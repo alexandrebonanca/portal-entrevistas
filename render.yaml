@@ -1,0 +1,40 @@
+services:
+  - type: web
+    name: portal-entrevistas
+    runtime: node
+    plan: starter
+    buildCommand: npm ci
+    startCommand: node src/server.ts
+    healthCheckPath: /healthz
+    disk:
+      name: media
+      mountPath: /var/data
+      sizeGB: 10
+    envVars:
+      - key: NODE_VERSION
+        value: 24.19.0
+      - key: NODE_ENV
+        value: production
+      - key: STORAGE_DIR
+        value: /var/data/storage
+      - key: DATABASE_URL
+        fromDatabase:
+          name: portal-entrevistas-db
+          property: connectionString
+      - key: APP_SECRET
+        generateValue: true
+      - key: BASE_URL
+        sync: false
+      - key: SUPPORT_EMAIL
+        sync: false
+      - key: ALLOW_SIGNUP
+        value: "false"
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: MAILERSEND_API_KEY
+        sync: false
+      - key: MAIL_FROM
+        sync: false
+databases:
+  - name: portal-entrevistas-db
+    plan: basic-256mb

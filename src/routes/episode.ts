@@ -1,0 +1,119 @@
+import type { FastifyInstance } from 'fastify';
+import { config } from '../config.ts';
+import { esc, fmtDuration, fmtDate } from '../lib.ts';
+import { page, flash } from '../views.ts';
+import { sendAsset, audit } from '../app.ts';
+import { toVtt, toSrt, type Cue } from '../subtitles.ts';
+import { t, normLang } from '../i18n.ts';
+
+export interface PlayerUrls { audio: string; cover: string; subs: (lang: string, ext: 'vtt' | 'srt') => string }
+
+const LANG_NAME: Record<string, string> = { en: 'English', 'pt-PT': 'Português (PT)', es: 'Español', fr: 'Français', de: 'Deutsch' };
+
+export function playerHtml(ep: any, urls: PlayerUrls, opts: { host?: string; guest?: string } = {}) {
+  const langs = Object.keys(ep.subtitles ?? {});
+  const json = JSON.stringify({ subtitles: ep.subtitles ?? {}, chapters: ep.chapters ?? [] }).replace(/</g, '\\u003c');
+  return `<article class="player" aria-label="${esc(ep.title)}">
+<div class="row" style="align-items:flex-start"><img src="${esc(urls.cover)}" alt="Cover of ${esc(ep.title)}" width="220" height="220" style="width:min(220px,40vw);height:auto;border-radius:12px;aspect-ratio:1;object-fit:cover">
+<div class="grow" style="min-width:220px"><h1 style="margin:.2em 0">${esc(ep.title)}</h1>
+<p class="sans hint">${opts.host ? `Host: ${esc(opts.host)}` : ''}${opts.guest ? ` · Guest: ${esc(opts.guest)}` : ''} · ${fmtDuration(ep.duration_ms)}</p>
+<p class="sans hint" style="border-left:3px solid var(--accent);padding-left:10px">${esc(config.aiDisclosure)}</p></div></div>
+<audio id="aud" controls preload="metadata" src="${esc(urls.audio)}" style="width:100%;margin-top:14px"></audio>
+<div class="row sans" style="margin:10px 0"><label for="spd" style="margin:0">Speed</label><select id="spd" style="width:auto"><option>0.75</option><option selected>1</option><option>1.25</option><option>1.5</option><option>2</option></select>
+<label for="lang" style="margin:0 0 0 12px">Subtitles</label><select id="lang" style="width:auto"><option value="">Off</option>${langs.map(l => `<option value="${esc(l)}" ${l === 'en' ? 'selected' : ''}>${esc(LANG_NAME[l] ?? l)}</option>`).join('')}${['en', 'pt-PT'].filter(l => !langs.includes(l)).map(l => `<option disabled>${esc(LANG_NAME[l])} — not available</option>`).join('')}</select>
+${langs.map(l => `<a class="hint" href="${esc(urls.subs(l, 'vtt'))}" download>${esc(l)}.vtt</a> <a class="hint" href="${esc(urls.subs(l, 'srt'))}" download>.srt</a>`).join(' · ')}</div>
+<div class="cue" id="cue" aria-live="off" aria-label="Subtitles"></div>
+<h2>Chapters</h2><ol id="chap" class="sans"></ol>
+<h2>Transcript</h2><div id="tr"></div>
+<script type="application/json" id="pdata">${json}</script></article>`;
+}
+
+export async function episodeRoutes(app: FastifyInstance) {
+  const db = app.db;
+  const send = (reply: any, html: string) => reply.type('text/html; charset=utf-8').send(html);
+
+  // ---- público ----
+  const live = (slug: string) => db.one(
+    `SELECT e.*, i.host_name, i.guest_name, i.id AS iid FROM episodes e JOIN interviews i ON i.id=e.interview_id
+     WHERE e.slug=$1 AND e.status='published' AND e.visibility IN ('unlisted','public') AND e.withdrawn_at IS NULL`, [slug]);
+
+  app.get('/e/:slug', async (req, reply) => {
+    const ep = await live((req.params as any).slug);
+    if (!ep) return reply.code(404).send('Episódio não disponível');
+    const s = ep.slug;
+    return send(reply, page({
+      lang: 'en', title: ep.title, noindex: ep.visibility !== 'public', desc: ep.description || undefined,
+      body: `<div class="wrap" style="padding-top:28px">${playerHtml(ep, { audio: `/e/${s}/audio`, cover: `/e/${s}/cover`, subs: (l, x) => `/e/${s}/subs/${l}.${x}` }, { host: ep.host_name, guest: ep.guest_name })}</div>`,
+      script: '/static/player.js', nav: '',
+    }));
+  });
+  const pubAsset = async (req: any, reply: any, which: 'audio' | 'cover' | 'thumb') => {
+    const ep = await live(req.params.slug);
+    if (!ep) return reply.code(404).send();
+    const id = { audio: ep.audio_asset_id, cover: ep.cover_asset_id, thumb: ep.cover_thumb_asset_id }[which];
+    const a = await db.one('SELECT * FROM assets WHERE id=$1 AND deleted_at IS NULL', [id]);
+    if (!a) return reply.code(404).send();
+    return sendAsset(req, reply, a, { cache: 'public, max-age=300' });
+  };
+  app.get('/e/:slug/audio', (req, reply) => pubAsset(req, reply, 'audio'));
+  app.get('/e/:slug/cover', (req, reply) => pubAsset(req, reply, 'cover'));
+  app.get('/e/:slug/thumb', (req, reply) => pubAsset(req, reply, 'thumb'));
+  const subsReply = (cues: Cue[] | undefined, fmt: string, reply: any) => {
+    if (!cues) return reply.code(404).send();
+    return fmt === 'srt' ? reply.type('application/x-subrip; charset=utf-8').send(toSrt(cues)) : reply.type('text/vtt; charset=utf-8').send(toVtt(cues));
+  };
+  app.get('/e/:slug/subs/:file', async (req, reply) => {
+    const ep = await live((req.params as any).slug);
+    const m = /^([A-Za-z-]{2,8})\.(vtt|srt)$/.exec((req.params as any).file);
+    if (!ep || !m) return reply.code(404).send();
+    return subsReply(ep.subtitles?.[m[1]], m[2], reply);
+  });
+
+  // ---- pré-visualização do entrevistador ----
+  app.get('/entrevistas/:id/subs/:file', async (req, reply) => {
+    if (!req.user) return reply.code(401).send();
+    const ep = await db.one(`SELECT e.subtitles FROM episodes e JOIN interviews i ON i.id=e.interview_id WHERE i.id=$1 AND (i.owner_id=$2 OR $3='admin') AND e.status<>'superseded' ORDER BY e.created_at DESC LIMIT 1`, [(req.params as any).id, req.user.id, req.user.role]);
+    const m = /^([A-Za-z-]{2,8})\.(vtt|srt)$/.exec((req.params as any).file);
+    if (!ep || !m) return reply.code(404).send();
+    return subsReply(ep.subtitles?.[m[1]], m[2], reply);
+  });
+
+  // ---- pré-visualização do entrevistado ----
+  const guestEpisode = async (req: any) => {
+    if (!req.guest) return null;
+    return db.one(`SELECT e.*, i.host_name, i.guest_name, i.review_policy, i.interaction_lang FROM episodes e JOIN interviews i ON i.id=e.interview_id
+      WHERE e.interview_id=$1 AND e.status IN ('preview','published') AND e.stale=false ORDER BY e.created_at DESC LIMIT 1`, [req.guest.interviewId]);
+  };
+  app.get('/entrevista/subs/:file', async (req, reply) => {
+    const ep = await guestEpisode(req);
+    const m = /^([A-Za-z-]{2,8})\.(vtt|srt)$/.exec((req.params as any).file);
+    if (!ep || !m) return reply.code(404).send();
+    return subsReply(ep.subtitles?.[m[1]], m[2], reply);
+  });
+  app.get('/entrevista/episodio', async (req, reply) => {
+    const ep = await guestEpisode(req);
+    if (!ep) return reply.redirect('/entrevista/obrigado');
+    const d = t(normLang(ep.interaction_lang));
+    const dec = await db.one(`SELECT * FROM approvals WHERE episode_id=$1 AND actor='guest' AND valid ORDER BY created_at DESC LIMIT 1`, [ep.id]);
+    const q = req.query as any;
+    return send(reply, page({
+      lang: normLang(ep.interaction_lang), title: d.episodePreview, noindex: true, nav: '', script: '/static/player.js',
+      body: `<div class="wrap" style="padding-top:28px">${flash(q.ok)}<h2>${esc(d.episodePreview)}</h2>
+${playerHtml(ep, { audio: `/api/g/media/${ep.audio_asset_id}`, cover: `/api/g/media/${ep.cover_asset_id}`, subs: (l, x) => `/entrevista/subs/${l}.${x}` }, { host: ep.host_name, guest: ep.guest_name })}
+${dec ? `<div class="flash">${esc(dec.decision === 'approved' ? d.approve : d.requestChanges)} — ${esc(fmtDate(dec.created_at))}</div>` : ''}
+<form method="post" action="/entrevista/episodio/decisao" class="card"><label for="nt">${esc(d.notePlaceholder)}</label><textarea id="nt" name="note"></textarea>
+<div class="row"><button name="decision" value="approved" class="accent">${esc(d.approve)}</button><button name="decision" value="changes" class="ghost">${esc(d.requestChanges)}</button></div>
+<p class="hint">Silence is never treated as approval.</p></form></div>`,
+    }));
+  });
+  app.post('/entrevista/episodio/decisao', async (req, reply) => {
+    const ep = await guestEpisode(req);
+    if (!ep) return reply.redirect('/entrevista/obrigado');
+    const b = req.body as any;
+    const decision = b.decision === 'approved' ? 'approved' : 'changes';
+    await db.query(`UPDATE approvals SET valid=false WHERE episode_id=$1 AND actor='guest'`, [ep.id]);
+    await db.query(`INSERT INTO approvals(interview_id, kind, actor, episode_id, script_id, decision, note) VALUES ($1,'episode','guest',$2,$3,$4,$5)`, [ep.interview_id, ep.id, ep.script_id, decision, String(b.note ?? '').slice(0, 2000)]);
+    await audit(db, 'guest', `episode.${decision}`, ep.interview_id);
+    return reply.redirect('/entrevista/episodio?ok=1');
+  });
+}
