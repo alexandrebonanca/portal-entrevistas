@@ -33,7 +33,7 @@ export async function productionRoutes(app: FastifyInstance) {
     const [procOk, coverOk, pubOk] = await Promise.all([consent(iv.id, 'processing'), consent(iv.id, 'cover_use'), consent(iv.id, 'publish')]);
     const jobs = await db.query(`SELECT * FROM jobs WHERE interview_id=$1 ORDER BY created_at DESC LIMIT 8`, [iv.id]);
     const script = await db.one(`SELECT * FROM scripts WHERE interview_id=$1 AND status<>'superseded' ORDER BY revision DESC LIMIT 1`, [iv.id]);
-    const ep = await db.one(`SELECT * FROM episodes WHERE interview_id=$1 AND status<>'superseded' ORDER BY created_at DESC LIMIT 1`, [iv.id]);
+    const ep = await db.one(`SELECT * FROM episodes WHERE interview_id=$1 AND status<>'superseded' AND NOT (status='withdrawn' AND stale) ORDER BY created_at DESC LIMIT 1`, [iv.id]);
     const ledger = await db.one(`SELECT COALESCE(sum(cost_usd),0)::float AS usd FROM usage_ledger WHERE interview_id=$1`, [iv.id]);
     const est = submitted ? await estimateCost(db, iv.id, iv.subtitle_langs) : null;
     const running = jobs.some((j: any) => ['queued', 'running'].includes(j.state));
@@ -141,6 +141,11 @@ ${ep.visibility === 'public' ? `<form method="post" action="/entrevistas/${iv.id
 <form method="post" action="/entrevistas/${iv.id}/episodio/${ep.id}/retirar" onsubmit="return confirm('Retirar o episódio?')"><button class="danger">Retirar episódio</button></form>
 <p class="hint">Cópias já descarregadas ou distribuídas externamente podem não ser recuperáveis.</p>`}</div>`;
     }
+    if (!live && (script || ep || ['failed', 'stale', 'editorial_review', 'ready', 'qc'].includes(iv.production_status))) {
+      body += `<div class="card"><h2 style="margin-top:0">Recomeçar a produção</h2>
+<p class="hint">Arquiva o guião e o episódio atuais (não são eliminados) e volta ao passo «Processar podcast». As gravações e as transcrições originais mantêm-se. Se o episódio estiver publicado, é retirado e sai da galeria.</p>
+<form method="post" action="/entrevistas/${iv.id}/producao/recomecar" onsubmit="return confirm('Arquivar o guião e o episódio atuais e recomeçar a produção?')"><button class="danger">Recomeçar produção</button></form></div>`;
+    }
     body += '</div>';
     return reply.type('text/html; charset=utf-8').send(page({ title: 'Produção', body, noindex: true, script: live ? '/static/progress.js' : '/static/player.js', nav: `<a href="/painel">Painel</a>` }));
   });
@@ -163,6 +168,19 @@ ${ep.visibility === 'public' ? `<form method="post" action="/entrevistas/${iv.id
   });
 
   // ---- ações ----
+  app.post('/entrevistas/:id/producao/recomecar', async (req, reply) => {
+    const iv = await guard(req, reply); if (!iv) return;
+    if (await db.one(`SELECT 1 FROM jobs WHERE interview_id=$1 AND state IN ('queued','running')`, [iv.id])) return back(reply, iv.id, undefined, 'Há um processamento em curso; aguarde que termine.');
+    await db.tx(async tx => {
+      await tx.query(`UPDATE scripts SET status='superseded' WHERE interview_id=$1 AND status<>'superseded'`, [iv.id]);
+      await tx.query(`UPDATE episodes SET status=CASE WHEN status='published' THEN 'withdrawn' ELSE 'superseded' END, withdrawn_at=CASE WHEN status='published' THEN now() ELSE withdrawn_at END, gallery=false, stale=true WHERE interview_id=$1 AND status NOT IN ('superseded','withdrawn')`, [iv.id]);
+      await tx.query(`UPDATE approvals SET valid=false WHERE interview_id=$1 AND valid`, [iv.id]);
+      await tx.query(`UPDATE interviews SET production_status='not_requested', publication_status='private' WHERE id=$1`, [iv.id]);
+    });
+    await audit(db, req.user!.email, 'production.reset', iv.id);
+    return back(reply, iv.id, 'Produção recomeçada: pode voltar a processar o podcast.');
+  });
+
   app.post('/entrevistas/:id/processar', async (req, reply) => {
     const iv = await guard(req, reply); if (!iv) return;
     if (iv.collection_status !== 'submitted') return back(reply, iv.id, undefined, 'A entrevista não foi submetida.');

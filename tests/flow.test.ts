@@ -312,3 +312,20 @@ test('progresso: JSON com percentagem e etapa, só para o dono', async () => {
   const job = await db.one(`SELECT progress_total, progress_done FROM jobs WHERE kind='generate_episode' ORDER BY created_at DESC LIMIT 1`);
   assert.equal(job.progress_done, job.progress_total);
 });
+
+test('recomeçar produção arquiva (não apaga) e permite processar de novo', async () => {
+  const before = Number((await db.one('SELECT count(*)::int n FROM episodes WHERE interview_id=$1', [ivId])).n);
+  const r = await post(`/entrevistas/${ivId}/producao/recomecar`, {}, owner);
+  assert.match(decodeURIComponent(r.headers.location as string), /recomeçada/);
+  const iv = await db.one('SELECT production_status, publication_status FROM interviews WHERE id=$1', [ivId]);
+  assert.equal(iv.production_status, 'not_requested'); assert.equal(iv.publication_status, 'private');
+  assert.equal(Number((await db.one('SELECT count(*)::int n FROM episodes WHERE interview_id=$1', [ivId])).n), before, 'nada é eliminado');
+  assert.equal((await db.one(`SELECT count(*)::int n FROM scripts WHERE interview_id=$1 AND status<>'superseded'`, [ivId])).n, 0);
+  assert.ok(Number((await db.one(`SELECT count(*)::int n FROM transcripts WHERE interview_id=$1`, [ivId])).n) > 0, 'transcrições mantêm-se');
+  const pg = await get(`/entrevistas/${ivId}/producao`, owner);
+  assert.match(pg.body, /Processar podcast/);
+  assert.doesNotMatch(pg.body, /5\. Episódio/);
+  await post(`/entrevistas/${ivId}/processar`, {}, owner);
+  await drain();
+  assert.equal((await db.one('SELECT production_status s FROM interviews WHERE id=$1', [ivId])).s, 'editorial_review');
+});
