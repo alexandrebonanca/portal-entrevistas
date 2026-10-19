@@ -252,9 +252,15 @@ export const handlers: Record<string, Handler> = {
 
   async lipsync_experiment(job, { db, progress }) {
     const t0 = Date.now();
-    await progress(5, 100, 'A gerar um retrato fictício');
-    const portrait = await generateFictionalPortrait();
-    const portraitId = await saveAsset(db, { interviewId: null, kind: 'lab_portrait', mime: 'image/jpeg', ext: 'jpg', data: portrait, meta: { fictional: true } });
+    // Numa nova tentativa reaproveita o retrato já gerado (não volta a pagar a imagem).
+    const prev = await db.one(`SELECT id, storage_key FROM assets WHERE kind='lab_portrait' AND meta->>'jobId'=$1 LIMIT 1`, [job.id]);
+    let portrait: Buffer, portraitId: string;
+    if (prev) { portrait = await storage.get(prev.storage_key); portraitId = prev.id; }
+    else {
+      await progress(5, 100, 'A gerar um retrato fictício');
+      portrait = await generateFictionalPortrait();
+      portraitId = await saveAsset(db, { interviewId: null, kind: 'lab_portrait', mime: 'image/jpeg', ext: 'jpg', data: portrait, meta: { fictional: true, jobId: job.id } });
+    }
     await progress(20, 100, 'A gerar a voz');
     const sp = await readQuestion(String(job.input.text ?? 'Hello.'), 'male', 'en');
     const pr = await probeAudio(sp.data, sp.ext);

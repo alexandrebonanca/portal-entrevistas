@@ -1,6 +1,7 @@
 import { config } from './config.ts';
 import { S } from './settings.ts';
 import { makeToneWav } from './media.ts';
+import { PermanentError } from './jobs.ts';
 
 /**
  * Sincronização labial experimental através da Replicate (modelo configurável; por omissão cjwbw/sadtalker).
@@ -16,7 +17,9 @@ async function rq(path: string, init: RequestInit = {}) {
   if (!token) throw new Error('REPLICATE_API_TOKEN não configurado');
   const res = await fetch(`${API}${path}`, { ...init, headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', ...(init.headers ?? {}) } });
   const j: any = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(`Replicate ${res.status}: ${j?.detail ?? j?.title ?? 'erro'}`);
+  const msg = `Replicate ${res.status}: ${j?.detail ?? j?.title ?? 'erro'}`;
+  // Sem crédito, token inválido, pedido inválido: repetir não resolve (e gastaria noutros serviços).
+  if (!res.ok) throw res.status >= 400 && res.status < 500 && res.status !== 429 ? new PermanentError(msg) : new Error(msg);
   return j;
 }
 
