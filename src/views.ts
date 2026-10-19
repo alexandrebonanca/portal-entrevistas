@@ -40,6 +40,8 @@ video.cam{width:100%;max-height:60vh;border-radius:12px;background:#000;transfor
 .cue{font:1.1rem/1.5 system-ui;min-height:3.2em;text-align:center;padding:12px;background:var(--card);border:1px solid var(--line);border-radius:10px}
 .seg{border-left:3px solid var(--line);padding:6px 12px;margin:10px 0}.seg.host{border-color:var(--accent)}.seg.flag{background:rgba(180,105,31,.08)}
 .skip{position:absolute;left:-999px}.skip:focus{left:8px;top:8px;background:var(--card);padding:8px;z-index:9}
+.pbar{height:14px;border-radius:99px;background:var(--line);overflow:hidden}.pfill{height:100%;width:0;background:var(--accent);border-radius:99px;transition:width .6s ease}
+@media (prefers-reduced-motion:reduce){.pfill{transition:none}}
 :focus-visible{outline:3px solid var(--accent);outline-offset:2px}
 `;
 

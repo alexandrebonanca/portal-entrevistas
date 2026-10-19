@@ -65,16 +65,20 @@ export const handlers: Record<string, Handler> = {
     if (!processingOk) throw new PermanentError('Sem autorização de processamento por IA');
     await db.query(`UPDATE interviews SET production_status='transcribing' WHERE id=$1`, [iv.id]);
     const qs = await db.query(`SELECT q.*, a.status, t.asset_id, a.selected_take_id FROM questions q LEFT JOIN answers a ON a.question_id=q.id LEFT JOIN answer_takes t ON t.id=a.selected_take_id WHERE q.interview_id=$1 ORDER BY q.position`, [iv.id]);
-    let done = 0; const total = qs.length * 2 + 1;
-    await progress(0, total);
+    // Pesos: transcrever uma resposta ~3, uma pergunta gravada ~1, preparar o guião ~6.
+    const W = { q: 1, a: 3, script: 6 };
+    let done = 0; const total = qs.length * (W.q + W.a) + W.script;
+    await progress(0, total, 'A preparar');
     for (const q of qs) {
-      if (q.audio_asset_id && !q.text) await transcribeAsset(db, iv, q.audio_asset_id, 'question', q.id);
-      await progress(++done);
-      if (q.status === 'answered' && q.asset_id) await transcribeAsset(db, iv, q.asset_id, 'answer_take', q.selected_take_id);
-      await progress(++done);
+      if (q.audio_asset_id && !q.text) { await progress(done, total, `A transcrever a pergunta ${q.position} de ${qs.length}`); await transcribeAsset(db, iv, q.audio_asset_id, 'question', q.id); }
+      done += W.q;
+      if (q.status === 'answered' && q.asset_id) { await progress(done, total, `A transcrever a resposta ${q.position} de ${qs.length}`); await transcribeAsset(db, iv, q.asset_id, 'answer_take', q.selected_take_id); }
+      done += W.a;
+      await progress(done, total);
     }
+    await progress(done, total, 'A preparar o guião em inglês');
     await prepareScript(db, iv.id);
-    await progress(total, total);
+    await progress(total, total, 'Concluído');
     return { ok: true };
   },
 
@@ -95,20 +99,24 @@ export const handlers: Record<string, Handler> = {
     const segments: ScriptSegment[] = script.segments;
     const opts = job.input as { subtitleLangs?: string[]; coverPhotoIds?: string[] };
     const subLangs: string[] = opts.subtitleLangs?.length ? opts.subtitleLangs : iv.subtitle_langs;
-    const total = segments.length + subLangs.length + 3;
-    let step = 0;
-    await progress(0, total);
 
     // 1. Áudio por segmento (com cache por texto+papel+voz+modelo), incluindo o aviso inicial.
     const all: { id: string; role: 'host' | 'guest'; text: string; editorial: boolean }[] = [
       { id: 'disclosure', role: 'host', text: config.aiDisclosure, editorial: true },
       ...segments.map(s => ({ id: s.id, role: s.speakerRole, text: s.textEnglish, editorial: s.transformationType.startsWith('editorial_') })),
     ];
+    // Pesos por etapa (aproximam o tempo real: voz ~2, montagem ~4, tempos das legendas ~1, tradução ~4, capa ~12, verificação ~1).
+    const W = { tts: 2, asm: 4, words: 1, tr: 4, cover: 12, qc: 1 };
+    const nTr = subLangs.filter(l => l !== 'en').length;
+    const total = all.length * (W.tts + W.words) + W.asm + nTr * W.tr + W.cover + W.qc;
+    let step = 0;
+    await progress(0, total, 'A preparar');
     const parts: { data: Buffer; ext: string; pauseAfterMs: number }[] = [];
     const timing: { id: string; role: 'host' | 'guest'; text: string; startMs: number; durationMs: number; data: Buffer; ext: string }[] = [];
     let cursor = 0, ttsChars = 0;
     for (let i = 0; i < all.length; i++) {
       const s = all[i];
+      await progress(step, total, `A gerar a voz: segmento ${i + 1} de ${all.length}`);
       const key = sha256(`${s.role}|${s.text}|${config.openai.voices[s.role]}|${config.openai.models.speech}|${config.openai.mock}`);
       let asset = await db.one(`SELECT * FROM assets WHERE interview_id=$1 AND kind='tts_segment' AND meta->>'ttsKey'=$2 AND deleted_at IS NULL LIMIT 1`, [iv.id, key]);
       let data: Buffer, ext: string, dur: number;
@@ -125,33 +133,39 @@ export const handlers: Record<string, Handler> = {
       parts.push({ data, ext, pauseAfterMs: pause });
       timing.push({ id: s.id, role: s.role, text: s.text, startMs: cursor, durationMs: dur, data, ext });
       cursor += dur + pause;
-      await progress(++step);
+      step += W.tts;
     }
     if (ttsChars) await usage(db, iv.id, 'tts_chars', ttsChars, (ttsChars / 1000) * config.prices.ttsPer1kChars);
 
     // 2. Montagem (derivados; as gravações originais não são tocadas).
+    await progress(step, total, 'A montar e normalizar o áudio do episódio');
     const asm = await assembleEpisode(parts);
-    await progress(++step);
+    step += W.asm;
     const audioId = await saveAsset(db, { interviewId: iv.id, kind: 'episode_audio', mime: 'audio/mpeg', ext: 'mp3', data: asm.mp3, durationMs: asm.durationMs, meta: { maxVolumeDb: asm.maxVolumeDb, clipping: asm.clipping } });
 
     // 3. Legendas: tempos MEDIDOS no áudio sintético final de cada segmento (não por divisão de duração por palavras).
     let en: Cue[] = [];
-    for (const seg of timing) {
+    for (let i = 0; i < timing.length; i++) {
+      const seg = timing[i];
+      await progress(step, total, `A sincronizar as legendas: segmento ${i + 1} de ${timing.length}`);
       const words = await transcribeWords(seg.data, seg.ext).catch(() => []);
+      step += W.words;
       en.push(...cuesFromWords(words, seg, 'en'));
     }
     en = fixOverlaps(en).map((c, i) => ({ ...c, id: `c${i}` }));
     const subtitles: Record<string, Cue[]> = { en };
     for (const lang of subLangs.filter(l => l !== 'en')) {
+      await progress(step, total, `A traduzir as legendas (${lang})`);
       const tr = await translateSubtitleCues(en.map(c => ({ id: c.id, text: c.text })), lang);
       const map = new Map(tr.map(x => [x.sourceCueId, x.translatedText]));
       subtitles[lang] = en.map(c => ({ ...c, language: lang, text: map.get(c.id) || c.text })); // ligação 1:1 aos cues de origem
-      await progress(++step);
+      step += W.tr;
     }
     if (!subLangs.includes('en')) delete subtitles.en;
     const cueIssues = Object.entries(subtitles).flatMap(([l, c]) => checkCues(c, asm.durationMs).map(m => `${l}: ${m}`));
 
     // 4. Capa: fundo por IA (ou determinístico) + texto e retratos compostos por nós.
+    await progress(step, total, 'A criar a capa');
     const brief = await coverBriefing(script.title_en, iv.objective_text).catch(() => null);
     const bg = brief ? await generateCoverBackground(brief).catch(() => null) : null;
     if (bg) await usage(db, iv.id, 'image', 1, config.prices.imageEach);
@@ -162,7 +176,8 @@ export const handlers: Record<string, Handler> = {
     const { cover, thumb } = await composeCover({ title: script.title_en, subtitle: iv.guest_name ? `with ${iv.guest_name}` : '', brand: config.brand, background: bg, photos: photoBufs, palette: brief?.palette });
     const coverId = await saveAsset(db, { interviewId: iv.id, kind: 'episode_cover', mime: 'image/jpeg', ext: 'jpg', data: cover });
     const thumbId = await saveAsset(db, { interviewId: iv.id, kind: 'episode_cover', mime: 'image/jpeg', ext: 'jpg', data: thumb, meta: { thumb: true } });
-    await progress(++step);
+    step += W.cover;
+    await progress(step, total, 'Controlo de qualidade');
 
     // 5. Capítulos e controlo de qualidade.
     const chapters: { startMs: number; title: string }[] = [];
@@ -184,7 +199,7 @@ export const handlers: Record<string, Handler> = {
       [iv.id, script.id, `${slugify(script.title_en)}-${randomBytes(3).toString('hex')}`, script.title_en, iv.objective_shared ? iv.objective_text.slice(0, 500) : '', audioId, coverId, thumbId, asm.durationMs,
         JSON.stringify(subtitles), JSON.stringify(chapters), JSON.stringify({ maxVolumeDb: asm.maxVolumeDb, clipping: asm.clipping, qcIssues: issues, supersedes: prev.map((p: any) => p.id), mock: config.openai.mock, voices: config.openai.voices, models: config.openai.models })]);
     await db.query(`UPDATE interviews SET production_status=$2, publication_status='awaiting_approval' WHERE id=$1`, [iv.id, issues.length ? 'qc' : 'ready']);
-    await progress(total, total);
+    await progress(total, total, 'Concluído');
     return { episodeId: ep.id, qcIssues: issues };
   },
 

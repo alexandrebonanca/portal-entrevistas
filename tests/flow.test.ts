@@ -259,3 +259,16 @@ test('CSRF: Origin null só passa com Sec-Fetch-Site same-origin; mesma origem e
   assert.equal((await f({ origin: 'null', 'sec-fetch-site': 'same-origin' })).statusCode, 302);
   assert.equal((await f({ origin: 'http://test.local' })).statusCode, 302, 'host de BASE_URL aceite atrás de proxy');
 });
+
+test('progresso: JSON com percentagem e etapa, só para o dono', async () => {
+  owner = `sid=${cookies(await post('/entrar', { email: 'ana@example.com', password: 'uma-palavra-passe-longa' }, '')).sid}`; // os testes de CSRF terminaram a sessão
+  const r = await get(`/entrevistas/${ivId}/progresso`, owner);
+  assert.equal(r.statusCode, 200);
+  const j = r.json();
+  assert.equal(j.active, false);
+  assert.equal(j.percent, 100);
+  assert.equal(j.label, 'Concluído');
+  assert.equal((await get(`/entrevistas/${ivId}/progresso`)).statusCode, 401);
+  const job = await db.one(`SELECT progress_total, progress_done FROM jobs WHERE kind='generate_episode' ORDER BY created_at DESC LIMIT 1`);
+  assert.equal(job.progress_done, job.progress_total);
+});

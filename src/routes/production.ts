@@ -10,6 +10,7 @@ import { playerHtml } from './episode.ts';
 import { createInvitation } from '../invites.ts';
 import { queueEmail, emailShell } from '../mail.ts';
 
+const JOB_LABEL: Record<string, string> = { process_submission: 'A transcrever e a preparar o guião', prepare_script: 'A preparar o guião', generate_episode: 'A gerar o episódio', transcribe_asset: 'A transcrever' };
 const SUBS = [['en', 'English'], ['pt-PT', 'Português (PT)'], ['es', 'Español'], ['fr', 'Français'], ['de', 'Deutsch']];
 
 export async function productionRoutes(app: FastifyInstance) {
@@ -56,9 +57,17 @@ ${!aiAvailable() ? '<div class="flash bad">OPENAI_API_KEY não está configurada
     }
 
     // 2. Progresso
-    if (running || iv.production_status === 'failed') {
+    const live = jobs.find((j: any) => ['queued', 'running'].includes(j.state));
+    if (live) {
+      body += `<div class="card" id="progress" data-url="/entrevistas/${iv.id}/progresso" aria-live="polite"><h2 style="margin-top:0">${esc(JOB_LABEL[live.kind] ?? live.kind)}</h2>
+<div class="pbar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div class="pfill"></div></div>
+<p class="sans" style="margin:.6em 0 0"><strong class="ppct">0%</strong> · <span class="pstep">${esc(live.state === 'queued' ? 'Em fila' : live.progress_label || 'A iniciar')}</span></p>
+<p class="hint sans" style="margin:.2em 0 0"><span class="pelapsed"></span> <span class="peta"></span></p>
+<p class="hint">Pode fechar esta página: o processamento continua no servidor.</p></div>`;
+    }
+    if (!live && iv.production_status === 'failed') {
       body += `<div class="card"><h2 style="margin-top:0">Trabalhos</h2><table><tbody>${jobs.map((j: any) => `<tr><td>${esc(j.kind)}</td><td>${pill(j.state, j.state === 'done' ? 'ok' : j.state === 'failed' ? 'bad' : '')}</td><td>${j.progress_total ? `${j.progress_done}/${j.progress_total}` : ''}</td><td class="hint">${esc(j.error ?? '')}</td></tr>`).join('')}</tbody></table>
-${running ? '<p class="hint">A processar… <a href="">atualizar</a></p><meta http-equiv="refresh" content="8">' : ''}
+
 ${iv.production_status === 'failed' ? `<form method="post" action="/entrevistas/${iv.id}/processar"><p class="hint">Falhou. Os erros permanentes exigem revisão; pode tentar novamente depois de corrigir a causa.</p><button class="ghost">Tentar de novo</button></form>` : ''}</div>`;
     }
 
@@ -122,7 +131,24 @@ ${ep.status !== 'published' ? `<form method="post" action="/entrevistas/${iv.id}
 <p class="hint">Cópias já descarregadas ou distribuídas externamente podem não ser recuperáveis.</p>`}</div>`;
     }
     body += '</div>';
-    return reply.type('text/html; charset=utf-8').send(page({ title: 'Produção', body, noindex: true, script: '/static/player.js', nav: `<a href="/painel">Painel</a>` }));
+    return reply.type('text/html; charset=utf-8').send(page({ title: 'Produção', body, noindex: true, script: live ? '/static/progress.js' : '/static/player.js', nav: `<a href="/painel">Painel</a>` }));
+  });
+
+  // Estado dos trabalhos em JSON, para a barra de progresso (só o dono/admin).
+  app.get('/entrevistas/:id/progresso', async (req, reply) => {
+    if (!req.user) return reply.code(401).send({ error: 'session' });
+    const iv = await ownedInterview(app, req, (req.params as any).id);
+    if (!iv) return reply.code(404).send({ error: 'not found' });
+    const j = await db.one(`SELECT kind, state, progress_done, progress_total, progress_label, started_at, created_at, error, now() AS server_now FROM jobs
+      WHERE interview_id=$1 ORDER BY created_at DESC LIMIT 1`, [iv.id]);
+    reply.header('Cache-Control', 'no-store');
+    if (!j) return { active: false };
+    const total = Number(j.progress_total) || 0, done = Math.min(Number(j.progress_done) || 0, total);
+    const elapsedSec = j.started_at ? Math.max(0, (new Date(j.server_now).getTime() - new Date(j.started_at).getTime()) / 1000) : 0;
+    // Estimativa pelo ritmo observado; só a partir de 5% feito, para não dar números absurdos no arranque.
+    const etaSec = j.state === 'running' && total && done / total >= 0.05 ? Math.round((elapsedSec / done) * (total - done)) : null;
+    return { active: ['queued', 'running'].includes(j.state), kind: j.kind, title: JOB_LABEL[j.kind] ?? j.kind, state: j.state, percent: total ? Math.round((done / total) * 100) : 0,
+      label: j.state === 'queued' ? 'Em fila' : j.progress_label, elapsedSec: Math.round(elapsedSec), etaSec, error: j.state === 'failed' ? j.error : null };
   });
 
   // ---- ações ----
