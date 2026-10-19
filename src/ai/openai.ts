@@ -1,16 +1,18 @@
 import { config } from '../config.ts';
+import { S } from '../settings.ts';
 import { makeToneWav, toMp3ForTranscription } from '../media.ts';
 import { SCRIPT_SYSTEM, SUBTITLE_SYSTEM, COVER_SYSTEM, REVIEW_SYSTEM, PROMPT_VERSIONS } from './prompts.ts';
 
 /** Todo o acesso à OpenAI está aqui, só no servidor. Com AI_MOCK=1 nada sai da máquina. */
-let client: any;
+let client: any, clientKey = '';
 async function openai() {
   if (config.openai.mock) throw new Error('mock');
-  if (!config.openai.apiKey) throw new Error('OPENAI_API_KEY não configurada');
-  if (!client) { const { default: OpenAI } = await import('openai'); client = new OpenAI({ apiKey: config.openai.apiKey, maxRetries: 0, timeout: 180_000 }); }
+  const key = S('OPENAI_API_KEY');
+  if (!key) throw new Error('OPENAI_API_KEY não configurada');
+  if (!client || clientKey !== key) { const { default: OpenAI } = await import('openai'); client = new OpenAI({ apiKey: key, maxRetries: 0, timeout: 180_000 }); clientKey = key; }
   return client;
 }
-export const aiAvailable = () => config.openai.mock || !!config.openai.apiKey;
+export const aiAvailable = () => config.openai.mock || !!S('OPENAI_API_KEY');
 
 async function toFile(data: Buffer, name: string, type: string) {
   const { toFile } = await import('openai');

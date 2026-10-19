@@ -7,9 +7,10 @@ import { sniff, stripJpegMetadata, saveAsset, probeAudio } from '../media.ts';
 import { createInvitation } from '../invites.ts';
 import { enqueue } from '../jobs.ts';
 import { aiAvailable } from '../ai/openai.ts';
+import { quotaFor } from '../billing.ts';
 
 const H = { 'Content-Type': 'text/html; charset=utf-8' };
-const nav = (u: any) => `<a href="/painel">Painel</a><a href="/entrevistas/nova">Nova entrevista</a><form method="post" action="/sair" style="display:inline"><button class="ghost" style="padding:6px 12px;min-height:0;margin-left:16px">Sair (${esc(u.name)})</button></form>`;
+const nav = (u: any) => `<a href="/painel">Painel</a><a href="/entrevistas/nova">Nova entrevista</a><a href="/account">Conta</a>${u.role === 'admin' ? '<a href="/admin/utilizadores">Utilizadores</a><a href="/admin/definicoes">Definições</a>' : ''}<form method="post" action="/sair" style="display:inline"><button class="ghost" style="padding:6px 12px;min-height:0;margin-left:16px">Sair (${esc(u.name)})</button></form>`;
 const LANGS: [string, string][] = [['pt-PT', 'Português (PT)'], ['en', 'English']];
 const SUBS = [['en', 'English'], ['pt-PT', 'Português (PT)'], ['es', 'Español'], ['fr', 'Français'], ['de', 'Deutsch']];
 const statusPill = (s: string) => pill(STATUS_LABEL[s] ?? s, ['submitted', 'ready', 'published', 'approved'].includes(s) ? 'ok' : ['failed', 'expired', 'cancelled', 'stale', 'withdrawn'].includes(s) ? 'bad' : '');
@@ -244,7 +245,9 @@ ${locked ? `<form method="post" action="/entrevistas/${iv.id}/adicional"><label 
     const iv = await ownedInterview(app, req, (req.params as any).id);
     if (!iv) return reply.code(404).send('Não encontrada');
     const { qs, problems } = await readiness(iv);
-    const body = `<div class="narrow" style="padding-top:32px"><h1>Rever e convidar</h1>
+    const quota = await quotaFor(db, req.user!);
+    if (!quota.allowed) problems.push(quota.reason === 'quota' ? `Atingiu o limite de ${quota.limit} entrevistas deste período (${quota.used}/${quota.limit}). Mude de plano em Conta.` : 'Precisa de uma subscrição ativa para enviar convites (Conta).');
+    const body = `<div class="narrow" style="padding-top:32px"><h1>Rever e convidar</h1>${flash((req.query as any).e, 'bad')}${quota.unlimited ? '' : `<p class="hint sans">Uso neste período: ${quota.used}/${quota.limit}</p>`}
 ${problems.length ? `<div class="flash bad"><strong>Antes de enviar:</strong><ul>${problems.map(p => `<li>${esc(p)}</li>`).join('')}</ul></div>` : ''}
 <div class="card"><p class="sans"><strong>Para:</strong> ${esc(iv.guest_name)} &lt;${esc(iv.guest_email)}&gt;<br><strong>Título:</strong> ${esc(iv.title)}<br><strong>Perguntas:</strong> ${qs.length}<br>
 <strong>Objetivo visível ao entrevistado:</strong> ${iv.objective_shared ? 'Sim' : 'Não (interno)'}<br><strong>Política de revisão:</strong> ${iv.review_policy === 'guest_preview' ? 'o entrevistado aprova a versão final' : 'só o entrevistador aprova'}</p>
@@ -262,6 +265,8 @@ ${iv.objective_shared && iv.objective_text ? `<p class="hint">O entrevistado vê
     if (iv.collection_status !== 'draft') return reply.redirect(`/entrevistas/${iv.id}`); // duplo clique / reenvio de formulário
     const { problems } = await readiness(iv);
     if (problems.length) return reply.redirect(`/entrevistas/${iv.id}/convidar`);
+    const quota = await quotaFor(db, req.user!);
+    if (!quota.allowed) return reply.redirect(`/entrevistas/${iv.id}/convidar?e=` + encodeURIComponent(quota.reason === 'quota' ? `Atingiu o limite de ${quota.limit} entrevistas deste período. Mude de plano em Conta.` : 'Precisa de uma subscrição ativa para enviar convites (Conta).'));
     await createInvitation(db, iv, { name: req.user!.name });
     await db.query(`UPDATE interviews SET collection_status='invited', invited_at=now() WHERE id=$1`, [iv.id]);
     await audit(db, req.user!.email, 'invitation.sent', iv.id);

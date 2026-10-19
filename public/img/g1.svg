@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 300" role="img" aria-label="Fictional guest portrait (illustration)"><defs><linearGradient id="b" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#2b3a55"/><stop offset="1" stop-color="#0d0c0b"/></linearGradient></defs>
+<rect width="240" height="300" fill="url(#b)"/><circle cx="190" cy="60" r="70" fill="#fff" opacity=".05"/>
+<path d="M70 120c-8-60 20-82 50-82s58 22 50 82c-4 30 4 60 8 86H62c4-26 12-56 8-86z" fill="#2a1d17"/>
+<path d="M30 300c4-60 40-84 90-84s86 24 90 84z" fill="#c8803c"/><path d="M96 216l24 34 24-34z" fill="#fff" opacity=".85"/>
+<rect x="104" y="170" width="32" height="50" rx="12" fill="#e8b48f"/>
+<ellipse cx="120" cy="124" rx="44" ry="54" fill="#e8b48f"/>
+<path d="M76 112c2-34 22-52 44-52s42 18 44 52c-8-16-24-26-44-26s-36 10-44 26z" fill="#2a1d17"/>
+<circle cx="104" cy="128" r="3.2" fill="#1a1412"/><circle cx="136" cy="128" r="3.2" fill="#1a1412"/><path d="M108 152q12 9 24 0" stroke="#1a1412" stroke-width="3" fill="none" stroke-linecap="round"/></svg>

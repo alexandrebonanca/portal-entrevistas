@@ -10,6 +10,9 @@ import { interviewerRoutes } from './routes/interviewer.ts';
 import { productionRoutes } from './routes/production.ts';
 import { guestRoutes } from './routes/guest.ts';
 import { episodeRoutes } from './routes/episode.ts';
+import { billingRoutes } from './routes/billing.ts';
+import { adminRoutes } from './routes/admin.ts';
+import { loadSettings } from './settings.ts';
 
 declare module 'fastify' {
   interface FastifyInstance { db: Db }
@@ -20,8 +23,10 @@ export async function buildApp(db: Db): Promise<FastifyInstance> {
   assertProductionConfig();
   const app = Fastify({ logger: config.production ? { level: 'info', redact: ['req.headers.cookie', 'req.headers.authorization'] } : false, bodyLimit: config.limits.maxUploadMb * 1024 * 1024, trustProxy: true });
   app.decorate('db', db);
+  await loadSettings(db);
   await app.register(cookie);
   await app.register(formbody);
+  app.addContentTypeParser('application/json', { parseAs: 'buffer' }, (_req, body, done) => done(null, body));
   for (const type of ['audio/webm', 'audio/ogg', 'audio/mp4', 'audio/mpeg', 'audio/wav', 'audio/x-m4a', 'audio/aac', 'video/webm', 'video/mp4', 'image/jpeg', 'image/png', 'application/octet-stream']) {
     app.addContentTypeParser(type, { parseAs: 'buffer' }, (_req, body, done) => done(null, body));
   }
@@ -61,7 +66,7 @@ export async function buildApp(db: Db): Promise<FastifyInstance> {
   app.addHook('preHandler', async (req) => {
     const sid = req.cookies?.sid;
     if (sid) {
-      const u = await db.one(`SELECT u.id,u.email,u.name,u.role FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.id=$1 AND s.expires_at>now()`, [sha256(sid)]);
+      const u = await db.one(`SELECT u.id,u.email,u.name,u.role FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.id=$1 AND s.expires_at>now() AND u.active`, [sha256(sid)]);
       if (u) req.user = u;
     }
     const gs = req.cookies?.gs;
@@ -77,6 +82,8 @@ export async function buildApp(db: Db): Promise<FastifyInstance> {
   await productionRoutes(app);
   await guestRoutes(app);
   await episodeRoutes(app);
+  await billingRoutes(app);
+  await adminRoutes(app);
 
   app.setNotFoundHandler((req, reply) => {
     reply.code(404).type('text/html').send('<!doctype html><meta charset=utf-8><title>404</title><p style="font:18px system-ui;padding:40px">404 — página não encontrada. <a href="/">Início</a>');

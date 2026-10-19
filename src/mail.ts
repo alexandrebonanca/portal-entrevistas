@@ -1,6 +1,7 @@
 import { config } from './config.ts';
 import type { Db } from './db.ts';
 import { esc } from './lib.ts';
+import { S } from './settings.ts';
 
 /** Coloca o email na outbox (deduplicado por chave). O envio real é feito por flushOutbox(). */
 export async function queueEmail(db: Db, e: { key: string; interviewId?: string; to: string; subject: string; html: string; text: string }) {
@@ -10,6 +11,8 @@ export async function queueEmail(db: Db, e: { key: string; interviewId?: string;
 }
 
 export async function flushOutbox(db: Db) {
+  // Em produção sem fornecedor configurado as mensagens ficam pendentes (não se fingem enviadas).
+  if (config.production && !S('MAILERSEND_API_KEY')) return;
   const rows = await db.query(`SELECT * FROM emails WHERE state IN ('pending','failed') AND attempts < 5 ORDER BY created_at LIMIT 20`);
   for (const m of rows) {
     // Reserva a linha antes de enviar: dois processos não enviam a mesma mensagem.
@@ -25,16 +28,16 @@ export async function flushOutbox(db: Db) {
 }
 
 async function deliver(m: any): Promise<string> {
-  if (!config.mail.apiKey) {
+  if (!S('MAILERSEND_API_KEY')) {
     // Sem fornecedor configurado: regista na consola (desenvolvimento). Não é entrega real.
     console.log(`[email:dev] para=${m.to_email} assunto="${m.subject}"\n${m.text_body}\n`);
     return 'console';
   }
   const res = await fetch('https://api.mailersend.com/v1/email', {
     method: 'POST',
-    headers: { Authorization: `Bearer ${config.mail.apiKey}`, 'Content-Type': 'application/json' },
+    headers: { Authorization: `Bearer ${S('MAILERSEND_API_KEY')}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      from: { email: config.mail.from, name: config.mail.fromName },
+      from: { email: S('MAIL_FROM') || config.mail.from, name: S('MAIL_FROM_NAME') || config.mail.fromName },
       to: [{ email: m.to_email }],
       subject: m.subject, html: m.html, text: m.text_body,
     }),

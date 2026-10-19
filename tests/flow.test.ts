@@ -35,12 +35,14 @@ test('landing em inglês e primeira conta administradora', async () => {
   const r = await get('/');
   assert.equal(r.statusCode, 200);
   assert.match(r.body, /lang="en"/);
-  assert.match(r.body, /Bring the people who shape your field/);
-  const reg = await post('/registar', { name: 'Ana', email: 'ana@example.com', password: 'uma-palavra-passe-longa' }, '');
+  assert.match(r.body, /Interview the people you admire/);
+  assert.match(r.body, /€10/);
+  assert.match(r.body, /Up to <strong>5 interviews/);
+  assert.match(r.body, /fictional illustrations/);
+  const reg = await post('/registar', { name: 'Ana', email: 'ana@example.com', password: 'uma-palavra-passe-longa', terms: '1' }, '');
   assert.equal(reg.statusCode, 302);
   owner = `sid=${cookies(reg).sid}`;
-  const second = await post('/registar', { name: 'X', email: 'x@example.com', password: 'uma-palavra-passe-longa' }, '');
-  assert.equal(second.statusCode, 404, 'registo fecha depois da primeira conta');
+  assert.equal((await db.one(`SELECT role FROM users WHERE email='ana@example.com'`)).role, 'admin');
 });
 
 test('criar entrevista, perguntas e convite', async () => {
