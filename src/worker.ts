@@ -1,5 +1,5 @@
 import type { Db } from './db.ts';
-import { runOne } from './jobs.ts';
+import { runOne, recoverOrphans } from './jobs.ts';
 import { handlers } from './pipeline.ts';
 import { flushOutbox } from './mail.ts';
 import { openDb, migrate } from './db.ts';
@@ -17,7 +17,7 @@ export function startWorker(db: Db, intervalMs = 2000) {
     finally { busy = false; }
   };
   const h = setInterval(tick, intervalMs);
-  void tick();
+  void (process.env.RUN_WORKER === '0' ? Promise.resolve() : recoverOrphans(db).catch(e => console.error('[worker] recuperação', e?.message))).then(tick);
   return { stop: () => { stopped = true; clearInterval(h); }, tick };
 }
 

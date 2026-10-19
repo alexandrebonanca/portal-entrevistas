@@ -20,6 +20,7 @@ export class PermanentError extends Error {}
 export async function runOne(db: Db, handlers: Record<string, Handler>): Promise<boolean> {
   // Recupera trabalhos presos (worker morreu a meio): volta à fila apenas se ainda tiver tentativas.
   await db.query(`UPDATE jobs SET state='queued', locked_at=NULL WHERE state='running' AND locked_at < now() - interval '15 minutes' AND attempts < max_attempts`);
+  await db.query(`UPDATE jobs SET state='failed', finished_at=now(), error=COALESCE(error, 'Interrompido e sem mais tentativas') WHERE state='running' AND locked_at < now() - interval '15 minutes' AND attempts >= max_attempts`);
   const job = await db.one(
     `UPDATE jobs SET state='running', attempts=attempts+1, locked_at=now(), started_at=COALESCE(started_at, now())
      WHERE id = (SELECT id FROM jobs WHERE state='queued' AND run_after <= now() ORDER BY created_at LIMIT 1 FOR UPDATE SKIP LOCKED) RETURNING *`);
@@ -40,4 +41,10 @@ export async function runOne(db: Db, handlers: Record<string, Handler>): Promise
     if (permanent && handlers['__onFail']) await handlers['__onFail'](job, { db, progress: async () => {} });
   }
   return true;
+}
+
+/** No arranque (instância única): trabalhos que estavam 'running' ficaram órfãos com o reinício — retomam já. */
+export async function recoverOrphans(db: Db) {
+  await db.query(`UPDATE jobs SET state='queued', locked_at=NULL, run_after=now() WHERE state='running' AND attempts < max_attempts`);
+  await db.query(`UPDATE jobs SET state='failed', finished_at=now(), error=COALESCE(error, 'Interrompido pelo reinício do servidor') WHERE state='running'`);
 }
