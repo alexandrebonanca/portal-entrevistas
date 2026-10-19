@@ -7,7 +7,7 @@ import { SETTING_DEFS, S, mask, saveEntitySetting, entityHas, entityValue, inEnt
 import { serviceTest } from './admin.ts';
 import { retryFailedEmails } from '../mail.ts';
 
-const GROUPS = ['OpenAI', 'Stripe', 'MailerSend', 'Moloni ON', 'Replicate'];
+const GROUPS = ['OpenAI', 'Stripe', 'MailerSend', 'Moloni ON', 'Replicate', 'fal.ai', 'WaveSpeed', 'Google'];
 
 export async function entityRoutes(app: FastifyInstance) {
   const db = app.db;

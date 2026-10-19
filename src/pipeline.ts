@@ -7,6 +7,7 @@ import { saveAsset, assembleEpisode, probeAudio } from './media.ts';
 import { transcribeAudio, transcribeWords, prepareEnglishScript, translateSubtitleCues, synthesizeSpeech, coverBriefing, generateCoverBackground, episodeVoice, type ScriptSegment } from './ai/openai.ts';
 import { planShots, renderBases, subtitleFrame, encodeVideo, encodeComposite, splitParts, shotsWithin, sliceAudio, stillClip, type Part } from './video.ts';
 import { lipsync, lipsyncMock, estimateLipsyncUsd } from './lipsync.ts';
+import { PROVIDERS, runProvider, signedAssetUrl } from './talking.ts';
 import { readQuestion, generateFictionalPortrait } from './ai/openai.ts';
 import { cuesFromWords, fixOverlaps, checkCues, type Cue } from './subtitles.ts';
 import { composeCover } from './cover.ts';
@@ -302,6 +303,55 @@ export const handlers: Record<string, Handler> = {
     await db.query('UPDATE episodes SET video_asset_id=$2, video_lang=$3 WHERE id=$1', [ep.id, id, lang]);
     await progress(100, 100, 'Concluído');
     return { videoAssetId: id, shots: shots.length, animated, failed, lipsyncUsd: gpuUsd };
+  },
+
+  async talking_compare(job, { db, progress }) {
+    // Retrato e voz uma única vez (reaproveitados numa nova tentativa), depois cada modelo à vez.
+    const prevP = await db.one(`SELECT id, storage_key FROM assets WHERE kind='lab_portrait' AND meta->>'jobId'=$1 LIMIT 1`, [job.id]);
+    let portrait: Buffer, portraitId: string;
+    if (prevP) { portrait = await storage.get(prevP.storage_key); portraitId = prevP.id; }
+    else {
+      await progress(2, 100, 'A gerar um retrato fictício');
+      portrait = await generateFictionalPortrait();
+      portraitId = await saveAsset(db, { interviewId: null, kind: 'lab_portrait', mime: 'image/jpeg', ext: 'jpg', data: portrait, meta: { fictional: true, jobId: job.id } });
+    }
+    const prevA = await db.one(`SELECT id, storage_key, duration_ms FROM assets WHERE kind='lab_audio' AND meta->>'jobId'=$1 LIMIT 1`, [job.id]);
+    let audioId: string, audioMs: number;
+    if (prevA) { audioId = prevA.id; audioMs = prevA.duration_ms; }
+    else {
+      await progress(6, 100, 'A gerar a voz');
+      const sp = await readQuestion(String(job.input.text), 'male', 'en');
+      const pr = await probeAudio(sp.data, sp.ext);
+      audioMs = pr.durationMs;
+      audioId = await saveAsset(db, { interviewId: null, kind: 'lab_audio', mime: sp.mime, ext: sp.ext, data: sp.data, durationMs: audioMs, meta: { jobId: job.id } });
+    }
+    const imageUrl = signedAssetUrl(portraitId), audioUrl = signedAssetUrl(audioId);
+    const chosen = PROVIDERS.filter(p => (job.input.providers as string[]).includes(p.id));
+    const results: any[] = [];
+    const { default: ff } = await import('@ffmpeg-installer/ffmpeg');
+    for (let i = 0; i < chosen.length; i++) {
+      const p = chosen[i];
+      // Já feito numa tentativa anterior? Não se paga outra vez.
+      const done = await db.one(`SELECT id, meta FROM assets WHERE kind='lab_video' AND meta->>'jobId'=$1 AND meta->>'provider'=$2 LIMIT 1`, [job.id, p.id]);
+      if (done) { results.push({ ...done.meta, videoAssetId: done.id }); continue; }
+      const base = 10 + Math.round((i / chosen.length) * 88);
+      await progress(base, 100, `${p.label}: a enviar`);
+      const t0 = Date.now();
+      try {
+        const r = lipsyncMock()
+          ? { video: await stillClip(process.env.FFMPEG_PATH || ff.path, portrait, audioMs), billedSec: null }
+          : await runProvider(p, { imageUrl, audioUrl, image: portrait, text: String(job.input.text), audioSec: audioMs / 1000 }, s => progress(base, 100, `${p.label}: ${s}`));
+        const secs = p.id === 'veo' ? 8 : (r.billedSec ?? audioMs / 1000);
+        const meta = { jobId: job.id, provider: p.id, label: p.label, partner: p.partner, ownAudio: p.ownAudio, wallSec: Math.round((Date.now() - t0) / 1000), billedSec: r.billedSec, estUsd: p.pricePerSec != null ? secs * p.pricePerSec : null };
+        const vid = await saveAsset(db, { interviewId: null, kind: 'lab_video', mime: 'video/mp4', ext: 'mp4', data: r.video, meta });
+        results.push({ ...meta, videoAssetId: vid });
+      } catch (e: any) {
+        console.error(`[lab] ${p.label} falhou: ${String(e?.message ?? e).slice(0, 300)}`);
+        results.push({ provider: p.id, label: p.label, ownAudio: p.ownAudio, error: String(e?.message ?? e).slice(0, 300), wallSec: Math.round((Date.now() - t0) / 1000) });
+      }
+    }
+    await progress(100, 100, 'Concluído');
+    return { results, portraitAssetId: portraitId, audioAssetId: audioId, audioSec: Math.round(audioMs / 100) / 10 };
   },
 
   async lipsync_experiment(job, { db, progress }) {

@@ -168,3 +168,27 @@ test('laboratório: só admin, corre a experiência (modo simulado) e mostra o v
   assert.equal((await get(`/admin/laboratorio/media/${job.result.videoAssetId}`, user)).statusCode, 403);
   assert.match((await get('/admin/definicoes', admin)).body, /Replicate/);
 });
+
+test('laboratório comparativo: só modelos com chave, resultados lado a lado, URLs assinados', async () => {
+  const { runOne } = await import('../src/jobs.ts');
+  const { handlers } = await import('../src/pipeline.ts');
+  const { signedAssetUrl } = await import('../src/talking.ts');
+  assert.equal((await post('/admin/laboratorio/comparar', { p_omnihuman: '1' }, user)).statusCode, 403);
+  const r = await post('/admin/laboratorio/comparar', { text: 'Hello.', p_omnihuman: '1', p_veo: '1', p_heygen: '1' }, admin);
+  assert.match(decodeURIComponent(r.headers.location as string), /iniciada/);
+  while (await runOne(db, handlers)) { /* */ }
+  const job = await db.one(`SELECT * FROM jobs WHERE kind='talking_compare' ORDER BY created_at DESC LIMIT 1`);
+  assert.equal(job.state, 'done', job.error ?? '');
+  assert.deepEqual(job.result.results.map((x: any) => x.provider), ['omnihuman', 'heygen', 'veo']);
+  assert.ok(job.result.results.every((x: any) => x.videoAssetId));
+  const pg = await get('/admin/laboratorio', admin);
+  assert.match(pg.body, /OmniHuman 1\.5/); assert.match(pg.body, /voz do próprio modelo/);
+  // URL assinado: válido para os ficheiros do laboratório; adulterado ou expirado é recusado
+  const url = new URL(signedAssetUrl(job.result.portraitAssetId));
+  assert.equal((await get(url.pathname)).statusCode, 200);
+  assert.equal((await get(url.pathname.replace(/.$/, c => (c === 'A' ? 'B' : 'A')))).statusCode, 404);
+  const parts = url.pathname.split('/');
+  assert.equal((await get(`/m/${parts[2]}/1000/${parts[4]}`)).statusCode, 404, 'expirado');
+  const other = await db.one(`SELECT id FROM assets WHERE kind='lab_video' LIMIT 1`);
+  assert.equal((await get(new URL(signedAssetUrl(other.id)).pathname)).statusCode, 404, 'só retrato e áudio do laboratório');
+});

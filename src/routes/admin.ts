@@ -30,6 +30,18 @@ export async function serviceTest(db: any, g: string, userEmail: string): Promis
     const { replicateAccount } = await import('../lipsync.ts');
     const acc = await replicateAccount();
     msg = `Replicate: token válido (conta ${acc.username ?? acc.name ?? 'OK'}).`;
+  } else if (g === 'fal.ai') {
+    const r = await fetch('https://queue.fal.run/fal-ai/bytedance/omnihuman/v1.5/requests/00000000-0000-0000-0000-000000000000/status', { headers: { Authorization: `Key ${S('FAL_KEY')}` } });
+    if (r.status === 401 || r.status === 403) throw new Error(`fal.ai recusou a chave (${r.status})`);
+    msg = 'fal.ai: chave aceite.';
+  } else if (g === 'WaveSpeed') {
+    const r = await fetch('https://api.wavespeed.ai/api/v3/predictions/00000000/result', { headers: { Authorization: `Bearer ${S('WAVESPEED_API_KEY')}` } });
+    if (r.status === 401 || r.status === 403) throw new Error(`WaveSpeed recusou a chave (${r.status})`);
+    msg = 'WaveSpeed: chave aceite.';
+  } else if (g === 'Google') {
+    const r = await fetch('https://generativelanguage.googleapis.com/v1beta/models/veo-3.1-fast-generate-preview', { headers: { 'x-goog-api-key': S('GEMINI_API_KEY') } });
+    if (!r.ok) throw new Error(`Google respondeu ${r.status} (chave inválida ou sem acesso ao Veo 3.1)`);
+    msg = 'Google: chave válida e modelo Veo 3.1 Fast disponível.';
   } else if (g === 'Moloni ON') {
     const r = await fetch('https://api.moloni.pt/v1/grant/', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({ grant_type: 'password', client_id: S('MOLONI_CLIENT_ID'), client_secret: S('MOLONI_CLIENT_SECRET'), username: S('MOLONI_USERNAME'), password: S('MOLONI_PASSWORD') }).toString() });
@@ -181,7 +193,7 @@ ${rows.map(({ u, qt }) => `<tr><td><a href="/admin/utilizadores/${u.id}">${esc(u
     return view(reply, 'Definições', `<h1>Definições</h1>${flash(q.ok)}${flash(q.e, 'bad')}
 <p class="hint sans">As chaves são guardadas cifradas e nunca voltam a ser mostradas por inteiro. Deixe um campo em branco para manter o valor atual; escreva <code>-</code> para o apagar. Uma variável de ambiente com o mesmo nome serve de valor de reserva.</p>
 <form method="post" action="/admin/definicoes">
-${groups.map(g => `<div class="card"><div class="row"><h2 style="margin:0" class="grow">${esc(g)}</h2>${['OpenAI', 'Stripe', 'MailerSend', 'Moloni ON', 'Replicate'].includes(g) ? `<button type="submit" formaction="/admin/definicoes/testar/${encodeURIComponent(g)}" class="ghost" name="testar" value="1">Guardar e testar</button>` : ''}</div>
+${groups.map(g => `<div class="card"><div class="row"><h2 style="margin:0" class="grow">${esc(g)}</h2>${['OpenAI', 'Stripe', 'MailerSend', 'Moloni ON', 'Replicate', 'fal.ai', 'WaveSpeed', 'Google'].includes(g) ? `<button type="submit" formaction="/admin/definicoes/testar/${encodeURIComponent(g)}" class="ghost" name="testar" value="1">Guardar e testar</button>` : ''}</div>
 ${g === 'Stripe' ? `<p class="hint sans">Endpoint do webhook a registar no Stripe: <code>${esc(config.baseUrl)}/webhooks/stripe</code> — eventos: checkout.session.completed, customer.subscription.created/updated/deleted.</p>` : ''}
 ${SETTING_DEFS.filter(d => d.group === g).map(d => `<label for="f_${d.key}">${esc(d.label)} <span class="hint">${S(d.key) ? (fromDb(d.key) ? '· definido' : '· definido por variável de ambiente') : '· por definir'}</span></label>
 <input id="f_${d.key}" name="${d.key}" type="${d.secret ? 'password' : 'text'}" autocomplete="off" placeholder="${esc(d.secret ? mask(S(d.key)) || (d.hint ?? '') : '')}" value="${d.secret ? '' : esc(S(d.key))}">`).join('')}</div>`).join('')}
