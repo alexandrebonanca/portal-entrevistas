@@ -146,3 +146,25 @@ test('signups podem ser fechados pelo admin; planos editáveis', async () => {
   assert.equal(p.price_cents, 1250); assert.equal(p.n, 6);
   assert.match((await get('/')).body, /€12\.50/);
 });
+
+test('laboratório: só admin, corre a experiência (modo simulado) e mostra o vídeo', async () => {
+  const { runOne } = await import('../src/jobs.ts');
+  const { handlers } = await import('../src/pipeline.ts');
+  assert.equal((await get('/admin/laboratorio', user)).statusCode, 403);
+  assert.equal((await post('/admin/laboratorio/lipsync', { text: 'Hi' }, user)).statusCode, 403);
+  await saveSetting(db, 'REPLICATE_API_TOKEN', 'r8_test_token_1234');
+  const r = await post('/admin/laboratorio/lipsync', { text: 'Hello and welcome.' }, admin);
+  assert.match(decodeURIComponent(r.headers.location as string), /iniciada/);
+  assert.match(decodeURIComponent((await post('/admin/laboratorio/lipsync', { text: 'x' }, admin)).headers.location as string), /Já há uma experiência/);
+  while (await runOne(db, handlers)) { /* */ }
+  const job = await db.one(`SELECT * FROM jobs WHERE kind='lipsync_experiment' ORDER BY created_at DESC LIMIT 1`);
+  assert.equal(job.state, 'done', job.error ?? '');
+  const pg = await get('/admin/laboratorio', admin);
+  assert.match(pg.body, /<video/);
+  assert.ok(!pg.body.includes('r8_test_token_1234'));
+  const v = await get(`/admin/laboratorio/media/${job.result.videoAssetId}`, admin);
+  assert.equal(v.statusCode, 200);
+  assert.equal(v.rawPayload.subarray(4, 8).toString('latin1'), 'ftyp');
+  assert.equal((await get(`/admin/laboratorio/media/${job.result.videoAssetId}`, user)).statusCode, 403);
+  assert.match((await get('/admin/definicoes', admin)).body, /Replicate/);
+});

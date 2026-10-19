@@ -6,6 +6,8 @@ import { sha256, slugify } from './lib.ts';
 import { saveAsset, assembleEpisode, probeAudio } from './media.ts';
 import { transcribeAudio, transcribeWords, prepareEnglishScript, translateSubtitleCues, synthesizeSpeech, coverBriefing, generateCoverBackground, episodeVoice, type ScriptSegment } from './ai/openai.ts';
 import { planShots, renderBases, subtitleFrame, encodeVideo } from './video.ts';
+import { lipsync, lipsyncMock } from './lipsync.ts';
+import { readQuestion, generateFictionalPortrait } from './ai/openai.ts';
 import { cuesFromWords, fixOverlaps, checkCues, type Cue } from './subtitles.ts';
 import { composeCover } from './cover.ts';
 import { PermanentError, type Handler } from './jobs.ts';
@@ -246,6 +248,29 @@ export const handlers: Record<string, Handler> = {
     await db.query('UPDATE episodes SET video_asset_id=$2, video_lang=$3 WHERE id=$1', [ep.id, id, lang]);
     await progress(100, 100, 'Concluído');
     return { videoAssetId: id, shots: shots.length };
+  },
+
+  async lipsync_experiment(job, { db, progress }) {
+    const t0 = Date.now();
+    await progress(5, 100, 'A gerar um retrato fictício');
+    const portrait = await generateFictionalPortrait();
+    const portraitId = await saveAsset(db, { interviewId: null, kind: 'lab_portrait', mime: 'image/jpeg', ext: 'jpg', data: portrait, meta: { fictional: true } });
+    await progress(20, 100, 'A gerar a voz');
+    const sp = await readQuestion(String(job.input.text ?? 'Hello.'), 'male', 'en');
+    const pr = await probeAudio(sp.data, sp.ext);
+    await progress(30, 100, 'A enviar para a Replicate');
+    let video: Buffer, meta: any;
+    if (lipsyncMock()) {
+      const { default: ff } = await import('@ffmpeg-installer/ffmpeg');
+      video = await encodeVideo(process.env.FFMPEG_PATH || ff.path, [{ startMs: 0, endMs: pr.durationMs, scene: 'cover', text: '' }], async () => portrait, sp.data);
+      meta = { predictSec: 0, estCostUsd: 0, model: 'mock', version: 'mock', predictionId: 'mock' };
+    } else {
+      const r = await lipsync({ data: portrait, mime: 'image/jpeg' }, { data: sp.data, mime: sp.mime }, s => progress(50, 100, s));
+      video = r.video; meta = { predictSec: r.predictSec, estCostUsd: r.estCostUsd, model: r.model, version: r.version, predictionId: r.predictionId };
+    }
+    const videoId = await saveAsset(db, { interviewId: null, kind: 'lab_video', mime: 'video/mp4', ext: 'mp4', data: video, meta });
+    await progress(100, 100, 'Concluído');
+    return { videoAssetId: videoId, portraitAssetId: portraitId, audioSec: Math.round(pr.durationMs / 100) / 10, wallSec: Math.round((Date.now() - t0) / 1000), ...meta };
   },
 
   async __onFail(job, { db }) {

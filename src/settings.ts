@@ -13,6 +13,8 @@ export const SETTING_DEFS: SettingDef[] = [
   { key: 'MAILERSEND_API_KEY', label: 'API token', group: 'MailerSend', secret: true },
   { key: 'MAIL_FROM', label: 'Email remetente (domínio verificado)', group: 'MailerSend', secret: false },
   { key: 'MAIL_FROM_NAME', label: 'Nome do remetente', group: 'MailerSend', secret: false },
+  { key: 'REPLICATE_API_TOKEN', label: 'API token', group: 'Replicate', secret: true, hint: 'r8_…' },
+  { key: 'REPLICATE_LIPSYNC_MODEL', label: 'Modelo de sincronização labial', group: 'Replicate', secret: false, hint: 'cjwbw/sadtalker' },
   { key: 'MOLONI_CLIENT_ID', label: 'Client ID (developer id)', group: 'Moloni ON', secret: false },
   { key: 'MOLONI_CLIENT_SECRET', label: 'Client secret', group: 'Moloni ON', secret: true },
   { key: 'MOLONI_USERNAME', label: 'Utilizador', group: 'Moloni ON', secret: false },

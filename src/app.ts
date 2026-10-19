@@ -13,6 +13,7 @@ import { episodeRoutes } from './routes/episode.ts';
 import { billingRoutes } from './routes/billing.ts';
 import { adminRoutes } from './routes/admin.ts';
 import { entityRoutes } from './routes/entities.ts';
+import { labRoutes } from './routes/lab.ts';
 import { loadSettings } from './settings.ts';
 
 declare module 'fastify' {
@@ -86,6 +87,7 @@ export async function buildApp(db: Db): Promise<FastifyInstance> {
   await billingRoutes(app);
   await adminRoutes(app);
   await entityRoutes(app);
+  await labRoutes(app);
 
   app.setNotFoundHandler((req, reply) => {
     reply.code(404).type('text/html').send('<!doctype html><meta charset=utf-8><title>404</title><p style="font:18px system-ui;padding:40px">404 — página não encontrada. <a href="/">Início</a>');

@@ -156,6 +156,18 @@ export async function readQuestion(text: string, gender: 'female' | 'male', lang
   return { data: Buffer.from(await r.arrayBuffer()), ext: 'mp3', mime: 'audio/mpeg', voice };
 }
 
+/** Retrato fotográfico de uma pessoa FICTÍCIA (não baseada em ninguém real), para testes. */
+export async function generateFictionalPortrait(): Promise<Buffer> {
+  const { default: sharp } = await import('sharp');
+  if (config.openai.mock) return sharp({ create: { width: 512, height: 512, channels: 3, background: '#6b4a32' } }).jpeg().toBuffer();
+  const c = await openai();
+  const r = await c.images.generate({ model: config.openai.models.image, size: '1024x1024',
+    prompt: 'Photorealistic head-and-shoulders studio portrait of a fictional middle-aged podcast host who does not exist and does not resemble any real or famous person. Facing the camera, neutral expression, mouth closed, even soft lighting, plain warm background, no text, no logos.' });
+  const b64 = r.data?.[0]?.b64_json;
+  const buf = b64 ? Buffer.from(b64, 'base64') : Buffer.from(await (await fetch(r.data?.[0]?.url)).arrayBuffer());
+  return sharp(buf).resize(512, 512).jpeg({ quality: 85 }).toBuffer();
+}
+
 export async function coverBriefing(title: string, objective: string) {
   if (config.openai.mock) return { backgroundPromptEnglish: 'abstract warm gradient with soft shapes', palette: ['#1c1a17', '#c8803c'], layoutHints: 'title lower third', negativeConstraints: ['no text'] };
   return chatJson(COVER_SYSTEM, `<interview_data>\n${JSON.stringify({ title, objective })}\n</interview_data>`);
