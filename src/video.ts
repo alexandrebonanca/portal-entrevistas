@@ -170,6 +170,14 @@ ${lines.map((l, i) => `<text x="${W / 2}" y="${y0 + 46 + i * lh}" text-anchor="m
   return sharp(Buffer.from(svg)).png().toBuffer();
 }
 
+/** Nome, aviso «AI-animated portrait» e legenda numa única imagem transparente. */
+export async function animatedOverlay(who: { name: string; role: string } | undefined, text: string): Promise<Buffer> {
+  const { default: sharp } = await import('sharp');
+  const layers: any[] = [{ input: await animatedNotice(who) }];
+  if (text) layers.push({ input: await subtitleOverlay(text) });
+  return sharp({ create: { width: W, height: H, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } } }).composite(layers).png().toBuffer();
+}
+
 /** Aviso visível obrigatório sobre os planos animados. */
 export async function animatedNotice(who?: { name: string; role: string }): Promise<Buffer> {
   const { default: sharp } = await import('sharp');
@@ -232,25 +240,36 @@ export async function encodeComposite(ffmpeg: string, parts: Part[], frameFor: (
         lines.push(`file '${last.replace(/\\/g, '/')}'`);
         const list = join(dir, `list${p}.txt`);
         await writeFile(list, lines.join('\n'));
-        const r = await run(ffmpeg, ['-y', '-v', 'error', '-f', 'concat', '-safe', '0', '-i', list, '-vf', 'fps=25,format=yuv420p', ...enc, '-t', dur, '-an', out], 900_000);
+        const r = await run(ffmpeg, ['-y', '-v', 'error', '-threads', '2', '-f', 'concat', '-safe', '0', '-i', list, '-vf', 'fps=25,format=yuv420p', ...enc, '-threads', '2', '-t', dur, '-an', out], 900_000);
         if (r.code !== 0) throw new Error('Falha a codificar parte fixa: ' + r.stderr.slice(-300));
       } else {
-        const base = join(dir, `base${p}.jpg`), clip = join(dir, `clip${p}.mp4`), notice = join(dir, `notice${p}.png`);
-        await writeFile(base, part.base); await writeFile(clip, part.clip); await writeFile(notice, await animatedNotice(part.who));
-        const args = ['-y', '-v', 'error', '-loop', '1', '-t', dur, '-i', base, '-i', clip, '-loop', '1', '-t', dur, '-i', notice];
-        const subs = part.cues.filter(c => c.text && c.endMs > 0 && c.startMs < part.endMs - part.startMs);
-        for (let k = 0; k < subs.length; k++) {
-          const f = join(dir, `sub${p}_${k}.png`);
-          await writeFile(f, await subtitleOverlay(subs[k].text));
-          args.push('-loop', '1', '-t', dur, '-i', f);
+        // Parte animada cortada legenda a legenda: cada pedaço tem só 3 entradas (fundo, clipe cortado, aviso+legenda),
+        // para caber nos 512 MB do servidor (antes: uma entrada por legenda, todas em simultâneo).
+        const base = join(dir, `base${p}.jpg`), clip = join(dir, `clip${p}.mp4`);
+        await writeFile(base, part.base); await writeFile(clip, part.clip);
+        const len = part.endMs - part.startMs;
+        const cuts = new Set<number>([0, len]);
+        for (const c of part.cues) { if (c.startMs > 0 && c.startMs < len) cuts.add(c.startMs); if (c.endMs > 0 && c.endMs < len) cuts.add(c.endMs); }
+        const pts = [...cuts].sort((x, y) => x - y);
+        const pieces: string[] = [];
+        for (let k = 0; k + 1 < pts.length; k++) {
+          const a0 = pts[k], a1 = pts[k + 1];
+          if (a1 - a0 < 40) continue;
+          const mid = (a0 + a1) / 2;
+          const text = part.cues.find(c => mid >= c.startMs && mid < c.endMs)?.text ?? '';
+          const over = join(dir, `ov${p}_${k}.png`), piece = join(dir, `piece${p}_${k}.mp4`);
+          await writeFile(over, await animatedOverlay(part.who, text));
+          const d = ((a1 - a0) / 1000).toFixed(3);
+          const g = `[1:v]scale=-2:${H},setsar=1[c];[0:v]scale=${W}:${H},setsar=1[bg];[bg][c]overlay=(W-w)/2:(H-h)/2:eof_action=repeat[v0];[v0][2:v]overlay=0:0,fps=25,format=yuv420p[out]`;
+          const r = await run(ffmpeg, ['-y', '-v', 'error', '-threads', '2', '-loop', '1', '-t', d, '-i', base, '-ss', (a0 / 1000).toFixed(3), '-t', d, '-i', clip, '-loop', '1', '-t', d, '-i', over,
+            '-filter_complex', g, '-map', '[out]', ...enc, '-threads', '2', '-t', d, '-an', piece], 600_000);
+          if (r.code !== 0) throw new Error('Falha a codificar parte animada: ' + r.stderr.slice(-300));
+          pieces.push(piece);
         }
-        // Clipe a 720 px de altura, centrado; se acabar antes da parte (pausas), o overlay repete o último fotograma
-        // (eof_action=repeat — compatível com o FFmpeg 4.1 do servidor, que não tem o filtro tpad).
-        let g = `[1:v]scale=-2:${H},setsar=1[c];[0:v]scale=${W}:${H},setsar=1[bg];[bg][c]overlay=(W-w)/2:(H-h)/2:eof_action=repeat[v0];[v0][2:v]overlay=0:0[v1]`;
-        subs.forEach((s, k) => { g += `;[v${k + 1}][${3 + k}:v]overlay=0:0:enable='between(t,${(Math.max(0, s.startMs) / 1000).toFixed(3)},${(s.endMs / 1000).toFixed(3)})'[v${k + 2}]`; });
-        g += `;[v${subs.length + 1}]fps=25,format=yuv420p[out]`;
-        const r = await run(ffmpeg, [...args, '-filter_complex', g, '-map', '[out]', ...enc, '-t', dur, '-an', out], 900_000);
-        if (r.code !== 0) throw new Error('Falha a codificar parte animada: ' + r.stderr.slice(-300));
+        const plist = join(dir, `plist${p}.txt`);
+        await writeFile(plist, pieces.map(f => `file '${f.replace(/\\/g, '/')}'`).join('\n'));
+        const r = await run(ffmpeg, ['-y', '-v', 'error', '-f', 'concat', '-safe', '0', '-i', plist, '-c', 'copy', out], 300_000);
+        if (r.code !== 0) throw new Error('Falha a juntar a parte animada: ' + r.stderr.slice(-300));
       }
       files.push(out);
       if (onProgress) await onProgress(p + 1, parts.length);
