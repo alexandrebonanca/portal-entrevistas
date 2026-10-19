@@ -5,7 +5,7 @@ import { page, flash, pill } from '../views.ts';
 import { audit } from '../app.ts';
 import { quotaFor, ACTIVE_STATUSES, stripe } from '../billing.ts';
 import { SETTING_DEFS, S, mask, saveSetting, fromDb } from '../settings.ts';
-import { queueEmail, emailShell, flushOutbox } from '../mail.ts';
+import { queueEmail, emailShell, flushOutbox, retryFailedEmails } from '../mail.ts';
 
 const STATUSES: [string, string][] = [['active', 'Ativa'], ['comped', 'Oferta (sem cobrança)'], ['trialing', 'Em teste'], ['past_due', 'Pagamento em atraso'], ['canceled', 'Cancelada'], ['inactive', 'Inativa']];
 const eur = (c: number) => `€${(c / 100).toFixed(2)}`;
@@ -20,9 +20,10 @@ export async function serviceTest(db: any, g: string, userEmail: string): Promis
     const bal = await stripe('balance', undefined, 'GET');
     msg = `Stripe: ligação OK (${bal.livemode ? 'modo real' : 'modo de teste'}).${S('STRIPE_WEBHOOK_SECRET') ? '' : ' Falta o webhook signing secret.'}`;
   } else if (g === 'MailerSend') {
-    await queueEmail(db, { key: `test:${Date.now()}`, to: userEmail, subject: 'Teste de email', html: emailShell('Teste de email', '<p>Se recebeu esta mensagem, o MailerSend está configurado.</p>'), text: 'Teste de email: MailerSend configurado.' });
+    const key = `test:${Date.now()}`;
+    await queueEmail(db, { key, to: userEmail, subject: 'Teste de email', html: emailShell('Teste de email', '<p>Se recebeu esta mensagem, o MailerSend está configurado.</p>'), text: 'Teste de email: MailerSend configurado.' });
     await flushOutbox(db);
-    const last = await db.one(`SELECT state, error FROM emails WHERE to_email=$1 ORDER BY created_at DESC LIMIT 1`, [userEmail]);
+    const last = await db.one(`SELECT state, error FROM emails WHERE dedupe_key=$1`, [key]);
     if (last.state !== 'sent') throw new Error(last.error ?? 'envio falhou');
     msg = `MailerSend: mensagem de teste aceite para ${userEmail}.`;
   } else if (g === 'Moloni ON') {
@@ -195,6 +196,7 @@ ${plans.map((p: any) => `<form method="post" action="/admin/planos/${esc(p.id)}"
       else if (b[d.key] !== undefined) await saveSetting(db, d.key, v === '-' ? '' : v);
     }
     await saveSetting(db, 'SIGNUPS_OPEN', b.signups_open ? '1' : '0');
+    if (['MAILERSEND_API_KEY', 'MAIL_FROM', 'MAIL_FROM_NAME'].some(k => typeof b[k] === 'string' && b[k].trim())) await retryFailedEmails(db);
     await audit(db, req.user!.email, 'admin.settings_saved', null, { keys: SETTING_DEFS.filter(d => typeof b[d.key] === 'string' && b[d.key].trim()).map(d => d.key) });
     return back(reply, '/admin/definicoes', 'Definições guardadas.');
   });
@@ -206,6 +208,7 @@ ${plans.map((p: any) => `<form method="post" action="/admin/planos/${esc(p.id)}"
       const v = typeof b[d.key] === 'string' ? b[d.key].trim() : '';
       if (v && v !== '-') await saveSetting(db, d.key, v);
     }
+    if (g === 'MailerSend') await retryFailedEmails(db);
     try {
       const msg = await serviceTest(db, g, req.user!.email);
       return back(reply, '/admin/definicoes', msg);

@@ -5,6 +5,7 @@ import { page, flash, pill } from '../views.ts';
 import { audit } from '../app.ts';
 import { SETTING_DEFS, S, mask, saveEntitySetting, entityHas, entityValue, inEntity } from '../settings.ts';
 import { serviceTest } from './admin.ts';
+import { retryFailedEmails } from '../mail.ts';
 
 const GROUPS = ['OpenAI', 'Stripe', 'MailerSend', 'Moloni ON'];
 
@@ -86,6 +87,7 @@ ${SETTING_DEFS.filter(d => d.group === g).map(d => `<label for="f_${d.key}">${es
     if (!req.user) return reply.redirect('/entrar');
     if (!isUuid(id) || !canManage(req, id)) return reply.code(404).send('Não encontrada');
     await saveFromBody(id, req.body as any);
+    if (['MAILERSEND_API_KEY', 'MAIL_FROM', 'MAIL_FROM_NAME'].some(k => typeof (req.body as any)[k] === 'string' && (req.body as any)[k].trim())) await retryFailedEmails(db);
     await audit(db, req.user.email, 'entity.keys_saved', null, { entityId: id, keys: SETTING_DEFS.filter(d => typeof (req.body as any)[d.key] === 'string' && (req.body as any)[d.key].trim()).map(d => d.key) });
     return back(reply, `/entidades/${id}/chaves`, 'Chaves guardadas.');
   });
@@ -95,6 +97,7 @@ ${SETTING_DEFS.filter(d => d.group === g).map(d => `<label for="f_${d.key}">${es
     if (!req.user) return reply.redirect('/entrar');
     if (!isUuid(id) || !canManage(req, id) || !GROUPS.includes(g)) return reply.code(404).send('Não encontrada');
     await saveFromBody(id, req.body as any, g);
+    if (g === 'MailerSend') await retryFailedEmails(db);
     try { const msg = await inEntity(id, () => serviceTest(db, g, req.user!.email)); return back(reply, `/entidades/${id}/chaves`, msg); }
     catch (err: any) { return back(reply, `/entidades/${id}/chaves`, undefined, `Teste falhou: ${String(err.message).slice(0, 200)}`); }
   });

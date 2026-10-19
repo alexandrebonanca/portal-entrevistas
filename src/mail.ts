@@ -17,7 +17,7 @@ export async function flushOutbox(db: Db) {
     if (Date.now() - lastWarn > 300_000) { lastWarn = Date.now(); console.warn('[mail] MAILERSEND_API_KEY não configurada: emails pendentes na outbox'); }
     return;
   }
-  const rows = await db.query(`SELECT * FROM emails WHERE state IN ('pending','failed') AND attempts < 5 ORDER BY created_at LIMIT 20`);
+  const rows = await db.query(`SELECT * FROM emails WHERE state IN ('pending','failed') AND attempts < 6 AND next_attempt_at <= now() ORDER BY created_at LIMIT 20`);
   for (const m of rows) {
     // Reserva a linha antes de enviar: dois processos não enviam a mesma mensagem.
     const claimed = await db.one(`UPDATE emails SET state='sending', attempts=attempts+1 WHERE id=$1 AND state IN ('pending','failed') RETURNING id`, [m.id]);
@@ -28,7 +28,8 @@ export async function flushOutbox(db: Db) {
       await db.query(`UPDATE emails SET state='sent', provider_id=$2, sent_at=now(), error=NULL WHERE id=$1`, [m.id, id]);
     } catch (err: any) {
       console.error(`[mail] falha ao enviar "${m.subject}" para ${m.to_email}: ${String(err?.message ?? err).slice(0, 300)}`);
-      await db.query(`UPDATE emails SET state='failed', error=$2 WHERE id=$1`, [m.id, String(err?.message ?? err).slice(0, 500)]);
+      // Espera crescente entre tentativas (1, 2, 4, 8, 16 min) para não esgotar as tentativas em segundos.
+      await db.query(`UPDATE emails SET state='failed', error=$2, next_attempt_at=now() + ($3 || ' minutes')::interval WHERE id=$1`, [m.id, String(err?.message ?? err).slice(0, 500), String(2 ** Math.max(0, m.attempts))]);
     }
   }
 }
@@ -58,4 +59,9 @@ export function emailShell(title: string, bodyHtml: string, button?: { label: st
 <h1 style="font-size:24px;line-height:1.25;margin:8px 0 18px">${esc(title)}</h1><div style="font-size:16px;line-height:1.6">${bodyHtml}</div>
 ${button ? `<p style="margin:28px 0"><a href="${esc(button.url)}" style="background:#1c1a17;color:#fff;text-decoration:none;padding:14px 22px;border-radius:6px;font:600 15px Arial,sans-serif;display:inline-block">${esc(button.label)}</a></p>` : ''}
 <p style="font:13px Arial,sans-serif;color:#6b655c;margin-top:32px">${esc(config.brand)} · ${esc(config.supportEmail)}</p></div></body></html>`;
+}
+
+/** Depois de corrigir a configuração (chave, remetente), as mensagens falhadas voltam à fila. */
+export async function retryFailedEmails(db: Db) {
+  await db.query(`UPDATE emails SET state='pending', attempts=0, next_attempt_at=now() WHERE state='failed'`);
 }
