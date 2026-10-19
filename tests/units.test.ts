@@ -49,7 +49,7 @@ test('sniff identifica pelo conteúdo', () => {
   assert.equal(sniff(Buffer.from('<html>aaaaaaaaaaaaaaaaaaaaaaa')), null);
 });
 
-test('plano do vídeo: capa na introdução, estúdio na 1.ª pergunta, grande plano de quem fala, capa no agradecimento', async () => {
+test('plano do vídeo: capa no aviso, estúdio na apresentação, só quem fala a partir da 1.ª pergunta, capa no agradecimento', async () => {
   const { planShots } = await import('../src/video.ts');
   const segs = [
     { id: 'disclosure', role: 'host', kind: 'disclosure', startMs: 0, durationMs: 4000 },
@@ -63,8 +63,9 @@ test('plano do vídeo: capa na introdução, estúdio na 1.ª pergunta, grande p
   const cues = [{ id: 'c0', startMs: 11500, endMs: 14000, speakerRole: 'guest', text: 'Olá', language: 'pt-PT', revision: 1 }] as any;
   const shots = planShots(segs, 31000, cues);
   const at = (ms: number) => shots.find(s => ms >= s.startMs && ms < s.endMs)!;
-  assert.equal(at(1000).scene, 'cover'); assert.equal(at(6000).scene, 'cover');
-  assert.equal(at(9000).scene, 'studio');
+  assert.equal(at(1000).scene, 'cover'); assert.equal(at(6000).scene, 'studio');
+  assert.equal(at(9000).scene, 'host', 'na 1.ª pergunta só o entrevistador');
+  assert.ok(!shots.some(s => s.scene === 'studio' && s.startMs >= 8000), 'o estúdio não volta a aparecer');
   assert.equal(at(12000).scene, 'guest'); assert.equal(at(12000).text, 'Olá');
   assert.equal(at(15000).text, '');
   assert.equal(at(19000).scene, 'host');

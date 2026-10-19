@@ -11,15 +11,15 @@ export interface Seg { id: string; role: 'host' | 'guest'; kind: string; startMs
 export interface Shot { startMs: number; endMs: number; scene: Scene; text: string }
 
 /**
- * Planeia o vídeo: capa durante o aviso e a introdução; composição de estúdio na primeira pergunta;
- * grande plano de quem fala; capa novamente no agradecimento final. As pausas pertencem ao plano anterior.
+ * Planeia o vídeo: capa durante o aviso; composição de estúdio (os dois) durante a apresentação;
+ * a partir da primeira pergunta, só quem fala, em grande plano; capa novamente no agradecimento final.
+ * As pausas pertencem ao plano anterior.
  */
 export function planShots(segs: Seg[], totalMs: number, cues: Cue[] | null): Shot[] {
-  let studioUsed = false;
   const scenes = segs.map((s, i) => {
     let scene: Scene;
-    if (s.kind === 'disclosure' || s.kind === 'editorial_intro' || s.kind === 'editorial_outro') scene = 'cover';
-    else if (s.kind === 'translated_question' && !studioUsed) { scene = 'studio'; studioUsed = true; }
+    if (s.kind === 'disclosure' || s.kind === 'editorial_outro') scene = 'cover';
+    else if (s.kind === 'editorial_intro') scene = 'studio';
     else scene = s.role;
     return { start: i === 0 ? 0 : s.startMs, end: i + 1 < segs.length ? segs[i + 1].startMs : totalMs, scene };
   });

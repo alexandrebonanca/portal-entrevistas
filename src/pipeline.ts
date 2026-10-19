@@ -37,7 +37,10 @@ export async function prepareScript(db: Db, interviewId: string) {
     items.push({ questionId: q.id, question: qt, status: q.status === 'answered' ? 'answered' : 'refused', answer: at });
   }
   const r = await prepareEnglishScript({ title: iv.title, objective: iv.objective_text, items });
-  // Garante o agradecimento final do entrevistador (texto editorial, atribuído ao anfitrião).
+  // Garante a apresentação (onde o vídeo mostra os dois) e o agradecimento final do entrevistador — textos editoriais do anfitrião.
+  if (!r.segments.some(x => x.transformationType === 'editorial_intro')) {
+    r.segments.unshift({ id: 'intro', speakerRole: 'host', textEnglish: `Welcome. Today${iv.guest_name ? ` ${iv.guest_name} joins us` : ' we have a guest with us'} to talk about ${r.titleEnglish}.`, sourceQuestionId: null, transformationType: 'editorial_intro' });
+  }
   if (!r.segments.some(x => x.transformationType === 'editorial_outro')) {
     const who = iv.guest_name ? `, ${iv.guest_name},` : '';
     r.segments.push({ id: 'outro', speakerRole: 'host', textEnglish: `Thank you${who} for sharing your time and experience with us. And thank you all for listening.`, sourceQuestionId: null, transformationType: 'editorial_outro' });
