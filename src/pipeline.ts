@@ -259,11 +259,18 @@ export const handlers: Record<string, Handler> = {
           const k = next++, sg = segs[k];
           try {
             const photo = sg.role === 'host' ? hostPhoto! : guestPhoto!;
-            if (lipsyncMock()) clips[k] = await stillClip(ffmpeg, photo, sg.durationMs);
+            // Clipes já animados (mesma fotografia, mesma fala) são reaproveitados: uma nova tentativa não volta a pagar.
+            const clipKey = sha256(`${sha256(photo)}|${ep.audio_asset_id}|${sg.startMs}|${sg.durationMs}|${lipsyncMock() ? 'mock' : 'replicate'}`);
+            const cached = await db.one(`SELECT storage_key FROM assets WHERE interview_id=$1 AND kind='anim_clip' AND meta->>'clipKey'=$2 AND deleted_at IS NULL LIMIT 1`, [iv.id, clipKey]);
+            if (cached) clips[k] = await storage.get(cached.storage_key);
             else {
-              const speech = await sliceAudio(ffmpeg, audio, sg.startMs, sg.startMs + sg.durationMs);
-              const r = await lipsync({ data: photo, mime: 'image/jpeg' }, { data: speech, mime: 'audio/mpeg' });
-              clips[k] = r.video; gpuUsd += r.estCostUsd ?? 0;
+              if (lipsyncMock()) clips[k] = await stillClip(ffmpeg, photo, sg.durationMs);
+              else {
+                const speech = await sliceAudio(ffmpeg, audio, sg.startMs, sg.startMs + sg.durationMs);
+                const r = await lipsync({ data: photo, mime: 'image/jpeg' }, { data: speech, mime: 'audio/mpeg' });
+                clips[k] = r.video; gpuUsd += r.estCostUsd ?? 0;
+              }
+              await saveAsset(db, { interviewId: iv.id, kind: 'anim_clip', mime: 'video/mp4', ext: 'mp4', data: clips[k]!, durationMs: sg.durationMs, meta: { clipKey, segmentId: sg.id, role: sg.role } });
             }
           } catch (e: any) { failed++; console.error(`[video] animação da fala ${sg.id} falhou: ${String(e?.message ?? e).slice(0, 200)}`); }
           doneN++;

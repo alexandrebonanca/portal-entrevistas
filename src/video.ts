@@ -244,8 +244,9 @@ export async function encodeComposite(ffmpeg: string, parts: Part[], frameFor: (
           await writeFile(f, await subtitleOverlay(subs[k].text));
           args.push('-loop', '1', '-t', dur, '-i', f);
         }
-        // Clipe a 720 px de altura, centrado; se for mais curto do que a fala (pausas), mantém o último fotograma.
-        let g = `[1:v]scale=-2:${H},setsar=1,tpad=stop_mode=clone:stop_duration=${dur}[c];[0:v]scale=${W}:${H},setsar=1[bg];[bg][c]overlay=(W-w)/2:(H-h)/2:eof_action=repeat[v0];[v0][2:v]overlay=0:0[v1]`;
+        // Clipe a 720 px de altura, centrado; se acabar antes da parte (pausas), o overlay repete o último fotograma
+        // (eof_action=repeat — compatível com o FFmpeg 4.1 do servidor, que não tem o filtro tpad).
+        let g = `[1:v]scale=-2:${H},setsar=1[c];[0:v]scale=${W}:${H},setsar=1[bg];[bg][c]overlay=(W-w)/2:(H-h)/2:eof_action=repeat[v0];[v0][2:v]overlay=0:0[v1]`;
         subs.forEach((s, k) => { g += `;[v${k + 1}][${3 + k}:v]overlay=0:0:enable='between(t,${(Math.max(0, s.startMs) / 1000).toFixed(3)},${(s.endMs / 1000).toFixed(3)})'[v${k + 2}]`; });
         g += `;[v${subs.length + 1}]fps=25,format=yuv420p[out]`;
         const r = await run(ffmpeg, [...args, '-filter_complex', g, '-map', '[out]', ...enc, '-t', dur, '-an', out], 900_000);

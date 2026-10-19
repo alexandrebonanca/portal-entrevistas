@@ -32,6 +32,7 @@ export async function runOne(db: Db, handlers: Record<string, Handler>): Promise
     await db.query(`UPDATE jobs SET state='done', result=$2, finished_at=now(), error=NULL WHERE id=$1`, [job.id, JSON.stringify(result ?? {})]);
   } catch (err: any) {
     const permanent = err instanceof PermanentError || job.attempts >= job.max_attempts;
+    console.error(`[job] ${job.kind} ${job.id} tentativa ${job.attempts}${permanent ? ' (definitiva)' : ''}: ${String(err?.message ?? err).slice(0, 400)}`);
     const backoffSec = 30 * 2 ** (job.attempts - 1);
     await db.query(
       `UPDATE jobs SET state=$2, error=$3, finished_at=CASE WHEN $2='failed' THEN now() END, run_after=now() + ($4 || ' seconds')::interval, locked_at=NULL WHERE id=$1`,
