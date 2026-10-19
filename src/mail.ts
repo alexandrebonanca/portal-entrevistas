@@ -10,9 +10,13 @@ export async function queueEmail(db: Db, e: { key: string; interviewId?: string;
     [e.key, e.interviewId ?? null, e.to, e.subject, e.html, e.text]);
 }
 
+let lastWarn = 0;
 export async function flushOutbox(db: Db) {
   // Em produção sem fornecedor configurado as mensagens ficam pendentes (não se fingem enviadas).
-  if (config.production && !S('MAILERSEND_API_KEY')) return;
+  if (config.production && !S('MAILERSEND_API_KEY')) {
+    if (Date.now() - lastWarn > 300_000) { lastWarn = Date.now(); console.warn('[mail] MAILERSEND_API_KEY não configurada: emails pendentes na outbox'); }
+    return;
+  }
   const rows = await db.query(`SELECT * FROM emails WHERE state IN ('pending','failed') AND attempts < 5 ORDER BY created_at LIMIT 20`);
   for (const m of rows) {
     // Reserva a linha antes de enviar: dois processos não enviam a mesma mensagem.
@@ -23,6 +27,7 @@ export async function flushOutbox(db: Db) {
       const id = m.interview_id ? await inEntity(await entityOfInterview(db, m.interview_id), () => deliver(m)) : await deliver(m);
       await db.query(`UPDATE emails SET state='sent', provider_id=$2, sent_at=now(), error=NULL WHERE id=$1`, [m.id, id]);
     } catch (err: any) {
+      console.error(`[mail] falha ao enviar "${m.subject}" para ${m.to_email}: ${String(err?.message ?? err).slice(0, 300)}`);
       await db.query(`UPDATE emails SET state='failed', error=$2 WHERE id=$1`, [m.id, String(err?.message ?? err).slice(0, 500)]);
     }
   }

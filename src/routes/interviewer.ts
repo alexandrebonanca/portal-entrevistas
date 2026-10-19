@@ -320,7 +320,7 @@ ${iv.objective_shared && iv.objective_text ? `<p class="hint">O entrevistado vê
     const photos = await db.query('SELECT p.*, a.id AS aid FROM photos p JOIN assets a ON a.id=p.asset_id WHERE p.interview_id=$1 ORDER BY p.created_at', [iv.id]);
     const consents = await db.query(`SELECT DISTINCT ON (purpose) purpose, granted, text_version, created_at FROM consents WHERE interview_id=$1 ORDER BY purpose, created_at DESC`, [iv.id]);
     const inv = await db.one(`SELECT * FROM invitations WHERE interview_id=$1 ORDER BY created_at DESC LIMIT 1`, [iv.id]);
-    const emails = await db.query(`SELECT subject, state, created_at, error FROM emails WHERE interview_id=$1 ORDER BY created_at DESC LIMIT 6`, [iv.id]);
+    const emails = await db.query(`SELECT subject, state, created_at, error, attempts FROM emails WHERE interview_id=$1 ORDER BY created_at DESC LIMIT 6`, [iv.id]);
     const sub = iv.collection_status === 'submitted';
     const ep = await db.one('SELECT * FROM episodes WHERE interview_id=$1 ORDER BY created_at DESC LIMIT 1', [iv.id]);
     const body = `<div class="wrap" style="padding-top:32px"><div class="row"><h1 class="grow" style="margin:0">${esc(iv.title)}</h1>${statusPill(iv.collection_status)}${statusPill(iv.production_status)}${statusPill(iv.publication_status)}</div>
@@ -336,7 +336,7 @@ ${rows.map((r: any) => `<tr><td>${r.position}</td><td>${esc(r.text) || '(áudio)
 <td>${r.take_asset ? `<audio controls preload="none" src="/media/${r.take_asset}"></audio>` : ''}</td></tr>`).join('')}</tbody></table></div>
 <div class="card"><h2 style="margin-top:0">Fotografias do convidado</h2>${photos.length ? `<div class="thumbs">${photos.map((p: any) => `<img alt="Selfie" src="/media/${p.aid}">`).join('')}</div>` : '<p class="hint">Sem fotografias.</p>'}</div>
 <div class="card"><h2 style="margin-top:0">Autorizações</h2>${consents.length ? `<table><tbody>${consents.map((c: any) => `<tr><td>${esc(c.purpose)}</td><td>${c.granted ? pill('Autorizado', 'ok') : pill('Recusado', 'bad')}</td><td>${esc(c.text_version)}</td><td>${fmtDate(c.created_at)}</td></tr>`).join('')}</tbody></table>` : '<p class="hint">Ainda sem registos.</p>'}</div>
-<div class="card"><h2 style="margin-top:0">Emails</h2><table><tbody>${emails.map((e: any) => `<tr><td>${esc(e.subject)}</td><td>${pill(e.state, e.state === 'sent' ? 'ok' : e.state === 'failed' ? 'bad' : '')}</td><td>${fmtDate(e.created_at)}</td></tr>`).join('') || '<tr><td class="hint">Sem emails.</td></tr>'}</tbody></table></div>
+<div class="card"><h2 style="margin-top:0">Emails</h2><table><tbody>${emails.map((e: any) => `<tr><td>${esc(e.subject)}</td><td>${pill(e.state === 'pending' ? 'por enviar' : e.state, e.state === 'sent' ? 'ok' : e.state === 'failed' ? 'bad' : 'warn')}</td><td>${fmtDate(e.created_at)}</td><td class="hint">${e.state === 'pending' ? 'Ainda não enviado: confirme que o MailerSend está configurado em Definições.' : esc(e.error ?? '')}</td></tr>`).join('') || '<tr><td class="hint">Sem emails.</td></tr>'}</tbody></table></div>
 ${ep ? `<p><a href="/entrevistas/${iv.id}/producao">Episódio: ${esc(ep.title)} (${fmtDuration(ep.duration_ms)})</a></p>` : ''}</div>`;
     return view(req, reply, iv.title, body);
   });
