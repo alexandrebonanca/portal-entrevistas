@@ -1,0 +1,103 @@
+import { test, before, after } from 'node:test';
+import assert from 'node:assert/strict';
+import { createHmac } from 'node:crypto';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+process.env.AI_MOCK = '1';
+process.env.PGLITE_MEMORY = '1';
+process.env.STORAGE_DIR = mkdtempSync(join(tmpdir(), 'pe-test-'));
+process.env.BASE_URL = 'http://test.local';
+
+const { openDb, migrate } = await import('../src/db.ts');
+const { buildApp } = await import('../src/app.ts');
+const { S, saveSetting, inEntity } = await import('../src/settings.ts');
+
+let db: any, app: any;
+before(async () => { db = await openDb(); await migrate(db); app = await buildApp(db); });
+after(async () => { await app.close(); await db.close(); });
+
+const cookies = (r: any) => Object.fromEntries((r.cookies as any[]).map(c => [c.name, c.value]));
+const form = (o: Record<string, any>) => new URLSearchParams(Object.entries(o).map(([k, v]) => [k, String(v)])).toString();
+const post = (url: string, body: any, cookie = '', extra: any = {}) => app.inject({ method: 'POST', url, payload: typeof body === 'string' ? body : form(body), headers: { 'content-type': 'application/x-www-form-urlencoded', cookie, ...extra } });
+const get = (url: string, cookie = '') => app.inject({ method: 'GET', url, headers: { cookie } });
+const PW = 'uma-palavra-passe-longa';
+let admin = '', gestor = '', other = '', tcId = '', otherId = '';
+
+test('a entidade Telecert Formação existe, com o URL do site', async () => {
+  const e = await db.one(`SELECT * FROM entities WHERE slug='telecert-formacao'`);
+  assert.equal(e.name, 'Telecert Formação');
+  assert.equal(e.url, 'https://www.grupotelecert.com');
+  tcId = e.id;
+  admin = `sid=${cookies(await post('/registar', { name: 'Admin', email: 'admin@example.com', password: PW, terms: 1 })).sid}`;
+  const pg = await get('/admin/entidades', admin);
+  assert.equal(pg.statusCode, 200);
+  assert.match(pg.body, /www\.grupotelecert\.com/);
+  assert.match(pg.body, /registar\?entidade=telecert-formacao/);
+  assert.match(pg.body, /webhooks\/stripe\/telecert-formacao/);
+});
+
+test('criar gestor de entidade; só vê e edita as chaves da sua entidade', async () => {
+  const bad = await post('/admin/utilizadores', { name: 'G', email: 'g@example.com', password: PW, role: 'entity_admin' }, admin);
+  assert.match(decodeURIComponent(bad.headers.location as string), /precisa de uma entidade/);
+  await post('/admin/utilizadores', { name: 'Gestora', email: 'gestora@telecert.pt', password: PW, role: 'entity_admin', entity_id: tcId }, admin);
+  gestor = `sid=${cookies(await post('/entrar', { email: 'gestora@telecert.pt', password: PW })).sid}`;
+  const o = await post('/admin/entidades', { name: 'Outra Entidade', url: 'https://outra.example' }, admin);
+  otherId = /entidades\/([0-9a-f-]{36})\//.exec(o.headers.location as string)![1];
+  await post('/admin/utilizadores', { name: 'Outro', email: 'outro@outra.pt', password: PW, role: 'entity_admin', entity_id: otherId }, admin);
+  other = `sid=${cookies(await post('/entrar', { email: 'outro@outra.pt', password: PW })).sid}`;
+
+  assert.equal((await get('/entidade', gestor)).headers.location, `/entidades/${tcId}/chaves`);
+  const pg = await get(`/entidades/${tcId}/chaves`, gestor);
+  assert.equal(pg.statusCode, 200);
+  for (const g of ['OpenAI', 'Stripe', 'MailerSend', 'Moloni ON']) assert.match(pg.body, new RegExp(g));
+  assert.equal((await get(`/entidades/${otherId}/chaves`, gestor)).statusCode, 404, 'não vê outra entidade');
+  assert.equal((await post(`/entidades/${otherId}/chaves`, { OPENAI_API_KEY: 'sk-x' }, gestor)).statusCode, 404);
+  assert.equal((await get('/admin/entidades', gestor)).statusCode, 403);
+  assert.equal((await get('/admin/definicoes', gestor)).statusCode, 403, 'sem acesso às chaves globais');
+  assert.equal((await post(`/entidades/${tcId}`, { name: 'Hack' }, gestor)).statusCode, 403, 'não altera os dados da entidade');
+});
+
+test('chaves da entidade: cifradas, mascaradas, isoladas e com prioridade sobre as globais', async () => {
+  await saveSetting(db, 'OPENAI_API_KEY', 'sk-GLOBAL-0000');
+  await post(`/entidades/${tcId}/chaves`, { OPENAI_API_KEY: 'sk-TELECERT-1234', STRIPE_SECRET_KEY: 'sk_test_tele9999', MAIL_FROM: 'no-reply@grupotelecert.com', MOLONI_PASSWORD: 'moloni-pw-7777' }, gestor);
+  const row = await db.one(`SELECT value_enc FROM entity_settings WHERE entity_id=$1 AND key='OPENAI_API_KEY'`, [tcId]);
+  assert.ok(!row.value_enc.includes('TELECERT'), 'cifrado em repouso');
+  const pg = await get(`/entidades/${tcId}/chaves`, gestor);
+  assert.ok(!pg.body.includes('sk-TELECERT-1234') && !pg.body.includes('moloni-pw-7777'), 'valores completos nunca voltam');
+  assert.match(pg.body, /1234/);
+  assert.match(pg.body, /no-reply@grupotelecert\.com/, 'campos não secretos visíveis');
+  assert.equal(inEntity(tcId, () => S('OPENAI_API_KEY')), 'sk-TELECERT-1234');
+  assert.equal(inEntity(otherId, () => S('OPENAI_API_KEY')), 'sk-GLOBAL-0000', 'outra entidade usa a global');
+  assert.equal(inEntity(null, () => S('OPENAI_API_KEY')), 'sk-GLOBAL-0000');
+  assert.equal(inEntity(otherId, () => S('STRIPE_SECRET_KEY')), '', 'chaves não vazam entre entidades');
+  assert.match((await get(`/entidades/${otherId}/chaves`, other)).body, /global \(reserva\)/);
+  // apagar volta à global
+  await post(`/entidades/${tcId}/chaves`, { OPENAI_API_KEY: '-' }, gestor);
+  assert.equal(inEntity(tcId, () => S('OPENAI_API_KEY')), 'sk-GLOBAL-0000');
+});
+
+test('webhook Stripe por entidade usa o segredo da entidade', async () => {
+  await post(`/entidades/${tcId}/chaves`, { STRIPE_WEBHOOK_SECRET: 'whsec_telecert' }, gestor);
+  await post('/registar?entidade=telecert-formacao', { name: 'Ana', email: 'ana@exemplo.pt', password: PW, terms: 1, entidade: 'telecert-formacao' });
+  const u = await db.one(`SELECT id, entity_id FROM users WHERE email='ana@exemplo.pt'`);
+  assert.equal(u.entity_id, tcId, 'registo pela ligação da entidade associa o utilizador');
+  const ev = JSON.stringify({ id: 'evt_t1', type: 'checkout.session.completed', data: { object: { mode: 'subscription', client_reference_id: u.id, customer: 'cus_t', subscription: 'sub_t', metadata: { plan_id: 'starter' } } } });
+  const t = Math.floor(Date.now() / 1000);
+  const sig = (sec: string) => `t=${t},v1=${createHmac('sha256', sec).update(`${t}.${ev}`).digest('hex')}`;
+  const send = (url: string, sec: string) => app.inject({ method: 'POST', url, payload: ev, headers: { 'content-type': 'application/json', 'stripe-signature': sig(sec) } });
+  assert.equal((await send('/webhooks/stripe/telecert-formacao', 'whsec_outro')).statusCode, 400);
+  assert.equal((await send('/webhooks/stripe', 'whsec_telecert')).statusCode, 400, 'o endpoint global não aceita o segredo da entidade');
+  assert.equal((await send('/webhooks/stripe/nao-existe', 'whsec_telecert')).statusCode, 404);
+  assert.equal((await send('/webhooks/stripe/telecert-formacao', 'whsec_telecert')).statusCode, 200);
+  assert.equal((await db.one('SELECT plan_id FROM subscriptions WHERE user_id=$1', [u.id])).plan_id, 'starter');
+});
+
+test('administrador edita a entidade e valida o URL', async () => {
+  assert.match(decodeURIComponent((await post(`/entidades/${tcId}`, { name: 'Telecert Formação', url: 'javascript:alert(1)', active: '1' }, admin)).headers.location as string), /URL inválido/);
+  await post(`/entidades/${tcId}`, { name: 'Telecert Formação', url: 'https://www.grupotelecert.com', active: '1' }, admin);
+  assert.equal((await db.one('SELECT url FROM entities WHERE id=$1', [tcId])).url, 'https://www.grupotelecert.com');
+  await post(`/entidades/${otherId}`, { name: 'Outra Entidade', url: 'https://outra.example' }, admin);
+  assert.equal((await get('/registar?entidade=outra-entidade')).statusCode, 200);
+});

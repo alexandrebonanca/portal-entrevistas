@@ -12,11 +12,12 @@ import { guestRoutes } from './routes/guest.ts';
 import { episodeRoutes } from './routes/episode.ts';
 import { billingRoutes } from './routes/billing.ts';
 import { adminRoutes } from './routes/admin.ts';
+import { entityRoutes } from './routes/entities.ts';
 import { loadSettings } from './settings.ts';
 
 declare module 'fastify' {
   interface FastifyInstance { db: Db }
-  interface FastifyRequest { user?: { id: string; email: string; name: string; role: string }; guest?: { interviewId: string; invitationId: string } }
+  interface FastifyRequest { user?: { id: string; email: string; name: string; role: string; entity_id: string | null }; guest?: { interviewId: string; invitationId: string } }
 }
 
 export async function buildApp(db: Db): Promise<FastifyInstance> {
@@ -66,7 +67,7 @@ export async function buildApp(db: Db): Promise<FastifyInstance> {
   app.addHook('preHandler', async (req) => {
     const sid = req.cookies?.sid;
     if (sid) {
-      const u = await db.one(`SELECT u.id,u.email,u.name,u.role FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.id=$1 AND s.expires_at>now() AND u.active`, [sha256(sid)]);
+      const u = await db.one(`SELECT u.id,u.email,u.name,u.role,u.entity_id FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.id=$1 AND s.expires_at>now() AND u.active`, [sha256(sid)]);
       if (u) req.user = u;
     }
     const gs = req.cookies?.gs;
@@ -84,6 +85,7 @@ export async function buildApp(db: Db): Promise<FastifyInstance> {
   await episodeRoutes(app);
   await billingRoutes(app);
   await adminRoutes(app);
+  await entityRoutes(app);
 
   app.setNotFoundHandler((req, reply) => {
     reply.code(404).type('text/html').send('<!doctype html><meta charset=utf-8><title>404</title><p style="font:18px system-ui;padding:40px">404 — página não encontrada. <a href="/">Início</a>');

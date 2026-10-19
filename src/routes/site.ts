@@ -67,8 +67,9 @@ export async function siteRoutes(app: FastifyInstance) {
     if (!(await canSignup())) return reply.code(404).send('Sign-ups are closed');
     const q = req.query as any;
     const first = (await userCount()) === 0;
+    const ent = q.entidade ? await db.one('SELECT slug, name FROM entities WHERE slug=$1 AND active', [String(q.entidade)]) : null;
     return reply.type('text/html; charset=utf-8').send(authPage(first ? 'Create the administrator account' : 'Create your account', `${flash(q.e, 'bad')}
-<form method="post" action="/registar" class="card"><label for="n">Name</label><input id="n" name="name" type="text" required>
+<form method="post" action="/registar" class="card">${ent ? `<input type="hidden" name="entidade" value="${esc(ent.slug)}"><p class="hint sans">Registering with <strong>${esc(ent.name)}</strong></p>` : ''}<label for="n">Name</label><input id="n" name="name" type="text" required>
 <label for="e">Email</label><input id="e" name="email" type="email" required autocomplete="username">
 <label for="p">Password (at least 12 characters)</label><input id="p" name="password" type="password" minlength="12" required autocomplete="new-password">
 <label class="check"><input type="checkbox" name="terms" value="1" required> <span>I will only invite people for consent-based interviews, and I accept the <a href="/privacy">privacy notice</a>.</span></label>
@@ -83,7 +84,8 @@ export async function siteRoutes(app: FastifyInstance) {
     if (!name || !isEmail(email) || pw.length < 12 || !b?.terms) return reply.redirect('/registar?e=' + encodeURIComponent('Please complete all fields (password with at least 12 characters).'));
     if (await db.one('SELECT 1 FROM users WHERE email=$1', [email])) return reply.redirect('/registar?e=' + encodeURIComponent('That email is already registered.'));
     const first = (await userCount()) === 0;
-    const u = await db.one(`INSERT INTO users(email, name, password_hash, role) VALUES ($1,$2,$3,$4) RETURNING id`, [email, name, await hashPassword(pw), first ? 'admin' : 'interviewer']);
+    const ent = !first && b.entidade ? await db.one('SELECT id FROM entities WHERE slug=$1 AND active', [String(b.entidade)]) : null;
+    const u = await db.one(`INSERT INTO users(email, name, password_hash, role, entity_id) VALUES ($1,$2,$3,$4,$5) RETURNING id`, [email, name, await hashPassword(pw), first ? 'admin' : 'interviewer', ent?.id ?? null]);
     await audit(db, email, 'signup', null, { role: first ? 'admin' : 'interviewer' });
     await startSession(reply, u.id);
     return reply.redirect(first ? '/admin/definicoes' : '/account');

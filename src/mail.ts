@@ -1,7 +1,7 @@
 import { config } from './config.ts';
 import type { Db } from './db.ts';
 import { esc } from './lib.ts';
-import { S } from './settings.ts';
+import { S, inEntity, entityOfInterview } from './settings.ts';
 
 /** Coloca o email na outbox (deduplicado por chave). O envio real é feito por flushOutbox(). */
 export async function queueEmail(db: Db, e: { key: string; interviewId?: string; to: string; subject: string; html: string; text: string }) {
@@ -19,7 +19,8 @@ export async function flushOutbox(db: Db) {
     const claimed = await db.one(`UPDATE emails SET state='sending', attempts=attempts+1 WHERE id=$1 AND state IN ('pending','failed') RETURNING id`, [m.id]);
     if (!claimed) continue;
     try {
-      const id = await deliver(m);
+      // Com entrevista: chaves da entidade do dono; sem entrevista (ex.: teste): mantém o contexto atual.
+      const id = m.interview_id ? await inEntity(await entityOfInterview(db, m.interview_id), () => deliver(m)) : await deliver(m);
       await db.query(`UPDATE emails SET state='sent', provider_id=$2, sent_at=now(), error=NULL WHERE id=$1`, [m.id, id]);
     } catch (err: any) {
       await db.query(`UPDATE emails SET state='failed', error=$2 WHERE id=$1`, [m.id, String(err?.message ?? err).slice(0, 500)]);

@@ -10,6 +10,31 @@ import { queueEmail, emailShell, flushOutbox } from '../mail.ts';
 const STATUSES: [string, string][] = [['active', 'Ativa'], ['comped', 'Oferta (sem cobrança)'], ['trialing', 'Em teste'], ['past_due', 'Pagamento em atraso'], ['canceled', 'Cancelada'], ['inactive', 'Inativa']];
 const eur = (c: number) => `€${(c / 100).toFixed(2)}`;
 
+export async function serviceTest(db: any, g: string, userEmail: string): Promise<string> {
+  let msg = '';
+  if (g === 'OpenAI') {
+    const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${S('OPENAI_API_KEY')}` } });
+    if (!r.ok) throw new Error(`OpenAI respondeu ${r.status}`);
+    msg = 'OpenAI: chave válida.';
+  } else if (g === 'Stripe') {
+    const bal = await stripe('balance', undefined, 'GET');
+    msg = `Stripe: ligação OK (${bal.livemode ? 'modo real' : 'modo de teste'}).${S('STRIPE_WEBHOOK_SECRET') ? '' : ' Falta o webhook signing secret.'}`;
+  } else if (g === 'MailerSend') {
+    await queueEmail(db, { key: `test:${Date.now()}`, to: userEmail, subject: 'Teste de email', html: emailShell('Teste de email', '<p>Se recebeu esta mensagem, o MailerSend está configurado.</p>'), text: 'Teste de email: MailerSend configurado.' });
+    await flushOutbox(db);
+    const last = await db.one(`SELECT state, error FROM emails WHERE to_email=$1 ORDER BY created_at DESC LIMIT 1`, [userEmail]);
+    if (last.state !== 'sent') throw new Error(last.error ?? 'envio falhou');
+    msg = `MailerSend: mensagem de teste aceite para ${userEmail}.`;
+  } else if (g === 'Moloni ON') {
+    const r = await fetch('https://api.moloni.pt/v1/grant/', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ grant_type: 'password', client_id: S('MOLONI_CLIENT_ID'), client_secret: S('MOLONI_CLIENT_SECRET'), username: S('MOLONI_USERNAME'), password: S('MOLONI_PASSWORD') }).toString() });
+    const j: any = await r.json().catch(() => ({}));
+    if (!r.ok || !j.access_token) throw new Error(`Moloni: ${j.error_description ?? j.error ?? r.status}`);
+    msg = 'Moloni ON: autenticação OK. (A emissão automática de faturas ainda não está ligada.)';
+  }
+  return msg;
+}
+
 export async function adminRoutes(app: FastifyInstance) {
   const db = app.db;
   const adminNav = `<a href="/painel">Painel</a><a href="/admin/utilizadores">Utilizadores</a><a href="/admin/definicoes">Definições</a><form method="post" action="/sair" style="display:inline"><button class="ghost" style="padding:6px 12px;min-height:0;margin-left:16px">Sair</button></form>`;
@@ -27,13 +52,14 @@ export async function adminRoutes(app: FastifyInstance) {
   app.get('/admin/utilizadores', async (req, reply) => {
     if (!guard(req, reply)) return;
     const q = req.query as any;
-    const users = await db.query(`SELECT u.*, s.status AS sub_status, s.source, p.name AS plan_name FROM users u LEFT JOIN subscriptions s ON s.user_id=u.id LEFT JOIN plans p ON p.id=s.plan_id ORDER BY u.created_at DESC`);
+    const users = await db.query(`SELECT u.*, en.name AS entity_name, s.status AS sub_status, s.source, p.name AS plan_name FROM users u LEFT JOIN entities en ON en.id=u.entity_id LEFT JOIN subscriptions s ON s.user_id=u.id LEFT JOIN plans p ON p.id=s.plan_id ORDER BY u.created_at DESC`);
     const plans = await db.query('SELECT * FROM plans ORDER BY sort');
+    const entities = await db.query('SELECT id, name FROM entities WHERE active ORDER BY name');
     const rows = [];
     for (const u of users) { const qt = await quotaFor(db, u); rows.push({ u, qt }); }
     return view(reply, 'Utilizadores', `<h1>Utilizadores</h1>${flash(q.ok)}${flash(q.e, 'bad')}
-<div class="card" style="overflow-x:auto"><table><thead><tr><th>Nome</th><th>Email</th><th>Perfil</th><th>Conta</th><th>Subscrição</th><th>Uso</th><th></th></tr></thead><tbody>
-${rows.map(({ u, qt }) => `<tr><td><a href="/admin/utilizadores/${u.id}">${esc(u.name)}</a></td><td>${esc(u.email)}</td><td>${esc(u.role)}</td>
+<div class="card" style="overflow-x:auto"><table><thead><tr><th>Nome</th><th>Email</th><th>Perfil</th><th>Entidade</th><th>Conta</th><th>Subscrição</th><th>Uso</th><th></th></tr></thead><tbody>
+${rows.map(({ u, qt }) => `<tr><td><a href="/admin/utilizadores/${u.id}">${esc(u.name)}</a></td><td>${esc(u.email)}</td><td>${esc(u.role)}</td><td>${esc(u.entity_name ?? '—')}</td>
 <td>${u.active ? pill('ativa', 'ok') : pill('desativada', 'bad')}</td>
 <td>${u.role === 'admin' ? '—' : u.sub_status ? `${esc(u.plan_name ?? '—')} ${pill(u.sub_status, ACTIVE_STATUSES.includes(u.sub_status) ? 'ok' : 'warn')} <span class="hint">${esc(u.source)}</span>` : pill('nenhuma')}</td>
 <td>${u.role === 'admin' ? '∞' : `${qt.used}/${qt.limit}`}</td>
@@ -41,7 +67,8 @@ ${rows.map(({ u, qt }) => `<tr><td><a href="/admin/utilizadores/${u.id}">${esc(u
 <div class="card"><h2 style="margin-top:0">Criar utilizador</h2><form method="post" action="/admin/utilizadores">
 <div class="row"><div class="grow"><label for="n">Nome</label><input id="n" name="name" type="text" required></div><div class="grow"><label for="e">Email</label><input id="e" name="email" type="email" required></div></div>
 <div class="row"><div class="grow"><label for="p">Palavra-passe inicial (mín. 12)</label><input id="p" name="password" type="password" minlength="12" required autocomplete="new-password"></div>
-<div class="grow"><label for="r">Perfil</label><select id="r" name="role"><option value="interviewer">Entrevistador</option><option value="admin">Administrador</option></select></div>
+<div class="grow"><label for="r">Perfil</label><select id="r" name="role"><option value="interviewer">Entrevistador</option><option value="entity_admin">Gestor de entidade (chaves)</option><option value="admin">Administrador</option></select></div>
+<div class="grow"><label for="en">Entidade</label><select id="en" name="entity_id"><option value="">Nenhuma</option>${entities.map((e: any) => `<option value="${e.id}">${esc(e.name)}</option>`).join('')}</select></div>
 <div class="grow"><label for="pl">Plano (sem cobrança, atribuído manualmente)</label><select id="pl" name="plan_id"><option value="">Nenhum</option>${plans.map((p: any) => `<option value="${esc(p.id)}">${esc(p.name)} — ${p.interviews_per_month}/mês</option>`).join('')}</select></div></div>
 <p class="hint">Comunique a palavra-passe ao utilizador por um canal seguro; ele pode alterá-la pedindo uma redefinição ao administrador.</p><button class="accent">Criar utilizador</button></form></div>`);
   });
@@ -52,8 +79,10 @@ ${rows.map(({ u, qt }) => `<tr><td><a href="/admin/utilizadores/${u.id}">${esc(u
     const email = String(b.email ?? '').trim().toLowerCase(), name = String(b.name ?? '').trim(), pw = String(b.password ?? '');
     if (!name || !isEmail(email) || pw.length < 12) return back(reply, '/admin/utilizadores', undefined, 'Dados inválidos (palavra-passe com pelo menos 12 caracteres).');
     if (await db.one('SELECT 1 FROM users WHERE email=$1', [email])) return back(reply, '/admin/utilizadores', undefined, 'Já existe um utilizador com esse email.');
-    const role = b.role === 'admin' ? 'admin' : 'interviewer';
-    const u = await db.one('INSERT INTO users(email, name, password_hash, role) VALUES ($1,$2,$3,$4) RETURNING id', [email, name, await hashPassword(pw), role]);
+    const role = ['admin', 'entity_admin'].includes(b.role) ? b.role : 'interviewer';
+    const ent = b.entity_id && /^[0-9a-f-]{36}$/i.test(b.entity_id) ? await db.one('SELECT id FROM entities WHERE id=$1', [b.entity_id]) : null;
+    if (role === 'entity_admin' && !ent) return back(reply, '/admin/utilizadores', undefined, 'Um gestor de entidade precisa de uma entidade.');
+    const u = await db.one('INSERT INTO users(email, name, password_hash, role, entity_id) VALUES ($1,$2,$3,$4,$5) RETURNING id', [email, name, await hashPassword(pw), role, ent?.id ?? null]);
     const plan = b.plan_id && (await db.one('SELECT id FROM plans WHERE id=$1', [b.plan_id]));
     if (plan && role !== 'admin') await db.query(`INSERT INTO subscriptions(user_id, plan_id, status, source) VALUES ($1,$2,'comped','manual')`, [u.id, plan.id]);
     await audit(db, req.user!.email, 'admin.user_created', null, { userId: u.id, role });
@@ -82,12 +111,14 @@ ${rows.map(({ u, qt }) => `<tr><td><a href="/admin/utilizadores/${u.id}">${esc(u
     const q = req.query as any;
     const sub = await db.one('SELECT * FROM subscriptions WHERE user_id=$1', [u.id]);
     const plans = await db.query('SELECT * FROM plans ORDER BY sort');
+    const entities = await db.query('SELECT id, name FROM entities ORDER BY name');
     const qt = await quotaFor(db, u);
     const iv = await db.query('SELECT id, title, collection_status, invited_at FROM interviews WHERE owner_id=$1 ORDER BY created_at DESC LIMIT 10', [u.id]);
     const date = (d: any) => (d ? new Date(d).toISOString().slice(0, 10) : '');
     return view(reply, u.name, `<p><a href="/admin/utilizadores">← Utilizadores</a></p><h1>${esc(u.name)} ${u.active ? pill('ativa', 'ok') : pill('desativada', 'bad')}</h1>${flash(q.ok)}${flash(q.e, 'bad')}
 <div class="card"><h2 style="margin-top:0">Conta</h2><p class="sans">${esc(u.email)} · criada em ${fmtDate(u.created_at)}${u.stripe_customer_id ? ' · Stripe: ' + esc(u.stripe_customer_id) : ''}</p>
-<form method="post" action="/admin/utilizadores/${u.id}/perfil" class="row"><select name="role" aria-label="Perfil" style="width:auto"><option value="interviewer" ${u.role === 'interviewer' ? 'selected' : ''}>Entrevistador</option><option value="admin" ${u.role === 'admin' ? 'selected' : ''}>Administrador</option></select><button class="ghost">Guardar perfil</button></form>
+<form method="post" action="/admin/utilizadores/${u.id}/perfil" class="row"><select name="role" aria-label="Perfil" style="width:auto"><option value="interviewer" ${u.role === 'interviewer' ? 'selected' : ''}>Entrevistador</option><option value="entity_admin" ${u.role === 'entity_admin' ? 'selected' : ''}>Gestor de entidade (chaves)</option><option value="admin" ${u.role === 'admin' ? 'selected' : ''}>Administrador</option></select>
+<select name="entity_id" aria-label="Entidade" style="width:auto"><option value="">Sem entidade</option>${entities.map((e: any) => `<option value="${e.id}" ${u.entity_id === e.id ? 'selected' : ''}>${esc(e.name)}</option>`).join('')}</select><button class="ghost">Guardar perfil</button></form>
 <form method="post" action="/admin/utilizadores/${u.id}/palavra-passe"><label for="np">Redefinir palavra-passe (mín. 12; termina as sessões)</label><div class="row"><input id="np" name="password" type="password" minlength="12" autocomplete="new-password" style="max-width:320px"><button class="ghost">Redefinir</button></div></form></div>
 <div class="card"><h2 style="margin-top:0">Subscrição</h2>
 <p class="sans">Uso neste período: <strong>${u.role === 'admin' ? '∞' : `${qt.used}/${qt.limit}`}</strong>${sub?.stripe_subscription_id ? ` · Stripe: ${esc(sub.stripe_subscription_id)}` : ''}${sub?.current_period_end ? ` · período até ${fmtDate(sub.current_period_end)}` : ''}</p>
@@ -102,9 +133,11 @@ ${rows.map(({ u, qt }) => `<tr><td><a href="/admin/utilizadores/${u.id}">${esc(u
 
   app.post('/admin/utilizadores/:id/perfil', async (req, reply) => {
     if (!guard(req, reply)) return;
-    const id = (req.params as any).id, role = (req.body as any).role === 'admin' ? 'admin' : 'interviewer';
+    const id = (req.params as any).id, rb = req.body as any, role = ['admin', 'entity_admin'].includes(rb.role) ? rb.role : 'interviewer';
     if (id === req.user!.id && role !== 'admin') return back(reply, `/admin/utilizadores/${id}`, undefined, 'Não pode retirar o seu próprio perfil de administrador.');
-    await db.query('UPDATE users SET role=$2 WHERE id=$1', [id, role]);
+    const ent = rb.entity_id && /^[0-9a-f-]{36}$/i.test(rb.entity_id) ? await db.one('SELECT id FROM entities WHERE id=$1', [rb.entity_id]) : null;
+    if (role === 'entity_admin' && !ent) return back(reply, `/admin/utilizadores/${id}`, undefined, 'Um gestor de entidade precisa de uma entidade.');
+    await db.query('UPDATE users SET role=$2, entity_id=$3 WHERE id=$1', [id, role, ent?.id ?? null]);
     await audit(db, req.user!.email, 'admin.role_changed', null, { userId: id, role });
     return back(reply, `/admin/utilizadores/${id}`, 'Perfil guardado.');
   });
@@ -174,27 +207,7 @@ ${plans.map((p: any) => `<form method="post" action="/admin/planos/${esc(p.id)}"
       if (v && v !== '-') await saveSetting(db, d.key, v);
     }
     try {
-      let msg = '';
-      if (g === 'OpenAI') {
-        const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${S('OPENAI_API_KEY')}` } });
-        if (!r.ok) throw new Error(`OpenAI respondeu ${r.status}`);
-        msg = 'OpenAI: chave válida.';
-      } else if (g === 'Stripe') {
-        const bal = await stripe('balance', undefined, 'GET');
-        msg = `Stripe: ligação OK (${bal.livemode ? 'modo real' : 'modo de teste'}).${S('STRIPE_WEBHOOK_SECRET') ? '' : ' Falta o webhook signing secret.'}`;
-      } else if (g === 'MailerSend') {
-        await queueEmail(db, { key: `test:${Date.now()}`, to: req.user!.email, subject: 'Teste de email', html: emailShell('Teste de email', '<p>Se recebeu esta mensagem, o MailerSend está configurado.</p>'), text: 'Teste de email: MailerSend configurado.' });
-        await flushOutbox(db);
-        const last = await db.one(`SELECT state, error FROM emails WHERE to_email=$1 ORDER BY created_at DESC LIMIT 1`, [req.user!.email]);
-        if (last.state !== 'sent') throw new Error(last.error ?? 'envio falhou');
-        msg = `MailerSend: mensagem de teste aceite para ${req.user!.email}.`;
-      } else if (g === 'Moloni ON') {
-        const r = await fetch('https://api.moloni.pt/v1/grant/', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-          body: new URLSearchParams({ grant_type: 'password', client_id: S('MOLONI_CLIENT_ID'), client_secret: S('MOLONI_CLIENT_SECRET'), username: S('MOLONI_USERNAME'), password: S('MOLONI_PASSWORD') }).toString() });
-        const j: any = await r.json().catch(() => ({}));
-        if (!r.ok || !j.access_token) throw new Error(`Moloni: ${j.error_description ?? j.error ?? r.status}`);
-        msg = 'Moloni ON: autenticação OK. (A emissão automática de faturas ainda não está ligada.)';
-      }
+      const msg = await serviceTest(db, g, req.user!.email);
       return back(reply, '/admin/definicoes', msg);
     } catch (e: any) { return back(reply, '/admin/definicoes', undefined, `Teste falhou: ${String(e.message).slice(0, 200)}`); }
   });

@@ -9,6 +9,7 @@ import { queueEmail, emailShell } from '../mail.ts';
 import { createInvitation } from '../invites.ts';
 import { aiAvailable, synthesizeSpeech } from '../ai/openai.ts';
 import { storage } from '../storage.ts';
+import { inEntity, entityOfInterview } from '../settings.ts';
 
 const H = { 'Content-Type': 'text/html; charset=utf-8' };
 
@@ -224,11 +225,12 @@ ${q.audio_asset_id ? `<p><audio controls preload="none" src="/api/g/media/${q.au
   app.get('/api/g/leitura/:qid', async (req, reply) => {
     const iv = await needApi(req, reply); if (!iv) return;
     const q = await db.one('SELECT * FROM questions WHERE id=$2 AND interview_id=$1', [iv.id, (req.params as any).qid]);
-    if (!q || !q.text || !aiAvailable()) return reply.code(404).send();
+    const ent = await entityOfInterview(db, iv.id);
+    if (!q || !q.text || !inEntity(ent, () => aiAvailable())) return reply.code(404).send();
     if (!rateLimit(`tts:${iv.id}`, 20, 3600_000)) return reply.code(429).send();
     let asset = q.tts_asset_id && await db.one('SELECT * FROM assets WHERE id=$1', [q.tts_asset_id]);
     if (!asset) {
-      const s = await synthesizeSpeech(q.text, 'host').catch(() => null);
+      const s = await inEntity(ent, () => synthesizeSpeech(q.text, 'host')).catch(() => null);
       if (!s) return reply.code(404).send();
       const id = await saveAsset(db, { interviewId: iv.id, kind: 'question_tts', mime: s.mime, ext: s.ext, data: s.data });
       await db.query('UPDATE questions SET tts_asset_id=$2 WHERE id=$1', [q.id, id]);

@@ -1,4 +1,5 @@
 import type { Db } from './db.ts';
+import { inEntity, entityOfInterview } from './settings.ts';
 
 export interface EnqueueOpts { kind: string; interviewId?: string | null; input?: object; dedupe?: string; costUsd?: number; delayMs?: number }
 
@@ -26,7 +27,8 @@ export async function runOne(db: Db, handlers: Record<string, Handler>): Promise
   const h = handlers[job.kind];
   try {
     if (!h) throw new PermanentError(`Sem handler para ${job.kind}`);
-    const result = await h(job, { db, progress: async (done, total) => { await db.query('UPDATE jobs SET progress_done=$2, progress_total=COALESCE($3, progress_total) WHERE id=$1', [job.id, done, total ?? null]); } });
+    const ent = job.interview_id ? await entityOfInterview(db, job.interview_id) : null;
+    const result = await inEntity(ent, () => h(job, { db, progress: async (done, total) => { await db.query('UPDATE jobs SET progress_done=$2, progress_total=COALESCE($3, progress_total) WHERE id=$1', [job.id, done, total ?? null]); } }));
     await db.query(`UPDATE jobs SET state='done', result=$2, finished_at=now(), error=NULL WHERE id=$1`, [job.id, JSON.stringify(result ?? {})]);
   } catch (err: any) {
     const permanent = err instanceof PermanentError || job.attempts >= job.max_attempts;
