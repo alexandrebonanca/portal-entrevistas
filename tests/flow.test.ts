@@ -249,6 +249,8 @@ test('vozes escolhidas, agradecimento final, vídeo MP4 e galeria', async () => 
 
   const v = await post(`/entrevistas/${ivId}/episodio/${ep.id}/video`, { lang: 'pt-PT' }, owner);
   assert.match(v.headers.location as string, /ok=/);
+  const again = await post(`/entrevistas/${ivId}/episodio/${ep.id}/video`, { lang: 'pt-PT' }, owner);
+  assert.match(decodeURIComponent(again.headers.location as string), /Já há um vídeo/, 'clique repetido recusado');
   await drain();
   const job = await db.one(`SELECT state, error FROM jobs WHERE kind='render_video' ORDER BY created_at DESC LIMIT 1`);
   assert.equal(job.state, 'done', job.error ?? '');

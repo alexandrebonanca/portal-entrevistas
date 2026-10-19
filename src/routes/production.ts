@@ -331,6 +331,8 @@ ${ep.visibility === 'public' ? `<form method="post" action="/entrevistas/${iv.id
   app.post('/entrevistas/:id/episodio/:eid/video', async (req, reply) => {
     const c = await epGuard(req, reply); if (!c) return;
     if (c.ep.stale) return back(reply, c.iv.id, undefined, 'Versão desatualizada.');
+    // Clique repetido: não se paga duas vezes a mesma geração.
+    if (await db.one(`SELECT 1 FROM jobs WHERE interview_id=$1 AND kind='render_video' AND state IN ('queued','running')`, [c.iv.id])) return back(reply, c.iv.id, undefined, 'Já há um vídeo a ser gerado; aguarde que termine.');
     const lang = String((req.body as any)?.lang ?? '');
     const n = Number((await db.one(`SELECT count(*)::int AS n FROM jobs WHERE interview_id=$1 AND kind='render_video'`, [c.iv.id])).n);
     await enqueue(db, { kind: 'render_video', interviewId: c.iv.id, input: { episodeId: c.ep.id, lang: lang && c.ep.subtitles?.[lang] ? lang : null, animate: !!(req.body as any)?.animate }, dedupe: `video:${c.ep.id}:${n}` });
