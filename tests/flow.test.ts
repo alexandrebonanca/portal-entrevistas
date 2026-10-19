@@ -239,6 +239,46 @@ test('pipeline: processar, rever guião, aprovar, gerar, aprovações e publicar
   assert.equal((await get(`/e/${ep.slug}/audio`)).statusCode, 404);
 });
 
+test('vozes escolhidas, agradecimento final, vídeo MP4 e galeria', async () => {
+  const ep = await db.one('SELECT * FROM episodes WHERE interview_id=$1 ORDER BY created_at DESC LIMIT 1', [ivId]);
+  assert.deepEqual(ep.technical.voices, { host: 'coral', guest: 'shimmer' }, 'feminina/feminina por omissão, vozes distintas');
+  const sc = await db.one('SELECT segments FROM scripts WHERE id=$1', [ep.script_id]);
+  const last = sc.segments[sc.segments.length - 1];
+  assert.equal(last.transformationType, 'editorial_outro'); assert.equal(last.speakerRole, 'host');
+  assert.ok(ep.technical.timing.length >= 3);
+
+  const v = await post(`/entrevistas/${ivId}/episodio/${ep.id}/video`, { lang: 'pt-PT' }, owner);
+  assert.match(v.headers.location as string, /ok=/);
+  await drain();
+  const job = await db.one(`SELECT state, error FROM jobs WHERE kind='render_video' ORDER BY created_at DESC LIMIT 1`);
+  assert.equal(job.state, 'done', job.error ?? '');
+  const ep2 = await db.one('SELECT * FROM episodes WHERE id=$1', [ep.id]);
+  assert.ok(ep2.video_asset_id); assert.equal(ep2.video_lang, 'pt-PT');
+  const dl = await get(`/entrevistas/${ivId}/episodio/${ep.id}/video.mp4`, owner);
+  assert.equal(dl.statusCode, 200);
+  assert.match(String(dl.headers['content-disposition']), /attachment; filename=".+\.mp4"/);
+  assert.equal(dl.rawPayload.subarray(4, 8).toString('latin1'), 'ftyp', 'MP4 válido');
+  assert.equal((await get(`/entrevistas/${ivId}/episodio/${ep.id}/video.mp4`)).statusCode, 302, 'sem sessão não descarrega');
+  const meta = (await db.one('SELECT meta FROM assets WHERE id=$1', [ep2.video_asset_id])).meta;
+  assert.equal(meta.guestPhoto, false, 'sem autorização de publicação de fotografias, a do convidado não entra');
+
+  // galeria: só episódios públicos e com autorização do entrevistador
+  await db.query(`UPDATE episodes SET status='published', visibility='unlisted', withdrawn_at=NULL WHERE id=$1`, [ep.id]);
+  await post(`/entrevistas/${ivId}/episodio/${ep.id}/galeria`, { gallery: '1', theme: 'Energia' }, owner);
+  assert.equal((await db.one('SELECT gallery FROM episodes WHERE id=$1', [ep.id])).gallery, false, 'não listado não entra na galeria');
+  await db.query(`UPDATE episodes SET visibility='public' WHERE id=$1`, [ep.id]);
+  await post(`/entrevistas/${ivId}/episodio/${ep.id}/galeria`, { gallery: '1', theme: 'Energia' }, owner);
+  const g = await get('/podcasts');
+  assert.equal(g.statusCode, 200);
+  assert.match(g.body, /<h2>Energia<\/h2>/);
+  assert.match(g.body, new RegExp(ep.slug));
+  assert.match((await get(`/e/${ep.slug}`)).body, /<video/);
+  assert.equal((await get(`/e/${ep.slug}/video`)).statusCode, 200);
+  await post(`/entrevistas/${ivId}/episodio/${ep.id}/retirar`, {}, owner);
+  assert.doesNotMatch((await get('/podcasts')).body, new RegExp(ep.slug), 'retirado sai da galeria');
+  assert.equal((await get(`/e/${ep.slug}/video`)).statusCode, 404);
+});
+
 test('alterar uma transcrição invalida guião e aprovações sem apagar versões', async () => {
   const take = await db.one(`SELECT t.id FROM answer_takes t LIMIT 1`);
   await post(`/entrevistas/${ivId}/transcricoes/${take.id}`, { text: 'Texto corrigido pelo editor' }, owner);

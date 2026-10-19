@@ -2,15 +2,15 @@ import type { FastifyInstance } from 'fastify';
 import { config } from '../config.ts';
 import { esc, fmtDate, fmtDuration, sha256, rateLimit } from '../lib.ts';
 import { page, flash, pill, STATUS_LABEL } from '../views.ts';
-import { requireUser, ownedInterview, audit } from '../app.ts';
+import { requireUser, ownedInterview, audit, sendAsset } from '../app.ts';
 import { enqueue } from '../jobs.ts';
 import { estimateCost, latestTranscript } from '../pipeline.ts';
-import { aiAvailable, reviewScript, validateScript } from '../ai/openai.ts';
+import { aiAvailable, reviewScript, validateScript, episodeVoice } from '../ai/openai.ts';
 import { playerHtml } from './episode.ts';
 import { createInvitation } from '../invites.ts';
 import { queueEmail, emailShell } from '../mail.ts';
 
-const JOB_LABEL: Record<string, string> = { process_submission: 'A transcrever e a preparar o guião', prepare_script: 'A preparar o guião', generate_episode: 'A gerar o episódio', transcribe_asset: 'A transcrever' };
+const JOB_LABEL: Record<string, string> = { render_video: 'A gerar o vídeo do podcast', process_submission: 'A transcrever e a preparar o guião', prepare_script: 'A preparar o guião', generate_episode: 'A gerar o episódio', transcribe_asset: 'A transcrever' };
 const SUBS = [['en', 'English'], ['pt-PT', 'Português (PT)'], ['es', 'Español'], ['fr', 'Français'], ['de', 'Deutsch']];
 
 export async function productionRoutes(app: FastifyInstance) {
@@ -102,7 +102,7 @@ ${editable ? `<div class="row" style="margin-top:12px"><form method="post" actio
 <form method="post" action="/entrevistas/${iv.id}/gerar" onsubmit="return confirm('Gerar o episódio (operações pagas)?')">
 <fieldset style="border:1px solid var(--line);border-radius:8px"><legend class="sans">Línguas das legendas</legend>${SUBS.map(([v, l]) => `<label class="check"><input type="checkbox" name="subtitle_langs" value="${v}" ${iv.subtitle_langs.includes(v) ? 'checked' : ''}> ${l}</label>`).join('')}</fieldset>
 ${photos.length ? `<fieldset style="border:1px solid var(--line);border-radius:8px"><legend class="sans">Fotografias na capa (autorizadas; máx. 2)</legend><div class="thumbs">${photos.map((p: any) => `<label class="check"><input type="checkbox" name="cover_photo" value="${p.id}"><img alt="" src="/media/${p.asset_id}"></label>`).join('')}</div></fieldset>` : '<p class="hint">Sem fotografias autorizadas para a capa: será usada capa tipográfica sobre fundo ilustrado.</p>'}
-<p class="hint">Vozes: anfitrião “${esc(config.openai.voices.host)}”, convidado “${esc(config.openai.voices.guest)}” (vozes sintéticas de catálogo; sem clonagem). Será acrescentado o aviso audível: “${esc(config.aiDisclosure)}”</p>
+<p class="hint">Vozes: entrevistador ${iv.question_voice === 'male' ? 'masculina' : 'feminina'} (“${esc(episodeVoice('host', iv.question_voice))}”), entrevistado ${iv.guest_voice === 'male' ? 'masculina' : 'feminina'} (“${esc(episodeVoice('guest', iv.guest_voice))}”) — altere em Editar. Vozes sintéticas de catálogo; sem clonagem. Será acrescentado o aviso audível: “${esc(config.aiDisclosure)}”</p>
 <button class="accent">Gerar episódio</button></form></div>`;
       }
     }
@@ -123,10 +123,21 @@ ${issues.length ? `<div class="flash bad"><strong>Controlo de qualidade:</strong
 <tr><td>Entrevistador</td><td>${hostAp ? pill('aprovou esta versão', 'ok') : pill('pendente')}</td><td>${!hostAp && !ep.stale ? `<form method="post" action="/entrevistas/${iv.id}/episodio/${ep.id}/aprovar"><button class="ghost">Aprovar esta versão</button></form>` : ''}</td></tr>
 ${needGuest ? `<tr><td>Entrevistado</td><td>${guestAp ? pill(guestAp.decision === 'approved' ? 'aprovou' : 'pediu alterações', guestAp.decision === 'approved' ? 'ok' : 'bad') : pill('pendente')} ${guestAp?.note ? esc(guestAp.note) : ''}</td>
 <td><form method="post" action="/entrevistas/${iv.id}/episodio/${ep.id}/enviar-previa"><button class="ghost">Enviar pré-visualização</button></form></td></tr>` : ''}</tbody></table>
+<h3>Vídeo do podcast</h3>
+${ep.video_asset_id ? `<video controls preload="metadata" poster="/media/${ep.cover_asset_id}" src="/media/${ep.video_asset_id}" style="width:100%;max-width:720px;border-radius:10px;background:#000"></video>
+<p class="sans"><a class="btn" href="/entrevistas/${iv.id}/episodio/${ep.id}/video.mp4" download>Descarregar vídeo (MP4)</a> <span class="hint">Legendas: ${esc(ep.video_lang ?? 'sem legendas')}</span></p>` : '<p class="hint">Ainda não foi gerado.</p>'}
+${!ep.stale ? `<form method="post" action="/entrevistas/${iv.id}/episodio/${ep.id}/video" class="row" onsubmit="return confirm('Gerar o vídeo?')"><label for="vl" style="margin:0">Legendas no vídeo</label><select id="vl" name="lang" style="width:auto">${Object.keys(ep.subtitles ?? {}).map(l => `<option value="${esc(l)}" ${l === (ep.video_lang ?? 'pt-PT') ? 'selected' : ''}>${esc(l)}</option>`).join('')}<option value="">Sem legendas</option></select><button class="ghost">${ep.video_asset_id ? 'Gerar de novo' : 'Gerar vídeo'}</button></form>
+<p class="hint">Capa durante a introdução e o agradecimento final; composição de estúdio com as duas fotografias autorizadas na primeira pergunta; depois, grande plano de quem fala. As legendas ficam gravadas na imagem, numa só língua. Só entram fotografias autorizadas (a do convidado exige autorização de publicação).</p>` : ''}
 ${!pubOk ? '<div class="flash bad">O entrevistado não autorizou a publicação.</div>' : ''}
 ${ep.status !== 'published' ? `<form method="post" action="/entrevistas/${iv.id}/episodio/${ep.id}/publicar" onsubmit="return confirm('Publicar agora?')"><label for="vis">Modalidade</label><select id="vis" name="visibility"><option value="private">Privado (só pessoas autorizadas)</option><option value="unlisted" ${iv.planned_visibility === 'unlisted' ? 'selected' : ''}>Não listado (quem tem o link; não equivale a privado)</option><option value="public" ${iv.planned_visibility === 'public' ? 'selected' : ''}>Público (indexável)</option></select>
+<fieldset style="border:1px solid var(--line);border-radius:8px;margin-top:12px"><legend class="sans">Galeria pública «Podcasts gerados»</legend>
+<label class="check"><input type="checkbox" name="gallery" value="1"> Permito que este episódio fique na galeria pública do portal, para consulta, organizada por temas (só para episódios públicos).</label>
+<label for="th">Tema</label><input id="th" name="theme" type="text" list="themes" maxlength="60" placeholder="Ex.: Energia, Telecomunicações, Hotelaria"><datalist id="themes">${(await db.query(`SELECT DISTINCT theme FROM episodes WHERE theme<>'' ORDER BY theme`)).map((t: any) => `<option value="${esc(t.theme)}">`).join('')}</datalist></fieldset>
 <p><button class="accent" ${canPublish ? '' : 'disabled'}>Publicar</button></p>${canPublish ? '' : '<p class="hint">Publicar exige: aprovação válida do entrevistador' + (needGuest ? ' e do entrevistado' : '') + ', autorização de publicação, versão atual e sem alertas de qualidade.</p>'}</form>`
   : `<p class="sans">Publicado (${esc(ep.visibility)}) em ${fmtDate(ep.published_at)}${ep.visibility !== 'private' ? ` · <a href="/e/${ep.slug}">/e/${esc(ep.slug)}</a>` : ''}</p>
+${ep.visibility === 'public' ? `<form method="post" action="/entrevistas/${iv.id}/episodio/${ep.id}/galeria" class="card"><strong class="sans">Galeria pública «Podcasts gerados»</strong>
+<label class="check"><input type="checkbox" name="gallery" value="1" ${ep.gallery ? 'checked' : ''}> Mostrar na galeria pública, organizada por temas</label>
+<label for="th2">Tema</label><input id="th2" name="theme" type="text" maxlength="60" value="${esc(ep.theme)}"><button class="ghost">Guardar</button></form>` : ''}
 <form method="post" action="/entrevistas/${iv.id}/episodio/${ep.id}/retirar" onsubmit="return confirm('Retirar o episódio?')"><button class="danger">Retirar episódio</button></form>
 <p class="hint">Cópias já descarregadas ou distribuídas externamente podem não ser recuperáveis.</p>`}</div>`;
     }
@@ -285,15 +296,43 @@ ${ep.status !== 'published' ? `<form method="post" action="/entrevistas/${iv.id}
     const issues: string[] = ep.technical?.qcIssues ?? [];
     const ok = hostAp && (iv.review_policy !== 'guest_preview' || guestAp?.decision === 'approved') && (await consent(iv.id, 'publish')) && !ep.stale && !issues.length && ep.status === 'preview';
     if (!ok) { await audit(db, req.user!.email, 'episode.publish_blocked', iv.id); return back(reply, iv.id, undefined, 'Publicação bloqueada: faltam aprovações válidas, autorização ou a versão está desatualizada.'); }
-    await db.query(`UPDATE episodes SET status='published', visibility=$2, published_at=now(), withdrawn_at=NULL WHERE id=$1`, [ep.id, vis]);
+    const b = req.body as any;
+    const theme = String(b?.theme ?? '').trim().slice(0, 60);
+    await db.query(`UPDATE episodes SET status='published', visibility=$2, published_at=now(), withdrawn_at=NULL, gallery=$3, theme=$4 WHERE id=$1`, [ep.id, vis, vis === 'public' && !!b?.gallery, theme]);
     await db.query(`UPDATE interviews SET publication_status='published' WHERE id=$1`, [iv.id]);
     await audit(db, req.user!.email, 'episode.published', iv.id, { visibility: vis, episodeId: ep.id });
     return back(reply, iv.id, vis === 'private' ? 'Guardado como privado.' : 'Publicado.');
   });
 
+  app.post('/entrevistas/:id/episodio/:eid/video', async (req, reply) => {
+    const c = await epGuard(req, reply); if (!c) return;
+    if (c.ep.stale) return back(reply, c.iv.id, undefined, 'Versão desatualizada.');
+    const lang = String((req.body as any)?.lang ?? '');
+    const n = Number((await db.one(`SELECT count(*)::int AS n FROM jobs WHERE interview_id=$1 AND kind='render_video'`, [c.iv.id])).n);
+    await enqueue(db, { kind: 'render_video', interviewId: c.iv.id, input: { episodeId: c.ep.id, lang: lang && c.ep.subtitles?.[lang] ? lang : null }, dedupe: `video:${c.ep.id}:${n}` });
+    await audit(db, req.user!.email, 'episode.video_requested', c.iv.id, { lang });
+    return back(reply, c.iv.id, 'Geração do vídeo iniciada.');
+  });
+
+  app.get('/entrevistas/:id/episodio/:eid/video.mp4', async (req, reply) => {
+    const c = await epGuard(req, reply); if (!c) return;
+    const a = c.ep.video_asset_id && await db.one('SELECT * FROM assets WHERE id=$1 AND deleted_at IS NULL', [c.ep.video_asset_id]);
+    if (!a) return reply.code(404).send('Vídeo ainda não gerado');
+    return sendAsset(req, reply, a, { download: `${c.ep.slug}.mp4` });
+  });
+
+  app.post('/entrevistas/:id/episodio/:eid/galeria', async (req, reply) => {
+    const c = await epGuard(req, reply); if (!c) return;
+    const b = req.body as any;
+    const on = !!b.gallery && c.ep.status === 'published' && c.ep.visibility === 'public';
+    await db.query('UPDATE episodes SET gallery=$2, theme=$3 WHERE id=$1', [c.ep.id, on, String(b.theme ?? '').trim().slice(0, 60)]);
+    await audit(db, req.user!.email, on ? 'episode.gallery_on' : 'episode.gallery_off', c.iv.id);
+    return back(reply, c.iv.id, on ? 'Episódio visível na galeria pública.' : 'Episódio fora da galeria.');
+  });
+
   app.post('/entrevistas/:id/episodio/:eid/retirar', async (req, reply) => {
     const c = await epGuard(req, reply); if (!c) return;
-    await db.query(`UPDATE episodes SET status='withdrawn', withdrawn_at=now() WHERE id=$1`, [c.ep.id]);
+    await db.query(`UPDATE episodes SET status='withdrawn', withdrawn_at=now(), gallery=false WHERE id=$1`, [c.ep.id]);
     await db.query(`UPDATE interviews SET publication_status='withdrawn' WHERE id=$1`, [c.iv.id]);
     await audit(db, req.user!.email, 'episode.withdrawn', c.iv.id);
     return back(reply, c.iv.id, 'Episódio retirado.');

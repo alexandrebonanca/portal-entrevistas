@@ -12,6 +12,7 @@ Rules:
 - Do not merge answers in a way that changes the guest's position. Do not fill inaudible passages.
 - Flag names, numbers or passages that need confirmation (reviewFlags).
 - Keep the original question order. Transitions are short, neutral and spoken by the host.
+- End with one editorial_outro spoken by the host: a short, sincere thank-you to the guest (by name) and to the listeners. Do not summarise or add opinions.
 - Do not simulate live reactions, laughter or exclamations that did not happen.
 - Every translated question/answer must point to its source. Segments without a source may only be editorial_intro, editorial_transition or editorial_outro.
 - If essential data is missing, return a blocking issue instead of inventing content.

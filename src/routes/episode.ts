@@ -43,14 +43,14 @@ export async function episodeRoutes(app: FastifyInstance) {
     const s = ep.slug;
     return send(reply, page({
       lang: 'en', title: ep.title, noindex: ep.visibility !== 'public', desc: ep.description || undefined,
-      body: `<div class="wrap" style="padding-top:28px">${playerHtml(ep, { audio: `/e/${s}/audio`, cover: `/e/${s}/cover`, subs: (l, x) => `/e/${s}/subs/${l}.${x}` }, { host: ep.host_name, guest: ep.guest_name })}</div>`,
+      body: `<div class="wrap" style="padding-top:28px">${ep.video_asset_id ? `<video controls preload="metadata" poster="/e/${s}/cover" src="/e/${s}/video" style="width:100%;border-radius:12px;background:#000;margin-bottom:18px"></video>` : ''}${playerHtml(ep, { audio: `/e/${s}/audio`, cover: `/e/${s}/cover`, subs: (l, x) => `/e/${s}/subs/${l}.${x}` }, { host: ep.host_name, guest: ep.guest_name })}</div>`,
       script: '/static/player.js', nav: '',
     }));
   });
-  const pubAsset = async (req: any, reply: any, which: 'audio' | 'cover' | 'thumb') => {
+  const pubAsset = async (req: any, reply: any, which: 'audio' | 'cover' | 'thumb' | 'video') => {
     const ep = await live(req.params.slug);
     if (!ep) return reply.code(404).send();
-    const id = { audio: ep.audio_asset_id, cover: ep.cover_asset_id, thumb: ep.cover_thumb_asset_id }[which];
+    const id = { audio: ep.audio_asset_id, cover: ep.cover_asset_id, thumb: ep.cover_thumb_asset_id, video: ep.video_asset_id }[which];
     const a = await db.one('SELECT * FROM assets WHERE id=$1 AND deleted_at IS NULL', [id]);
     if (!a) return reply.code(404).send();
     return sendAsset(req, reply, a, { cache: 'public, max-age=300' });
@@ -58,6 +58,24 @@ export async function episodeRoutes(app: FastifyInstance) {
   app.get('/e/:slug/audio', (req, reply) => pubAsset(req, reply, 'audio'));
   app.get('/e/:slug/cover', (req, reply) => pubAsset(req, reply, 'cover'));
   app.get('/e/:slug/thumb', (req, reply) => pubAsset(req, reply, 'thumb'));
+  app.get('/e/:slug/video', (req, reply) => pubAsset(req, reply, 'video'));
+
+  // Galeria pública «Podcasts gerados»: só episódios publicados como públicos e autorizados pelo entrevistador, por tema.
+  app.get('/podcasts', async (req, reply) => {
+    const rows = await db.query(`SELECT e.slug, e.title, e.theme, e.duration_ms, e.published_at, e.video_asset_id, i.host_name, i.guest_name FROM episodes e JOIN interviews i ON i.id=e.interview_id
+      WHERE e.gallery AND e.status='published' AND e.visibility='public' AND e.withdrawn_at IS NULL ORDER BY e.theme, e.published_at DESC`);
+    const q = String((req.query as any).theme ?? '');
+    const groups = new Map<string, any[]>();
+    for (const r of rows) { const t = r.theme || 'Other'; if (q && t !== q) continue; if (!groups.has(t)) groups.set(t, []); groups.get(t)!.push(r); }
+    const themes = [...new Set(rows.map((r: any) => r.theme || 'Other'))];
+    return send(reply, page({
+      lang: 'en', title: 'Podcast gallery', desc: 'Published interview episodes, organised by theme.',
+      nav: `<a href="/">Home</a><a href="/podcasts">Gallery</a><a href="/entrar">Sign in</a>`,
+      body: `<div class="wrap" style="padding-top:32px"><h1>Podcast gallery</h1><p class="hint sans">Episodes published by their interviewers for public listening. Translation and narration are AI-generated.</p>
+${themes.length > 1 ? `<p class="row sans"><a class="btn ${q ? 'ghost' : 'accent'}" href="/podcasts">All</a>${themes.map(t => `<a class="btn ${q === t ? 'accent' : 'ghost'}" href="/podcasts?theme=${encodeURIComponent(t)}">${esc(t)}</a>`).join('')}</p>` : ''}
+${groups.size ? [...groups].map(([t, eps]) => `<section style="margin-top:28px"><h2>${esc(t)}</h2><div class="grid3">${eps.map((e: any) => `<a class="card" href="/e/${esc(e.slug)}" style="text-decoration:none;color:inherit;margin:0"><img src="/e/${esc(e.slug)}/thumb" alt="" width="300" height="300" loading="lazy" style="width:100%;height:auto;border-radius:8px"><h3 style="margin:.5em 0 .2em">${esc(e.title)}</h3><p class="hint sans" style="margin:0">${esc(e.host_name)} · ${esc(e.guest_name)} · ${fmtDuration(e.duration_ms)}${e.video_asset_id ? ' · video' : ''}</p></a>`).join('')}</div></section>`).join('') : '<div class="card"><p>No episodes yet.</p></div>'}</div>`,
+    }));
+  });
   const subsReply = (cues: Cue[] | undefined, fmt: string, reply: any) => {
     if (!cues) return reply.code(404).send();
     return fmt === 'srt' ? reply.type('application/x-subrip; charset=utf-8').send(toSrt(cues)) : reply.type('text/vtt; charset=utf-8').send(toVtt(cues));

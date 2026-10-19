@@ -4,7 +4,8 @@ import { config } from './config.ts';
 import { storage } from './storage.ts';
 import { sha256, slugify } from './lib.ts';
 import { saveAsset, assembleEpisode, probeAudio } from './media.ts';
-import { transcribeAudio, transcribeWords, prepareEnglishScript, translateSubtitleCues, synthesizeSpeech, coverBriefing, generateCoverBackground, type ScriptSegment } from './ai/openai.ts';
+import { transcribeAudio, transcribeWords, prepareEnglishScript, translateSubtitleCues, synthesizeSpeech, coverBriefing, generateCoverBackground, episodeVoice, type ScriptSegment } from './ai/openai.ts';
+import { planShots, renderBases, subtitleFrame, encodeVideo } from './video.ts';
 import { cuesFromWords, fixOverlaps, checkCues, type Cue } from './subtitles.ts';
 import { composeCover } from './cover.ts';
 import { PermanentError, type Handler } from './jobs.ts';
@@ -36,6 +37,11 @@ export async function prepareScript(db: Db, interviewId: string) {
     items.push({ questionId: q.id, question: qt, status: q.status === 'answered' ? 'answered' : 'refused', answer: at });
   }
   const r = await prepareEnglishScript({ title: iv.title, objective: iv.objective_text, items });
+  // Garante o agradecimento final do entrevistador (texto editorial, atribuído ao anfitrião).
+  if (!r.segments.some(x => x.transformationType === 'editorial_outro')) {
+    const who = iv.guest_name ? `, ${iv.guest_name},` : '';
+    r.segments.push({ id: 'outro', speakerRole: 'host', textEnglish: `Thank you${who} for sharing your time and experience with us. And thank you all for listening.`, sourceQuestionId: null, transformationType: 'editorial_outro' });
+  }
   const rev = Number((await db.one('SELECT COALESCE(max(revision),0)+1 AS n FROM scripts WHERE interview_id=$1', [interviewId])).n);
   await db.query(`UPDATE scripts SET status='superseded' WHERE interview_id=$1 AND status IN ('draft','approved','stale')`, [interviewId]);
   const chars = JSON.stringify(items).length;
@@ -111,18 +117,20 @@ export const handlers: Record<string, Handler> = {
     const total = all.length * (W.tts + W.words) + W.asm + nTr * W.tr + W.cover + W.qc;
     let step = 0;
     await progress(0, total, 'A preparar');
+    const voiceOf = { host: episodeVoice('host', iv.question_voice), guest: episodeVoice('guest', iv.guest_voice) };
+    const kinds = new Map<string, string>([['disclosure', 'disclosure'], ...segments.map(x => [x.id, x.transformationType] as [string, string])]);
     const parts: { data: Buffer; ext: string; pauseAfterMs: number }[] = [];
     const timing: { id: string; role: 'host' | 'guest'; text: string; startMs: number; durationMs: number; data: Buffer; ext: string }[] = [];
     let cursor = 0, ttsChars = 0;
     for (let i = 0; i < all.length; i++) {
       const s = all[i];
       await progress(step, total, `A gerar a voz: segmento ${i + 1} de ${all.length}`);
-      const key = sha256(`${s.role}|${s.text}|${config.openai.voices[s.role]}|${config.openai.models.speech}|${config.openai.mock}`);
+      const key = sha256(`${s.role}|${s.text}|${voiceOf[s.role]}|${config.openai.models.speech}|${config.openai.mock}`);
       let asset = await db.one(`SELECT * FROM assets WHERE interview_id=$1 AND kind='tts_segment' AND meta->>'ttsKey'=$2 AND deleted_at IS NULL LIMIT 1`, [iv.id, key]);
       let data: Buffer, ext: string, dur: number;
       if (asset) { data = await storage.get(asset.storage_key); ext = asset.storage_key.split('.').pop()!; dur = asset.duration_ms; }
       else {
-        const sp = await synthesizeSpeech(s.text, s.role);
+        const sp = await synthesizeSpeech(s.text, s.role, voiceOf[s.role]);
         const pr = await probeAudio(sp.data, sp.ext);
         if (!pr.ok) throw new Error(`Áudio sintético inválido no segmento ${s.id}`);
         data = sp.data; ext = sp.ext; dur = pr.durationMs;
@@ -197,10 +205,44 @@ export const handlers: Record<string, Handler> = {
       `INSERT INTO episodes(interview_id, script_id, slug, title, description, audio_asset_id, cover_asset_id, cover_thumb_asset_id, duration_ms, subtitles, chapters, technical, status, visibility)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'preview','private') RETURNING id`,
       [iv.id, script.id, `${slugify(script.title_en)}-${randomBytes(3).toString('hex')}`, script.title_en, iv.objective_shared ? iv.objective_text.slice(0, 500) : '', audioId, coverId, thumbId, asm.durationMs,
-        JSON.stringify(subtitles), JSON.stringify(chapters), JSON.stringify({ maxVolumeDb: asm.maxVolumeDb, clipping: asm.clipping, qcIssues: issues, supersedes: prev.map((p: any) => p.id), mock: config.openai.mock, voices: config.openai.voices, models: config.openai.models })]);
+        JSON.stringify(subtitles), JSON.stringify(chapters), JSON.stringify({ maxVolumeDb: asm.maxVolumeDb, clipping: asm.clipping, qcIssues: issues, supersedes: prev.map((p: any) => p.id), mock: config.openai.mock, voices: voiceOf, models: config.openai.models, coverPhotoIds: opts.coverPhotoIds ?? [], timing: timing.map(t => ({ id: t.id, role: t.role, kind: kinds.get(t.id) ?? '', startMs: t.startMs, durationMs: t.durationMs })) })]);
     await db.query(`UPDATE interviews SET production_status=$2, publication_status='awaiting_approval' WHERE id=$1`, [iv.id, issues.length ? 'qc' : 'ready']);
     await progress(total, total, 'Concluído');
     return { episodeId: ep.id, qcIssues: issues };
+  },
+
+  async render_video(job, { db, progress }) {
+    const ep = await db.one('SELECT * FROM episodes WHERE id=$1 AND interview_id=$2', [job.input.episodeId, job.interview_id]);
+    if (!ep || ep.stale || ep.status === 'superseded') throw new PermanentError('Episódio inexistente ou desatualizado');
+    const iv = await db.one('SELECT * FROM interviews WHERE id=$1', [ep.interview_id]);
+    const timing = ep.technical?.timing as any[] | undefined;
+    if (!timing?.length) throw new PermanentError('Este episódio foi gerado antes do vídeo existir: gere o episódio de novo');
+    const consent = async (p: string) => !!(await db.one(`SELECT granted FROM consents WHERE interview_id=$1 AND purpose=$2 ORDER BY created_at DESC LIMIT 1`, [iv.id, p]))?.granted;
+    await progress(0, 100, 'A preparar as imagens');
+    const asset = async (id: string | null) => { if (!id) return null; const a = await db.one('SELECT storage_key FROM assets WHERE id=$1 AND deleted_at IS NULL', [id]); return a ? storage.get(a.storage_key) : null; };
+    // Só fotografias autorizadas: a do entrevistador com direitos declarados; a do convidado com autorização de publicação.
+    const hostPhoto = iv.host_photo_rights ? await asset(iv.host_photo_asset_id) : null;
+    let guestPhoto: Buffer | null = null;
+    if (await consent('publish_photo')) {
+      const pid = job.input.photoId ?? ep.technical?.coverPhotoIds?.[0] ?? null;
+      const ph = pid ? await db.one('SELECT asset_id FROM photos WHERE id=$1 AND interview_id=$2', [pid, iv.id]) : await db.one('SELECT asset_id FROM photos WHERE interview_id=$1 ORDER BY created_at LIMIT 1', [iv.id]);
+      guestPhoto = ph ? await asset(ph.asset_id) : null;
+    }
+    const cover = await asset(ep.cover_asset_id);
+    const audio = await asset(ep.audio_asset_id);
+    if (!cover || !audio) throw new PermanentError('Capa ou áudio do episódio em falta');
+    const lang: string | null = job.input.lang && ep.subtitles?.[job.input.lang] ? job.input.lang : null;
+    const shots = planShots(timing, ep.duration_ms, lang ? ep.subtitles[lang] : null);
+    const bases = await renderBases({ cover, title: ep.title, brand: config.brand, host: { name: iv.host_name || 'Host', photo: hostPhoto }, guest: { name: iv.guest_name || 'Guest', photo: guestPhoto } });
+    await progress(10, 100, 'A desenhar os fotogramas com legendas');
+    const { default: ff } = await import('@ffmpeg-installer/ffmpeg');
+    const mp4 = await encodeVideo(process.env.FFMPEG_PATH || ff.path, shots, (sh) => subtitleFrame(bases[sh.scene], sh.text), audio,
+      async (i, n) => progress(10 + Math.round((i / n) * 60), 100, `A desenhar os fotogramas (${i} de ${n})`));
+    await progress(90, 100, 'A guardar o vídeo');
+    const id = await saveAsset(db, { interviewId: iv.id, kind: 'episode_video', mime: 'video/mp4', ext: 'mp4', data: mp4, durationMs: ep.duration_ms, meta: { lang, shots: shots.length, guestPhoto: !!guestPhoto, hostPhoto: !!hostPhoto } });
+    await db.query('UPDATE episodes SET video_asset_id=$2, video_lang=$3 WHERE id=$1', [ep.id, id, lang]);
+    await progress(100, 100, 'Concluído');
+    return { videoAssetId: id, shots: shots.length };
   },
 
   async __onFail(job, { db }) {

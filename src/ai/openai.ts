@@ -124,11 +124,18 @@ export async function translateSubtitleCues(cues: { id: string; text: string }[]
   return out;
 }
 
-export async function synthesizeSpeech(text: string, role: 'host' | 'guest'): Promise<{ data: Buffer; ext: string; mime: string }> {
+/** Vozes do episódio por papel e género escolhido pelo entrevistador (sempre distintas entre os dois papéis). */
+export const EPISODE_VOICES = {
+  host: { male: process.env.OPENAI_VOICE_HOST_MALE ?? 'ash', female: process.env.OPENAI_VOICE_HOST_FEMALE ?? 'coral' },
+  guest: { male: process.env.OPENAI_VOICE_GUEST_MALE ?? 'onyx', female: process.env.OPENAI_VOICE_GUEST_FEMALE ?? 'shimmer' },
+} as const;
+export const episodeVoice = (role: 'host' | 'guest', gender: string) => EPISODE_VOICES[role][gender === 'male' ? 'male' : 'female'];
+
+export async function synthesizeSpeech(text: string, role: 'host' | 'guest', voice?: string): Promise<{ data: Buffer; ext: string; mime: string }> {
   if (config.openai.mock) return { data: makeToneWav(Math.max(1, Math.min(8, text.length / 18)), role === 'host' ? 330 : 220), ext: 'wav', mime: 'audio/wav' };
   const c = await openai();
   const r = await c.audio.speech.create({
-    model: config.openai.models.speech, voice: config.openai.voices[role], input: text, response_format: 'mp3',
+    model: config.openai.models.speech, voice: voice ?? config.openai.voices[role], input: text, response_format: 'mp3',
     instructions: role === 'host' ? 'Warm, clear podcast host. Neutral and professional.' : 'Natural, conversational. Do not exaggerate emotion.',
   });
   return { data: Buffer.from(await r.arrayBuffer()), ext: 'mp3', mime: 'audio/mpeg' };

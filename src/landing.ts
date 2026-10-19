@@ -12,7 +12,7 @@ export function landing(plans: any[]) {
   return page({
     lang: 'en', title: 'Interview the people you admire — without chasing them',
     desc: `Invite a public figure to answer your questions on their own time, on their phone. We turn the recordings into a reviewed, subtitled English podcast episode. From ${cheapest}/month.`,
-    nav: `<a href="#how">How it works</a><a href="#pricing">Pricing</a><a href="/entrar">Sign in</a><a class="btn accent" style="margin-left:16px" href="/registar">Get started</a>`,
+    nav: `<a href="#how">How it works</a><a href="/podcasts">Gallery</a><a href="#pricing">Pricing</a><a href="/entrar">Sign in</a><a class="btn accent" style="margin-left:16px" href="/registar">Get started</a>`,
     body: `
 <section class="hero"><div class="wrap"><div class="row" style="gap:40px;align-items:center">
   <div class="grow" style="flex-basis:380px">

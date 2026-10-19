@@ -11,7 +11,7 @@ export async function siteRoutes(app: FastifyInstance) {
 
   app.get('/', async (_req, reply) => reply.type('text/html; charset=utf-8').send(landing(await db.query('SELECT * FROM plans WHERE active ORDER BY sort'))));
   app.get('/healthz', async () => ({ ok: true }));
-  app.get('/robots.txt', async (_req, reply) => reply.type('text/plain').send('User-agent: *\nAllow: /$\nAllow: /privacy\nAllow: /e/\nDisallow: /i/\nDisallow: /entrevista\nDisallow: /painel\nDisallow: /entrevistas\nDisallow: /admin\nDisallow: /account\n'));
+  app.get('/robots.txt', async (_req, reply) => reply.type('text/plain').send('User-agent: *\nAllow: /$\nAllow: /privacy\nAllow: /e/\nAllow: /podcasts\nDisallow: /i/\nDisallow: /entrevista\nDisallow: /painel\nDisallow: /entrevistas\nDisallow: /admin\nDisallow: /account\n'));
 
   app.get('/privacy', async (_req, reply) => reply.type('text/html; charset=utf-8').send(page({
     lang: 'en', title: 'Privacy',

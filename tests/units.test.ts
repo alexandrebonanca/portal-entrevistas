@@ -48,3 +48,32 @@ test('sniff identifica pelo conteúdo', () => {
   assert.equal(sniff(Buffer.concat([Buffer.alloc(4), Buffer.from('ftypM4A '), Buffer.alloc(8)]))?.mime, 'audio/mp4');
   assert.equal(sniff(Buffer.from('<html>aaaaaaaaaaaaaaaaaaaaaaa')), null);
 });
+
+test('plano do vídeo: capa na introdução, estúdio na 1.ª pergunta, grande plano de quem fala, capa no agradecimento', async () => {
+  const { planShots } = await import('../src/video.ts');
+  const segs = [
+    { id: 'disclosure', role: 'host', kind: 'disclosure', startMs: 0, durationMs: 4000 },
+    { id: 's0', role: 'host', kind: 'editorial_intro', startMs: 4800, durationMs: 3000 },
+    { id: 'q0', role: 'host', kind: 'translated_question', startMs: 8000, durationMs: 3000 },
+    { id: 'a0', role: 'guest', kind: 'translated_answer', startMs: 11500, durationMs: 6000 },
+    { id: 'q1', role: 'host', kind: 'translated_question', startMs: 18000, durationMs: 3000 },
+    { id: 'a1', role: 'guest', kind: 'translated_answer', startMs: 21500, durationMs: 5000 },
+    { id: 'outro', role: 'host', kind: 'editorial_outro', startMs: 27000, durationMs: 4000 },
+  ] as any;
+  const cues = [{ id: 'c0', startMs: 11500, endMs: 14000, speakerRole: 'guest', text: 'Olá', language: 'pt-PT', revision: 1 }] as any;
+  const shots = planShots(segs, 31000, cues);
+  const at = (ms: number) => shots.find(s => ms >= s.startMs && ms < s.endMs)!;
+  assert.equal(at(1000).scene, 'cover'); assert.equal(at(6000).scene, 'cover');
+  assert.equal(at(9000).scene, 'studio');
+  assert.equal(at(12000).scene, 'guest'); assert.equal(at(12000).text, 'Olá');
+  assert.equal(at(15000).text, '');
+  assert.equal(at(19000).scene, 'host');
+  assert.equal(at(28000).scene, 'cover');
+  assert.equal(shots[0].startMs, 0); assert.equal(shots[shots.length - 1].endMs, 31000);
+  for (let i = 1; i < shots.length; i++) assert.equal(shots[i].startMs, shots[i - 1].endMs, 'sem buracos');
+});
+test('vozes do episódio por género escolhido, sempre distintas entre papéis', async () => {
+  const { episodeVoice } = await import('../src/ai/openai.ts');
+  for (const h of ['male', 'female']) for (const g of ['male', 'female']) assert.notEqual(episodeVoice('host', h), episodeVoice('guest', g));
+  assert.equal(episodeVoice('host', 'male'), 'ash');
+});
