@@ -15,7 +15,23 @@ export const replicatePricePerSec = () => Number(S('REPLICATE_PRICE_PER_SEC') ||
 export const gpuPerAudioSec = () => Number(S('LIPSYNC_GPU_RATIO') || 8.6);
 export const estimateLipsyncUsd = (speechSec: number) => speechSec * gpuPerAudioSec() * replicatePricePerSec();
 
-async function rq(path: string, init: RequestInit = {}) {
+/** Pedidos com espera e nova tentativa quando a Replicate limita o ritmo (429), respeitando Retry-After. */
+async function rq(path: string, init: RequestInit = {}, attempt = 0): Promise<any> {
+  try { return await rqOnce(path, init); }
+  catch (e: any) {
+    if (e?.status === 429 && attempt < 8) {
+      await new Promise(r => setTimeout(r, Math.min(60_000, (e.retryAfter ?? 10) * 1000 + Math.random() * 1500)));
+      return rq(path, init, attempt + 1);
+    }
+    throw e;
+  }
+}
+
+// Só uma criação de predição de cada vez: com pouco crédito a Replicate só aceita 1 pedido em rajada.
+let chain: Promise<unknown> = Promise.resolve();
+const serial = <T>(fn: () => Promise<T>): Promise<T> => { const p = chain.then(fn, fn); chain = p.catch(() => {}); return p; };
+
+async function rqOnce(path: string, init: RequestInit = {}) {
   const token = S('REPLICATE_API_TOKEN');
   if (!token) throw new Error('REPLICATE_API_TOKEN não configurado');
   const isForm = typeof FormData !== 'undefined' && init.body instanceof FormData;
@@ -23,7 +39,11 @@ async function rq(path: string, init: RequestInit = {}) {
   const j: any = await res.json().catch(() => ({}));
   const msg = `Replicate ${res.status}: ${j?.detail ?? j?.title ?? 'erro'}`;
   // Sem crédito, token inválido, pedido inválido: repetir não resolve (e gastaria noutros serviços).
-  if (!res.ok) throw res.status >= 400 && res.status < 500 && res.status !== 429 ? new PermanentError(msg) : new Error(msg);
+  if (!res.ok) {
+    const err: any = res.status >= 400 && res.status < 500 && res.status !== 429 ? new PermanentError(msg) : new Error(msg);
+    err.status = res.status; err.retryAfter = Number(res.headers.get('retry-after')) || undefined;
+    throw err;
+  }
   return j;
 }
 
@@ -61,7 +81,8 @@ export async function lipsync(image: { data: Buffer; mime: string }, audio: { da
   if ('enhancer' in props) input.enhancer = 'gfpgan';
   if ('use_enhancer' in props) input.use_enhancer = true;
   if ('still_mode' in props) input.still_mode = false;
-  let p = await rq('/predictions', { method: 'POST', headers: { Prefer: 'wait=55' }, body: JSON.stringify({ version, input }) });
+  // Cria a predição sem esperar pelo resultado (para não prender a vez das outras) e acompanha-a por consulta.
+  let p = await serial(() => rq('/predictions', { method: 'POST', body: JSON.stringify({ version, input }) }));
   const t0 = Date.now();
   while (['starting', 'processing'].includes(p.status)) {
     if (Date.now() - t0 > 15 * 60_000) throw new Error('Tempo excedido à espera da Replicate');
