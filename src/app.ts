@@ -46,8 +46,13 @@ export async function buildApp(db: Db): Promise<FastifyInstance> {
     const origin = req.headers.origin;
     if (site && !['same-origin', 'none'].includes(String(site))) return reply.code(403).send('Pedido entre origens recusado');
     if (origin) {
-      const host = req.headers['x-forwarded-host'] ?? req.headers.host;
-      try { if (new URL(origin).host !== host) return reply.code(403).send('Origem inválida'); } catch { return reply.code(403).send('Origem inválida'); }
+      // Atrás de proxy (Render) o Host pode variar: aceita o Host, o X-Forwarded-Host e o host de BASE_URL.
+      const allowed = new Set<string>();
+      for (const h of [req.headers.host, req.headers['x-forwarded-host'], new URL(config.baseUrl).host]) {
+        for (const v of String(h ?? '').split(',')) if (v.trim()) allowed.add(v.trim().toLowerCase());
+      }
+      try { if (!allowed.has(new URL(origin).host.toLowerCase())) { req.log.warn({ origin, allowed: [...allowed] }, 'origem recusada'); return reply.code(403).send('Origem inválida'); } }
+      catch { return reply.code(403).send('Origem inválida'); }
     }
   });
 
