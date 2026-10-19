@@ -78,3 +78,31 @@ test('vozes do episódio por género escolhido, sempre distintas entre papéis',
   for (const h of ['male', 'female']) for (const g of ['male', 'female']) assert.notEqual(episodeVoice('host', h), episodeVoice('guest', g));
   assert.equal(episodeVoice('host', 'male'), 'ash');
 });
+
+test('partes do vídeo: animadas substituem os fotogramas fixos do seu intervalo', async () => {
+  const { splitParts, shotsWithin } = await import('../src/video.ts');
+  const parts = splitParts([{ startMs: 5000, endMs: 9000 }, { startMs: 12000, endMs: 15000 }], 20000);
+  assert.deepEqual(parts.map(p => [p.kind, p.startMs, p.endMs]), [['still', 0, 5000], ['anim', 5000, 9000], ['still', 9000, 12000], ['anim', 12000, 15000], ['still', 15000, 20000]]);
+  const sh = shotsWithin([{ startMs: 0, endMs: 6000, scene: 'cover', text: '' }, { startMs: 6000, endMs: 13000, scene: 'host', text: 'x' }] as any, 9000, 12000);
+  assert.deepEqual(sh.map(s => [s.startMs, s.endMs]), [[9000, 12000]]);
+});
+test('composição com parte animada produz MP4 com a duração do áudio', async () => {
+  const { spawnSync } = await import('node:child_process');
+  const ffmpeg = (await import('@ffmpeg-installer/ffmpeg')).default.path, ffprobe = (await import('@ffprobe-installer/ffprobe')).default.path;
+  const sharp = (await import('sharp')).default;
+  const { encodeComposite, stillClip } = await import('../src/video.ts');
+  const img = await sharp({ create: { width: 1280, height: 720, channels: 3, background: '#224' } }).jpeg().toBuffer();
+  const face = await sharp({ create: { width: 512, height: 512, channels: 3, background: '#a76' } }).jpeg().toBuffer();
+  const audio = spawnSync(ffmpeg, ['-v', 'error', '-f', 'lavfi', '-i', 'sine=frequency=200:duration=8', '-f', 'mp3', 'pipe:1'], { maxBuffer: 1e8 }).stdout;
+  const clip = await stillClip(ffmpeg, face, 2500); // clipe mais curto do que a parte: o último fotograma mantém-se
+  const mp4 = await encodeComposite(ffmpeg, [
+    { kind: 'still', startMs: 0, endMs: 3000, shots: [{ startMs: 0, endMs: 3000, scene: 'cover', text: 'Hello' }] },
+    { kind: 'anim', startMs: 3000, endMs: 6000, base: img, clip, cues: [{ startMs: 0, endMs: 1500, text: 'Olá' }, { startMs: 1500, endMs: 3000, text: 'Mundo' }] },
+    { kind: 'still', startMs: 6000, endMs: 8000, shots: [{ startMs: 6000, endMs: 8000, scene: 'host', text: '' }] },
+  ] as any, async () => img, audio);
+  const { writeFileSync, mkdtempSync } = await import('node:fs');
+  const { join } = await import('node:path'); const { tmpdir } = await import('node:os');
+  const f = join(mkdtempSync(join(tmpdir(), 'pe-')), 'v.mp4'); writeFileSync(f, mp4);
+  const d = parseFloat(spawnSync(ffprobe, ['-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=duration', '-of', 'csv=p=0', f]).stdout.toString());
+  assert.ok(Math.abs(d - 8) < 0.3, `duração do vídeo ${d}`);
+});

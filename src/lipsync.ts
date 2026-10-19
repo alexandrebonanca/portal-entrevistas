@@ -11,11 +11,15 @@ const API = 'https://api.replicate.com/v1';
 export const lipsyncModel = () => S('REPLICATE_LIPSYNC_MODEL') || 'cjwbw/sadtalker';
 // Preço por segundo de GPU (estimativa; a Replicate cobra pelo tempo de execução no hardware do modelo).
 export const replicatePricePerSec = () => Number(S('REPLICATE_PRICE_PER_SEC') || 0.0014);
+// Segundos de GPU por segundo de fala, medidos no piloto (51,5 s de GPU para 6 s de áudio).
+export const gpuPerAudioSec = () => Number(S('LIPSYNC_GPU_RATIO') || 8.6);
+export const estimateLipsyncUsd = (speechSec: number) => speechSec * gpuPerAudioSec() * replicatePricePerSec();
 
 async function rq(path: string, init: RequestInit = {}) {
   const token = S('REPLICATE_API_TOKEN');
   if (!token) throw new Error('REPLICATE_API_TOKEN não configurado');
-  const res = await fetch(`${API}${path}`, { ...init, headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', ...(init.headers ?? {}) } });
+  const isForm = typeof FormData !== 'undefined' && init.body instanceof FormData;
+  const res = await fetch(`${API}${path}`, { ...init, headers: { Authorization: `Bearer ${token}`, ...(isForm ? {} : { 'Content-Type': 'application/json' }), ...(init.headers ?? {}) } });
   const j: any = await res.json().catch(() => ({}));
   const msg = `Replicate ${res.status}: ${j?.detail ?? j?.title ?? 'erro'}`;
   // Sem crédito, token inválido, pedido inválido: repetir não resolve (e gastaria noutros serviços).
@@ -26,6 +30,16 @@ async function rq(path: string, init: RequestInit = {}) {
 export async function replicateAccount() { return rq('/account'); }
 
 const pick = (props: Record<string, any>, names: string[]) => names.find(n => n in props);
+
+/** Envia um ficheiro para a Replicate e devolve um URL utilizável como entrada do modelo. */
+async function upload(data: Buffer, name: string, mime: string): Promise<string> {
+  const fd = new FormData();
+  fd.append('content', new Blob([data], { type: mime }), name);
+  const j = await rq('/files', { method: 'POST', body: fd });
+  const url = j?.urls?.get;
+  if (!url) throw new Error('A Replicate não devolveu o URL do ficheiro');
+  return url;
+}
 
 export interface LipsyncResult { video: Buffer; predictSec: number | null; estCostUsd: number | null; model: string; version: string; predictionId: string }
 
@@ -39,8 +53,8 @@ export async function lipsync(image: { data: Buffer; mime: string }, audio: { da
   const audKey = pick(props, ['driven_audio', 'audio', 'input_audio', 'audio_file']);
   if (!imgKey || !audKey) throw new Error(`Não reconheço as entradas do modelo ${modelName} (${Object.keys(props).join(', ')})`);
   const input: Record<string, any> = {
-    [imgKey]: `data:${image.mime};base64,${image.data.toString('base64')}`,
-    [audKey]: `data:${audio.mime};base64,${audio.data.toString('base64')}`,
+    [imgKey]: await upload(image.data, image.mime === 'image/png' ? 'portrait.png' : 'portrait.jpg', image.mime),
+    [audKey]: await upload(audio.data, audio.mime === 'audio/wav' ? 'speech.wav' : 'speech.mp3', audio.mime),
   };
   // Opções do SadTalker, se existirem: corpo inteiro (não recortar), com melhoria de rosto e movimento natural da cabeça.
   if ('preprocess' in props) input.preprocess = 'full';

@@ -68,7 +68,7 @@ const initialsCard = (name: string, color: string) => {
 export async function renderBases(opts: {
   cover: Buffer; title: string; brand: string;
   host: { name: string; photo: Buffer | null }; guest: { name: string; photo: Buffer | null };
-}): Promise<Record<Scene, Buffer>> {
+}): Promise<Record<Scene | 'animHost' | 'animGuest', Buffer>> {
   const { default: sharp } = await import('sharp');
   const bg = await blurredFill(sharp, opts.cover);
   const coverSq = await sharp(opts.cover).resize(560, 560).jpeg().toBuffer();
@@ -106,7 +106,9 @@ ${[left + P / 2, left + P + gap + P / 2].map(cx => `<g fill="#e8e0d4"><rect x="$
 <text x="68" y="80" font-family="${FONT}" font-weight="700" font-size="30" fill="#fff">${esc(p.name)}</text><text x="68" y="110" font-family="${FONT}" font-size="20" fill="#fff" opacity=".8">${esc(role)}</text></svg>`);
     return sharp(bg).composite([{ input: img, left: Math.round((W - (meta.width ?? 0)) / 2), top: Math.round((H - (meta.height ?? 0)) / 2) }, { input: lower }]).jpeg({ quality: 88 }).toBuffer();
   };
-  return { cover, studio, host: await close(opts.host, '#7a4a1f', 'Host'), guest: await close(opts.guest, '#2f5d6b', 'Guest') };
+  // Fundo para os planos animados: o mesmo enquadramento, sem a fotografia (o clipe animado é sobreposto ao centro).
+  const animBase = async (_p: { name: string }, _role: string) => sharp(bg).jpeg({ quality: 88 }).toBuffer();
+  return { cover, studio, host: await close(opts.host, '#7a4a1f', 'Host'), guest: await close(opts.guest, '#2f5d6b', 'Guest'), animHost: await animBase(opts.host, 'Host'), animGuest: await animBase(opts.guest, 'Guest') };
 }
 
 export async function subtitleFrame(base: Buffer, text: string): Promise<Buffer> {
@@ -151,5 +153,135 @@ export async function encodeVideo(ffmpeg: string, shots: Shot[], frameFor: (s: S
     if (r.code !== 0) r = await run(ffmpeg, [...common, '-c:v', 'mpeg4', '-q:v', '4', out], 900_000); // reserva se o binário não tiver libx264
     if (r.code !== 0) throw new Error('Falha a codificar o vídeo: ' + r.stderr.slice(-300));
     return readFile(out);
+  });
+}
+
+// ---------------------------------------------------------------------------------------------
+// Vídeo com retratos animados: partes fixas (fotogramas) e partes animadas (clipe por fala),
+// codificadas separadamente com os mesmos parâmetros e depois juntas sem recodificar.
+
+/** Legenda num PNG transparente do tamanho do vídeo (para sobrepor a um clipe). */
+export async function subtitleOverlay(text: string): Promise<Buffer> {
+  const { default: sharp } = await import('sharp');
+  const lines = wrapLines(text);
+  const lh = 46, boxH = lines.length * lh + 30, y0 = H - boxH - 36;
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}"><rect x="${W / 2 - 560}" y="${y0}" width="1120" height="${boxH}" rx="12" fill="#000" opacity=".68"/>
+${lines.map((l, i) => `<text x="${W / 2}" y="${y0 + 46 + i * lh}" text-anchor="middle" font-family="${FONT}" font-weight="600" font-size="36" fill="#fff">${esc(l)}</text>`).join('')}</svg>`;
+  return sharp(Buffer.from(svg)).png().toBuffer();
+}
+
+/** Aviso visível obrigatório sobre os planos animados. */
+export async function animatedNotice(who?: { name: string; role: string }): Promise<Buffer> {
+  const { default: sharp } = await import('sharp');
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}">${who ? `<rect x="40" y="40" width="${Math.max(260, who.name.length * 22 + 60)}" height="86" rx="10" fill="#000" opacity=".6"/>
+<text x="68" y="80" font-family="${FONT}" font-weight="700" font-size="30" fill="#fff">${esc(who.name)}</text><text x="68" y="110" font-family="${FONT}" font-size="20" fill="#fff" opacity=".8">${esc(who.role)}</text>` : ''}<rect x="${W - 372}" y="36" width="336" height="44" rx="8" fill="#000" opacity=".6"/>
+<text x="${W - 204}" y="65" text-anchor="middle" font-family="${FONT}" font-weight="600" font-size="20" fill="#fff">AI-animated portrait</text></svg>`;
+  return sharp(Buffer.from(svg)).png().toBuffer();
+}
+
+export type Part =
+  | { kind: 'still'; startMs: number; endMs: number; shots: Shot[] }
+  | { kind: 'anim'; startMs: number; endMs: number; base: Buffer; clip: Buffer; who?: { name: string; role: string }; cues: { startMs: number; endMs: number; text: string }[] };
+
+let encoderCache: string[] | null = null;
+async function videoEncoder(ffmpeg: string): Promise<string[]> {
+  if (encoderCache) return encoderCache;
+  const r = await run(ffmpeg, ['-hide_banner', '-h', 'encoder=libx264'], 30_000).catch(() => ({ code: 1, stderr: '' }));
+  encoderCache = r.code === 0 && !/Unknown encoder/i.test(r.stderr)
+    ? ['-c:v', 'libx264', '-preset', 'veryfast', '-crf', '24', '-pix_fmt', 'yuv420p', '-r', '25']
+    : ['-c:v', 'mpeg4', '-q:v', '4', '-pix_fmt', 'yuv420p', '-r', '25'];
+  return encoderCache;
+}
+
+/** Divide a linha temporal: os intervalos animados substituem os fotogramas fixos desse período. */
+export function splitParts(anims: { startMs: number; endMs: number }[], totalMs: number): { kind: 'still' | 'anim'; startMs: number; endMs: number; animIndex?: number }[] {
+  const out: { kind: 'still' | 'anim'; startMs: number; endMs: number; animIndex?: number }[] = [];
+  let t = 0;
+  const sorted = anims.map((a, i) => ({ ...a, i })).sort((a, b) => a.startMs - b.startMs);
+  for (const a of sorted) {
+    if (a.startMs > t) out.push({ kind: 'still', startMs: t, endMs: a.startMs });
+    out.push({ kind: 'anim', startMs: Math.max(a.startMs, t), endMs: a.endMs, animIndex: a.i });
+    t = a.endMs;
+  }
+  if (t < totalMs) out.push({ kind: 'still', startMs: t, endMs: totalMs });
+  return out.filter(p => p.endMs - p.startMs >= 40);
+}
+
+/** Recorta os planos fixos ao intervalo [a, b). */
+export function shotsWithin(shots: Shot[], a: number, b: number): Shot[] {
+  return shots.filter(s => s.endMs > a && s.startMs < b).map(s => ({ ...s, startMs: Math.max(s.startMs, a), endMs: Math.min(s.endMs, b) }));
+}
+
+export async function encodeComposite(ffmpeg: string, parts: Part[], frameFor: (s: Shot) => Promise<Buffer>, audio: Buffer, onProgress?: (i: number, n: number) => Promise<void>): Promise<Buffer> {
+  const enc = await videoEncoder(ffmpeg);
+  return withTemp(async dir => {
+    const files: string[] = [];
+    let frameNo = 0;
+    for (let p = 0; p < parts.length; p++) {
+      const part = parts[p];
+      const dur = ((part.endMs - part.startMs) / 1000).toFixed(3);
+      const out = join(dir, `part${String(p).padStart(4, '0')}.mp4`);
+      if (part.kind === 'still') {
+        const lines: string[] = []; let last = '';
+        for (const s of part.shots) {
+          const f = join(dir, `f${String(frameNo++).padStart(5, '0')}.jpg`);
+          await writeFile(f, await frameFor(s));
+          lines.push(`file '${f.replace(/\\/g, '/')}'`, `duration ${((s.endMs - s.startMs) / 1000).toFixed(3)}`);
+          last = f;
+        }
+        lines.push(`file '${last.replace(/\\/g, '/')}'`);
+        const list = join(dir, `list${p}.txt`);
+        await writeFile(list, lines.join('\n'));
+        const r = await run(ffmpeg, ['-y', '-v', 'error', '-f', 'concat', '-safe', '0', '-i', list, '-vf', 'fps=25,format=yuv420p', ...enc, '-t', dur, '-an', out], 900_000);
+        if (r.code !== 0) throw new Error('Falha a codificar parte fixa: ' + r.stderr.slice(-300));
+      } else {
+        const base = join(dir, `base${p}.jpg`), clip = join(dir, `clip${p}.mp4`), notice = join(dir, `notice${p}.png`);
+        await writeFile(base, part.base); await writeFile(clip, part.clip); await writeFile(notice, await animatedNotice(part.who));
+        const args = ['-y', '-v', 'error', '-loop', '1', '-t', dur, '-i', base, '-i', clip, '-loop', '1', '-t', dur, '-i', notice];
+        const subs = part.cues.filter(c => c.text && c.endMs > 0 && c.startMs < part.endMs - part.startMs);
+        for (let k = 0; k < subs.length; k++) {
+          const f = join(dir, `sub${p}_${k}.png`);
+          await writeFile(f, await subtitleOverlay(subs[k].text));
+          args.push('-loop', '1', '-t', dur, '-i', f);
+        }
+        // Clipe a 720 px de altura, centrado; se for mais curto do que a fala (pausas), mantém o último fotograma.
+        let g = `[1:v]scale=-2:${H},setsar=1,tpad=stop_mode=clone:stop_duration=${dur}[c];[0:v]scale=${W}:${H},setsar=1[bg];[bg][c]overlay=(W-w)/2:(H-h)/2:eof_action=repeat[v0];[v0][2:v]overlay=0:0[v1]`;
+        subs.forEach((s, k) => { g += `;[v${k + 1}][${3 + k}:v]overlay=0:0:enable='between(t,${(Math.max(0, s.startMs) / 1000).toFixed(3)},${(s.endMs / 1000).toFixed(3)})'[v${k + 2}]`; });
+        g += `;[v${subs.length + 1}]fps=25,format=yuv420p[out]`;
+        const r = await run(ffmpeg, [...args, '-filter_complex', g, '-map', '[out]', ...enc, '-t', dur, '-an', out], 900_000);
+        if (r.code !== 0) throw new Error('Falha a codificar parte animada: ' + r.stderr.slice(-300));
+      }
+      files.push(out);
+      if (onProgress) await onProgress(p + 1, parts.length);
+    }
+    const list = join(dir, 'parts.txt'), a = join(dir, 'audio.mp3'), out = join(dir, 'video.mp4');
+    await writeFile(list, files.map(f => `file '${f.replace(/\\/g, '/')}'`).join('\n'));
+    await writeFile(a, audio);
+    const r = await run(ffmpeg, ['-y', '-v', 'error', '-f', 'concat', '-safe', '0', '-i', list, '-i', a, '-map', '0:v', '-map', '1:a', '-c:v', 'copy', '-c:a', 'aac', '-b:a', '128k', '-shortest', '-movflags', '+faststart', out], 900_000);
+    if (r.code !== 0) throw new Error('Falha a juntar as partes do vídeo: ' + r.stderr.slice(-300));
+    return readFile(out);
+  });
+}
+
+/** Extrai um troço do áudio final (para animar exatamente o que se ouve). */
+export async function sliceAudio(ffmpeg: string, audio: Buffer, startMs: number, endMs: number): Promise<Buffer> {
+  return withTemp(async dir => {
+    const i = join(dir, 'in.mp3'), o = join(dir, 'out.mp3');
+    await writeFile(i, audio);
+    const r = await run(ffmpeg, ['-y', '-v', 'error', '-ss', (startMs / 1000).toFixed(3), '-t', ((endMs - startMs) / 1000).toFixed(3), '-i', i, '-ac', '1', '-b:a', '96k', o], 120_000);
+    if (r.code !== 0) throw new Error('Falha a recortar o áudio: ' + r.stderr.slice(-200));
+    return readFile(o);
+  });
+}
+
+/** Clipe "animado" simulado (imagem fixa) — usado em testes (AI_MOCK). */
+export async function stillClip(ffmpeg: string, image: Buffer, ms: number): Promise<Buffer> {
+  const enc = await videoEncoder(ffmpeg);
+  return withTemp(async dir => {
+    const i = join(dir, 'p.jpg'), o = join(dir, 'c.mp4');
+    await writeFile(i, image);
+    const r = await run(ffmpeg, ['-y', '-v', 'error', '-loop', '1', '-t', (ms / 1000).toFixed(3), '-i', i, '-vf', 'scale=512:512,fps=25,format=yuv420p', ...enc, o], 120_000);
+    if (r.code !== 0) throw new Error('Falha no clipe simulado: ' + r.stderr.slice(-200));
+    return readFile(o);
   });
 }

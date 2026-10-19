@@ -5,8 +5,8 @@ import { storage } from './storage.ts';
 import { sha256, slugify } from './lib.ts';
 import { saveAsset, assembleEpisode, probeAudio } from './media.ts';
 import { transcribeAudio, transcribeWords, prepareEnglishScript, translateSubtitleCues, synthesizeSpeech, coverBriefing, generateCoverBackground, episodeVoice, type ScriptSegment } from './ai/openai.ts';
-import { planShots, renderBases, subtitleFrame, encodeVideo } from './video.ts';
-import { lipsync, lipsyncMock } from './lipsync.ts';
+import { planShots, renderBases, subtitleFrame, encodeVideo, encodeComposite, splitParts, shotsWithin, sliceAudio, stillClip, type Part } from './video.ts';
+import { lipsync, lipsyncMock, estimateLipsyncUsd } from './lipsync.ts';
 import { readQuestion, generateFictionalPortrait } from './ai/openai.ts';
 import { cuesFromWords, fixOverlaps, checkCues, type Cue } from './subtitles.ts';
 import { composeCover } from './cover.ts';
@@ -239,15 +239,62 @@ export const handlers: Record<string, Handler> = {
     const lang: string | null = job.input.lang && ep.subtitles?.[job.input.lang] ? job.input.lang : null;
     const shots = planShots(timing, ep.duration_ms, lang ? ep.subtitles[lang] : null);
     const bases = await renderBases({ cover, title: ep.title, brand: config.brand, host: { name: iv.host_name || 'Host', photo: hostPhoto }, guest: { name: iv.guest_name || 'Guest', photo: guestPhoto } });
-    await progress(10, 100, 'A desenhar os fotogramas com legendas');
     const { default: ff } = await import('@ffmpeg-installer/ffmpeg');
-    const mp4 = await encodeVideo(process.env.FFMPEG_PATH || ff.path, shots, (sh) => subtitleFrame(bases[sh.scene], sh.text), audio,
-      async (i, n) => progress(10 + Math.round((i / n) * 60), 100, `A desenhar os fotogramas (${i} de ${n})`));
-    await progress(90, 100, 'A guardar o vídeo');
-    const id = await saveAsset(db, { interviewId: iv.id, kind: 'episode_video', mime: 'video/mp4', ext: 'mp4', data: mp4, durationMs: ep.duration_ms, meta: { lang, shots: shots.length, guestPhoto: !!guestPhoto, hostPhoto: !!hostPhoto } });
+    const ffmpeg = process.env.FFMPEG_PATH || ff.path;
+    const frameFor = (sh: any) => subtitleFrame((bases as any)[sh.scene], sh.text);
+
+    // Animação por fala: só com autorização específica de cada pessoa e fotografia autorizada.
+    const animHost = !!job.input.animate && iv.host_animate && !!hostPhoto;
+    const animGuest = !!job.input.animate && !!guestPhoto && (await consent('animate_portrait'));
+    const segs = timing.map((t: any, i: number) => ({ ...t, endMs: i + 1 < timing.length ? timing[i + 1].startMs : ep.duration_ms }))
+      .filter((t: any) => !['disclosure', 'editorial_intro', 'editorial_outro'].includes(t.kind) && ((t.role === 'host' && animHost) || (t.role === 'guest' && animGuest)) && t.durationMs >= 800);
+    let mp4: Buffer, animated = 0, failed = 0, gpuUsd = 0;
+    if (segs.length) {
+      const clips: (Buffer | null)[] = new Array(segs.length).fill(null);
+      let doneN = 0, next = 0;
+      await progress(5, 100, `A animar os retratos (0 de ${segs.length} falas)`);
+      // Até 3 animações em paralelo; uma falha cai para a imagem fixa (o vídeo nunca fica incompleto).
+      const worker = async () => {
+        while (next < segs.length) {
+          const k = next++, sg = segs[k];
+          try {
+            const photo = sg.role === 'host' ? hostPhoto! : guestPhoto!;
+            if (lipsyncMock()) clips[k] = await stillClip(ffmpeg, photo, sg.durationMs);
+            else {
+              const speech = await sliceAudio(ffmpeg, audio, sg.startMs, sg.startMs + sg.durationMs);
+              const r = await lipsync({ data: photo, mime: 'image/jpeg' }, { data: speech, mime: 'audio/mpeg' });
+              clips[k] = r.video; gpuUsd += r.estCostUsd ?? 0;
+            }
+          } catch (e: any) { failed++; console.error(`[video] animação da fala ${sg.id} falhou: ${String(e?.message ?? e).slice(0, 200)}`); }
+          doneN++;
+          await progress(5 + Math.round((doneN / segs.length) * 65), 100, `A animar os retratos (${doneN} de ${segs.length} falas)`);
+        }
+      };
+      await Promise.all([worker(), worker(), worker()]);
+      const ok = segs.map((sg: any, k: number) => ({ sg, clip: clips[k] })).filter((x: any) => x.clip);
+      animated = ok.length;
+      const layout = splitParts(ok.map((x: any) => ({ startMs: x.sg.startMs, endMs: x.sg.endMs })), ep.duration_ms);
+      const cues = lang ? ep.subtitles[lang] as any[] : [];
+      const parts: Part[] = layout.map(l => {
+        if (l.kind === 'still') return { kind: 'still', startMs: l.startMs, endMs: l.endMs, shots: shotsWithin(shots, l.startMs, l.endMs) };
+        const x = ok[l.animIndex!];
+        return { kind: 'anim', startMs: l.startMs, endMs: l.endMs, base: x.sg.role === 'host' ? bases.animHost : bases.animGuest, clip: x.clip, who: x.sg.role === 'host' ? { name: iv.host_name || 'Host', role: 'Host' } : { name: iv.guest_name || 'Guest', role: 'Guest' },
+          cues: cues.filter(c => c.endMs > l.startMs && c.startMs < l.endMs).map(c => ({ startMs: c.startMs - l.startMs, endMs: Math.min(c.endMs, l.endMs) - l.startMs, text: c.text })) };
+      });
+      await progress(72, 100, 'A montar o vídeo');
+      mp4 = await encodeComposite(ffmpeg, parts, frameFor, audio, async (i, n) => progress(72 + Math.round((i / n) * 18), 100, `A montar o vídeo (${i} de ${n} partes)`));
+      if (gpuUsd) await usage(db, iv.id, 'lipsync_usd', gpuUsd, gpuUsd);
+    } else {
+      await progress(10, 100, 'A desenhar os fotogramas com legendas');
+      mp4 = await encodeVideo(ffmpeg, shots, frameFor, audio,
+        async (i, n) => progress(10 + Math.round((i / n) * 60), 100, `A desenhar os fotogramas (${i} de ${n})`));
+    }
+    await progress(92, 100, 'A guardar o vídeo');
+    const id = await saveAsset(db, { interviewId: iv.id, kind: 'episode_video', mime: 'video/mp4', ext: 'mp4', data: mp4, durationMs: ep.duration_ms,
+      meta: { lang, shots: shots.length, guestPhoto: !!guestPhoto, hostPhoto: !!hostPhoto, animatedSegments: animated, failedAnimations: failed, guestAnimated: animGuest && animated > 0, hostAnimated: animHost && animated > 0, lipsyncUsd: gpuUsd } });
     await db.query('UPDATE episodes SET video_asset_id=$2, video_lang=$3 WHERE id=$1', [ep.id, id, lang]);
     await progress(100, 100, 'Concluído');
-    return { videoAssetId: id, shots: shots.length };
+    return { videoAssetId: id, shots: shots.length, animated, failed, lipsyncUsd: gpuUsd };
   },
 
   async lipsync_experiment(job, { db, progress }) {
@@ -284,6 +331,14 @@ export const handlers: Record<string, Handler> = {
       await db.query(`UPDATE interviews SET production_status='failed' WHERE id=$1`, [job.interview_id]);
   },
 };
+
+/** Fala que seria animada num episódio (segundos) e custo estimado da animação. */
+export function animationEstimate(ep: any, iv: any, guestConsent: boolean, hasHostPhoto: boolean, hasGuestPhoto: boolean) {
+  const timing = (ep.technical?.timing ?? []) as any[];
+  const sec = timing.filter(t => !['disclosure', 'editorial_intro', 'editorial_outro'].includes(t.kind)
+    && ((t.role === 'host' && iv.host_animate && hasHostPhoto) || (t.role === 'guest' && guestConsent && hasGuestPhoto))).reduce((a, t) => a + t.durationMs / 1000, 0);
+  return { sec, usd: estimateLipsyncUsd(sec), minutes: Math.ceil((sec * 8.6) / 3 / 60) + 2 };
+}
 
 /** Estimativa (não custo final): preços configuráveis; a utilização observada fica no usage_ledger. */
 export async function estimateCost(db: Db, interviewId: string, subtitleLangs: string[]) {

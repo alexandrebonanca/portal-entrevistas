@@ -4,7 +4,7 @@ import { esc, fmtDate, fmtDuration, sha256, rateLimit } from '../lib.ts';
 import { page, flash, pill, STATUS_LABEL } from '../views.ts';
 import { requireUser, ownedInterview, audit, sendAsset } from '../app.ts';
 import { enqueue } from '../jobs.ts';
-import { estimateCost, latestTranscript } from '../pipeline.ts';
+import { estimateCost, latestTranscript, animationEstimate } from '../pipeline.ts';
 import { aiAvailable, reviewScript, validateScript, episodeVoice } from '../ai/openai.ts';
 import { playerHtml } from './episode.ts';
 import { createInvitation } from '../invites.ts';
@@ -110,6 +110,9 @@ ${photos.length ? `<fieldset style="border:1px solid var(--line);border-radius:8
     // 4. Episódio
     if (ep) {
       const issues: string[] = ep.technical?.qcIssues ?? [];
+      const animOk = await consent(iv.id, 'animate_portrait') && await consent(iv.id, 'publish_photo');
+      const guestHasPhoto = !!(await db.one('SELECT 1 FROM photos WHERE interview_id=$1 LIMIT 1', [iv.id]));
+      const videoMeta = ep.video_asset_id ? (await db.one('SELECT meta FROM assets WHERE id=$1', [ep.video_asset_id]))?.meta : null;
       const hostAp = await db.one(`SELECT * FROM approvals WHERE episode_id=$1 AND actor='interviewer' AND valid AND decision='approved'`, [ep.id]);
       const guestAp = await db.one(`SELECT * FROM approvals WHERE episode_id=$1 AND actor='guest' AND valid ORDER BY created_at DESC LIMIT 1`, [ep.id]);
       const needGuest = iv.review_policy === 'guest_preview';
@@ -125,8 +128,11 @@ ${needGuest ? `<tr><td>Entrevistado</td><td>${guestAp ? pill(guestAp.decision ==
 <td><form method="post" action="/entrevistas/${iv.id}/episodio/${ep.id}/enviar-previa"><button class="ghost">Enviar pré-visualização</button></form></td></tr>` : ''}</tbody></table>
 <h3>Vídeo do podcast</h3>
 ${ep.video_asset_id ? `<video controls preload="metadata" poster="/media/${ep.cover_asset_id}" src="/media/${ep.video_asset_id}" style="width:100%;max-width:720px;border-radius:10px;background:#000"></video>
-<p class="sans"><a class="btn" href="/entrevistas/${iv.id}/episodio/${ep.id}/video.mp4" download>Descarregar vídeo (MP4)</a> <span class="hint">Legendas: ${esc(ep.video_lang ?? 'sem legendas')}</span></p>` : '<p class="hint">Ainda não foi gerado.</p>'}
-${!ep.stale ? `<form method="post" action="/entrevistas/${iv.id}/episodio/${ep.id}/video" class="row" onsubmit="return confirm('Gerar o vídeo?')"><label for="vl" style="margin:0">Legendas no vídeo</label><select id="vl" name="lang" style="width:auto">${Object.keys(ep.subtitles ?? {}).map(l => `<option value="${esc(l)}" ${l === (ep.video_lang ?? 'pt-PT') ? 'selected' : ''}>${esc(l)}</option>`).join('')}<option value="">Sem legendas</option></select><button class="ghost">${ep.video_asset_id ? 'Gerar de novo' : 'Gerar vídeo'}</button></form>
+<p class="sans"><a class="btn" href="/entrevistas/${iv.id}/episodio/${ep.id}/video.mp4" download>Descarregar vídeo (MP4)</a> <span class="hint">Legendas: ${esc(ep.video_lang ?? 'sem legendas')}${videoMeta?.animatedSegments ? ` · ${videoMeta.animatedSegments} falas animadas${videoMeta.failedAnimations ? `, ${videoMeta.failedAnimations} com imagem fixa por falha` : ''} · custo da animação ~$${Number(videoMeta.lipsyncUsd ?? 0).toFixed(2)}` : ''}</span></p>` : '<p class="hint">Ainda não foi gerado.</p>'}
+${!ep.stale ? `<form method="post" action="/entrevistas/${iv.id}/episodio/${ep.id}/video" class="row" onsubmit="return confirm('Gerar o vídeo?')">
+${(() => { const est = animationEstimate(ep, iv, animOk, !!(iv.host_photo_rights && iv.host_photo_asset_id), guestHasPhoto); return `<div style="flex-basis:100%"><label class="check"><input type="checkbox" name="animate" value="1" ${est.sec ? '' : 'disabled'}> Animar os retratos com sincronização labial (aviso visível «AI-animated portrait»)</label>
+<p class="hint" style="margin:0 0 8px 30px">Entrevistador: ${iv.host_animate && iv.host_photo_rights && iv.host_photo_asset_id ? 'autorizado' : 'sem autorização ou sem fotografia (em Editar)'} · Convidado: ${animOk && guestHasPhoto ? 'autorizado' : 'sem autorização específica (o convidado pode dá-la em «Autorizações das fotografias», a partir do link do convite ou da pré-visualização)'}.
+${est.sec ? `Fala a animar: ${Math.round(est.sec)} s · custo estimado ~$${est.usd.toFixed(2)} (Replicate) · demora ~${est.minutes} min.` : ''} Se alguma animação falhar, essa fala fica com a imagem fixa.</p></div>`; })()}<label for="vl" style="margin:0">Legendas no vídeo</label><select id="vl" name="lang" style="width:auto">${Object.keys(ep.subtitles ?? {}).map(l => `<option value="${esc(l)}" ${l === (ep.video_lang ?? 'pt-PT') ? 'selected' : ''}>${esc(l)}</option>`).join('')}<option value="">Sem legendas</option></select><button class="ghost">${ep.video_asset_id ? 'Gerar de novo' : 'Gerar vídeo'}</button></form>
 <p class="hint">Capa durante o aviso inicial e o agradecimento final; composição de estúdio com as duas fotografias autorizadas durante a apresentação; a partir da primeira pergunta, só quem fala, em grande plano. As legendas ficam gravadas na imagem, numa só língua. Só entram fotografias autorizadas (a do convidado exige autorização de publicação).</p>` : ''}
 ${!pubOk ? '<div class="flash bad">O entrevistado não autorizou a publicação.</div>' : ''}
 ${ep.status !== 'published' ? `<form method="post" action="/entrevistas/${iv.id}/episodio/${ep.id}/publicar" onsubmit="return confirm('Publicar agora?')"><label for="vis">Modalidade</label><select id="vis" name="visibility"><option value="private">Privado (só pessoas autorizadas)</option><option value="unlisted" ${iv.planned_visibility === 'unlisted' ? 'selected' : ''}>Não listado (quem tem o link; não equivale a privado)</option><option value="public" ${iv.planned_visibility === 'public' ? 'selected' : ''}>Público (indexável)</option></select>
@@ -327,7 +333,7 @@ ${ep.visibility === 'public' ? `<form method="post" action="/entrevistas/${iv.id
     if (c.ep.stale) return back(reply, c.iv.id, undefined, 'Versão desatualizada.');
     const lang = String((req.body as any)?.lang ?? '');
     const n = Number((await db.one(`SELECT count(*)::int AS n FROM jobs WHERE interview_id=$1 AND kind='render_video'`, [c.iv.id])).n);
-    await enqueue(db, { kind: 'render_video', interviewId: c.iv.id, input: { episodeId: c.ep.id, lang: lang && c.ep.subtitles?.[lang] ? lang : null }, dedupe: `video:${c.ep.id}:${n}` });
+    await enqueue(db, { kind: 'render_video', interviewId: c.iv.id, input: { episodeId: c.ep.id, lang: lang && c.ep.subtitles?.[lang] ? lang : null, animate: !!(req.body as any)?.animate }, dedupe: `video:${c.ep.id}:${n}` });
     await audit(db, req.user!.email, 'episode.video_requested', c.iv.id, { lang });
     return back(reply, c.iv.id, 'Geração do vídeo iniciada.');
   });

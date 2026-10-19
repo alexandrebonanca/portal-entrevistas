@@ -279,6 +279,44 @@ test('vozes escolhidas, agradecimento final, vídeo MP4 e galeria', async () => 
   assert.equal((await get(`/e/${ep.slug}/video`)).statusCode, 404);
 });
 
+test('animação por fala: só com autorização específica; aviso e reserva', async () => {
+  const ep = await db.one(`SELECT * FROM episodes WHERE interview_id=$1 AND NOT stale ORDER BY created_at DESC LIMIT 1`, [ivId]);
+  // sem autorizações: pedir animação gera vídeo sem falas animadas
+  await post(`/entrevistas/${ivId}/episodio/${ep.id}/video`, { lang: 'en', animate: '1' }, owner);
+  await drain();
+  let ep2 = await db.one('SELECT video_asset_id FROM episodes WHERE id=$1', [ep.id]);
+  let meta = (await db.one('SELECT meta FROM assets WHERE id=$1', [ep2.video_asset_id])).meta;
+  assert.equal(meta.animatedSegments, 0, 'sem autorização não anima ninguém');
+
+  // entrevistador autoriza (com fotografia e direitos); convidado autoriza publicação e animação
+  const jpg = await sharp({ create: { width: 400, height: 400, channels: 3, background: '#865' } }).jpeg().toBuffer();
+  await app.inject({ method: 'POST', url: `/api/entrevistas/${ivId}/foto`, payload: jpg, headers: { 'content-type': 'image/jpeg', cookie: owner } });
+  await db.query('UPDATE interviews SET host_photo_rights=true, host_animate=true WHERE id=$1', [ivId]);
+  const tk = (await post(`/entrevistas/${ivId}/episodio/${ep.id}/enviar-previa`, {}, owner), await flushOutbox(db), await db.one(`SELECT text_body FROM emails WHERE interview_id=$1 AND subject LIKE 'Please review%' ORDER BY created_at DESC LIMIT 1`, [ivId]));
+  const gtoken = /\/i\/([A-Za-z0-9_-]{40,})/.exec(tk.text_body)![1];
+  const g = `gs=${cookies(await post(`/i/${gtoken}/abrir`, {}, '')).gs}`;
+  const pg = await get('/entrevista/fotos', g);
+  assert.match(pg.body, /animated by AI/);
+  assert.doesNotMatch(pg.body, /id="cam"/, 'depois de submeter não há captação nova');
+  await post('/entrevista/fotos/autorizacoes', { photo_capture: '1', cover_use: '1', publish_photo: '1', animate_portrait: '1' }, g);
+  const c = await db.one(`SELECT granted, text_snapshot FROM consents WHERE interview_id=$1 AND purpose='animate_portrait' ORDER BY created_at DESC LIMIT 1`, [ivId]);
+  assert.equal(c.granted, true); assert.match(c.text_snapshot, /AI-animated portrait/);
+
+  await post(`/entrevistas/${ivId}/episodio/${ep.id}/video`, { lang: 'en', animate: '1' }, owner);
+  await drain();
+  const job = await db.one(`SELECT state, error, result FROM jobs WHERE kind='render_video' ORDER BY created_at DESC LIMIT 1`);
+  assert.equal(job.state, 'done', job.error ?? '');
+  ep2 = await db.one('SELECT video_asset_id FROM episodes WHERE id=$1', [ep.id]);
+  meta = (await db.one('SELECT meta FROM assets WHERE id=$1', [ep2.video_asset_id])).meta;
+  assert.ok(meta.animatedSegments > 0, 'falas animadas'); assert.equal(meta.guestAnimated, true); assert.equal(meta.hostAnimated, true);
+  const v = await get(`/entrevistas/${ivId}/episodio/${ep.id}/video.mp4`, owner);
+  assert.equal(v.rawPayload.subarray(4, 8).toString('latin1'), 'ftyp');
+
+  // retirar a autorização de animação tira o vídeo do ar (o ficheiro fica privado)
+  await post('/entrevista/fotos/autorizacoes', { photo_capture: '1', cover_use: '1', publish_photo: '1' }, g);
+  assert.equal((await db.one('SELECT video_asset_id FROM episodes WHERE id=$1', [ep.id])).video_asset_id, null);
+});
+
 test('alterar uma transcrição invalida guião e aprovações sem apagar versões', async () => {
   const take = await db.one(`SELECT t.id FROM answer_takes t LIMIT 1`);
   await post(`/entrevistas/${ivId}/transcricoes/${take.id}`, { text: 'Texto corrigido pelo editor' }, owner);

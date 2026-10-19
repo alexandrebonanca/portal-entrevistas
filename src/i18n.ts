@@ -24,7 +24,7 @@ const D = {
     silent: 'A gravação parece silenciosa. Pode repetir ou continuar mesmo assim.', tooLong: 'A gravação excede o limite.', otherAudio: 'Pare qualquer outro áudio (música, vídeo) antes de gravar.',
     refused: 'Registou que não pretende responder a esta pergunta.', answered: 'Resposta guardada',
     photos: 'Fotografias (opcional)', photosIntro: 'Pode tirar até três selfies à sua escolha para acompanhar a entrevista. Só usamos as que escolher, e só nas finalidades que autorizar.',
-    c_photo: 'Autorizo a captação e o armazenamento das fotografias que eu escolher.', c_cover: 'Autorizo a utilização de uma ou mais fotografias na capa do episódio.', c_pubphoto: 'Autorizo a publicação dessas fotografias no episódio.',
+    c_photo: 'Autorizo a captação e o armazenamento das fotografias que eu escolher.', c_cover: 'Autorizo a utilização de uma ou mais fotografias na capa do episódio.', c_pubphoto: 'Autorizo a publicação dessas fotografias no episódio.', c_animate: 'Autorizo que uma dessas fotografias seja animada por IA no vídeo do episódio (movimento da boca sincronizado com a voz sintética em inglês), sempre com o aviso visível «Retrato animado por IA».', photoAuth: 'Autorizações das fotografias',
     openCamera: 'Abrir câmara', take: 'Tirar fotografia', keep: 'Guardar esta', discard: 'Descartar', skipPhotos: 'Terminar sem fotografias', photoUpload: 'Carregar fotografia', photosDone: 'Concluir fotografias',
     camDenied: 'A câmara não está disponível. Pode carregar uma fotografia.', max3: 'Máximo de três fotografias.',
     review: 'Rever e submeter', yourAnswers: 'As suas respostas', noPhotos: 'Sem fotografias', pendingUploads: 'Ainda há respostas por enviar ou por responder.',
@@ -58,7 +58,7 @@ const D = {
     silent: 'The recording seems silent. You can redo it or continue anyway.', tooLong: 'The recording exceeds the limit.', otherAudio: 'Stop any other audio (music, video) before recording.',
     refused: 'You chose not to answer this question.', answered: 'Answer saved',
     photos: 'Photos (optional)', photosIntro: 'You may take up to three selfies of your choice to go with the interview. We only use the ones you choose, and only for the purposes you allow.',
-    c_photo: 'I allow the capture and storage of the photos I choose.', c_cover: 'I allow one or more photos to be used on the episode cover.', c_pubphoto: 'I allow those photos to be published with the episode.',
+    c_photo: 'I allow the capture and storage of the photos I choose.', c_cover: 'I allow one or more photos to be used on the episode cover.', c_pubphoto: 'I allow those photos to be published with the episode.', c_animate: 'I allow one of those photos to be animated by AI in the episode video (mouth movement synchronised with the synthetic English voice), always with the visible notice “AI-animated portrait”.', photoAuth: 'Photo permissions',
     openCamera: 'Open camera', take: 'Take photo', keep: 'Keep this one', discard: 'Discard', skipPhotos: 'Finish without photos', photoUpload: 'Upload a photo', photosDone: 'Finish photos',
     camDenied: 'The camera is not available. You can upload a photo instead.', max3: 'Maximum of three photos.',
     review: 'Review and submit', yourAnswers: 'Your answers', noPhotos: 'No photos', pendingUploads: 'Some answers are still missing or not uploaded.',
@@ -75,9 +75,9 @@ const D = {
 export const t = (lang: Lang) => D[lang];
 
 export const CONSENT_VERSION = 'v1-2026-10';
-export const CONSENT_PURPOSES = ['participation', 'processing', 'photo_capture', 'cover_use', 'publish_photo', 'publish'] as const;
+export const CONSENT_PURPOSES = ['participation', 'processing', 'photo_capture', 'cover_use', 'publish_photo', 'animate_portrait', 'publish'] as const;
 export type ConsentPurpose = typeof CONSENT_PURPOSES[number];
 export function consentText(lang: Lang, purpose: ConsentPurpose): string {
   const d = D[lang];
-  return ({ participation: d.c_participation, processing: d.c_processing, photo_capture: d.c_photo, cover_use: d.c_cover, publish_photo: d.c_pubphoto, publish: d.c_publish } as const)[purpose];
+  return ({ participation: d.c_participation, processing: d.c_processing, photo_capture: d.c_photo, cover_use: d.c_cover, publish_photo: d.c_pubphoto, animate_portrait: d.c_animate, publish: d.c_publish } as const)[purpose];
 }
