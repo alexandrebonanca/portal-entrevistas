@@ -48,7 +48,7 @@ export interface PageOpts { title: string; body: string; lang?: string; nav?: st
 export function page(o: PageOpts) {
   return `<!doctype html><html lang="${o.lang ?? 'pt-PT'}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${esc(o.title)} · ${esc(config.brand)}</title>${o.desc ? `<meta name="description" content="${esc(o.desc)}">` : ''}
-${o.noindex ? '<meta name="robots" content="noindex,nofollow"><meta name="referrer" content="no-referrer">' : ''}
+${o.noindex ? '<meta name="robots" content="noindex,nofollow"><meta name="referrer" content="same-origin">' : ''}
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23b4691f'/%3E%3Crect x='13' y='6' width='6' height='14' rx='3' fill='white'/%3E%3Cpath d='M9 15a7 7 0 0 0 14 0M16 22v4' stroke='white' stroke-width='2' fill='none'/%3E%3C/svg%3E">
 <style>${CSS}</style></head><body><a class="skip" href="#main">Skip to content</a>
 <header class="top"><div class="wrap"><a class="brand" href="/">${esc(config.brand)}</a><nav>${o.nav ?? ''}</nav></div></header>

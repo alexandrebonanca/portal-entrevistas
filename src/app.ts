@@ -45,7 +45,9 @@ export async function buildApp(db: Db): Promise<FastifyInstance> {
     const site = req.headers['sec-fetch-site'];
     const origin = req.headers.origin;
     if (site && !['same-origin', 'none'].includes(String(site))) return reply.code(403).send('Pedido entre origens recusado');
-    if (origin) {
+    // Origin "null" (ex.: política de referrer restritiva) só é aceite se o próprio browser declarar mesma origem.
+    if (origin === 'null') { if (String(site) !== 'same-origin') return reply.code(403).send('Origem inválida'); }
+    else if (origin) {
       // Atrás de proxy (Render) o Host pode variar: aceita o Host, o X-Forwarded-Host e o host de BASE_URL.
       const allowed = new Set<string>();
       for (const h of [req.headers.host, req.headers['x-forwarded-host'], new URL(config.baseUrl).host]) {

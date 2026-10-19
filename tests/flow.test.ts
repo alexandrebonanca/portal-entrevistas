@@ -250,3 +250,10 @@ test('CSRF: pedidos de outra origem são recusados', async () => {
   const r = await app.inject({ method: 'POST', url: '/sair', headers: { origin: 'https://evil.example', host: 'test.local', cookie: owner } });
   assert.equal(r.statusCode, 403);
 });
+
+test('CSRF: Origin null só passa com Sec-Fetch-Site same-origin; mesma origem e BASE_URL passam', async () => {
+  const f = (h: any) => app.inject({ method: 'POST', url: '/sair', headers: { host: 'internal:10000', cookie: owner, ...h } });
+  assert.equal((await f({ origin: 'null' })).statusCode, 403);
+  assert.equal((await f({ origin: 'null', 'sec-fetch-site': 'same-origin' })).statusCode, 302);
+  assert.equal((await f({ origin: 'http://test.local' })).statusCode, 302, 'host de BASE_URL aceite atrás de proxy');
+});
