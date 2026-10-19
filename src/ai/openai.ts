@@ -134,6 +134,21 @@ export async function synthesizeSpeech(text: string, role: 'host' | 'guest'): Pr
   return { data: Buffer.from(await r.arrayBuffer()), ext: 'mp3', mime: 'audio/mpeg' };
 }
 
+export const READING_VOICES = { female: process.env.OPENAI_VOICE_READING_FEMALE ?? 'nova', male: process.env.OPENAI_VOICE_READING_MALE ?? 'ash' } as const;
+
+/** Leitura da pergunta escrita com voz natural (ainda assim gerada por IA e identificada como tal na página). */
+export async function readQuestion(text: string, gender: 'female' | 'male', lang: string): Promise<{ data: Buffer; ext: string; mime: string; voice: string }> {
+  const voice = READING_VOICES[gender] ?? READING_VOICES.female;
+  if (config.openai.mock) return { data: makeToneWav(Math.max(1, Math.min(6, text.length / 18)), gender === 'male' ? 180 : 300), ext: 'wav', mime: 'audio/wav', voice };
+  const c = await openai();
+  const accent = lang === 'en' ? 'Speak natural, neutral English.' : 'Fale em português europeu (de Portugal), com pronúncia de Lisboa, nunca com sotaque brasileiro.';
+  const r = await c.audio.speech.create({
+    model: config.openai.models.speech, voice, input: text, response_format: 'mp3',
+    instructions: `${accent} Read this interview question the way a friendly, attentive interviewer would ask it in person: natural pace, warm tone, natural pauses at commas, a slight rising intonation at the end of a question. Do not sound like an announcer or a robot; no exaggerated emotion.`,
+  });
+  return { data: Buffer.from(await r.arrayBuffer()), ext: 'mp3', mime: 'audio/mpeg', voice };
+}
+
 export async function coverBriefing(title: string, objective: string) {
   if (config.openai.mock) return { backgroundPromptEnglish: 'abstract warm gradient with soft shapes', palette: ['#1c1a17', '#c8803c'], layoutHints: 'title lower third', negativeConstraints: ['no text'] };
   return chatJson(COVER_SYSTEM, `<interview_data>\n${JSON.stringify({ title, objective })}\n</interview_data>`);

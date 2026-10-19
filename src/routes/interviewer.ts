@@ -73,6 +73,8 @@ ${objT && !iv.objective_text ? `<p class="hint">Transcrição do objetivo gravad
 <div class="grow"><label for="al">Idioma esperado das respostas</label><select id="al" name="answer_lang"><option value="auto">Detetar automaticamente</option>${sel(iv.answer_lang, [['pt', 'Português'], ['en', 'English'], ['es', 'Español'], ['fr', 'Français'], ['de', 'Deutsch']])}</select></div></div>
 <div class="row"><div class="grow"><label for="dl">Prazo (opcional)</label><input id="dl" name="deadline" type="date" value="${iv.deadline ? new Date(iv.deadline).toISOString().slice(0, 10) : ''}"></div>
 <div class="grow"><label for="pv">Visibilidade prevista do episódio</label><select id="pv" name="planned_visibility">${sel(iv.planned_visibility, [['private', 'Privado'], ['unlisted', 'Não listado (quem tem o link)'], ['public', 'Público']])}</select></div></div>
+<label for="qv">Voz de leitura das perguntas escritas</label><select id="qv" name="question_voice"><option value="female" ${iv.question_voice !== 'male' ? 'selected' : ''}>Feminina</option><option value="male" ${iv.question_voice === 'male' ? 'selected' : ''}>Masculina</option></select>
+<p class="hint">O convidado ouve as perguntas escritas lidas com uma voz natural gerada por IA (identificada como tal). Para usar a sua própria voz, grave a pergunta em áudio.</p>
 <label for="pm">Mensagem pessoal no convite</label><textarea id="pm" name="personal_message">${esc(iv.personal_message)}</textarea>
 <fieldset style="border:1px solid var(--line);border-radius:8px;margin-top:14px"><legend class="sans">Legendas previstas</legend>${SUBS.map(([v, l]) => `<label class="check"><input type="checkbox" name="subtitle_langs" value="${v}" ${(iv.subtitle_langs ?? []).includes(v) ? 'checked' : ''}> ${l}</label>`).join('')}</fieldset>
 <label for="rp">Política de revisão e publicação (comunicada no convite)</label><select id="rp" name="review_policy">${sel(iv.review_policy, [['guest_preview', 'O entrevistado vê e aprova a versão final antes de publicar'], ['host_only', 'Só o entrevistador aprova (não recomendado)']])}</select>
@@ -112,12 +114,12 @@ ${locked ? `<form method="post" action="/entrevistas/${iv.id}/adicional"><label 
     if (email && !isEmail(email)) return reply.redirect(`/entrevistas/${iv.id}/editar?e=` + encodeURIComponent('Email do entrevistado inválido.'));
     await db.query(
       `UPDATE interviews SET title=$2, objective_text=$3, objective_shared=$4, host_name=$5, guest_name=$6, guest_email=$7, interaction_lang=$8, answer_lang=$9,
-        deadline=$10, planned_visibility=$11, personal_message=$12, subtitle_langs=$13, review_policy=$14, host_photo_rights=$15 WHERE id=$1`,
+        deadline=$10, planned_visibility=$11, personal_message=$12, subtitle_langs=$13, review_policy=$14, host_photo_rights=$15, question_voice=$16 WHERE id=$1`,
       [iv.id, locked ? iv.title : String(b.title ?? '').trim().slice(0, 140) || iv.title, locked ? iv.objective_text : String(b.objective_text ?? '').slice(0, 4000), !!b.objective_shared,
         String(b.host_name ?? '').slice(0, 100), String(b.guest_name ?? '').slice(0, 100), locked ? iv.guest_email : email, b.interaction_lang === 'en' ? 'en' : 'pt-PT',
         ['auto', 'pt', 'en', 'es', 'fr', 'de'].includes(b.answer_lang) ? b.answer_lang : 'auto', b.deadline || null,
         ['private', 'unlisted', 'public'].includes(b.planned_visibility) ? b.planned_visibility : 'private', String(b.personal_message ?? '').slice(0, 1500),
-        subs.length ? subs : ['en'], b.review_policy === 'host_only' ? 'host_only' : 'guest_preview', !!b.host_photo_rights]);
+        subs.length ? subs : ['en'], b.review_policy === 'host_only' ? 'host_only' : 'guest_preview', !!b.host_photo_rights, b.question_voice === 'male' ? 'male' : 'female']);
     return reply.redirect(`/entrevistas/${iv.id}/editar?ok=` + encodeURIComponent('Guardado.'));
   });
 

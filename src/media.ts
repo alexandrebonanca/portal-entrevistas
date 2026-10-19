@@ -87,11 +87,12 @@ export async function probeAudio(data: Buffer, ext: string): Promise<{ ok: boole
     const pr = await run(ffprobe, ['-v', 'error', '-show_entries', 'format=duration', '-of', 'default=nw=1:nk=1', f], 30_000);
     let dur = parseFloat(pr.stdout);
     if (!Number.isFinite(dur) || pr.code !== 0) {
-      // MediaRecorder produz por vezes WebM sem duração no cabeçalho: decodificar para medir.
-      const dec = await run(ffmpeg, ['-v', 'error', '-i', f, '-f', 'null', '-'], 60_000);
-      const m = /time=(\d+):(\d+):(\d+\.\d+)/.exec(dec.stderr);
-      if (dec.code !== 0 || !m) return { ok: false, durationMs: 0, silent: true };
-      dur = +m[1] * 3600 + +m[2] * 60 + parseFloat(m[3]);
+      // O MediaRecorder (Chrome/Android) grava WebM em fluxo, sem duração no cabeçalho: descodificar para medir.
+      // -progress escreve out_time_us no stdout independentemente do nível de log (com -v error a linha "time=" não aparece).
+      const dec = await run(ffmpeg, ['-v', 'error', '-nostdin', '-i', f, '-f', 'null', '-progress', 'pipe:1', '-'], 60_000);
+      const times = [...dec.stdout.matchAll(/out_time_(?:us|ms)=(\d+)/g)].map(x => Number(x[1]));
+      if (dec.code !== 0 || !times.length) return { ok: false, durationMs: 0, silent: true };
+      dur = Math.max(...times) / 1_000_000; // out_time_ms também vem em microssegundos (particularidade do FFmpeg)
     }
     const vol = await run(ffmpeg, ['-v', 'info', '-i', f, '-af', 'volumedetect', '-f', 'null', '-'], 60_000);
     const mm = /max_volume:\s*(-?[\d.]+) dB/.exec(vol.stderr);

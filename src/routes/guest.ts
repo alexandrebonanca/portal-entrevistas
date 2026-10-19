@@ -7,7 +7,7 @@ import { t, normLang, consentText, CONSENT_VERSION, type Lang, type ConsentPurpo
 import { sniff, stripJpegMetadata, saveAsset, probeAudio } from '../media.ts';
 import { queueEmail, emailShell } from '../mail.ts';
 import { createInvitation } from '../invites.ts';
-import { aiAvailable, synthesizeSpeech } from '../ai/openai.ts';
+import { aiAvailable, readQuestion, READING_VOICES } from '../ai/openai.ts';
 import { storage } from '../storage.ts';
 import { inEntity, entityOfInterview } from '../settings.ts';
 
@@ -153,7 +153,7 @@ ${iv.objective_shared && iv.objective_text ? `<p>${esc(iv.objective_text)}</p>` 
     return gpage(reply, lang, `${d.question} ${n}`, `<p class="qnum">${esc(d.question)} ${n} ${esc(d.of)} ${total}${q.followup ? ' · +' : ''}</p>
 <h1 style="font-size:1.6rem">${esc(q.text) || ''}</h1>
 ${q.audio_asset_id ? `<p><audio controls preload="none" src="/api/g/media/${q.audio_asset_id}"></audio></p>` : ''}
-<p><button type="button" class="ghost" id="listen" data-q="${q.id}" data-text="${esc(q.text)}" data-lang="${lang}">🔊 ${esc(q.audio_asset_id ? d.listen : d.listenSynth)}</button></p>
+<p><button type="button" class="ghost" id="listen" data-q="${q.id}" data-text="${esc(q.text)}" data-lang="${lang}">🔊 ${esc(d.listen)}</button>${q.audio_asset_id ? '' : `<br><span class="hint">${esc(d.listenSynth)}</span>`}</p>
 <div class="card"><div class="rec" id="guestrec" data-upload="/api/g/respostas/${q.id}" data-msg='${esc(msg)}'>
 <div class="timer" id="timer" aria-live="off">0:00</div><button type="button" id="recBtn" class="recbtn" aria-label="${esc(d.record)}">${esc(d.record)}</button>
 <div id="review" ${ans?.asset_id ? '' : 'hidden'} style="width:100%"><audio controls id="player" preload="none" style="width:100%" ${ans?.asset_id ? `src="/api/g/media/${ans.asset_id}"` : ''}></audio></div>
@@ -181,8 +181,8 @@ ${q.audio_asset_id ? `<p><audio controls preload="none" src="/api/g/media/${q.au
     const data = req.body as Buffer;
     const kind = Buffer.isBuffer(data) ? sniff(data) : null;
     if (!kind || kind.kind !== 'audio') return reply.code(415).send({ error: 'format' });
-    const p = await probeAudio(data, kind.ext).catch(() => ({ ok: false, durationMs: 0, silent: true }));
-    if (!p.ok || p.durationMs < 400) return reply.code(422).send({ error: 'empty' });
+    const p = await probeAudio(data, kind.ext).catch((e: any) => { req.log.error({ err: String(e?.message ?? e) }, 'probe de áudio falhou'); return { ok: false, durationMs: 0, silent: true }; });
+    if (!p.ok || p.durationMs < 400) { req.log.warn({ bytes: data.length, mime: kind.mime, ok: p.ok, durationMs: p.durationMs }, 'resposta recusada: áudio vazio ou ilegível'); return reply.code(422).send({ error: 'empty' }); }
     if (p.durationMs > config.limits.maxAnswerSeconds * 1000 + 2000) return reply.code(422).send({ error: 'tooLong' });
     const assetId = await saveAsset(db, { interviewId: iv.id, kind: 'answer_audio', mime: kind.mime, ext: kind.ext, data, durationMs: p.durationMs, meta: { uploadId: upId || null, via: String(req.headers['x-upload-via'] ?? 'recording') } });
     const take = await db.tx(async tx => {
@@ -227,12 +227,15 @@ ${q.audio_asset_id ? `<p><audio controls preload="none" src="/api/g/media/${q.au
     const q = await db.one('SELECT * FROM questions WHERE id=$2 AND interview_id=$1', [iv.id, (req.params as any).qid]);
     const ent = await entityOfInterview(db, iv.id);
     if (!q || !q.text || !inEntity(ent, () => aiAvailable())) return reply.code(404).send();
-    if (!rateLimit(`tts:${iv.id}`, 20, 3600_000)) return reply.code(429).send();
+    const gender = iv.question_voice === 'male' ? 'male' : 'female';
     let asset = q.tts_asset_id && await db.one('SELECT * FROM assets WHERE id=$1', [q.tts_asset_id]);
+    // A leitura guardada só serve se foi feita com a voz atual e para o texto atual.
+    if (asset && (asset.meta?.voice !== READING_VOICES[gender] || asset.meta?.text !== q.text)) asset = null;
     if (!asset) {
-      const s = await inEntity(ent, () => synthesizeSpeech(q.text, 'host')).catch(() => null);
+      if (!rateLimit(`tts:${iv.id}`, 30, 3600_000)) return reply.code(429).send();
+      const s = await inEntity(ent, () => readQuestion(q.text, gender, iv.interaction_lang)).catch((e: any) => { req.log.error({ err: String(e?.message ?? e) }, 'leitura da pergunta falhou'); return null; });
       if (!s) return reply.code(404).send();
-      const id = await saveAsset(db, { interviewId: iv.id, kind: 'question_tts', mime: s.mime, ext: s.ext, data: s.data });
+      const id = await saveAsset(db, { interviewId: iv.id, kind: 'question_tts', mime: s.mime, ext: s.ext, data: s.data, meta: { voice: s.voice, text: q.text } });
       await db.query('UPDATE questions SET tts_asset_id=$2 WHERE id=$1', [q.id, id]);
       asset = await db.one('SELECT * FROM assets WHERE id=$1', [id]);
     }

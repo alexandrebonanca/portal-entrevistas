@@ -32,6 +32,17 @@ test('título da capa quebra em linhas e limita', () => {
   const l = wrapTitle('A very long interview title about fibre optics in the Iberian market and beyond', 18, 4);
   assert.ok(l.length <= 4 && l.every(x => x.length <= 18));
 });
+test('WebM em fluxo (como o MediaRecorder do Chrome/Android, sem duração no cabeçalho) é aceite e medido', async () => {
+  const { spawnSync } = await import('node:child_process');
+  const ffmpeg = (await import('@ffmpeg-installer/ffmpeg')).default.path;
+  const r = spawnSync(ffmpeg, ['-v', 'error', '-f', 'lavfi', '-i', 'sine=frequency=300:duration=3', '-c:a', 'libopus', '-f', 'webm', '-live', '1', 'pipe:1'], { maxBuffer: 1e8 });
+  assert.equal(r.status, 0);
+  const { probeAudio } = await import('../src/media.ts');
+  const p = await probeAudio(r.stdout, 'webm');
+  assert.equal(p.ok, true);
+  assert.ok(p.durationMs > 2800 && p.durationMs < 3300, String(p.durationMs));
+  assert.equal(p.silent, false);
+});
 test('sniff identifica pelo conteúdo', () => {
   assert.equal(sniff(Buffer.concat([Buffer.from([0x1a, 0x45, 0xdf, 0xa3]), Buffer.alloc(20)]))?.mime, 'audio/webm');
   assert.equal(sniff(Buffer.concat([Buffer.alloc(4), Buffer.from('ftypM4A '), Buffer.alloc(8)]))?.mime, 'audio/mp4');
