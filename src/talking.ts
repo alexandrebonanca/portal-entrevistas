@@ -118,6 +118,12 @@ export const VEO_PRICE_PER_SEC = 0.10; // Veo 3.1 Fast, 720p, com áudio
 export class VeoQuotaError extends PermanentError {}
 /** Envio não feito porque a autorização foi retirada ou o trabalho parou (nada saiu para a Google). */
 export class VeoCancelled extends PermanentError {}
+/** Falha passageira da Google numa operação (procura elevada, serviço indisponível): repete-se mais tarde e não conta para o limite. */
+export class VeoBusy extends Error {}
+/** Clipe bloqueado pelos filtros de segurança da Google (não há vídeo; normalmente não é cobrado). */
+export class VeoFiltered extends PermanentError {}
+const BUSY_TEXT = /high demand|try again later|temporar|unavailable|overload|internal error|backend error|deadline exceeded/i;
+const BUSY_CODES = new Set([4, 8, 13, 14]); // DEADLINE_EXCEEDED, RESOURCE_EXHAUSTED, INTERNAL, UNAVAILABLE
 
 const quiet = async (f?: (s: string) => Promise<void>, s = '') => { try { await f?.(s); } catch { /* o progresso nunca interrompe uma operação já paga */ } };
 
@@ -149,27 +155,35 @@ export async function veoSubmit(o: { image: Buffer; prompt: string; aspectRatio?
         await sleep(o.waitMs ? o.waitMs(attempt) : 30_000 * (attempt + 1));
         continue;
       }
+      // Pedido não aceite por indisponibilidade da Google (5xx, «high demand»): passageiro, não conta para o limite.
+      if (/^Veo 5\d\d/.test(m) || BUSY_TEXT.test(m)) throw new VeoBusy(m);
       throw e;
     }
   }
 }
 
 /** Espera pela operação e descarrega o vídeo. Erros passageiros (rede, 5xx, 429) repetem a consulta, nunca a submissão. */
-export async function veoAwait(opName: string, dur: number, onStatus?: (s: string) => Promise<void>, deadlineMs = 20 * 60_000) {
+export async function veoAwait(opName: string, dur: number, onStatus?: (s: string) => Promise<void>, deadlineMs = 20 * 60_000, pollMs = 10_000) {
   const key = S('GEMINI_API_KEY');
   const headers = { 'x-goog-api-key': key };
   const t0 = Date.now();
   let fails = 0;
   for (;;) {
     if (Date.now() - t0 > deadlineMs) throw new Error('Veo: tempo excedido (a operação fica pendente e é retomada na próxima tentativa)');
-    await sleep(10_000);
+    await sleep(pollMs);
     let st: any;
     try { st = await jsonFetch(`https://generativelanguage.googleapis.com/v1beta/${opName}`, { headers }, 'Veo'); fails = 0; }
     catch (e) { if (e instanceof PermanentError || ++fails > 8) throw e; continue; }
-    if (st.error) throw new PermanentError(`Veo: ${String(st.error.message ?? JSON.stringify(st.error)).slice(0, 300)}`);
+    if (st.error) {
+      const msg = String(st.error.message ?? JSON.stringify(st.error)).slice(0, 300);
+      if (BUSY_TEXT.test(msg) || BUSY_CODES.has(Number(st.error.code))) throw new VeoBusy(`Veo: ${msg}`);
+      throw new PermanentError(`Veo: ${msg}`);
+    }
     if (st.done) {
-      const uri = st.response?.generateVideoResponse?.generatedSamples?.[0]?.video?.uri;
-      if (!uri) throw new PermanentError(`Veo não devolveu vídeo (pode ter sido bloqueado pelos filtros): ${JSON.stringify(st.response ?? {}).slice(0, 200)}`);
+      const gen = st.response?.generateVideoResponse;
+      const uri = gen?.generatedSamples?.[0]?.video?.uri;
+      if (!uri && (gen?.raiMediaFilteredCount || gen?.raiMediaFilteredReasons?.length)) throw new VeoFiltered(`Veo: clipe bloqueado pelos filtros da Google: ${String(gen.raiMediaFilteredReasons?.[0] ?? '').slice(0, 200)}`);
+      if (!uri) throw new PermanentError(`Veo não devolveu vídeo: ${JSON.stringify(st.response ?? {}).slice(0, 200)}`);
       for (let k = 0; ; k++) {
         try { return { video: await download(uri, { 'x-goog-api-key': key }), billedSec: dur }; }
         catch (e) { if (k >= 3) throw e; await sleep(5000 * (k + 1)); }

@@ -162,6 +162,25 @@ test('vídeo: pedaços de 1–2 fotogramas no início e no fim de uma parte anim
   assert.ok(Math.abs(vdur - total / 1000) < 0.045, `duração da imagem ${vdur}`);
 });
 
+test('Veo: falhas da Google classificadas (procura elevada é passageira; filtros contam)', async () => {
+  const { veoAwait, veoSubmit, VeoBusy, VeoFiltered } = await import('../src/talking.ts');
+  const { PermanentError } = await import('../src/jobs.ts');
+  const real = globalThis.fetch;
+  const reply = (body: any, status = 200) => (async () => new Response(JSON.stringify(body), { status })) as any;
+  try {
+    globalThis.fetch = reply({ name: 'op', done: true, error: { code: 8, message: 'This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.' } });
+    await assert.rejects(veoAwait('op', 4, undefined, 60_000, 1), (e: any) => e instanceof VeoBusy && !(e instanceof PermanentError));
+    globalThis.fetch = reply({ name: 'op', done: true, error: { code: 14, message: 'Service unavailable' } });
+    await assert.rejects(veoAwait('op', 4, undefined, 60_000, 1), (e: any) => e instanceof VeoBusy);
+    globalThis.fetch = reply({ name: 'op', done: true, response: { generateVideoResponse: { raiMediaFilteredCount: 1, raiMediaFilteredReasons: ['We encountered an issue with the audio for your prompt'] } } });
+    await assert.rejects(veoAwait('op', 4, undefined, 60_000, 1), (e: any) => e instanceof VeoFiltered && e instanceof PermanentError);
+    globalThis.fetch = reply({ name: 'op', done: true, error: { code: 3, message: 'Invalid argument' } });
+    await assert.rejects(veoAwait('op', 4, undefined, 60_000, 1), (e: any) => e instanceof PermanentError && !(e instanceof VeoFiltered));
+    globalThis.fetch = reply({ error: { message: 'backend unavailable' } }, 503);
+    await assert.rejects(veoSubmit({ image: Buffer.from('x'), prompt: 'p', durationSeconds: 4 }), (e: any) => e instanceof VeoBusy, 'pedido recusado por indisponibilidade: passageiro');
+  } finally { globalThis.fetch = real; }
+});
+
 test('Veo: depois de um 429, nada volta a ser enviado sem confirmar a autorização', async () => {
   const { veoSubmit, VeoCancelled } = await import('../src/talking.ts');
   const real = globalThis.fetch;

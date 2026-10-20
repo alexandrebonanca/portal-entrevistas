@@ -122,7 +122,8 @@ ${playerHtml(ep, { audio: `/api/g/media/${ep.audio_asset_id}`, cover: `/api/g/me
 ${dec ? `<div class="flash">${esc(dec.decision === 'approved' ? d.approve : d.requestChanges)} — ${esc(fmtDate(dec.created_at))}${dec.decision === 'approved' && String(dec.video_asset_id ?? '') !== String(ep.video_asset_id ?? '') ? ` (${esc(d.versionChanged)})` : ''}</div>` : ''}
 <form method="post" action="/entrevista/episodio/decisao" class="card"><input type="hidden" name="video" value="${esc(ep.video_asset_id ?? '')}"><input type="hidden" name="episode" value="${esc(ep.id)}"><input type="hidden" name="audio" value="${esc(ep.audio_asset_id ?? '')}"><label for="nt">${esc(d.notePlaceholder)}</label><textarea id="nt" name="note"></textarea>
 <div class="row"><button name="decision" value="approved" class="accent">${esc(d.approve)}</button><button name="decision" value="changes" class="ghost">${esc(d.requestChanges)}</button></div>
-<p class="hint">Silence is never treated as approval.</p></form></div>`,
+<p class="hint">Silence is never treated as approval.</p></form>
+<p class="sans"><a href="/entrevista/fotos">${esc(d.photoAuth)}</a></p></div>`,
     }));
   });
   app.post('/entrevista/episodio/decisao', async (req, reply) => {
