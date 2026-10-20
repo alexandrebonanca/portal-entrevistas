@@ -8,9 +8,14 @@ import { t, normLang } from './i18n.ts';
 export async function createInvitation(db: Db, interview: any, host: { name: string }, opts: { followup?: boolean; preview?: boolean } = {}) {
   const token = newToken(32);
   const days = config.limits.inviteDays;
-  let exp = new Date(Date.now() + days * 86400_000);
-  exp.setUTCHours(23, 59, 59, 0); // o link vale até ao fim do dia indicado no email
-  if (interview.deadline) { const d = new Date(interview.deadline); d.setHours(23, 59, 59); if (d > new Date()) exp = d; }
+  // O link vale até ao fim do último dia em qualquer fuso (UTC−12), e é esse dia que o email mostra.
+  // O prazo da recolha não se aplica ao link de validação do episódio.
+  const ymd = (v: any) => (typeof v === 'string' ? v : v instanceof Date
+    ? (v.getUTCHours() === 0 && v.getUTCMinutes() === 0 ? v.toISOString() : `${v.getFullYear()}-${String(v.getMonth() + 1).padStart(2, '0')}-${String(v.getDate()).padStart(2, '0')}`) : '').slice(0, 10);
+  const endOfDay = (day: string) => new Date(`${day}T23:59:59Z`).getTime() + 12 * 3600_000;
+  let lastDay = new Date(Date.now() + days * 86400_000).toISOString().slice(0, 10);
+  if (interview.deadline && !opts.preview) { const dl = ymd(interview.deadline); if (/^\d{4}-\d{2}-\d{2}$/.test(dl) && endOfDay(dl) > Date.now()) lastDay = dl; }
+  const exp = new Date(endOfDay(lastDay));
   const inv = await db.tx(async tx => {
     await tx.query(`UPDATE invitations SET revoked_at=now() WHERE interview_id=$1 AND revoked_at IS NULL`, [interview.id]);
     return tx.one(`INSERT INTO invitations(interview_id, token_hash, question_version, expires_at, purpose) VALUES ($1,$2,$3,$4,$5) RETURNING id`,
@@ -29,23 +34,26 @@ export async function createInvitation(db: Db, interview: any, host: { name: str
   const small = (s: string) => `<p style="font-size:14px;color:#6b655c">${esc(s)}</p>`;
   if (opts.preview) {
     // Validação do episódio: email próprio (sem número de perguntas, sem «responder no telemóvel», sem recusa).
-    const body = `<p>${esc(d.reviewIntro(hostName))}</p><p><strong>${esc(interview.title)}</strong></p><p>${esc(d.reviewSteps)}</p>`;
-    const text = [d.reviewTitle, d.reviewIntro(hostName), interview.title, d.reviewSteps, `${d.reviewOpen}: ${url}`, help, footerText].join('\n\n');
+    // Com «só o entrevistador aprova», a aprovação do convidado só é exigida para o vídeo em que aparece animado.
+    const steps = interview.review_policy === 'host_only' ? d.reviewStepsVideo : d.reviewSteps;
+    const body = `<p>${esc(d.reviewIntro(hostName))}</p><p><strong>${esc(interview.title)}</strong></p><p>${esc(steps)}</p>`;
+    const text = [d.reviewTitle, d.reviewIntro(hostName), interview.title, steps, `${d.reviewOpen}: ${url}`, help, footerText].join('\n\n');
     await queueEmail(db, { key: `invite:${inv.id}`, interviewId: interview.id, to: interview.guest_email, subject: d.reviewSubject(interview.title), html: emailShell(d.reviewTitle, body, { label: d.reviewOpen, url }, { footer, after: small(help) }), text });
     return { invitationId: inv.id, url, expires: exp };
   }
   // Convite: quem convida e sobre quê, a mensagem pessoal, como funciona o portal (para quem não o conhece) e até quando vale o link.
   const followup = !!opts.followup;
   // Perguntas adicionais: quantas estão por responder (singular ou plural no texto).
-  const nOpen = followup ? Math.max(1, Number((await db.one(`SELECT count(*)::int AS n FROM questions q WHERE q.interview_id=$1
-    AND NOT EXISTS (SELECT 1 FROM answers a WHERE a.question_id=q.id AND a.status IN ('answered','refused'))`, [interview.id]))?.n ?? 1)) : 0;
+  // (só as perguntas adicionais ainda por responder; sem nenhuma, o texto fica no plural genérico)
+  const nOpen = followup ? Number((await db.one(`SELECT count(*)::int AS n FROM questions q WHERE q.interview_id=$1 AND q.followup
+    AND NOT EXISTS (SELECT 1 FROM answers a WHERE a.question_id=q.id AND a.status IN ('answered','refused'))`, [interview.id]))?.n ?? 0) || 2 : 0;
   const heading = followup ? d.followupHeading(nOpen) : d.inviteHeading;
   const lead = `${followup ? d.followupLead(hostName, nOpen) : d.inviteLead(hostName)} `;
   const end = /[.?!…]$/.test(String(interview.title).trim()) ? '' : '.'; // sem «?.» quando o título já termina em pontuação
   const steps = followup ? [] : [d.howAnswer(nQ), d.howListen, interview.review_policy === 'host_only' ? d.howConsent : d.howApprove];
-  const until = d.linkUntil(exp.toLocaleDateString(lang === 'en' ? 'en-GB' : 'pt-PT', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' }));
+  const until = d.linkUntil(new Date(`${lastDay}T12:00:00Z`).toLocaleDateString(lang === 'en' ? 'en-GB' : 'pt-PT', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' }));
   const pm = String(interview.personal_message ?? '').trim();
-  const body = `<p>${esc(lead)}<strong>${esc(interview.title)}</strong>${end}</p>${pm ? `<blockquote style="border-left:3px solid #b4691f;margin:16px 0;padding:4px 16px;color:#4a443b;white-space:pre-line">${esc(pm)}</blockquote>` : ''}
+  const body = `<p>${esc(lead)}<strong>${esc(interview.title)}</strong>${end}</p>${pm ? `<blockquote style="border-left:3px solid #b4691f;margin:16px 0;padding:4px 16px;color:#4a443b">${esc(pm).replace(/\r?\n/g, '<br>')}</blockquote>` : ''}
 ${steps.length ? `<p style="margin:18px 0 6px"><strong>${esc(d.howTitle(config.brand))}</strong></p><ul style="padding-left:20px;margin:0 0 16px">${steps.map(s => `<li style="margin:4px 0">${esc(s)}</li>`).join('')}</ul>` : ''}
 <p>${esc(until)}</p>`;
   const quote = (s: string) => (lang === 'en' ? `“${s}”` : `«${s}»`);

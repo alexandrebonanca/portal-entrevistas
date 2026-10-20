@@ -83,8 +83,8 @@ test('criar entrevista, perguntas e convite', async () => {
   assert.match(mail.text_body, /record it again until you submit the interview/, 'não promete ouvir antes de enviar (a gravação sobe ao parar)');
   // sem prazo, o link vale até ao fim do dia mostrado no email
   const inv = await db.one(`SELECT expires_at FROM invitations WHERE interview_id=$1 ORDER BY created_at DESC LIMIT 1`, [ivId]);
-  assert.equal(new Date(inv.expires_at).toISOString().slice(11, 19), '23:59:59');
-  const shown = new Date(inv.expires_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' });
+  assert.equal(new Date(inv.expires_at).toISOString().slice(11, 19), '11:59:59', 'fim do dia em qualquer fuso (23:59:59 em UTC−12)');
+  const shown = new Date(new Date(inv.expires_at).getTime() - 12 * 3600_000).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' });
   assert.ok(mail.text_body.includes(`until ${shown}.`), 'a data do email é a do fim da validade');
   assert.ok(mail.html.indexOf('>Open interview</a>') < mail.html.indexOf('I do not wish to take part'), 'recusa e apoio depois do botão');
   assert.match(mail.text_body, /quietinterview — interviews recorded in your own time · test\.local/);
@@ -493,8 +493,16 @@ test('vídeo com o Google Veo: autorização própria, som dos clipes, verifica�
   assert.equal(withGuest.meta.guestAiVideo, true);
   const ivNow = await db.one('SELECT * FROM interviews WHERE id=$1', [ivId]);
   await post(`/entrevistas/${ivId}/guardar`, { title: ivNow.title, objective_text: ivNow.objective_text, host_name: ivNow.host_name, guest_name: ivNow.guest_name, guest_email: ivNow.guest_email, subtitle_langs: ivNow.subtitle_langs, review_policy: 'host_only', host_photo_rights: '1', host_animate: '1', host_ai_video: '1' }, owner);
-  assert.equal((await db.one('SELECT video_asset_id FROM episodes WHERE id=$1', [ep.id])).video_asset_id, null, 'host_only desliga o vídeo Veo do convidado');
-  // mesmo que o vídeo volte a ser ligado (por exemplo, por uma corrida), publicar exige a aprovação do convidado
+  assert.equal((await db.one('SELECT review_policy FROM interviews WHERE id=$1', [ivId])).review_policy, 'guest_preview', 'depois do convite, a política não passa a «só o entrevistador aprova»');
+  assert.ok((await db.one('SELECT video_asset_id FROM episodes WHERE id=$1', [ep.id])).video_asset_id, 'o vídeo mantém-se: o convidado continua a aprovar');
+  // com «só o entrevistador aprova» desde o início, o vídeo com o convidado animado exige na mesma a aprovação dele
+  await db.query(`UPDATE interviews SET review_policy='host_only' WHERE id=$1`, [ivId]);
+  const { createInvitation } = await import('../src/invites.ts');
+  const vinv = await createInvitation(db, await db.one('SELECT * FROM interviews WHERE id=$1', [ivId]), { name: 'Ana' }, { preview: true });
+  const vmail = await db.one(`SELECT text_body FROM emails WHERE dedupe_key=$1`, [`invite:${vinv.invitationId}`]);
+  // (o /guardar acima não enviou interaction_lang, por isso a entrevista ficou em pt-PT)
+  assert.match(vmail.text_body, /O vídeo com a sua imagem animada não é publicado sem a sua aprovação/);
+  assert.doesNotMatch(vmail.text_body, /Nada é publicado sem a sua aprovação/, 'em host_only não se promete a aprovação de tudo');
   await db.query('UPDATE episodes SET video_asset_id=$2 WHERE id=$1', [ep.id, withGuest.video_asset_id]);
   await post(`/entrevistas/${ivId}/episodio/${ep.id}/aprovar`, { video: withGuest.video_asset_id }, owner);
   const pub = await post(`/entrevistas/${ivId}/episodio/${ep.id}/publicar`, { visibility: 'unlisted' }, owner);

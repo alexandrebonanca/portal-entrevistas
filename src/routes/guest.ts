@@ -20,7 +20,7 @@ export async function guestRoutes(app: FastifyInstance) {
     reply.headers({ ...H, 'Cache-Control': 'no-store' }).send(page({ lang, title, body: `<div class="narrow" style="padding:28px 20px 0">${body}</div>`, noindex: true, script, nav: '' }));
 
   const loadInvitation = async (token: string) =>
-    db.one(`SELECT inv.*, i.title, COALESCE(NULLIF(i.host_name,''), u.name) AS host_name, i.interaction_lang, i.guest_email, i.guest_name, i.id AS iid, i.collection_status
+    db.one(`SELECT inv.*, i.title, COALESCE(NULLIF(i.host_name,''), u.name) AS host_name, i.interaction_lang, i.guest_email, i.guest_name, i.id AS iid, i.collection_status, i.review_policy
             FROM invitations inv JOIN interviews i ON i.id=inv.interview_id LEFT JOIN users u ON u.id=i.owner_id WHERE inv.token_hash=$1`, [sha256(token)]);
 
   // ---- convite: GET só mostra; nada é consumido ----
@@ -35,7 +35,7 @@ export async function guestRoutes(app: FastifyInstance) {
 <form method="post" action="/i/${esc((req.params as any).token)}/novo-link" class="card"><label for="em">${esc(d.yourEmail)}</label><input id="em" name="email" type="email" required autocomplete="email"><p><button class="accent">${esc(d.resendBtn)}</button></p></form>`);
     }
     if (inv.purpose === 'preview') // validação do episódio: sem número de perguntas e sem «Não pretendo participar»
-      return gpage(reply, lang, d.reviewTitle, `<h1>${esc(d.reviewTitle)}</h1><p>${esc(d.reviewIntro(inv.host_name))}</p><p><strong>${esc(inv.title)}</strong></p><p class="hint">${esc(d.reviewSteps)}</p>
+      return gpage(reply, lang, d.reviewTitle, `<h1>${esc(d.reviewTitle)}</h1><p>${esc(d.reviewIntro(inv.host_name))}</p><p><strong>${esc(inv.title)}</strong></p><p class="hint">${esc(inv.review_policy === 'host_only' ? d.reviewStepsVideo : d.reviewSteps)}</p>
 <form method="post" action="/i/${esc((req.params as any).token)}/abrir"><p><button class="accent" style="width:100%">${esc(d.reviewOpen)}</button></p></form>`);
     const nQ = Number((await db.one('SELECT count(*)::int AS n FROM questions WHERE interview_id=$1', [inv.iid]))?.n);
     return gpage(reply, lang, d.inviteTitle, `<h1>${esc(inv.title)}</h1><p>${esc(d.invitedBy(inv.host_name))}</p><p class="hint">${esc(d.qCount(nQ))}</p>

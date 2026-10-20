@@ -78,7 +78,9 @@ ${objT && !iv.objective_text ? `<p class="hint">Transcrição do objetivo gravad
 <p class="hint">Vozes naturais geradas por IA (identificadas como tal), sempre diferentes para cada um. Para o convidado ouvir as perguntas na sua própria voz, grave-as em áudio.</p>
 <label for="pm">Mensagem pessoal no convite</label><textarea id="pm" name="personal_message">${esc(iv.personal_message)}</textarea>
 <fieldset style="border:1px solid var(--line);border-radius:8px;margin-top:14px"><legend class="sans">Legendas previstas</legend>${SUBS.map(([v, l]) => `<label class="check"><input type="checkbox" name="subtitle_langs" value="${v}" ${(iv.subtitle_langs ?? []).includes(v) ? 'checked' : ''}> ${l}</label>`).join('')}</fieldset>
-<label for="rp">Política de revisão e publicação (comunicada no convite)</label><select id="rp" name="review_policy">${sel(iv.review_policy, [['guest_preview', 'O entrevistado vê e aprova a versão final antes de publicar'], ['host_only', 'Só o entrevistador aprova (não recomendado)']])}</select>
+<label for="rp">Política de revisão e publicação (comunicada no convite)</label><select id="rp" name="review_policy">${iv.collection_status !== 'draft' && iv.review_policy === 'guest_preview'
+  ? `<option value="guest_preview" selected>O entrevistado vê e aprova a versão final antes de publicar</option>`
+  : sel(iv.review_policy, [['guest_preview', 'O entrevistado vê e aprova a versão final antes de publicar'], ['host_only', 'Só o entrevistador aprova (não recomendado)']])}</select>${iv.collection_status !== 'draft' && iv.review_policy === 'guest_preview' ? '<p class="hint">O convite já prometeu ao entrevistado que vê e aprova a versão final: esta política mantém-se.</p>' : ''}
 <label class="check"><input type="checkbox" name="host_photo_rights" value="1" ${iv.host_photo_rights ? 'checked' : ''}> Tenho direito a usar a minha fotografia neste projeto</label>
 <label class="check"><input type="checkbox" name="host_animate" value="1" ${iv.host_animate ? 'checked' : ''}> Autorizo que a minha fotografia seja animada por IA no vídeo (boca sincronizada com a voz sintética), com o aviso visível «Retrato animado por IA»</label>
 <label class="check"><input type="checkbox" name="host_ai_video" value="1" ${iv.host_ai_video ? 'checked' : ''}> Autorizo que a minha fotografia e o texto aprovado das minhas falas sejam enviados à Google (Veo) para gerar um vídeo por IA em que apareço a dizer esse texto em inglês, com gestos e voz gerados pelo modelo (não é a minha voz), com o aviso visível «AI-generated video · AI voice»</label>
@@ -112,6 +114,8 @@ ${locked ? `<form method="post" action="/entrevistas/${iv.id}/adicional"><label 
     if (!iv) return reply.code(404).send('Não encontrada');
     const b = req.body as any;
     const locked = iv.collection_status !== 'draft';
+    // Depois do convite, a aprovação prometida ao convidado mantém-se: a política só pode passar a «o entrevistado aprova».
+    const policy = locked && iv.review_policy === 'guest_preview' ? 'guest_preview' : b.review_policy === 'host_only' ? 'host_only' : 'guest_preview';
     const subs = ([] as string[]).concat(b.subtitle_langs ?? []).filter(l => SUBS.some(s => s[0] === l));
     const email = String(b.guest_email ?? '').trim().toLowerCase();
     if (email && !isEmail(email)) return reply.redirect(`/entrevistas/${iv.id}/editar?e=` + encodeURIComponent('Email do entrevistado inválido.'));
@@ -122,10 +126,10 @@ ${locked ? `<form method="post" action="/entrevistas/${iv.id}/adicional"><label 
         String(b.host_name ?? '').slice(0, 100), String(b.guest_name ?? '').slice(0, 100), locked ? iv.guest_email : email, b.interaction_lang === 'en' ? 'en' : 'pt-PT',
         ['auto', 'pt', 'en', 'es', 'fr', 'de'].includes(b.answer_lang) ? b.answer_lang : 'auto', b.deadline || null,
         ['private', 'unlisted', 'public'].includes(b.planned_visibility) ? b.planned_visibility : 'private', String(b.personal_message ?? '').slice(0, 1500),
-        subs.length ? subs : ['en'], b.review_policy === 'host_only' ? 'host_only' : 'guest_preview', !!b.host_photo_rights, b.question_voice === 'male' ? 'male' : 'female', b.guest_voice === 'male' ? 'male' : 'female', !!b.host_animate && !!b.host_photo_rights, !!b.host_ai_video && !!b.host_photo_rights]);
+        subs.length ? subs : ['en'], policy, !!b.host_photo_rights, b.question_voice === 'male' ? 'male' : 'female', b.guest_voice === 'male' ? 'male' : 'female', !!b.host_animate && !!b.host_photo_rights, !!b.host_ai_video && !!b.host_photo_rights]);
     // Autorização retirada pelo entrevistador: o vídeo que usava a fotografia, a animação ou o Veo deixa de ser servido (o ficheiro fica privado).
     const photo = !!b.host_photo_rights, anim = photo && !!b.host_animate, ai = photo && !!b.host_ai_video;
-    const guestSees = b.review_policy !== 'host_only'; // com «só o entrevistador aprova», o convidado não veria o seu vídeo Veo
+    const guestSees = policy !== 'host_only'; // com «só o entrevistador aprova», o convidado não veria o seu vídeo Veo
     for (const e of await db.query(`SELECT e.id, e.status, a.meta FROM episodes e JOIN assets a ON a.id=e.video_asset_id WHERE e.interview_id=$1`, [iv.id])) {
       const hostWithdrew = (!photo && e.meta?.hostPhoto) || (!anim && e.meta?.hostAnimated) || (!ai && e.meta?.hostAiVideo);
       const guestCannotSee = !guestSees && e.meta?.guestAiVideo && e.status !== 'published'; // publicado: o convidado já o viu e aprovou
@@ -294,7 +298,9 @@ ${iv.objective_shared && iv.objective_text ? `<p class="hint">O entrevistado vê
     const iv = await ownedInterview(app, req, (req.params as any).id);
     if (!iv || !['invited', 'started', 'reopened', 'expired'].includes(iv.collection_status)) return reply.code(404).send('Indisponível');
     if (!rateLimit(`resend:${iv.id}`, 1, config.limits.resendCooldownSec * 1000)) return reply.redirect(`/entrevistas/${iv.id}?e=` + encodeURIComponent('Aguarde antes de reenviar.'));
-    await createInvitation(db, iv, { name: req.user!.name });
+    // Mantém a finalidade do convite em vigor (perguntas adicionais continuam a ser perguntas adicionais).
+    const latest = (await db.one(`SELECT purpose FROM invitations WHERE interview_id=$1 AND purpose<>'preview' ORDER BY created_at DESC LIMIT 1`, [iv.id]))?.purpose;
+    await createInvitation(db, iv, { name: req.user!.name }, latest === 'followup' ? { followup: true } : {});
     if (iv.collection_status === 'expired') await db.query(`UPDATE interviews SET collection_status='reopened' WHERE id=$1`, [iv.id]);
     await audit(db, req.user!.email, 'invitation.resent', iv.id);
     return reply.redirect(`/entrevistas/${iv.id}?ok=` + encodeURIComponent('Novo convite enviado; o link anterior foi revogado.'));

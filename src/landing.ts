@@ -103,7 +103,7 @@ ${video ? `
 </section>
 
 <section class="wrap lp-section" aria-labelledby="fmh"><div class="lp-split">
-  <figure class="lp-photo">${img('listen', 'People listening to a podcast')}</figure>
+  <figure class="lp-photo">${img('listen', 'White headphones beside a lightbox that reads PODCAST')}</figure>
   <div><h2 id="fmh">One interview, three ways to share it</h2>
     <ul class="lp-formats">
       <li><strong>Audio podcast</strong><span>A clear English episode with chapters, transcript and an audible AI disclosure.</span></li>
