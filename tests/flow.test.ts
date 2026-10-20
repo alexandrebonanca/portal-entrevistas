@@ -444,6 +444,16 @@ test('vídeo com o Google Veo: autorização própria, som dos clipes, verifica�
   const rs = await post(`/entrevistas/${ivId}/episodio/${ep.id}/video`, { lang: 'en', engine: 'veo' }, owner);
   assert.match(decodeURIComponent(rs.headers.location as string), /guião deste episódio foi substituído/);
   await db.query(`UPDATE scripts SET status='approved' WHERE id=$1`, [ep.script_id]);
+
+  // «só o entrevistador aprova» e episódio sem vídeo Veo: um pedido de alterações do convidado não trava a publicação (como no main)
+  await db.query(`UPDATE interviews SET review_policy='host_only' WHERE id=$1`, [ivId]);
+  await db.query(`UPDATE approvals SET valid=false WHERE episode_id=$1`, [ep.id]);
+  await post('/entrevista/episodio/decisao', { decision: 'changes', note: 'Uma sugestão', video: '' }, g);
+  await post(`/entrevistas/${ivId}/episodio/${ep.id}/aprovar`, { video: '' }, owner);
+  const pub2 = await post(`/entrevistas/${ivId}/episodio/${ep.id}/publicar`, { visibility: 'private' }, owner);
+  assert.match(decodeURIComponent(pub2.headers.location as string), /Guardado como privado/);
+  await db.query(`UPDATE episodes SET status='preview' WHERE id=$1`, [ep.id]);
+  await db.query(`UPDATE interviews SET review_policy='guest_preview' WHERE id=$1`, [ivId]);
 });
 
 test('alterar uma transcrição invalida guião e aprovações sem apagar versões', async () => {

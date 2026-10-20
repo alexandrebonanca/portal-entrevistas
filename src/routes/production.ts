@@ -189,7 +189,7 @@ ${ep.visibility === 'public' ? `<form method="post" action="/entrevistas/${iv.id
     const iv = await ownedInterview(app, req, (req.params as any).id);
     if (!iv) return reply.code(404).send({ error: 'not found' });
     const j = await db.one(`SELECT kind, state, progress_done, progress_total, progress_label, started_at, created_at, error, now() AS server_now FROM jobs
-      WHERE interview_id=$1 ORDER BY created_at DESC LIMIT 1`, [iv.id]);
+      WHERE interview_id=$1 ORDER BY (state IN ('queued','running')) DESC, created_at DESC LIMIT 1`, [iv.id]); // o que está a correr primeiro (os vídeos esperam pelos trabalhos curtos)
     reply.header('Cache-Control', 'no-store');
     if (!j) return { active: false };
     const total = Number(j.progress_total) || 0, done = Math.min(Number(j.progress_done) || 0, total);
@@ -302,7 +302,8 @@ ${ep.visibility === 'public' ? `<form method="post" action="/entrevistas/${iv.id
     const iv = await guard(req, reply); if (!iv) return;
     const s = await db.one(`SELECT * FROM scripts WHERE interview_id=$1 AND status='approved' ORDER BY revision DESC LIMIT 1`, [iv.id]);
     if (!s) return back(reply, iv.id, undefined, 'Aprove primeiro o guião.');
-    if (await db.one(`SELECT 1 FROM approvals a JOIN episodes e ON e.id=a.episode_id WHERE e.script_id=$1 AND a.actor='guest' AND a.valid AND a.decision='changes' LIMIT 1`, [s.id]))
+    // Só com «o entrevistado aprova» o pedido de alterações do convidado trava uma nova geração do mesmo guião (como no main com host_only).
+    if (iv.review_policy === 'guest_preview' && await db.one(`SELECT 1 FROM approvals a JOIN episodes e ON e.id=a.episode_id WHERE e.script_id=$1 AND a.actor='guest' AND a.valid AND a.decision='changes' LIMIT 1`, [s.id]))
       return back(reply, iv.id, undefined, 'O convidado pediu alterações a um episódio deste guião: reveja o guião e aprove uma nova revisão antes de gerar.');
     const b = req.body as any;
     const langs = ([] as string[]).concat(b.subtitle_langs ?? []).filter(l => SUBS.some(x => x[0] === l));
@@ -361,7 +362,7 @@ ${ep.visibility === 'public' ? `<form method="post" action="/entrevistas/${iv.id
     // Só publica a versão que foi verificada acima (o vídeo não mudou entretanto).
     const done = await db.one(`UPDATE episodes SET status='published', visibility=$2, published_at=now(), withdrawn_at=NULL, gallery=$3, theme=$4
       WHERE id=$1 AND status='preview' AND NOT stale AND video_asset_id IS NOT DISTINCT FROM $5::uuid
-        AND NOT EXISTS (SELECT 1 FROM approvals a WHERE a.episode_id=$1 AND a.actor='guest' AND a.valid AND a.decision='changes') RETURNING id`, [ep.id, vis, vis === 'public' && !!b?.gallery, theme, ep.video_asset_id]);
+        AND (NOT $6::boolean OR NOT EXISTS (SELECT 1 FROM approvals a WHERE a.episode_id=$1 AND a.actor='guest' AND a.valid AND a.decision='changes')) RETURNING id`, [ep.id, vis, vis === 'public' && !!b?.gallery, theme, ep.video_asset_id, needGuest]); // o pedido do convidado só conta quando a aprovação dele é exigida
     if (!done) return back(reply, iv.id, undefined, 'O episódio mudou entretanto (vídeo novo ou outra versão): reveja e aprove de novo.');
     await db.query(`UPDATE interviews SET publication_status='published' WHERE id=$1`, [iv.id]);
     await audit(db, req.user!.email, 'episode.published', iv.id, { visibility: vis, episodeId: ep.id });
