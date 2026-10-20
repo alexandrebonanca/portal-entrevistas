@@ -75,7 +75,13 @@ test('criar entrevista, perguntas e convite', async () => {
   assert.match(mail.html, /<h1[^>]*>You are invited to an interview<\/h1>/);
   assert.equal(mail.html.split('Fibra ótica em Portugal').length - 1, 1, 'o título aparece uma só vez no corpo');
   assert.match(mail.html, /How quietinterview works:[\s\S]*Answer 2 questions[\s\S]*approve it before it is published/);
-  assert.match(mail.text_body, /This link is personal; you can answer until \d{1,2} \w+ \d{4}\./);
+  assert.match(mail.text_body, /This link is personal\. You can answer until \d{1,2} \w+ \d{4}\./);
+  assert.match(mail.text_body, /record it again until you submit the interview/, 'não promete ouvir antes de enviar (a gravação sobe ao parar)');
+  // sem prazo, o link vale até ao fim do dia mostrado no email
+  const inv = await db.one(`SELECT expires_at FROM invitations WHERE interview_id=$1 ORDER BY created_at DESC LIMIT 1`, [ivId]);
+  assert.equal(new Date(inv.expires_at).toISOString().slice(11, 19), '23:59:59');
+  const shown = new Date(inv.expires_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' });
+  assert.ok(mail.text_body.includes(`until ${shown}.`), 'a data do email é a do fim da validade');
   assert.ok(mail.html.indexOf('>Open interview</a>') < mail.html.indexOf('I do not wish to take part'), 'recusa e apoio depois do botão');
   assert.match(mail.text_body, /quietinterview — interviews recorded in your own time · test\.local/);
   assert.doesNotMatch(mail.html + mail.text_body, /convida-o\(a\)|Conversations/);
