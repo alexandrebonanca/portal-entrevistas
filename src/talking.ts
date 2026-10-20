@@ -23,6 +23,26 @@ export const PROVIDERS: TalkingProvider[] = [
 
 export const providerReady = (p: TalkingProvider) => config.openai.mock || !!S(p.keyName);
 
+/** Direção de cena com regras de boa apresentação (usada pelos modelos que aceitam instruções de movimento). */
+export function presenterDirection(role: 'host' | 'guest' | 'presenter' = 'presenter') {
+  const common = [
+    'Natural on-camera speaker following presentation best practices.',
+    'Eye contact with the camera most of the time; natural blinking; small, natural nods.',
+    'Open, relaxed posture: shoulders slightly angled to the camera at rest, turning square to the camera when making a key point.',
+    'Both hands visible and active inside the gesture zone between waist and chest: open-palm gestures to explain, a single small emphasis gesture on key words, counting on fingers only when listing, hands returning to a relaxed resting position between ideas.',
+    'Gestures are synchronised with the rhythm and stress of the speech, never repetitive.',
+    'Calm, confident, friendly facial expression that matches the tone of what is being said.',
+    'Avoid: crossed arms, hands in pockets, touching the face or hair, fidgeting, pointing at the camera, exaggerated or theatrical movement, standing up, leaving the frame.',
+    'Static camera, medium shot, same framing and lighting throughout.',
+  ];
+  const byRole = {
+    host: 'The speaker is the interviewer asking a question: slightly leaning in, inviting open-palm gesture towards the camera, eyebrows rising gently at the end of the question.',
+    guest: 'The speaker is the guest answering thoughtfully: brief pauses to think, explanatory open-palm gestures, a small nod when concluding.',
+    presenter: 'The speaker is a podcast host welcoming the audience.',
+  } as const;
+  return [byRole[role], ...common].join(' ');
+}
+
 // ---------- URLs temporários assinados (para os fornecedores descarregarem os ficheiros) ----------
 export function signedAssetUrl(assetId: string, ttlSec = 3600) {
   const exp = Math.floor(Date.now() / 1000) + ttlSec;
@@ -92,9 +112,10 @@ async function wavespeedHeygen(imageUrl: string, audioUrl: string, onStatus?: (s
 
 // ---------- Google Veo 3.1 (Gemini API) ----------
 async function veo(image: Buffer, text: string, onStatus?: (s: string) => Promise<void>) {
+  // (a direção de cena entra no texto do pedido)
   const key = S('GEMINI_API_KEY');
   const headers = { 'x-goog-api-key': key, 'Content-Type': 'application/json' };
-  const prompt = `The person in the image is a podcast host in a calm studio. They look at the camera and say, in a natural, warm voice: "${text.replace(/"/g, "'")}". Natural head and shoulder movement, subtle hand gestures, static medium close-up camera. No captions, no text on screen, no music.`;
+  const prompt = `The person in the image is a podcast host in a calm studio. They look at the camera and say, in a natural, warm voice: "${text.replace(/"/g, "'")}". ${presenterDirection()} No captions, no text on screen, no music.`;
   const op = await jsonFetch('https://generativelanguage.googleapis.com/v1beta/models/veo-3.1-fast-generate-preview:predictLongRunning', {
     method: 'POST', headers,
     body: JSON.stringify({ instances: [{ prompt, image: { inlineData: { mimeType: 'image/jpeg', data: image.toString('base64') } } }], parameters: { aspectRatio: '16:9', durationSeconds: 8, personGeneration: 'allow_adult' } }),
@@ -115,11 +136,12 @@ async function veo(image: Buffer, text: string, onStatus?: (s: string) => Promis
 }
 
 /** Corre um fornecedor. `audioSec` serve para o InfiniteTalk calcular o número de fotogramas. */
-export async function runProvider(p: TalkingProvider, a: { imageUrl: string; audioUrl: string; image: Buffer; text: string; audioSec: number }, onStatus?: (s: string) => Promise<void>) {
+export async function runProvider(p: TalkingProvider, a: { imageUrl: string; audioUrl: string; image: Buffer; text: string; audioSec: number; direction?: string }, onStatus?: (s: string) => Promise<void>) {
+  const direction = a.direction ?? presenterDirection();
   switch (p.id) {
-    case 'omnihuman': return falRun('fal-ai/bytedance/omnihuman/v1.5', { image_url: a.imageUrl, audio_url: a.audioUrl, resolution: '720p' }, onStatus);
+    case 'omnihuman': return falRun('fal-ai/bytedance/omnihuman/v1.5', { image_url: a.imageUrl, audio_url: a.audioUrl, resolution: '720p', prompt: direction }, onStatus);
     case 'fabric': return falRun('veed/fabric-1.0', { image_url: a.imageUrl, audio_url: a.audioUrl, resolution: '720p' }, onStatus);
-    case 'infinitalk': return falRun('fal-ai/infinitalk', { image_url: a.imageUrl, audio_url: a.audioUrl, prompt: 'A podcast host speaking naturally to the camera, subtle head and hand movement.', resolution: '480p', num_frames: Math.min(721, Math.max(41, Math.round(a.audioSec * 25) + 5)) }, onStatus);
+    case 'infinitalk': return falRun('fal-ai/infinitalk', { image_url: a.imageUrl, audio_url: a.audioUrl, prompt: direction, resolution: '480p', num_frames: Math.min(721, Math.max(41, Math.round(a.audioSec * 25) + 5)) }, onStatus);
     case 'heygen': return wavespeedHeygen(a.imageUrl, a.audioUrl, onStatus);
     case 'veo': return veo(a.image, a.text, onStatus);
     default: throw new PermanentError(`Fornecedor desconhecido: ${p.id}`);

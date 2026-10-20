@@ -161,11 +161,11 @@ export async function generateFictionalPortrait(): Promise<Buffer> {
   const { default: sharp } = await import('sharp');
   if (config.openai.mock) return sharp({ create: { width: 512, height: 512, channels: 3, background: '#6b4a32' } }).jpeg().toBuffer();
   const c = await openai();
-  const r = await c.images.generate({ model: config.openai.models.image, size: '1024x1024',
-    prompt: 'Photorealistic head-and-shoulders studio portrait of a fictional middle-aged podcast host who does not exist and does not resemble any real or famous person. Facing the camera, neutral expression, mouth closed, even soft lighting, plain warm background, no text, no logos.' });
+  const r = await c.images.generate({ model: config.openai.models.image, size: '1536x1024',
+    prompt: 'Photorealistic medium shot, from the waist up, of a fictional middle-aged podcast host who does not exist and does not resemble any real or famous person, seated at a wooden desk in a warm, softly lit studio. Body angled about 15 degrees towards the camera, face towards the camera, relaxed confident posture, BOTH HANDS fully visible and relaxed on the desk in front of the torso, mouth closed, neutral friendly expression. Small podcast microphone on a low stand to the side, not covering the face or hands. Landscape 16:9 framing with space around the hands. No text, no logos.' });
   const b64 = r.data?.[0]?.b64_json;
   const buf = b64 ? Buffer.from(b64, 'base64') : Buffer.from(await (await fetch(r.data?.[0]?.url)).arrayBuffer());
-  return sharp(buf).resize(512, 512).jpeg({ quality: 85 }).toBuffer();
+  return sharp(buf).resize(1280, 720, { fit: 'cover', position: 'attention' }).jpeg({ quality: 88 }).toBuffer();
 }
 
 export async function coverBriefing(title: string, objective: string) {

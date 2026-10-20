@@ -340,7 +340,7 @@ export const handlers: Record<string, Handler> = {
       try {
         const r = lipsyncMock()
           ? { video: await stillClip(process.env.FFMPEG_PATH || ff.path, portrait, audioMs), billedSec: null }
-          : await runProvider(p, { imageUrl, audioUrl, image: portrait, text: String(job.input.text), audioSec: audioMs / 1000 }, s => progress(base, 100, `${p.label}: ${s}`));
+          : await runProvider(p, { imageUrl, audioUrl, image: portrait, text: String(job.input.text), audioSec: audioMs / 1000, direction: job.input.direction }, s => progress(base, 100, `${p.label}: ${s}`));
         const secs = p.id === 'veo' ? 8 : (r.billedSec ?? audioMs / 1000);
         const meta = { jobId: job.id, provider: p.id, label: p.label, partner: p.partner, ownAudio: p.ownAudio, wallSec: Math.round((Date.now() - t0) / 1000), billedSec: r.billedSec, estUsd: p.pricePerSec != null ? secs * p.pricePerSec : null };
         const vid = await saveAsset(db, { interviewId: null, kind: 'lab_video', mime: 'video/mp4', ext: 'mp4', data: r.video, meta });
