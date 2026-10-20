@@ -117,6 +117,7 @@ test('limpeza de chaves coladas: tira prefixos de código, aspas e espaços sem 
   assert.equal(cleanSecret('ABC123:SECRET'), 'ABC123:SECRET', 'identificador em maiúsculas não é confundido com nome de variável');
   assert.match(secretFingerprint(k), /^25 caracteres, começa por «fal_sk_», termina em «…i789»$/);
   assert.match(secretFingerprint('minhapass fal_sk_x'), /espaços/);
+  assert.match(secretFingerprint('fal_sk_acn…437832d2'), /vista abreviada/);
   const { isApiKey } = await import('../src/settings.ts');
   assert.equal(isApiKey('FAL_KEY'), true); assert.equal(isApiKey('MOLONI_PASSWORD'), false, 'palavras-passe não são alteradas'); assert.equal(isApiKey('MAIL_FROM'), false);
 });

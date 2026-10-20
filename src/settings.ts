@@ -87,7 +87,8 @@ export function secretFingerprint(v: string) {
   if (!v) return 'nenhuma chave guardada';
   const prefix = (/^[a-z]+_[a-z]+_/i.exec(v)?.[0] ?? v.slice(0, 3)).slice(0, 8);
   const odd = /\s/.test(v) ? ' · contém espaços (provável colagem dupla)' : '';
-  return `${v.length} caracteres, começa por «${prefix}», termina em «…${v.slice(-4)}»${odd}`;
+  const cut = /[^!-~]/.test(v.replace(/\s/g, '')) ? ' · contém caracteres especiais (ex.: «…») — foi copiada de uma vista abreviada, não da chave completa' : '';
+  return `${v.length} caracteres, começa por «${prefix}», termina em «…${v.slice(-4)}»${odd}${cut}`;
 }
 
 export async function saveEntitySetting(db: Db, entityId: string, key: string, value: string) {

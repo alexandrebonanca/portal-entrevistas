@@ -36,6 +36,7 @@ export async function serviceTest(db: any, g: string, userEmail: string): Promis
     const key = S('FAL_KEY');
     const fp = secretFingerprint(key);
     if (!key) throw new Error('falta a chave da fal.ai');
+    if (/[^!-~]/.test(key)) throw new Error(`a chave guardada não é uma chave completa (${fp}). No painel da fal.ai a lista mostra a chave abreviada com «…»; a chave completa só aparece ao criá-la.`);
     const r = await fetch('https://queue.fal.run/fal-ai/infinitalk', { method: 'POST', headers: { Authorization: `Key ${key}`, 'Content-Type': 'application/json' }, body: '{}' });
     const body = (await r.text()).slice(0, 160);
     if (r.status === 401 || r.status === 403) throw new Error(`fal.ai recusou a chave guardada (${fp}). Compare com a chave no painel da fal.ai. Resposta: ${body}`);
