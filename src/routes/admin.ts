@@ -31,9 +31,14 @@ export async function serviceTest(db: any, g: string, userEmail: string): Promis
     const acc = await replicateAccount();
     msg = `Replicate: token válido (conta ${acc.username ?? acc.name ?? 'OK'}).`;
   } else if (g === 'fal.ai') {
-    const r = await fetch('https://queue.fal.run/fal-ai/bytedance/omnihuman/v1.5/requests/00000000-0000-0000-0000-000000000000/status', { headers: { Authorization: `Key ${S('FAL_KEY')}` } });
-    if (r.status === 401 || r.status === 403) throw new Error(`fal.ai recusou a chave (${r.status})`);
-    msg = 'fal.ai: chave aceite.';
+    // Pedido real mas sem campos obrigatórios: chave errada → 401/403; chave certa → 422 (validação), sem custo.
+    const key = S('FAL_KEY');
+    if (!key.includes(':')) throw new Error('a chave da fal.ai tem o formato «KEY_ID:KEY_SECRET» — parece faltar uma das partes');
+    const r = await fetch('https://queue.fal.run/fal-ai/infinitalk', { method: 'POST', headers: { Authorization: `Key ${key}`, 'Content-Type': 'application/json' }, body: '{}' });
+    const body = (await r.text()).slice(0, 160);
+    if (r.status === 401 || r.status === 403) throw new Error(`fal.ai recusou a chave (${r.status}): ${body}`);
+    if (r.status !== 422 && r.status !== 400) throw new Error(`fal.ai respondeu ${r.status}: ${body}`);
+    msg = 'fal.ai: chave válida (pedido de verificação sem custo).';
   } else if (g === 'WaveSpeed') {
     const r = await fetch('https://api.wavespeed.ai/api/v3/predictions/00000000/result', { headers: { Authorization: `Bearer ${S('WAVESPEED_API_KEY')}` } });
     if (r.status === 401 || r.status === 403) throw new Error(`WaveSpeed recusou a chave (${r.status})`);
