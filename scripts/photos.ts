@@ -1,5 +1,6 @@
 // Prepara as fotografias licenciadas da landing page: recorta (centrado no que interessa), reduz e comprime.
 // Uso: node scripts/photos.ts "<pasta das fotos>" hero=ficheiro.jpg interviewer=... guest=... studio=... listen=... ["credits=Texto dos créditos"]
+//      O corte procura o que interessa na imagem; para o fixar, acrescente @north, @south, @east, @west ou @centre ao ficheiro (ex.: interviewer=foto.jpg@north).
 // Resultado: public/img/photos/<nome>.jpg (1600×1200 o hero, 1200×900 as restantes) e, se indicado, credits.txt.
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -19,9 +20,11 @@ for (const p of pairs) {
   if (key === 'credits') { credits = val; continue; }
   if (!SLOTS.has(key)) { console.error(`Nome desconhecido: ${key} (use ${[...SLOTS].join(', ')} ou credits)`); process.exit(1); }
   const [w, h] = key === 'hero' ? [1600, 1200] : [1200, 900];
+  const m = /^(.*?)(?:@(north|south|east|west|centre|center))?$/.exec(val)!;
+  const file = m[1], position = m[2] ? (m[2] === 'center' ? 'centre' : m[2]) : 'attention';
   try {
-    ready.push([key, await sharp(join(src, val)).rotate().resize(w, h, { fit: 'cover', position: 'attention' }).flatten({ background: '#f6f2ea' }).jpeg({ quality: 78, progressive: true, mozjpeg: true }).toBuffer(), val]);
-  } catch (e: any) { console.error(`${key}: não foi possível ler ${join(src, val)} (${e.message})`); process.exit(1); }
+    ready.push([key, await sharp(join(src, file)).rotate().resize(w, h, { fit: 'cover', position }).flatten({ background: '#f6f2ea' }).jpeg({ quality: 78, progressive: true, mozjpeg: true }).toBuffer(), val]);
+  } catch (e: any) { console.error(`${key}: não foi possível ler ${join(src, file)} (${e.message})`); process.exit(1); }
 }
 const out = join('public', 'img', 'photos');
 await mkdir(out, { recursive: true });
