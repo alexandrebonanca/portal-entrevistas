@@ -99,7 +99,7 @@ ${groups.size ? [...groups].map(([t, eps]) => `<section style="margin-top:28px">
   // ---- pré-visualização do entrevistado ----
   const guestEpisode = async (req: any) => {
     if (!req.guest) return null;
-    return db.one(`SELECT e.*, COALESCE(NULLIF(i.host_name,''), u.name) AS host_name, i.guest_name, i.review_policy, i.interaction_lang FROM episodes e JOIN interviews i ON i.id=e.interview_id LEFT JOIN users u ON u.id=i.owner_id
+    return db.one(`SELECT e.*, i.host_name, COALESCE(NULLIF(i.host_name,''), u.name) AS host_label, i.guest_name, i.review_policy, i.interaction_lang FROM episodes e JOIN interviews i ON i.id=e.interview_id LEFT JOIN users u ON u.id=i.owner_id
       WHERE e.interview_id=$1 AND e.status IN ('preview','published') AND e.stale=false ORDER BY e.created_at DESC LIMIT 1`, [req.guest.interviewId]);
   };
   app.get('/entrevista/subs/:file', async (req, reply) => {
@@ -117,7 +117,7 @@ ${groups.size ? [...groups].map(([t, eps]) => `<section style="margin-top:28px">
     return send(reply, page({
       lang: normLang(ep.interaction_lang), title: d.episodePreview, noindex: true, nav: '', script: '/static/player.js',
       body: `<div class="wrap" style="padding-top:28px">${flash(q.ok)}${q.changed ? `<div class="flash bad">${esc(d.versionChanged)}</div>` : ''}<h1>${esc(d.episodePreview)}</h1>
-<p class="sans"><strong>${esc(d.reviewTitle)}</strong></p><p>${esc(d.reviewIntro(ep.host_name ?? ''))} ${esc(d.reviewSteps)}</p>
+<p class="sans"><strong>${esc(d.reviewTitle)}</strong></p><p>${esc(d.reviewIntro(ep.host_label ?? ''))} ${esc(d.reviewSteps)}</p>
 ${ep.video_asset_id ? `<video controls preload="metadata" poster="/api/g/media/${ep.cover_asset_id}" src="/api/g/media/${ep.video_asset_id}" style="width:100%;border-radius:12px;background:#000;margin-bottom:18px"></video>` : ''}
 ${playerHtml(ep, { audio: `/api/g/media/${ep.audio_asset_id}`, cover: `/api/g/media/${ep.cover_asset_id}`, subs: (l, x) => `/entrevista/subs/${l}.${x}` }, { host: ep.host_name, guest: ep.guest_name })}
 ${dec ? `<div class="flash">${esc(dec.decision === 'approved' ? d.approve : d.requestChanges)} — ${esc(fmtDate(dec.created_at))}${dec.decision === 'approved' && String(dec.video_asset_id ?? '') !== String(ep.video_asset_id ?? '') ? ` (${esc(d.versionChanged)})` : ''}</div>` : ''}

@@ -557,7 +557,7 @@ export async function renderVeoVideo(job: any, { db, progress }: Parameters<Hand
   const usedRoles = new Set(segs.filter(s => veoSegs.has(s.id)).map(s => s.role));
   const meta = { engine: 'veo', model: VEO_MODEL, lang, guestPhoto: !!guestPhoto, hostPhoto: !!hostPhoto, guestAiVideo: usedRoles.has('guest'), hostAiVideo: usedRoles.has('host'),
     veoClips: chunks.length, veoSegments: veoSegs.size, fallbackSegments: fallbackSegs, generatedClips: generated, spentUsd: Math.max(0, spentUsd - failedUsd), failedUsd, veoUsd: costUsd,
-    googleBusy: fidelity.some(f => f.problem === 'busy'),
+    googleBusy: fidelity.some(f => f.problem === 'busy' || f.problem === 'busycap'),
     fidelityIssues: fidelity.filter(f => !f.ok).length, fidelity, mock };
   const id = await saveAsset(db, { interviewId: iv.id, kind: 'episode_video', mime: 'video/mp4', ext: 'mp4', data: mp4, durationMs: t, meta });
   // Ligação ao episódio e fim das aprovações anteriores numa só transação, com as autorizações lidas no próprio momento.

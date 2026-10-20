@@ -11,11 +11,15 @@ const { default: sharp } = await import('sharp');
 const out = join('public', 'img', 'photos');
 await mkdir(out, { recursive: true });
 for (const p of pairs) {
-  const i = p.indexOf('='); const key = p.slice(0, i), val = p.slice(i + 1);
+  const i = p.indexOf('='); const key = p.slice(0, i), val = p.slice(i + 1).trim();
+  if (i < 1 || !val) { console.error(`Argumento inválido: «${p}» (use nome=ficheiro.jpg)`); process.exit(1); }
   if (key === 'credits') { await writeFile(join(out, 'credits.txt'), val); continue; }
-  if (!SLOTS.has(key)) { console.error(`Nome desconhecido: ${key}`); process.exit(1); }
+  if (!SLOTS.has(key)) { console.error(`Nome desconhecido: ${key} (use ${[...SLOTS].join(', ')} ou credits)`); process.exit(1); }
   const [w, h] = key === 'hero' ? [1600, 1200] : [1200, 900];
-  const buf = await sharp(join(src, val)).rotate().resize(w, h, { fit: 'cover', position: 'attention' }).jpeg({ quality: 78, progressive: true, mozjpeg: true }).toBuffer();
+  let buf: Buffer;
+  try {
+    buf = await sharp(join(src, val)).rotate().resize(w, h, { fit: 'cover', position: 'attention' }).flatten({ background: '#f6f2ea' }).jpeg({ quality: 78, progressive: true, mozjpeg: true }).toBuffer();
+  } catch (e: any) { console.error(`${key}: não foi possível ler ${join(src, val)} (${e.message})`); process.exit(1); }
   await writeFile(join(out, `${key}.jpg`), buf);
   console.log(`${key}.jpg ← ${val} (${Math.round(buf.length / 1024)} KB)`);
 }

@@ -9,11 +9,17 @@ const eur = (c: number) => `€${(c / 100).toFixed(c % 100 ? 2 : 0)}`;
 
 /**
  * Fotografias da página (public/img/photos/<nome>.jpg, preparadas com scripts/photos.ts a partir das fotos licenciadas).
- * Enquanto não existirem, usa as ilustrações que já existiam.
+ * Enquanto não existirem, usa as ilustrações que já existiam, com o alt do que a ilustração mostra (e sem cortes).
  */
 const PHOTO_DIR = join(process.cwd(), 'public', 'img', 'photos');
-const FALLBACK: Record<string, string> = { hero: 'studio.svg', interviewer: 'g2.svg', guest: 'g1.svg', studio: 'c2.svg', listen: 'c1.svg' };
-const photo = (name: string) => (existsSync(join(PHOTO_DIR, `${name}.jpg`)) ? `/static/img/photos/${name}.jpg` : `/static/img/${FALLBACK[name]}`);
+const FALLBACK: Record<string, { src: string; alt: string }> = {
+  hero: { src: 'studio.svg', alt: 'Illustration of a podcast microphone and sound waves' },
+  interviewer: { src: 'g2.svg', alt: 'Fictional interviewer portrait (illustration)' },
+  guest: { src: 'g1.svg', alt: 'Fictional guest portrait (illustration)' },
+  studio: { src: 'c2.svg', alt: 'Sample podcast cover: Backstage' },
+  listen: { src: 'c1.svg', alt: 'Sample podcast cover: The Long Table' },
+};
+const COVERS: [string, string][] = [['c1', 'The Long Table'], ['c2', 'Backstage'], ['c3', 'Open Mic']];
 const hasPhoto = (name: string) => existsSync(join(PHOTO_DIR, `${name}.jpg`));
 const credits = () => { try { return readFileSync(join(PHOTO_DIR, 'credits.txt'), 'utf8').trim(); } catch { return ''; } };
 
@@ -24,7 +30,7 @@ const STYLES = `
 .lp-trust{display:flex;gap:8px 18px;flex-wrap:wrap;font:.9rem system-ui,sans-serif;color:var(--mute);margin-top:18px;padding:0;list-style:none}
 .lp-trust li::before{content:"";display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--accent);margin-right:8px;vertical-align:2px}
 .lp-photo{position:relative;border-radius:18px;overflow:hidden;background:var(--line);aspect-ratio:4/3;margin:0}
-.lp-photo img{width:100%;height:100%;object-fit:cover;display:block}
+.lp-photo img{width:100%;height:100%;object-fit:cover;display:block}.lp-photo img.ill{object-fit:contain;background:var(--card)}
 .lp-chip{position:absolute;left:14px;bottom:14px;right:auto;background:var(--card);color:var(--ink);border:1px solid var(--line);border-radius:12px;padding:10px 14px;font:.86rem/1.35 system-ui,sans-serif;display:flex;gap:10px;align-items:center;max-width:calc(100% - 28px)}
 .lp-chip strong{display:block;font-weight:600}.lp-chip span{color:var(--mute)}
 .lp-section{margin-top:64px}.lp-section>h2{margin-bottom:.3em}.lp-intro{max-width:62ch;color:var(--mute);margin-top:0}
@@ -42,8 +48,16 @@ const STYLES = `
 export function landing(plans: any[]) {
   const b = esc(config.brand);
   const cheapest = plans[0] ? eur(plans[0].price_cents) : '€10';
-  const img = (name: string, alt: string, eager = false) =>
-    `<img src="${photo(name)}" alt="${hasPhoto(name) ? esc(alt) : esc(alt + ' (illustration)')}" width="1200" height="900" ${eager ? 'fetchpriority="high"' : 'loading="lazy"'} decoding="async">`;
+  const img = (name: string, alt: string, eager = false) => {
+    const lazy = eager ? 'fetchpriority="high"' : 'loading="lazy"';
+    if (hasPhoto(name)) return `<img src="/static/img/photos/${name}.jpg" alt="${esc(alt)}" width="1200" height="900" ${lazy} decoding="async">`;
+    const f = FALLBACK[name];
+    return `<img class="ill" src="/static/img/${f.src}" alt="${esc(f.alt)}" width="1200" height="900" ${lazy} decoding="async">`;
+  };
+  // Capas de exemplo: só com a fotografia de quem ouve (sem ela, a figura grande já é uma capa), sem repetir as usadas como recurso.
+  const usedFallback = new Set(Object.keys(FALLBACK).filter(n => !hasPhoto(n)).map(n => FALLBACK[n].src));
+  const covers = hasPhoto('listen') ? COVERS.filter(([f]) => !usedFallback.has(`${f}.svg`)) : [];
+  const illustrated = usedFallback.size > 0;
   const cr = credits();
   const ogImage = hasPhoto('hero') ? `${config.baseUrl}/static/img/photos/hero.jpg` : '';
   return page({
@@ -52,7 +66,7 @@ export function landing(plans: any[]) {
     head: `<meta property="og:type" content="website"><meta property="og:site_name" content="${b}"><meta property="og:title" content="Great interviews, recorded in your guest’s own time">
 <meta property="og:description" content="Asynchronous interviews turned into reviewed podcasts and videos."><meta property="og:url" content="${esc(config.baseUrl)}/">${ogImage ? `<meta property="og:image" content="${esc(ogImage)}"><meta name="twitter:card" content="summary_large_image">` : ''}`,
     styles: STYLES,
-    nav: `<a href="#how">How it works</a><a href="/podcasts">Gallery</a><a href="#pricing">Pricing</a><a href="/entrar">Sign in</a><a class="btn accent" style="margin-left:16px" href="/registar">Get started</a>`,
+    nav: `<a href="#how">How it works</a><a href="/podcasts">Gallery</a><a href="#pricing">Pricing</a><a href="/entrar">Sign in</a><a class="btn accent" href="/registar">Get started</a>`,
     body: `
 <section class="lp-hero"><div class="wrap lp-grid">
   <div>
@@ -71,7 +85,7 @@ export function landing(plans: any[]) {
   <div class="lp-steps">
     <article class="lp-step"><figure class="lp-photo">${img('interviewer', 'An interviewer preparing questions')}</figure><span class="lp-num">01</span><h3>You send the questions</h3><p>Write or record your goal and questions, add your photo and send one invitation by email.</p></article>
     <article class="lp-step"><figure class="lp-photo">${img('guest', 'A microphone and laptop ready to record an answer')}</figure><span class="lp-num">02</span><h3>They answer in their own time</h3><p>A private link on their phone or laptop, no app, no account. They hear each question, record, listen back and confirm.</p></article>
-    <article class="lp-step"><figure class="lp-photo">${img('studio', 'A podcast microphone in a studio')}</figure><span class="lp-num">03</span><h3>We produce the episode</h3><p>A faithful English script you review, natural narration, timed subtitles and a cover. Your guest validates before anything goes live.</p></article>
+    <article class="lp-step"><figure class="lp-photo">${img('studio', 'A podcast microphone in a studio')}</figure><span class="lp-num">03</span><h3>We produce the episode</h3><p>A faithful English script you review, natural narration, timed subtitles and a cover. By default, your guest validates before anything goes live.</p></article>
   </div>
 </section>
 
@@ -83,7 +97,7 @@ export function landing(plans: any[]) {
       <li><strong>Video with photos and subtitles</strong><span>Authorized photos, close-ups of whoever is speaking and subtitles in the language you choose.</span></li>
       <li><strong>AI video</strong><span>Presenters animated from authorized photos, with a visible “AI-generated video” notice. Only with each person’s specific consent.</span></li>
     </ul>
-    <div class="lp-covers">${[['c1', 'The Long Table'], ['c2', 'Backstage'], ['c3', 'Open Mic']].map(([f, c]) => `<img src="/static/img/${f}.svg" alt="Sample podcast cover: ${esc(c)}" width="400" height="400" loading="lazy">`).join('')}</div>
+    ${covers.length ? `<div class="lp-covers">${covers.map(([f, c]) => `<img src="/static/img/${f}.svg" alt="Sample podcast cover: ${esc(c)}" width="400" height="400" loading="lazy">`).join('')}</div>` : ''}
   </div>
 </div></section>
 
@@ -92,7 +106,7 @@ export function landing(plans: any[]) {
     <div class="card"><h3>Consent first</h3><p>Recording, AI processing, photo use, AI video and publication are separate, unticked choices, stored with the exact text shown.</p></div>
     <div class="card"><h3>Never invented</h3><p>Every line points to what was actually said. AI video clips are checked word by word against the approved script.</p></div>
     <div class="card"><h3>Synthetic means disclosed</h3><p>Episodes open with an audible notice, and animated portraits carry a visible label. No cloned voices.</p></div>
-    <div class="card"><h3>Guest approves</h3><p>Your guest sees and validates the final version. Silence is never approval.</p></div>
+    <div class="card"><h3>Guest approves</h3><p>By default, your guest sees and validates the final version, and always does when they appear in an AI video. Silence is never approval.</p></div>
     <div class="card"><h3>Originals stay private</h3><p>Raw recordings and unused photos are never published. Withdrawing an episode takes one click.</p></div>
     <div class="card"><h3>You stay in control</h3><p>Nothing paid runs until you press “process”, and you review every script before it is narrated.</p></div>
   </div>
@@ -107,7 +121,7 @@ export function landing(plans: any[]) {
 
 <section class="wrap lp-section"><div class="card lp-cta"><h2 style="margin-top:0">Your next great guest is one polite invitation away.</h2>
   <a class="btn accent" href="/registar">Create your account</a><p class="hint" style="margin-top:14px">Invited as a guest? Use the personal link in your email. There is nothing to sign up for.</p></div>
-  ${cr ? `<p class="hint">Photos: ${esc(cr)}</p>` : '<p class="hint">Illustrations on this page are fictional and do not depict any real person.</p>'}
+  ${cr ? `<p class="hint">Photos: ${esc(cr)}</p>` : ''}${illustrated ? '<p class="hint">Illustrations on this page are fictional and do not depict any real person.</p>' : ''}
 </section>`,
   });
 }
