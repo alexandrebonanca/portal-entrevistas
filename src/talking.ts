@@ -19,6 +19,7 @@ export const PROVIDERS: TalkingProvider[] = [
   { id: 'infinitalk', label: 'InfiniteTalk', partner: 'fal.ai', keyName: 'FAL_KEY', pricePerSec: null, ownAudio: true, note: 'Código aberto; 480p; preço por confirmar no painel' },
   { id: 'heygen', label: 'HeyGen Avatar IV', partner: 'WaveSpeed', keyName: 'WAVESPEED_API_KEY', pricePerSec: 0.10, ownAudio: true, note: '720p, expressividade média' },
   { id: 'veo', label: 'Google Veo 3.1 Fast (Flow)', partner: 'Google', keyName: 'GEMINI_API_KEY', pricePerSec: 0.10, ownAudio: false, note: 'Gera a voz dele (não usa o nosso áudio); clipe de 8 s' },
+  { id: 'veo-lite', label: 'Google Veo 3.1 Lite', partner: 'Google', keyName: 'GEMINI_API_KEY', pricePerSec: 0.05, ownAudio: false, note: 'Metade do preço do Fast; gera a voz dele; clipe de 8 s' },
 ];
 
 export const providerReady = (p: TalkingProvider) => config.openai.mock || !!S(p.keyName);
@@ -112,6 +113,7 @@ async function wavespeedHeygen(imageUrl: string, audioUrl: string, onStatus?: (s
 
 // ---------- Google Veo 3.1 (Gemini API) ----------
 export const VEO_MODEL = 'veo-3.1-fast-generate-preview';
+export const VEO_LITE_MODEL = 'veo-3.1-lite-generate-preview'; // Gemini API; $0,05/s em 720p (metade do Fast)
 export const VEO_PRICE_PER_SEC = 0.10; // Veo 3.1 Fast, 720p, com áudio
 
 /** Limite de pedidos da Google que não passa em minutos (quota esgotada): o trabalho pára em vez de esperar horas. */
@@ -140,14 +142,14 @@ const quiet = async (f?: (s: string) => Promise<void>, s = '') => { try { await 
  * Pedidos recusados (400/429) não são cobrados: o 429 espera e repete (até ~5 min), depois desiste com VeoQuotaError;
  * uma duração não aceite neste modo passa a 8 s.
  */
-export async function veoSubmit(o: { image: Buffer; prompt: string; aspectRatio?: '16:9' | '9:16'; durationSeconds?: 4 | 6 | 8; onStatus?: (s: string) => Promise<void>; canSend?: () => Promise<boolean>; waitMs?: (attempt: number) => number }): Promise<{ opName: string; dur: 4 | 6 | 8 }> {
+export async function veoSubmit(o: { image: Buffer; prompt: string; aspectRatio?: '16:9' | '9:16'; durationSeconds?: 4 | 6 | 8; onStatus?: (s: string) => Promise<void>; canSend?: () => Promise<boolean>; waitMs?: (attempt: number) => number; model?: string }): Promise<{ opName: string; dur: 4 | 6 | 8 }> {
   const headers = { 'x-goog-api-key': S('GEMINI_API_KEY'), 'Content-Type': 'application/json' };
   let dur: 4 | 6 | 8 = o.durationSeconds ?? 8;
   for (let attempt = 0; ; attempt++) {
     // Antes de CADA envio (também nas repetições após 429): autorização em vigor e trabalho não parado.
     if (o.canSend && !(await o.canSend())) throw new VeoCancelled('Envio à Google cancelado: autorização retirada ou trabalho parado');
     try {
-      const op = await jsonFetch(`https://generativelanguage.googleapis.com/v1beta/models/${VEO_MODEL}:predictLongRunning`, {
+      const op = await jsonFetch(`https://generativelanguage.googleapis.com/v1beta/models/${o.model ?? VEO_MODEL}:predictLongRunning`, {
         method: 'POST', headers,
         body: JSON.stringify({ instances: [{ prompt: o.prompt, image: { bytesBase64Encoded: o.image.toString('base64'), mimeType: 'image/jpeg' } }], parameters: { aspectRatio: o.aspectRatio ?? '16:9', durationSeconds: dur, personGeneration: 'allow_adult' } }),
       }, 'Veo');
@@ -200,15 +202,15 @@ export async function veoAwait(opName: string, dur: number, onStatus?: (s: strin
   }
 }
 
-export async function veoGenerate(o: { image: Buffer; prompt: string; aspectRatio?: '16:9' | '9:16'; durationSeconds?: 4 | 6 | 8; onStatus?: (s: string) => Promise<void> }) {
+export async function veoGenerate(o: { image: Buffer; prompt: string; aspectRatio?: '16:9' | '9:16'; durationSeconds?: 4 | 6 | 8; onStatus?: (s: string) => Promise<void>; model?: string }) {
   const s = await veoSubmit(o);
   return veoAwait(s.opName, s.dur, o.onStatus);
 }
 
-async function veo(image: Buffer, text: string, onStatus?: (s: string) => Promise<void>) {
-  // (a direção de cena entra no texto do pedido)
+async function veo(image: Buffer, text: string, onStatus?: (s: string) => Promise<void>, model?: string) {
+  // (a direção de cena entra no texto do pedido; o mesmo pedido no Fast e no Lite, para comparar só o modelo)
   const prompt = `The person in the image is a podcast host in a calm studio. They look at the camera and say, in a natural, warm voice: "${text.replace(/"/g, "'")}". ${presenterDirection()} No captions, no text on screen, no music.`;
-  return veoGenerate({ image, prompt, onStatus });
+  return veoGenerate({ image, prompt, onStatus, model });
 }
 
 /**
@@ -230,6 +232,7 @@ export async function runProvider(p: TalkingProvider, a: { imageUrl: string; aud
     case 'infinitalk': return falRun('fal-ai/infinitalk', { image_url: a.imageUrl, audio_url: a.audioUrl, prompt: direction, resolution: '480p', num_frames: Math.min(721, Math.max(41, Math.round(a.audioSec * 25) + 5)) }, onStatus);
     case 'heygen': return wavespeedHeygen(a.imageUrl, a.audioUrl, onStatus);
     case 'veo': return veo(a.image, a.text, onStatus);
+    case 'veo-lite': return veo(a.image, a.text, onStatus, VEO_LITE_MODEL);
     default: throw new PermanentError(`Fornecedor desconhecido: ${p.id}`);
   }
 }

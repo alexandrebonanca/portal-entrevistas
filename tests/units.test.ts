@@ -322,3 +322,15 @@ test('Veo: planos fixos cortados nas legendas', async () => {
   const shots = stillShots('cover', 0, 4000, [{ startMs: 400, endMs: 2000, text: 'A' }, { startMs: 2000, endMs: 3600, text: 'B' }]);
   assert.deepEqual(shots.map(x => [x.startMs, x.endMs, x.text]), [[0, 400, ''], [400, 2000, 'A'], [2000, 3600, 'B'], [3600, 4000, '']]);
 });
+
+test('Laboratório: Veo Lite disponível com o modelo e o preço certos', async () => {
+  const { PROVIDERS, VEO_LITE_MODEL, veoGenerate } = await import('../src/talking.ts');
+  const lite = PROVIDERS.find(p => p.id === 'veo-lite')!;
+  assert.ok(lite); assert.equal(lite.pricePerSec, 0.05); assert.equal(lite.ownAudio, false); assert.equal(VEO_LITE_MODEL, 'veo-3.1-lite-generate-preview');
+  const real = globalThis.fetch;
+  let url = '';
+  globalThis.fetch = (async (u: string) => { url = String(u); return new Response(JSON.stringify({ error: { message: 'stop' } }), { status: 400 }); }) as any;
+  try { await assert.rejects(veoGenerate({ image: Buffer.from('x'), prompt: 'p', durationSeconds: 8, model: VEO_LITE_MODEL })); }
+  finally { globalThis.fetch = real; }
+  assert.match(url, /models\/veo-3\.1-lite-generate-preview:predictLongRunning$/, 'o pedido vai para o modelo Lite');
+});
