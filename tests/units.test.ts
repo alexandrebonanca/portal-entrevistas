@@ -106,3 +106,17 @@ test('composição com parte animada produz MP4 com a duração do áudio', asyn
   const d = parseFloat(spawnSync(ffprobe, ['-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=duration', '-of', 'csv=p=0', f]).stdout.toString());
   assert.ok(Math.abs(d - 8) < 0.3, `duração do vídeo ${d}`);
 });
+
+test('limpeza de chaves coladas: tira prefixos de código, aspas e espaços sem mexer na chave', async () => {
+  const { cleanSecret, secretFingerprint } = await import('../src/settings.ts');
+  const k = 'fal_sk_abc123DEF456ghi789';
+  for (const raw of [k, ` ${k}\n`, `"${k}"`, `FAL_KEY="${k}"`, `export FAL_KEY=${k}`, `Authorization: Key ${k}`, `Key ${k}`, `Bearer ${k}`, `'${k}';`])
+    assert.equal(cleanSecret(raw), k, raw);
+  assert.equal(cleanSecret('abc123:sk_live_xyz'), 'abc123:sk_live_xyz', 'formato id:segredo intacto');
+  assert.equal(cleanSecret('sk-proj-AbC'), 'sk-proj-AbC');
+  assert.equal(cleanSecret('ABC123:SECRET'), 'ABC123:SECRET', 'identificador em maiúsculas não é confundido com nome de variável');
+  assert.match(secretFingerprint(k), /^25 caracteres, começa por «fal_sk_», termina em «…i789»$/);
+  assert.match(secretFingerprint('minhapass fal_sk_x'), /espaços/);
+  const { isApiKey } = await import('../src/settings.ts');
+  assert.equal(isApiKey('FAL_KEY'), true); assert.equal(isApiKey('MOLONI_PASSWORD'), false, 'palavras-passe não são alteradas'); assert.equal(isApiKey('MAIL_FROM'), false);
+});

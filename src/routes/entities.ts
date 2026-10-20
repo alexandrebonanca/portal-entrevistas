@@ -70,7 +70,7 @@ ${req.user.role === 'admin' ? `<form method="post" action="/entidades/${e.id}" c
 ${GROUPS.map(g => `<div class="card"><div class="row"><h2 style="margin:0" class="grow">${esc(g)}</h2><button type="submit" formaction="/entidades/${e.id}/testar/${encodeURIComponent(g)}" class="ghost">Guardar e testar</button></div>
 ${g === 'Stripe' ? `<p class="hint sans">Endpoint do webhook desta entidade, a registar no Stripe: <code>${esc(config.baseUrl)}/webhooks/stripe/${esc(e.slug)}</code> — eventos: checkout.session.completed, customer.subscription.created/updated/deleted.</p>` : ''}
 ${SETTING_DEFS.filter(d => d.group === g).map(d => `<label for="f_${d.key}">${esc(d.label)} <span class="hint">· ${src(d.key)}</span></label>
-<input id="f_${d.key}" name="${d.key}" type="${d.secret ? 'password' : 'text'}" autocomplete="off" placeholder="${esc(d.secret ? (entityHas(id, d.key) ? mask(entityValue(id, d.key)) : (d.hint ?? '')) : '')}" value="${d.secret ? '' : esc(entityValue(id, d.key))}">`).join('')}</div>`).join('')}
+<input id="f_${d.key}" name="${d.key}" type="${d.secret ? 'password' : 'text'}" autocomplete="${d.secret ? 'new-password' : 'off'}" data-lpignore="true" spellcheck="false" placeholder="${esc(d.secret ? (entityHas(id, d.key) ? mask(entityValue(id, d.key)) : (d.hint ?? '')) : '')}" value="${d.secret ? '' : esc(entityValue(id, d.key))}">`).join('')}</div>`).join('')}
 <p><button class="accent">Guardar chaves</button></p></form>`);
   });
 

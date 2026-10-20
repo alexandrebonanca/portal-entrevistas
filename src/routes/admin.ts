@@ -4,7 +4,7 @@ import { esc, fmtDate, hashPassword, isEmail } from '../lib.ts';
 import { page, flash, pill } from '../views.ts';
 import { audit } from '../app.ts';
 import { quotaFor, ACTIVE_STATUSES, stripe } from '../billing.ts';
-import { SETTING_DEFS, S, mask, saveSetting, fromDb } from '../settings.ts';
+import { SETTING_DEFS, S, mask, saveSetting, fromDb, secretFingerprint } from '../settings.ts';
 import { queueEmail, emailShell, flushOutbox, retryFailedEmails } from '../mail.ts';
 
 const STATUSES: [string, string][] = [['active', 'Ativa'], ['comped', 'Oferta (sem cobrança)'], ['trialing', 'Em teste'], ['past_due', 'Pagamento em atraso'], ['canceled', 'Cancelada'], ['inactive', 'Inativa']];
@@ -32,13 +32,15 @@ export async function serviceTest(db: any, g: string, userEmail: string): Promis
     msg = `Replicate: token válido (conta ${acc.username ?? acc.name ?? 'OK'}).`;
   } else if (g === 'fal.ai') {
     // Pedido real mas sem campos obrigatórios: chave errada → 401/403; chave certa → 422 (validação), sem custo.
+    // Igual ao cliente oficial: «Authorization: Key <FAL_KEY>», com a chave tal como o painel a dá (fal_sk_… ou id:segredo).
     const key = S('FAL_KEY');
-    if (!key.includes(':')) throw new Error('a chave da fal.ai tem o formato «KEY_ID:KEY_SECRET» — parece faltar uma das partes');
+    const fp = secretFingerprint(key);
+    if (!key) throw new Error('falta a chave da fal.ai');
     const r = await fetch('https://queue.fal.run/fal-ai/infinitalk', { method: 'POST', headers: { Authorization: `Key ${key}`, 'Content-Type': 'application/json' }, body: '{}' });
     const body = (await r.text()).slice(0, 160);
-    if (r.status === 401 || r.status === 403) throw new Error(`fal.ai recusou a chave (${r.status}): ${body}`);
-    if (r.status !== 422 && r.status !== 400) throw new Error(`fal.ai respondeu ${r.status}: ${body}`);
-    msg = 'fal.ai: chave válida (pedido de verificação sem custo).';
+    if (r.status === 401 || r.status === 403) throw new Error(`fal.ai recusou a chave guardada (${fp}). Compare com a chave no painel da fal.ai. Resposta: ${body}`);
+    if (r.status !== 422 && r.status !== 400) throw new Error(`fal.ai respondeu ${r.status} (${fp}): ${body}`);
+    msg = `fal.ai: chave válida (${fp}); verificação sem custo.`;
   } else if (g === 'WaveSpeed') {
     const r = await fetch('https://api.wavespeed.ai/api/v3/predictions/00000000/result', { headers: { Authorization: `Bearer ${S('WAVESPEED_API_KEY')}` } });
     if (r.status === 401 || r.status === 403) throw new Error(`WaveSpeed recusou a chave (${r.status})`);
@@ -201,7 +203,7 @@ ${rows.map(({ u, qt }) => `<tr><td><a href="/admin/utilizadores/${u.id}">${esc(u
 ${groups.map(g => `<div class="card"><div class="row"><h2 style="margin:0" class="grow">${esc(g)}</h2>${['OpenAI', 'Stripe', 'MailerSend', 'Moloni ON', 'Replicate', 'fal.ai', 'WaveSpeed', 'Google'].includes(g) ? `<button type="submit" formaction="/admin/definicoes/testar/${encodeURIComponent(g)}" class="ghost" name="testar" value="1">Guardar e testar</button>` : ''}</div>
 ${g === 'Stripe' ? `<p class="hint sans">Endpoint do webhook a registar no Stripe: <code>${esc(config.baseUrl)}/webhooks/stripe</code> — eventos: checkout.session.completed, customer.subscription.created/updated/deleted.</p>` : ''}
 ${SETTING_DEFS.filter(d => d.group === g).map(d => `<label for="f_${d.key}">${esc(d.label)} <span class="hint">${S(d.key) ? (fromDb(d.key) ? '· definido' : '· definido por variável de ambiente') : '· por definir'}</span></label>
-<input id="f_${d.key}" name="${d.key}" type="${d.secret ? 'password' : 'text'}" autocomplete="off" placeholder="${esc(d.secret ? mask(S(d.key)) || (d.hint ?? '') : '')}" value="${d.secret ? '' : esc(S(d.key))}">`).join('')}</div>`).join('')}
+<input id="f_${d.key}" name="${d.key}" type="${d.secret ? 'password' : 'text'}" autocomplete="${d.secret ? 'new-password' : 'off'}" data-lpignore="true" spellcheck="false" placeholder="${esc(d.secret ? mask(S(d.key)) || (d.hint ?? '') : '')}" value="${d.secret ? '' : esc(S(d.key))}">`).join('')}</div>`).join('')}
 <div class="card"><h2 style="margin-top:0">Registo de utilizadores</h2><label class="check"><input type="checkbox" name="signups_open" value="1" ${signups ? 'checked' : ''}> Permitir que novos utilizadores se registem (e subscrevam um plano)</label></div>
 <p><button class="accent">Guardar definições</button></p></form>
 <div class="card"><h2 style="margin-top:0">Planos</h2><p class="hint sans">Alterar o preço afeta apenas novas subscrições; as existentes mantêm o preço contratado no Stripe.</p>

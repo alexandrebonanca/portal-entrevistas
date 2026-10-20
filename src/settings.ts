@@ -65,8 +65,34 @@ export const entityOfUser = async (db: Db, userId: string) => (await db.one('SEL
 export const entityOfInterview = async (db: Db, interviewId: string) =>
   (await db.one('SELECT u.entity_id FROM interviews i JOIN users u ON u.id=i.owner_id WHERE i.id=$1', [interviewId]))?.entity_id as string | null | undefined;
 
+/**
+ * Limpa o que vem colado à volta de uma chave: espaços e quebras de linha, aspas, prefixos de código
+ * («FAL_KEY=», «export …=», «Authorization:», «Key », «Bearer »). Não altera o conteúdo da chave em si.
+ */
+export function cleanSecret(raw: string): string {
+  let v = String(raw ?? '').replace(/[\r\n\t]/g, ' ').trim();
+  v = v.replace(/^export\s+/i, '');
+  v = v.replace(/^[A-Z][A-Z0-9]*_[A-Z0-9_]*\s*[=:]\s*/, ''); // FAL_KEY=…, OPENAI_API_KEY: … (nome de variável com «_»)
+  v = v.replace(/^authorization\s*:\s*/i, '');
+  v = v.replace(/^(key|bearer)\s+/i, '');
+  v = v.replace(/^["'`]+|["'`;,]+$/g, '').trim();
+  return v;
+}
+
+/** Só chaves/tokens de API são limpos; palavras-passe (ex.: Moloni) ficam exatamente como foram escritas. */
+export const isApiKey = (key: string) => !!SETTING_DEFS.find(d => d.key === key)?.secret && !/PASSWORD/i.test(key);
+
+/** Retrato não secreto de uma chave guardada (para comparar com o painel do fornecedor). */
+export function secretFingerprint(v: string) {
+  if (!v) return 'nenhuma chave guardada';
+  const prefix = (/^[a-z]+_[a-z]+_/i.exec(v)?.[0] ?? v.slice(0, 3)).slice(0, 8);
+  const odd = /\s/.test(v) ? ' · contém espaços (provável colagem dupla)' : '';
+  return `${v.length} caracteres, começa por «${prefix}», termina em «…${v.slice(-4)}»${odd}`;
+}
+
 export async function saveEntitySetting(db: Db, entityId: string, key: string, value: string) {
   if (!SETTING_DEFS.some(d => d.key === key)) throw new Error('Definição desconhecida');
+  if (isApiKey(key)) value = cleanSecret(value);
   if (!value) { await db.query('DELETE FROM entity_settings WHERE entity_id=$1 AND key=$2', [entityId, key]); entityCache.get(entityId)?.delete(key); return; }
   await db.query(`INSERT INTO entity_settings(entity_id, key, value_enc) VALUES ($1,$2,$3) ON CONFLICT (entity_id, key) DO UPDATE SET value_enc=$3, updated_at=now()`, [entityId, key, encrypt(value)]);
   if (!entityCache.has(entityId)) entityCache.set(entityId, new Map());
@@ -84,6 +110,7 @@ export const isSet = (key: string) => !!S(key);
 export const fromDb = (key: string) => cache.has(key);
 
 export async function saveSetting(db: Db, key: string, value: string) {
+  if (isApiKey(key)) value = cleanSecret(value);
   if (!SETTING_DEFS.some(d => d.key === key) && key !== 'SIGNUPS_OPEN') throw new Error('Definição desconhecida');
   if (!value) {
     await db.query('DELETE FROM settings WHERE key=$1', [key]); cache.delete(key); return;
