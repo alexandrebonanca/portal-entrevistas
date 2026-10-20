@@ -113,6 +113,8 @@ test('limpeza de chaves coladas: tira prefixos de código, aspas e espaços sem 
   for (const raw of [k, ` ${k}\n`, `"${k}"`, `FAL_KEY="${k}"`, `export FAL_KEY=${k}`, `Authorization: Key ${k}`, `Key ${k}`, `Bearer ${k}`, `'${k}';`])
     assert.equal(cleanSecret(raw), k, raw);
   assert.equal(cleanSecret('abc123:sk_live_xyz'), 'abc123:sk_live_xyz', 'formato id:segredo intacto');
+  assert.equal(cleanSecret('fal_sk_abc123 0123456789abcdef'), 'fal_sk_abc123:0123456789abcdef', 'fal.ai: ID e segredo colados com espaço');
+  assert.equal(cleanSecret('fal_sk_abc123:0123456789abcdef'), 'fal_sk_abc123:0123456789abcdef');
   assert.equal(cleanSecret('sk-proj-AbC'), 'sk-proj-AbC');
   assert.equal(cleanSecret('ABC123:SECRET'), 'ABC123:SECRET', 'identificador em maiúsculas não é confundido com nome de variável');
   assert.match(secretFingerprint(k), /^25 caracteres, começa por «fal_sk_», termina em «…i789»$/);

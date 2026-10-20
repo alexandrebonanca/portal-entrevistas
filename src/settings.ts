@@ -76,6 +76,9 @@ export function cleanSecret(raw: string): string {
   v = v.replace(/^authorization\s*:\s*/i, '');
   v = v.replace(/^(key|bearer)\s+/i, '');
   v = v.replace(/^["'`]+|["'`;,]+$/g, '').trim();
+  // fal.ai: «ID SEGREDO» (copiados em separado) → «ID:SEGREDO», o formato que a fal.ai aceita.
+  const m = /^(fal_sk_[A-Za-z0-9_-]+)\s+(?:secret\s*[:=]?\s*)?([A-Za-z0-9_-]{8,})$/i.exec(v);
+  if (m) v = `${m[1]}:${m[2]}`;
   return v;
 }
 
