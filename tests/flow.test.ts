@@ -379,6 +379,20 @@ test('animação por fala: só com autorização específica; aviso e reserva', 
   assert.ok(pm.animatedSegments > 0);
   const pv = await post(`/entrevistas/${ivId}/episodio/${ep.id}/enviar-previa`, {}, owner);
   assert.match(decodeURIComponent(pv.headers.location as string), /já está publicado/);
+
+  // «só o entrevistador aprova» sem o convidado animado: não se lhe pede aprovação nem se fala de animação
+  await db.query(`UPDATE interviews SET review_policy='host_only' WHERE id=$1`, [ivId]);
+  await db.query(`UPDATE episodes SET status='preview' WHERE id=$1`, [ep.id]);
+  const view = await get('/entrevista/episodio', g);
+  assert.match(view.body, /Publication is decided by the interviewer/);
+  assert.doesNotMatch(view.body, /animated by AI, confirm|action="\/entrevista\/episodio\/decisao"/);
+  const nGuestAp = (await db.one(`SELECT count(*)::int n FROM approvals WHERE episode_id=$1 AND actor='guest'`, [ep.id])).n;
+  await post('/entrevista/episodio/decisao', { decision: 'changes', video: pubVideo.video_asset_id }, g);
+  assert.equal((await db.one(`SELECT count(*)::int n FROM approvals WHERE episode_id=$1 AND actor='guest'`, [ep.id])).n, nGuestAp, 'sem alcance, a decisão do convidado não se regista');
+  const pv2 = await post(`/entrevistas/${ivId}/episodio/${ep.id}/enviar-previa`, {}, owner);
+  assert.match(decodeURIComponent(pv2.headers.location as string), /só valida um vídeo em que apareça animado/);
+  await db.query(`UPDATE interviews SET review_policy='guest_preview' WHERE id=$1`, [ivId]);
+
   await db.query(`UPDATE episodes SET status='preview', video_asset_id=$2 WHERE id=$1`, [ep.id, ep2.video_asset_id]);
 
   // retirar a autorização de animação tira o vídeo do ar (o ficheiro fica privado)

@@ -80,7 +80,7 @@ ${objT && !iv.objective_text ? `<p class="hint">Transcrição do objetivo gravad
 <fieldset style="border:1px solid var(--line);border-radius:8px;margin-top:14px"><legend class="sans">Legendas previstas</legend>${SUBS.map(([v, l]) => `<label class="check"><input type="checkbox" name="subtitle_langs" value="${v}" ${(iv.subtitle_langs ?? []).includes(v) ? 'checked' : ''}> ${l}</label>`).join('')}</fieldset>
 <label for="rp">Política de revisão e publicação (comunicada no convite)</label><select id="rp" name="review_policy">${iv.collection_status !== 'draft' && iv.review_policy === 'guest_preview'
   ? `<option value="guest_preview" selected>O entrevistado vê e aprova a versão final antes de publicar</option>`
-  : sel(iv.review_policy, [['guest_preview', 'O entrevistado vê e aprova a versão final antes de publicar'], ['host_only', 'Só o entrevistador aprova (não recomendado)']])}</select>${iv.collection_status !== 'draft' && iv.review_policy === 'guest_preview' ? '<p class="hint">O convite já prometeu ao entrevistado que vê e aprova a versão final: esta política mantém-se.</p>' : ''}
+  : sel(iv.review_policy, [['guest_preview', 'O entrevistado vê e aprova a versão final antes de publicar'], ['host_only', 'Só o entrevistador aprova (não recomendado)']])}</select>${iv.collection_status !== 'draft' && iv.review_policy === 'guest_preview' ? '<p class="hint">Depois de enviado o convite, a política já não pode passar a «só o entrevistador aprova» (o entrevistado foi informado de que vê e aprova a versão final).</p>' : ''}
 <label class="check"><input type="checkbox" name="host_photo_rights" value="1" ${iv.host_photo_rights ? 'checked' : ''}> Tenho direito a usar a minha fotografia neste projeto</label>
 <label class="check"><input type="checkbox" name="host_animate" value="1" ${iv.host_animate ? 'checked' : ''}> Autorizo que a minha fotografia seja animada por IA no vídeo (boca sincronizada com a voz sintética), com o aviso visível «Retrato animado por IA»</label>
 <label class="check"><input type="checkbox" name="host_ai_video" value="1" ${iv.host_ai_video ? 'checked' : ''}> Autorizo que a minha fotografia e o texto aprovado das minhas falas sejam enviados à Google (Veo) para gerar um vídeo por IA em que apareço a dizer esse texto em inglês, com gestos e voz gerados pelo modelo (não é a minha voz), com o aviso visível «AI-generated video · AI voice»</label>
@@ -325,7 +325,8 @@ ${iv.objective_shared && iv.objective_text ? `<p class="hint">O entrevistado vê
     const n = Number((await db.one('SELECT count(*)::int AS n FROM questions WHERE interview_id=$1', [iv.id]))?.n);
     await db.query('INSERT INTO questions(interview_id, position, text, followup, version) VALUES ($1,$2,$3,true,$4)', [iv.id, n + 1, text, iv.version + 1]);
     const fresh = await db.one(`UPDATE interviews SET version=version+1, collection_status=CASE WHEN collection_status='submitted' THEN 'reopened' ELSE collection_status END WHERE id=$1 RETURNING *`, [iv.id]);
-    await createInvitation(db, fresh, { name: req.user!.name }, { followup: true });
+    // Se o convidado ainda não abriu o convite, recebe o convite completo (com a pergunta nova), não o email de perguntas adicionais.
+    await createInvitation(db, fresh, { name: req.user!.name }, fresh.collection_status === 'invited' ? {} : { followup: true });
     await audit(db, req.user!.email, 'question.followup', iv.id);
     return reply.redirect(`/entrevistas/${iv.id}?ok=` + encodeURIComponent('Pergunta adicional enviada ao entrevistado.'));
   });
@@ -348,7 +349,7 @@ ${iv.objective_shared && iv.objective_text ? `<p class="hint">O entrevistado vê
     const body = `<div class="wrap" style="padding-top:32px"><div class="row"><h1 class="grow" style="margin:0">${esc(iv.title)}</h1>${statusPill(iv.collection_status)}${statusPill(iv.production_status)}${statusPill(iv.publication_status)}</div>
 ${flash(q.ok)}${flash(q.e, 'bad')}
 <div class="card"><p class="sans"><strong>Convidado:</strong> ${esc(iv.guest_name)} &lt;${esc(iv.guest_email)}&gt; · <strong>Versão das perguntas:</strong> ${iv.version}
-${inv ? `<br><strong>Convite:</strong> ${inv.revoked_at ? 'revogado' : inv.declined_at ? 'recusado pelo convidado' : new Date(inv.expires_at) < new Date() ? 'expirado' : 'válido até ' + fmtDate(inv.expires_at)}${inv.first_opened_at ? ' · aberto em ' + fmtDate(inv.first_opened_at) : ''}` : ''}</p>
+${inv ? `<br><strong>Convite:</strong> ${inv.revoked_at ? 'revogado' : inv.declined_at ? 'recusado pelo convidado' : new Date(inv.expires_at) < new Date() ? 'expirado' : 'válido até ' + new Date(new Date(inv.expires_at).getTime() - 12 * 3600_000).toLocaleDateString('pt-PT', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' })}${inv.first_opened_at ? ' · aberto em ' + fmtDate(inv.first_opened_at) : ''}` : ''}</p>
 <div class="row">${iv.collection_status === 'draft' ? `<a class="btn accent" href="/entrevistas/${iv.id}/convidar">Convidar</a>` : ''}
 <a class="btn ghost" href="/entrevistas/${iv.id}/editar">Editar</a>
 ${['invited', 'started', 'reopened', 'expired'].includes(iv.collection_status) ? `<form method="post" action="/entrevistas/${iv.id}/reenviar"><button class="ghost">Reenviar convite (revoga o anterior)</button></form><form method="post" action="/entrevistas/${iv.id}/cancelar" onsubmit="return confirm('Cancelar a entrevista?')"><button class="danger">Cancelar</button></form>` : ''}

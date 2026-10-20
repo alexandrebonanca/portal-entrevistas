@@ -8,6 +8,7 @@ const D = {
     reviewIntro: (h: string) => `${h} preparou o episódio a partir das suas respostas.`,
     reviewSteps: 'Reveja o episódio, confirme que o conteúdo corresponde ao que disse e aprove esta versão ou peça alterações. Nada é publicado sem a sua aprovação.',
     reviewStepsVideo: 'Reveja o episódio e o vídeo em que aparece animado por IA, confirme que corresponde ao que disse e aprove esta versão ou peça alterações. O vídeo com a sua imagem animada não é publicado sem a sua aprovação.',
+    reviewStepsView: 'Pode ver e ouvir o episódio. A publicação é decidida pelo entrevistador.',
     silence: 'O silêncio nunca conta como aprovação.',
     reviewOpen: 'Ver e validar a entrevista',
     reviewSubject: (t: string) => `Confirme e valide o conteúdo da entrevista — ${t}`,
@@ -22,7 +23,9 @@ const D = {
     c_participation: 'Participação e gravação das minhas respostas (necessário para responder).',
     c_processing: 'Transcrição, tradução para inglês e narração com vozes sintéticas geradas por IA, através de serviços externos.',
     c_publish: 'Publicação do episódio resultante, depois de eu o ter visto e aprovado.',
-    consentLong: 'Quem organiza: o entrevistador indicado no convite. Finalidades: gravar as suas respostas, transcrevê-las, traduzi-las e produzir um episódio de podcast em inglês com vozes sintéticas (não clonamos a sua voz). Serviços externos: transcrição, tradução e voz sintética são feitos por um fornecedor de IA. Publicação: só após a sua aprovação do resultado. Conservação: os originais ficam privados e pode pedir a sua eliminação através do contacto de apoio.',
+    c_publish_host: 'Publicação do episódio resultante, depois de revisto e aprovado pelo entrevistador. Um vídeo em que eu apareça animado por IA só é publicado depois de eu o ter visto e aprovado.',
+    consentLong: 'Quem organiza: o entrevistador indicado no convite. Finalidades: gravar as suas respostas, transcrevê-las, traduzi-las e produzir um episódio de podcast em inglês com vozes sintéticas (não clonamos a sua voz). Serviços externos: transcrição, tradução e voz sintética são feitos por um fornecedor de IA. Publicação: {PUB} Conservação: os originais ficam privados e pode pedir a sua eliminação através do contacto de apoio.',
+    pubAll: 'só após a sua aprovação do resultado.', pubHost: 'decidida pelo entrevistador; um vídeo em que apareça animado por IA só com a sua aprovação.',
     adults: 'Confirmo que tenho 18 anos ou mais.',
     save: 'Guardar e continuar', start: 'Começar', continue: 'Continuar',
     question: 'Pergunta', of: 'de', listen: 'Ouvir pergunta', listenSynth: 'Leitura feita com voz gerada por IA.', record: 'Gravar resposta', stop: 'Parar', hear: 'Ouvir resposta',
@@ -32,7 +35,7 @@ const D = {
     silent: 'A gravação parece silenciosa. Pode repetir ou continuar mesmo assim.', tooLong: 'A gravação excede o limite.', otherAudio: 'Pare qualquer outro áudio (música, vídeo) antes de gravar.',
     refused: 'Registou que não pretende responder a esta pergunta.', answered: 'Resposta guardada',
     photos: 'Fotografias (opcional)', photosIntro: 'Pode tirar até três selfies à sua escolha para acompanhar a entrevista. Só usamos as que escolher, e só nas finalidades que autorizar.',
-    c_photo: 'Autorizo a captação e o armazenamento das fotografias que eu escolher.', c_cover: 'Autorizo a utilização de uma ou mais fotografias na capa do episódio.', c_pubphoto: 'Autorizo a publicação dessas fotografias no episódio.', c_animate: 'Autorizo que uma dessas fotografias seja animada por IA no vídeo do episódio (movimento da boca sincronizado com a voz sintética em inglês), sempre com o aviso visível «Retrato animado por IA».', versionChanged: 'O vídeo mudou desde que abriu esta página: veja a versão atual antes de aprovar.', c_aivideo: 'Autorizo que uma dessas fotografias e o texto aprovado da minha resposta sejam enviados à Google (Veo) para gerar um vídeo por IA em que apareço a dizer esse texto em inglês, com gestos e uma voz gerados pelo modelo (não é a minha voz), sempre com o aviso visível «AI-generated video · AI voice».', photoAuth: 'Autorizações das fotografias',
+    c_photo: 'Autorizo a captação e o armazenamento das fotografias que eu escolher.', c_cover: 'Autorizo a utilização de uma ou mais fotografias na capa do episódio.', c_pubphoto: 'Autorizo a publicação dessas fotografias no episódio.', c_animate: 'Autorizo que uma dessas fotografias seja animada por IA no vídeo do episódio (movimento da boca sincronizado com a voz sintética em inglês), sempre com o aviso visível «Retrato animado por IA». A animação é feita por um serviço externo (Replicate).', versionChanged: 'O vídeo mudou desde que abriu esta página: veja a versão atual antes de aprovar.', c_aivideo: 'Autorizo que uma dessas fotografias e o texto aprovado da minha resposta sejam enviados à Google (Veo) para gerar um vídeo por IA em que apareço a dizer esse texto em inglês, com gestos e uma voz gerados pelo modelo (não é a minha voz), sempre com o aviso visível «AI-generated video · AI voice».', photoAuth: 'Autorizações das fotografias',
     openCamera: 'Abrir câmara', take: 'Tirar fotografia', keep: 'Guardar esta', discard: 'Descartar', skipPhotos: 'Terminar sem fotografias', photoUpload: 'Carregar fotografia', photosDone: 'Concluir fotografias',
     camDenied: 'A câmara não está disponível. Pode carregar uma fotografia.', max3: 'Máximo de três fotografias.',
     review: 'Rever e submeter', yourAnswers: 'As suas respostas', noPhotos: 'Sem fotografias', pendingUploads: 'Ainda há respostas por enviar ou por responder.',
@@ -59,6 +62,7 @@ const D = {
     reviewIntro: (h: string) => `${h} has prepared the episode from your answers.`,
     reviewSteps: 'Review the episode, confirm that it matches what you said, and approve this version or request changes. Nothing is published without your approval.',
     reviewStepsVideo: 'Review the episode and the video in which you appear animated by AI, confirm that it matches what you said, and approve this version or request changes. The video with your animated image is not published without your approval.',
+    reviewStepsView: 'You can watch and listen to the episode. Publication is decided by the interviewer.',
     silence: 'Silence is never treated as approval.',
     reviewOpen: 'View and validate the interview',
     reviewSubject: (t: string) => `Please review and validate your interview — ${t}`,
@@ -73,7 +77,9 @@ const D = {
     c_participation: 'Taking part and recording my answers (needed to answer).',
     c_processing: 'Transcription, translation into English and narration with AI-generated synthetic voices, using external services.',
     c_publish: 'Publication of the resulting episode, after I have seen and approved it.',
-    consentLong: 'Organiser: the interviewer named in the invitation. Purposes: record your answers, transcribe and translate them, and produce an English-language podcast episode narrated with synthetic voices (we do not clone your voice). External services: transcription, translation and synthetic voice are provided by an AI vendor. Publication: only after you approve the result. Retention: the originals stay private and you can ask for deletion through the support contact.',
+    c_publish_host: 'Publication of the resulting episode, after it has been reviewed and approved by the interviewer. A video in which I appear animated by AI is only published after I have seen and approved it.',
+    consentLong: 'Organiser: the interviewer named in the invitation. Purposes: record your answers, transcribe and translate them, and produce an English-language podcast episode narrated with synthetic voices (we do not clone your voice). External services: transcription, translation and synthetic voice are provided by an AI vendor. Publication: {PUB} Retention: the originals stay private and you can ask for deletion through the support contact.',
+    pubAll: 'only after you approve the result.', pubHost: 'decided by the interviewer; a video in which you appear animated by AI only with your approval.',
     adults: 'I confirm I am 18 or older.',
     save: 'Save and continue', start: 'Start', continue: 'Continue',
     question: 'Question', of: 'of', listen: 'Listen to the question', listenSynth: 'Read aloud with an AI-generated voice.', record: 'Record answer', stop: 'Stop', hear: 'Play my answer',
@@ -83,7 +89,7 @@ const D = {
     silent: 'The recording seems silent. You can redo it or continue anyway.', tooLong: 'The recording exceeds the limit.', otherAudio: 'Stop any other audio (music, video) before recording.',
     refused: 'You chose not to answer this question.', answered: 'Answer saved',
     photos: 'Photos (optional)', photosIntro: 'You may take up to three selfies of your choice to go with the interview. We only use the ones you choose, and only for the purposes you allow.',
-    c_photo: 'I allow the capture and storage of the photos I choose.', c_cover: 'I allow one or more photos to be used on the episode cover.', c_pubphoto: 'I allow those photos to be published with the episode.', c_animate: 'I allow one of those photos to be animated by AI in the episode video (mouth movement synchronised with the synthetic English voice), always with the visible notice “AI-animated portrait”.', versionChanged: 'The video changed since you opened this page: please watch the current version before approving.', c_aivideo: 'I allow one of those photos and the approved text of my answer to be sent to Google (Veo) to generate an AI video in which I appear saying that text in English, with gestures and a voice generated by the model (not my own voice), always with the visible notice “AI-generated video · AI voice”.', photoAuth: 'Photo permissions',
+    c_photo: 'I allow the capture and storage of the photos I choose.', c_cover: 'I allow one or more photos to be used on the episode cover.', c_pubphoto: 'I allow those photos to be published with the episode.', c_animate: 'I allow one of those photos to be animated by AI in the episode video (mouth movement synchronised with the synthetic English voice), always with the visible notice “AI-animated portrait”. The animation is done by an external service (Replicate).', versionChanged: 'The video changed since you opened this page: please watch the current version before approving.', c_aivideo: 'I allow one of those photos and the approved text of my answer to be sent to Google (Veo) to generate an AI video in which I appear saying that text in English, with gestures and a voice generated by the model (not my own voice), always with the visible notice “AI-generated video · AI voice”.', photoAuth: 'Photo permissions',
     openCamera: 'Open camera', take: 'Take photo', keep: 'Keep this one', discard: 'Discard', skipPhotos: 'Finish without photos', photoUpload: 'Upload a photo', photosDone: 'Finish photos',
     camDenied: 'The camera is not available. You can upload a photo instead.', max3: 'Maximum of three photos.',
     review: 'Review and submit', yourAnswers: 'Your answers', noPhotos: 'No photos', pendingUploads: 'Some answers are still missing or not uploaded.',
@@ -108,10 +114,13 @@ const D = {
 
 export const t = (lang: Lang) => D[lang];
 
-export const CONSENT_VERSION = 'v1-2026-10';
+export const CONSENT_VERSION = 'v2-2026-10'; // v2: publicação conforme a política de revisão; Replicate na animação
 export const CONSENT_PURPOSES = ['participation', 'processing', 'photo_capture', 'cover_use', 'publish_photo', 'animate_portrait', 'ai_video', 'publish'] as const;
 export type ConsentPurpose = typeof CONSENT_PURPOSES[number];
-export function consentText(lang: Lang, purpose: ConsentPurpose): string {
+/** Texto de cada autorização; a de publicação depende da política de revisão da entrevista. */
+export function consentText(lang: Lang, purpose: ConsentPurpose, policy?: string): string {
   const d = D[lang];
-  return ({ participation: d.c_participation, processing: d.c_processing, photo_capture: d.c_photo, cover_use: d.c_cover, publish_photo: d.c_pubphoto, animate_portrait: d.c_animate, ai_video: d.c_aivideo, publish: d.c_publish } as const)[purpose];
+  return ({ participation: d.c_participation, processing: d.c_processing, photo_capture: d.c_photo, cover_use: d.c_cover, publish_photo: d.c_pubphoto, animate_portrait: d.c_animate, ai_video: d.c_aivideo, publish: policy === 'host_only' ? d.c_publish_host : d.c_publish } as const)[purpose];
 }
+/** Informação de base mostrada antes das autorizações, com a regra de publicação da entrevista. */
+export const consentLongFor = (lang: Lang, policy?: string) => D[lang].consentLong.replace('{PUB}', policy === 'host_only' ? D[lang].pubHost : D[lang].pubAll);

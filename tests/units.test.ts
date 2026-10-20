@@ -346,3 +346,23 @@ test('relatório Veo: porque é que um pedaço ficou sem clipe', async () => {
   assert.equal(chunkProblem(false, false, false, 'filtered'), 'filtered');
   assert.equal(chunkProblem(false, false, false, undefined), 'error');
 });
+
+test('alcance da aprovação do convidado e autorizações conforme a política', async () => {
+  const { approvalScope, guestMustApprove } = await import('../src/approval.ts');
+  const cases: [string, any, string][] = [
+    ['guest_preview', null, 'all'], ['host_only', null, 'none'], ['host_only', { hostAnimated: true }, 'none'],
+    ['host_only', { guestAnimated: true }, 'video'], ['host_only', { guestAiVideo: true }, 'video'], ['guest_preview', { guestAiVideo: true }, 'all'],
+  ];
+  for (const [policy, meta, scope] of cases) {
+    assert.equal(approvalScope({ review_policy: policy }, meta), scope, `${policy} ${JSON.stringify(meta)}`);
+    assert.equal(guestMustApprove({ review_policy: policy }, meta), scope !== 'none', 'a publicação e o texto ao convidado usam a mesma regra');
+  }
+  const { consentText, consentLongFor, CONSENT_VERSION } = await import('../src/i18n.ts');
+  assert.match(consentText('pt-PT', 'publish'), /depois de eu o ter visto e aprovado/);
+  assert.match(consentText('pt-PT', 'publish', 'host_only'), /aprovado pelo entrevistador[\s\S]*animado por IA só é publicado depois de eu o ter visto/);
+  assert.match(consentLongFor('en', 'host_only'), /Publication: decided by the interviewer/);
+  assert.match(consentLongFor('en', 'guest_preview'), /Publication: only after you approve the result/);
+  assert.doesNotMatch(consentLongFor('pt-PT', 'host_only') + consentLongFor('pt-PT'), /\{PUB\}/);
+  assert.match(consentText('en', 'animate_portrait'), /Replicate/);
+  assert.equal(CONSENT_VERSION, 'v2-2026-10');
+});

@@ -3,6 +3,7 @@ import { config } from './config.ts';
 import { esc, newToken, sha256 } from './lib.ts';
 import { queueEmail, emailShell } from './mail.ts';
 import { t, normLang } from './i18n.ts';
+import { guestReviewScope } from './approval.ts';
 
 /** Revoga convites anteriores e cria um novo; o email vai para a outbox (deduplicado por convite). */
 export async function createInvitation(db: Db, interview: any, host: { name: string }, opts: { followup?: boolean; preview?: boolean } = {}) {
@@ -14,7 +15,7 @@ export async function createInvitation(db: Db, interview: any, host: { name: str
     ? (v.getUTCHours() === 0 && v.getUTCMinutes() === 0 ? v.toISOString() : `${v.getFullYear()}-${String(v.getMonth() + 1).padStart(2, '0')}-${String(v.getDate()).padStart(2, '0')}`) : '').slice(0, 10);
   const endOfDay = (day: string) => new Date(`${day}T23:59:59Z`).getTime() + 12 * 3600_000;
   let lastDay = new Date(Date.now() + days * 86400_000).toISOString().slice(0, 10);
-  if (interview.deadline && !opts.preview) { const dl = ymd(interview.deadline); if (/^\d{4}-\d{2}-\d{2}$/.test(dl) && endOfDay(dl) > Date.now()) lastDay = dl; }
+  if (interview.deadline && !opts.preview) { const dl = ymd(interview.deadline); if (/^\d{4}-\d{2}-\d{2}$/.test(dl) && dl >= new Date().toISOString().slice(0, 10)) lastDay = dl; }
   const exp = new Date(endOfDay(lastDay));
   const inv = await db.tx(async tx => {
     await tx.query(`UPDATE invitations SET revoked_at=now() WHERE interview_id=$1 AND revoked_at IS NULL`, [interview.id]);
@@ -34,8 +35,9 @@ export async function createInvitation(db: Db, interview: any, host: { name: str
   const small = (s: string) => `<p style="font-size:14px;color:#6b655c">${esc(s)}</p>`;
   if (opts.preview) {
     // Validação do episódio: email próprio (sem número de perguntas, sem «responder no telemóvel», sem recusa).
-    // Com «só o entrevistador aprova», a aprovação do convidado só é exigida para o vídeo em que aparece animado.
-    const steps = interview.review_policy === 'host_only' ? d.reviewStepsVideo : d.reviewSteps;
+    // O texto segue o alcance da aprovação do convidado no episódio atual (a mesma regra da publicação).
+    const scope = await guestReviewScope(db, interview);
+    const steps = scope === 'video' ? d.reviewStepsVideo : scope === 'none' ? d.reviewStepsView : d.reviewSteps;
     const body = `<p>${esc(d.reviewIntro(hostName))}</p><p><strong>${esc(interview.title)}</strong></p><p>${esc(steps)}</p>`;
     const text = [d.reviewTitle, d.reviewIntro(hostName), interview.title, steps, `${d.reviewOpen}: ${url}`, help, footerText].join('\n\n');
     await queueEmail(db, { key: `invite:${inv.id}`, interviewId: interview.id, to: interview.guest_email, subject: d.reviewSubject(interview.title), html: emailShell(d.reviewTitle, body, { label: d.reviewOpen, url }, { footer, after: small(help) }), text });
