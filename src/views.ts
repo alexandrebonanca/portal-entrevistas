@@ -14,6 +14,7 @@ header.top{border-bottom:1px solid var(--line)}header.top .wrap{display:flex;ali
 .brand{display:inline-flex;align-items:center;gap:9px;font:600 1.18rem system-ui,-apple-system,'Segoe UI',sans-serif;letter-spacing:-.01em;color:var(--ink);text-decoration:none}
 .brand .mark{flex:none}.brand .wq{color:var(--accent);font-weight:400}.brand .wi{color:var(--ink)}
 nav a{margin-left:16px;font-size:.95rem;text-decoration:none;color:var(--ink)}nav a:hover{color:var(--accent)}
+@media (max-width:560px){nav a{margin:0 14px 0 0;font-size:.9rem}nav a.btn{padding:8px 14px;min-height:36px;margin-left:0!important}}
 .btn,button{display:inline-block;background:var(--ink);color:var(--bg);border:0;border-radius:8px;padding:12px 20px;font-size:1rem;font-weight:600;cursor:pointer;text-decoration:none;min-height:44px}
 .btn.accent,button.accent{background:var(--accent);color:var(--accent-ink)}.btn.ghost,button.ghost{background:transparent;color:var(--ink);border:1px solid var(--line)}
 button.danger{background:var(--bad);color:#fff}button:disabled{opacity:.5;cursor:not-allowed}

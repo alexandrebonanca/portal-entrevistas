@@ -25,7 +25,7 @@ export const faviconHref = () =>
 /** Nome com «quiet» na cor de destaque. Para um nome de marca diferente (BRAND_NAME), mostra-o tal como está. */
 export const wordmark = () => {
   const b = config.brand;
-  return /^quietinterview$/i.test(b) ? `<span class="wq">quiet</span><span class="wi">interview</span>` : `<span class="wi">${esc(b)}</span>`;
+  return /^quietinterview$/i.test(b) ? `<span class="wm"><span class="wq">quiet</span><span class="wi">interview</span></span>` : `<span class="wi">${esc(b)}</span>`; // um só bloco: sem o espaço do flex entre as duas partes
 };
 
 /** Cabeçalho dos emails: símbolo em PNG (os clientes de email não mostram SVG) e o nome em texto. */
