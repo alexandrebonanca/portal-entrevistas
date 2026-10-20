@@ -171,25 +171,26 @@ ${lines.map((l, i) => `<text x="${W / 2}" y="${y0 + 46 + i * lh}" text-anchor="m
 }
 
 /** Nome, aviso «AI-animated portrait» e legenda numa única imagem transparente. */
-export async function animatedOverlay(who: { name: string; role: string } | undefined, text: string): Promise<Buffer> {
+export async function animatedOverlay(who: { name: string; role: string } | undefined, text: string, notice = 'AI-animated portrait'): Promise<Buffer> {
   const { default: sharp } = await import('sharp');
-  const layers: any[] = [{ input: await animatedNotice(who) }];
+  const layers: any[] = [{ input: await animatedNotice(who, notice) }];
   if (text) layers.push({ input: await subtitleOverlay(text) });
   return sharp({ create: { width: W, height: H, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } } }).composite(layers).png().toBuffer();
 }
 
 /** Aviso visível obrigatório sobre os planos animados. */
-export async function animatedNotice(who?: { name: string; role: string }): Promise<Buffer> {
+export async function animatedNotice(who?: { name: string; role: string }, label = 'AI-animated portrait'): Promise<Buffer> {
   const { default: sharp } = await import('sharp');
+  const bw = Math.max(336, Math.round(label.length * 11.5) + 48);
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}">${who ? `<rect x="40" y="40" width="${Math.max(260, who.name.length * 22 + 60)}" height="86" rx="10" fill="#000" opacity=".6"/>
-<text x="68" y="80" font-family="${FONT}" font-weight="700" font-size="30" fill="#fff">${esc(who.name)}</text><text x="68" y="110" font-family="${FONT}" font-size="20" fill="#fff" opacity=".8">${esc(who.role)}</text>` : ''}<rect x="${W - 372}" y="36" width="336" height="44" rx="8" fill="#000" opacity=".6"/>
-<text x="${W - 204}" y="65" text-anchor="middle" font-family="${FONT}" font-weight="600" font-size="20" fill="#fff">AI-animated portrait</text></svg>`;
+<text x="68" y="80" font-family="${FONT}" font-weight="700" font-size="30" fill="#fff">${esc(who.name)}</text><text x="68" y="110" font-family="${FONT}" font-size="20" fill="#fff" opacity=".8">${esc(who.role)}</text>` : ''}<rect x="${W - 36 - bw}" y="36" width="${bw}" height="44" rx="8" fill="#000" opacity=".6"/>
+<text x="${W - 36 - bw / 2}" y="65" text-anchor="middle" font-family="${FONT}" font-weight="600" font-size="20" fill="#fff">${esc(label)}</text></svg>`;
   return sharp(Buffer.from(svg)).png().toBuffer();
 }
 
 export type Part =
   | { kind: 'still'; startMs: number; endMs: number; shots: Shot[] }
-  | { kind: 'anim'; startMs: number; endMs: number; base: Buffer; clip: Buffer; who?: { name: string; role: string }; cues: { startMs: number; endMs: number; text: string }[] };
+  | { kind: 'anim'; startMs: number; endMs: number; base: Buffer; clip: Buffer | (() => Promise<Buffer>); clipOffsetMs?: number; notice?: string; who?: { name: string; role: string }; cues: { startMs: number; endMs: number; text: string }[] };
 
 let encoderCache: string[] | null = null;
 async function videoEncoder(ffmpeg: string): Promise<string[]> {
@@ -220,7 +221,7 @@ export function shotsWithin(shots: Shot[], a: number, b: number): Shot[] {
   return shots.filter(s => s.endMs > a && s.startMs < b).map(s => ({ ...s, startMs: Math.max(s.startMs, a), endMs: Math.min(s.endMs, b) }));
 }
 
-export async function encodeComposite(ffmpeg: string, parts: Part[], frameFor: (s: Shot) => Promise<Buffer>, audio: Buffer, onProgress?: (i: number, n: number) => Promise<void>): Promise<Buffer> {
+export async function encodeComposite(ffmpeg: string, parts: Part[], frameFor: (s: Shot) => Promise<Buffer>, audio: Buffer, onProgress?: (i: number, n: number) => Promise<void>, audioExt = 'mp3'): Promise<Buffer> {
   const enc = await videoEncoder(ffmpeg);
   return withTemp(async dir => {
     const files: string[] = [];
@@ -246,7 +247,8 @@ export async function encodeComposite(ffmpeg: string, parts: Part[], frameFor: (
         // Parte animada cortada legenda a legenda: cada pedaço tem só 3 entradas (fundo, clipe cortado, aviso+legenda),
         // para caber nos 512 MB do servidor (antes: uma entrada por legenda, todas em simultâneo).
         const base = join(dir, `base${p}.jpg`), clip = join(dir, `clip${p}.mp4`);
-        await writeFile(base, part.base); await writeFile(clip, part.clip);
+        await writeFile(base, part.base); await writeFile(clip, typeof part.clip === 'function' ? await part.clip() : part.clip);
+        const off = part.clipOffsetMs ?? 0;
         const len = part.endMs - part.startMs;
         const cuts = new Set<number>([0, len]);
         for (const c of part.cues) { if (c.startMs > 0 && c.startMs < len) cuts.add(c.startMs); if (c.endMs > 0 && c.endMs < len) cuts.add(c.endMs); }
@@ -258,10 +260,10 @@ export async function encodeComposite(ffmpeg: string, parts: Part[], frameFor: (
           const mid = (a0 + a1) / 2;
           const text = part.cues.find(c => mid >= c.startMs && mid < c.endMs)?.text ?? '';
           const over = join(dir, `ov${p}_${k}.png`), piece = join(dir, `piece${p}_${k}.mp4`);
-          await writeFile(over, await animatedOverlay(part.who, text));
+          await writeFile(over, await animatedOverlay(part.who, text, part.notice));
           const d = ((a1 - a0) / 1000).toFixed(3);
           const g = `[1:v]scale=-2:${H},setsar=1[c];[0:v]scale=${W}:${H},setsar=1[bg];[bg][c]overlay=(W-w)/2:(H-h)/2:eof_action=repeat[v0];[v0][2:v]overlay=0:0,fps=25,format=yuv420p[out]`;
-          const r = await run(ffmpeg, ['-y', '-v', 'error', '-threads', '2', '-loop', '1', '-t', d, '-i', base, '-ss', (a0 / 1000).toFixed(3), '-t', d, '-i', clip, '-loop', '1', '-t', d, '-i', over,
+          const r = await run(ffmpeg, ['-y', '-v', 'error', '-threads', '2', '-loop', '1', '-t', d, '-i', base, '-ss', ((off + a0) / 1000).toFixed(3), '-t', d, '-i', clip, '-loop', '1', '-t', d, '-i', over,
             '-filter_complex', g, '-map', '[out]', ...enc, '-threads', '2', '-t', d, '-an', piece], 600_000);
           if (r.code !== 0) throw new Error('Falha a codificar parte animada: ' + r.stderr.slice(-300));
           pieces.push(piece);
@@ -274,7 +276,7 @@ export async function encodeComposite(ffmpeg: string, parts: Part[], frameFor: (
       files.push(out);
       if (onProgress) await onProgress(p + 1, parts.length);
     }
-    const list = join(dir, 'parts.txt'), a = join(dir, 'audio.mp3'), out = join(dir, 'video.mp4');
+    const list = join(dir, 'parts.txt'), a = join(dir, `audio.${audioExt}`), out = join(dir, 'video.mp4');
     await writeFile(list, files.map(f => `file '${f.replace(/\\/g, '/')}'`).join('\n'));
     await writeFile(a, audio);
     const r = await run(ffmpeg, ['-y', '-v', 'error', '-f', 'concat', '-safe', '0', '-i', list, '-i', a, '-map', '0:v', '-map', '1:a', '-c:v', 'copy', '-c:a', 'aac', '-b:a', '128k', '-shortest', '-movflags', '+faststart', out], 900_000);
@@ -301,6 +303,49 @@ export async function stillClip(ffmpeg: string, image: Buffer, ms: number): Prom
     const i = join(dir, 'p.jpg'), o = join(dir, 'c.mp4');
     await writeFile(i, image);
     const r = await run(ffmpeg, ['-y', '-v', 'error', '-loop', '1', '-t', (ms / 1000).toFixed(3), '-i', i, '-vf', 'scale=512:512,fps=25,format=yuv420p', ...enc, o], 120_000);
+    if (r.code !== 0) throw new Error('Falha no clipe simulado: ' + r.stderr.slice(-200));
+    return readFile(o);
+  });
+}
+
+/**
+ * Faixa de áudio contínua (WAV) a partir de troços com duração exata: som de um clipe ou do áudio do episódio
+ * (a partir de offsetMs, completado com silêncio se for curto) ou silêncio. Em PCM, juntar não desloca o som face à imagem.
+ */
+export type AudioPiece = { durMs: number; src?: Buffer | (() => Promise<Buffer>); ext?: string; offsetMs?: number };
+export async function buildAudioTrack(ffmpeg: string, pieces: AudioPiece[]): Promise<Buffer> {
+  return withTemp(async dir => {
+    const files: string[] = [];
+    const written = new Map<any, string>();
+    for (let i = 0; i < pieces.length; i++) {
+      const p = pieces[i], o = join(dir, `a${String(i).padStart(4, '0')}.wav`), d = (p.durMs / 1000).toFixed(3);
+      const silence = ['-y', '-v', 'error', '-f', 'lavfi', '-i', 'anullsrc=r=44100:cl=stereo', '-t', d, '-c:a', 'pcm_s16le', o];
+      let r = { code: 1, stderr: '' };
+      if (p.src) {
+        let f = written.get(p.src);
+        if (!f) { f = join(dir, `s${i}.${p.ext ?? 'mp3'}`); await writeFile(f, typeof p.src === 'function' ? await p.src() : p.src); written.set(p.src, f); }
+        r = await run(ffmpeg, ['-y', '-v', 'error', '-ss', ((p.offsetMs ?? 0) / 1000).toFixed(3), '-i', f, '-vn', '-af', 'apad', '-t', d, '-ar', '44100', '-ac', '2', '-c:a', 'pcm_s16le', o], 120_000);
+        if (r.code !== 0) console.error(`[video] troço de áudio ${i} sem som utilizável, fica silêncio: ${r.stderr.slice(-200)}`);
+      }
+      if (r.code !== 0) { r = await run(ffmpeg, silence, 60_000); if (r.code !== 0) throw new Error('Falha a gerar silêncio: ' + r.stderr.slice(-200)); }
+      files.push(o);
+    }
+    const list = join(dir, 'alist.txt'), out = join(dir, 'track.wav');
+    await writeFile(list, files.map(f => `file '${f.replace(/\\/g, '/')}'`).join('\n'));
+    const r = await run(ffmpeg, ['-y', '-v', 'error', '-f', 'concat', '-safe', '0', '-i', list, '-c', 'copy', out], 300_000);
+    if (r.code !== 0) throw new Error('Falha a juntar o áudio: ' + r.stderr.slice(-300));
+    return readFile(out);
+  });
+}
+
+/** Clipe simulado com imagem e som (testes com AI_MOCK, no lugar do Veo). */
+export async function mockTalkingClip(ffmpeg: string, image: Buffer, ms: number, vertical = false): Promise<Buffer> {
+  const enc = await videoEncoder(ffmpeg);
+  return withTemp(async dir => {
+    const i = join(dir, 'p.jpg'), o = join(dir, 'c.mp4');
+    await writeFile(i, image);
+    const r = await run(ffmpeg, ['-y', '-v', 'error', '-loop', '1', '-t', (ms / 1000).toFixed(3), '-i', i, '-f', 'lavfi', '-t', (ms / 1000).toFixed(3), '-i', 'sine=frequency=300:sample_rate=44100',
+      '-vf', `scale=${vertical ? '720:1280' : '1280:720'},fps=25,format=yuv420p`, ...enc, '-c:a', 'aac', '-shortest', o], 120_000);
     if (r.code !== 0) throw new Error('Falha no clipe simulado: ' + r.stderr.slice(-200));
     return readFile(o);
   });

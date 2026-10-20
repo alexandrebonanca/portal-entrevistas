@@ -319,6 +319,54 @@ test('animação por fala: só com autorização específica; aviso e reserva', 
   assert.equal((await db.one('SELECT video_asset_id FROM episodes WHERE id=$1', [ep.id])).video_asset_id, null);
 });
 
+test('vídeo com o Google Veo: autorização própria, som dos clipes, verificação e retirada', async () => {
+  const ep = await db.one(`SELECT * FROM episodes WHERE interview_id=$1 AND NOT stale ORDER BY created_at DESC LIMIT 1`, [ivId]);
+  const lastJob = () => db.one(`SELECT state, error, result FROM jobs WHERE kind='render_video' ORDER BY created_at DESC LIMIT 1`);
+  // sem autorização para o Veo: a opção aparece desativada e um pedido forçado falha sem gerar nada
+  let pg = await get(`/entrevistas/${ivId}/producao`, owner);
+  assert.match(pg.body, /value="veo" disabled/);
+  await post(`/entrevistas/${ivId}/episodio/${ep.id}/video`, { lang: 'pt-PT', engine: 'veo' }, owner);
+  await drain();
+  let job = await lastJob();
+  assert.equal(job.state, 'failed'); assert.match(job.error, /Google Veo/);
+  assert.equal((await db.one(`SELECT count(*)::int n FROM assets WHERE interview_id=$1 AND kind='veo_clip'`, [ivId])).n, 0);
+
+  // o entrevistador autoriza em Editar e o convidado em «Autorizações das fotografias»
+  await db.query('UPDATE interviews SET host_ai_video=true WHERE id=$1', [ivId]);
+  const tk = (await post(`/entrevistas/${ivId}/episodio/${ep.id}/enviar-previa`, {}, owner), await flushOutbox(db), await db.one(`SELECT text_body FROM emails WHERE interview_id=$1 AND subject LIKE 'Please review%' ORDER BY created_at DESC LIMIT 1`, [ivId]));
+  const g = `gs=${cookies(await post(`/i/${/\/i\/([A-Za-z0-9_-]{40,})/.exec(tk.text_body)![1]}/abrir`, {}, '')).gs}`;
+  assert.match((await get('/entrevista/fotos', g)).body, /Google \(Veo\)/);
+  await post('/entrevista/fotos/autorizacoes', { photo_capture: '1', cover_use: '1', publish_photo: '1', ai_video: '1' }, g);
+  const c = await db.one(`SELECT granted, text_snapshot FROM consents WHERE interview_id=$1 AND purpose='ai_video' ORDER BY created_at DESC LIMIT 1`, [ivId]);
+  assert.equal(c.granted, true); assert.match(c.text_snapshot, /not my own voice|não é a minha voz/);
+  pg = await get(`/entrevistas/${ivId}/producao`, owner);
+  assert.doesNotMatch(pg.body, /value="veo" disabled/); assert.match(pg.body, /\d+ clipes, \d+ s faturados/);
+
+  await post(`/entrevistas/${ivId}/episodio/${ep.id}/video`, { lang: 'pt-PT', engine: 'veo' }, owner);
+  await drain();
+  job = await lastJob();
+  assert.equal(job.state, 'done', job.error ?? '');
+  let ep2 = await db.one('SELECT video_asset_id, video_lang FROM episodes WHERE id=$1', [ep.id]);
+  const meta = (await db.one('SELECT meta, duration_ms FROM assets WHERE id=$1', [ep2.video_asset_id])).meta;
+  assert.equal(meta.engine, 'veo'); assert.ok(meta.veoClips > 0); assert.equal(meta.generatedClips, meta.veoClips);
+  assert.equal(meta.hostAiVideo, true); assert.equal(meta.guestAiVideo, true); assert.deepEqual(meta.fallbackSegments, []);
+  assert.equal(meta.fidelity.length, meta.veoClips);
+  assert.equal((await db.one(`SELECT count(*)::int n FROM assets WHERE interview_id=$1 AND kind='veo_clip'`, [ivId])).n, meta.veoClips);
+  const v = await get(`/entrevistas/${ivId}/episodio/${ep.id}/video.mp4`, owner);
+  assert.equal(v.rawPayload.subarray(4, 8).toString('latin1'), 'ftyp');
+  assert.match((await get(`/entrevistas/${ivId}/producao`, owner)).body, /Fidelidade ao guião/);
+
+  // gerar de novo reaproveita os clipes já pagos
+  await post(`/entrevistas/${ivId}/episodio/${ep.id}/video`, { lang: 'en', engine: 'veo' }, owner);
+  await drain();
+  ep2 = await db.one('SELECT video_asset_id FROM episodes WHERE id=$1', [ep.id]);
+  assert.equal((await db.one('SELECT meta FROM assets WHERE id=$1', [ep2.video_asset_id])).meta.generatedClips, 0);
+
+  // retirar a autorização do Veo tira o vídeo do ar
+  await post('/entrevista/fotos/autorizacoes', { photo_capture: '1', cover_use: '1', publish_photo: '1' }, g);
+  assert.equal((await db.one('SELECT video_asset_id FROM episodes WHERE id=$1', [ep.id])).video_asset_id, null);
+});
+
 test('alterar uma transcrição invalida guião e aprovações sem apagar versões', async () => {
   const take = await db.one(`SELECT t.id FROM answer_takes t LIMIT 1`);
   await post(`/entrevistas/${ivId}/transcricoes/${take.id}`, { text: 'Texto corrigido pelo editor' }, owner);

@@ -12,6 +12,7 @@ import { readQuestion, generateFictionalPortrait } from './ai/openai.ts';
 import { cuesFromWords, fixOverlaps, checkCues, type Cue } from './subtitles.ts';
 import { composeCover } from './cover.ts';
 import { PermanentError, type Handler } from './jobs.ts';
+import { renderVeoVideo } from './veo-episode.ts';
 
 const usage = (db: Db, interviewId: string, kind: string, quantity: number, cost: number) =>
   db.query('INSERT INTO usage_ledger(interview_id, kind, quantity, cost_usd, estimated) VALUES ($1,$2,$3,$4,true)', [interviewId, kind, quantity, cost]);
@@ -218,6 +219,7 @@ export const handlers: Record<string, Handler> = {
   },
 
   async render_video(job, { db, progress }) {
+    if (job.input.engine === 'veo') return renderVeoVideo(job, { db, progress });
     const ep = await db.one('SELECT * FROM episodes WHERE id=$1 AND interview_id=$2', [job.input.episodeId, job.interview_id]);
     if (!ep || ep.stale || ep.status === 'superseded') throw new PermanentError('Episódio inexistente ou desatualizado');
     const iv = await db.one('SELECT * FROM interviews WHERE id=$1', [ep.interview_id]);

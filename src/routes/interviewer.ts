@@ -81,6 +81,7 @@ ${objT && !iv.objective_text ? `<p class="hint">Transcrição do objetivo gravad
 <label for="rp">Política de revisão e publicação (comunicada no convite)</label><select id="rp" name="review_policy">${sel(iv.review_policy, [['guest_preview', 'O entrevistado vê e aprova a versão final antes de publicar'], ['host_only', 'Só o entrevistador aprova (não recomendado)']])}</select>
 <label class="check"><input type="checkbox" name="host_photo_rights" value="1" ${iv.host_photo_rights ? 'checked' : ''}> Tenho direito a usar a minha fotografia neste projeto</label>
 <label class="check"><input type="checkbox" name="host_animate" value="1" ${iv.host_animate ? 'checked' : ''}> Autorizo que a minha fotografia seja animada por IA no vídeo (boca sincronizada com a voz sintética), com o aviso visível «Retrato animado por IA»</label>
+<label class="check"><input type="checkbox" name="host_ai_video" value="1" ${iv.host_ai_video ? 'checked' : ''}> Autorizo que a minha fotografia e o texto aprovado das minhas falas sejam enviados à Google (Veo) para gerar um vídeo por IA em que apareço a dizer esse texto em inglês, com gestos e voz gerados pelo modelo (não é a minha voz), com o aviso visível «AI-generated video · AI voice»</label>
 <p><button class="accent">Guardar dados</button></p></form>
 
 <div class="card"><h2 style="margin-top:0">A minha fotografia</h2>
@@ -116,12 +117,12 @@ ${locked ? `<form method="post" action="/entrevistas/${iv.id}/adicional"><label 
     if (email && !isEmail(email)) return reply.redirect(`/entrevistas/${iv.id}/editar?e=` + encodeURIComponent('Email do entrevistado inválido.'));
     await db.query(
       `UPDATE interviews SET title=$2, objective_text=$3, objective_shared=$4, host_name=$5, guest_name=$6, guest_email=$7, interaction_lang=$8, answer_lang=$9,
-        deadline=$10, planned_visibility=$11, personal_message=$12, subtitle_langs=$13, review_policy=$14, host_photo_rights=$15, question_voice=$16, guest_voice=$17, host_animate=$18 WHERE id=$1`,
+        deadline=$10, planned_visibility=$11, personal_message=$12, subtitle_langs=$13, review_policy=$14, host_photo_rights=$15, question_voice=$16, guest_voice=$17, host_animate=$18, host_ai_video=$19 WHERE id=$1`,
       [iv.id, locked ? iv.title : String(b.title ?? '').trim().slice(0, 140) || iv.title, locked ? iv.objective_text : String(b.objective_text ?? '').slice(0, 4000), !!b.objective_shared,
         String(b.host_name ?? '').slice(0, 100), String(b.guest_name ?? '').slice(0, 100), locked ? iv.guest_email : email, b.interaction_lang === 'en' ? 'en' : 'pt-PT',
         ['auto', 'pt', 'en', 'es', 'fr', 'de'].includes(b.answer_lang) ? b.answer_lang : 'auto', b.deadline || null,
         ['private', 'unlisted', 'public'].includes(b.planned_visibility) ? b.planned_visibility : 'private', String(b.personal_message ?? '').slice(0, 1500),
-        subs.length ? subs : ['en'], b.review_policy === 'host_only' ? 'host_only' : 'guest_preview', !!b.host_photo_rights, b.question_voice === 'male' ? 'male' : 'female', b.guest_voice === 'male' ? 'male' : 'female', !!b.host_animate && !!b.host_photo_rights]);
+        subs.length ? subs : ['en'], b.review_policy === 'host_only' ? 'host_only' : 'guest_preview', !!b.host_photo_rights, b.question_voice === 'male' ? 'male' : 'female', b.guest_voice === 'male' ? 'male' : 'female', !!b.host_animate && !!b.host_photo_rights, !!b.host_ai_video && !!b.host_photo_rights]);
     return reply.redirect(`/entrevistas/${iv.id}/editar?ok=` + encodeURIComponent('Guardado.'));
   });
 

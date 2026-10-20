@@ -111,15 +111,33 @@ async function wavespeedHeygen(imageUrl: string, audioUrl: string, onStatus?: (s
 }
 
 // ---------- Google Veo 3.1 (Gemini API) ----------
-async function veo(image: Buffer, text: string, onStatus?: (s: string) => Promise<void>) {
-  // (a direção de cena entra no texto do pedido; a imagem segue o formato do SDK oficial @google/genai: bytesBase64Encoded + mimeType)
+export const VEO_MODEL = 'veo-3.1-fast-generate-preview';
+export const VEO_PRICE_PER_SEC = 0.10; // Veo 3.1 Fast, 720p, com áudio
+
+/**
+ * Um clipe do Veo a partir de uma imagem inicial (formato do SDK oficial @google/genai: bytesBase64Encoded + mimeType).
+ * Cobrado pela duração pedida (4, 6 ou 8 s). Pedidos recusados (400/429) não são cobrados: o 429 espera e repete;
+ * uma duração não aceite neste modo passa a 8 s.
+ */
+export async function veoGenerate(o: { image: Buffer; prompt: string; aspectRatio?: '16:9' | '9:16'; durationSeconds?: 4 | 6 | 8; onStatus?: (s: string) => Promise<void> }) {
   const key = S('GEMINI_API_KEY');
   const headers = { 'x-goog-api-key': key, 'Content-Type': 'application/json' };
-  const prompt = `The person in the image is a podcast host in a calm studio. They look at the camera and say, in a natural, warm voice: "${text.replace(/"/g, "'")}". ${presenterDirection()} No captions, no text on screen, no music.`;
-  const op = await jsonFetch('https://generativelanguage.googleapis.com/v1beta/models/veo-3.1-fast-generate-preview:predictLongRunning', {
-    method: 'POST', headers,
-    body: JSON.stringify({ instances: [{ prompt, image: { bytesBase64Encoded: image.toString('base64'), mimeType: 'image/jpeg' } }], parameters: { aspectRatio: '16:9', durationSeconds: 8, personGeneration: 'allow_adult' } }),
-  }, 'Veo');
+  let dur = o.durationSeconds ?? 8;
+  let op: any;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      op = await jsonFetch(`https://generativelanguage.googleapis.com/v1beta/models/${VEO_MODEL}:predictLongRunning`, {
+        method: 'POST', headers,
+        body: JSON.stringify({ instances: [{ prompt: o.prompt, image: { bytesBase64Encoded: o.image.toString('base64'), mimeType: 'image/jpeg' } }], parameters: { aspectRatio: o.aspectRatio ?? '16:9', durationSeconds: dur, personGeneration: 'allow_adult' } }),
+      }, 'Veo');
+      break;
+    } catch (e: any) {
+      const m = String(e?.message ?? e);
+      if (dur !== 8 && /^Veo 400/.test(m) && /duration/i.test(m)) { dur = 8; continue; }
+      if (/^Veo 429/.test(m) && attempt < 5) { await o.onStatus?.('Limite de pedidos do Google: a aguardar'); await sleep(30_000 * (attempt + 1)); continue; }
+      throw e;
+    }
+  }
   const t0 = Date.now();
   for (;;) {
     if (Date.now() - t0 > 15 * 60_000) throw new Error('Veo: tempo excedido');
@@ -129,10 +147,26 @@ async function veo(image: Buffer, text: string, onStatus?: (s: string) => Promis
     if (st.done) {
       const uri = st.response?.generateVideoResponse?.generatedSamples?.[0]?.video?.uri;
       if (!uri) throw new PermanentError(`Veo não devolveu vídeo (pode ter sido bloqueado pelos filtros): ${JSON.stringify(st.response ?? {}).slice(0, 200)}`);
-      return { video: await download(uri, { 'x-goog-api-key': key }), billedSec: 8 };
+      return { video: await download(uri, { 'x-goog-api-key': key }), billedSec: dur };
     }
-    await onStatus?.('A gerar no Google Veo');
+    await o.onStatus?.('A gerar no Google Veo');
   }
+}
+
+async function veo(image: Buffer, text: string, onStatus?: (s: string) => Promise<void>) {
+  // (a direção de cena entra no texto do pedido)
+  const prompt = `The person in the image is a podcast host in a calm studio. They look at the camera and say, in a natural, warm voice: "${text.replace(/"/g, "'")}". ${presenterDirection()} No captions, no text on screen, no music.`;
+  return veoGenerate({ image, prompt, onStatus });
+}
+
+/**
+ * Pedido de um clipe de episódio: a pessoa diz exatamente o texto aprovado, com a voz (masculina/feminina) escolhida pelo
+ * entrevistador e uma descrição fixa por papel, para a voz variar o menos possível entre clipes.
+ */
+export function veoEpisodePrompt(o: { role: 'host' | 'guest'; text: string; voice: 'male' | 'female' }) {
+  const who = o.role === 'host' ? 'the interviewer of a podcast' : 'the guest of a podcast interview';
+  const voice = `a natural adult ${o.voice === 'male' ? 'male' : 'female'} voice, ${o.role === 'host' ? 'warm and mid-pitched' : 'calm and mid-pitched'}, clear neutral international English accent, steady unhurried pace`;
+  return `The person in the image is ${who}, in a calm studio. They look at the camera and say, in English, exactly these words and nothing else, with ${voice}: "${o.text.replace(/"/g, "'")}" They finish speaking before the end of the clip and then stay silent with a natural, friendly expression. ${presenterDirection(o.role)} Keep the framing, background, clothing and appearance of the image; if the hands are not visible in the image, do not add them and express through the face, head and shoulders. Do not add other people or objects. Only this person speaks. No captions, no text on screen, no music, no sound effects.`;
 }
 
 /** Corre um fornecedor. `audioSec` serve para o InfiniteTalk calcular o número de fotogramas. */

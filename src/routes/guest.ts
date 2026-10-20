@@ -247,12 +247,12 @@ ${q.audio_asset_id ? `<p><audio controls preload="none" src="/api/g/media/${q.au
     const c = await need(req, reply); if (!c) return;
     const { iv, lang } = c, d = t(lang);
     if (!(await granted(iv.id, 'participation'))) return reply.redirect('/entrevista');
-    const [pc, cu, pp, an] = await Promise.all([granted(iv.id, 'photo_capture'), granted(iv.id, 'cover_use'), granted(iv.id, 'publish_photo'), granted(iv.id, 'animate_portrait')]);
+    const [pc, cu, pp, an, av] = await Promise.all([granted(iv.id, 'photo_capture'), granted(iv.id, 'cover_use'), granted(iv.id, 'publish_photo'), granted(iv.id, 'animate_portrait'), granted(iv.id, 'ai_video')]);
     const done = iv.collection_status === 'submitted';
     const photos = await db.query('SELECT * FROM photos WHERE interview_id=$1 ORDER BY created_at', [iv.id]);
     const msg = JSON.stringify({ camDenied: d.camDenied, max3: d.max3, stUp: d.stUp, stFail: d.stFail });
     return gpage(reply, lang, d.photos, `<h1>${esc(d.photos)}</h1><p>${esc(d.photosIntro)}</p>
-<form method="post" action="/entrevista/fotos/autorizacoes" class="card">${cb('photo_capture', d.c_photo, pc)}${cb('cover_use', d.c_cover, cu)}${cb('publish_photo', d.c_pubphoto, pp)}${cb('animate_portrait', d.c_animate, an)}<button class="ghost">${esc(d.save)}</button></form>
+<form method="post" action="/entrevista/fotos/autorizacoes" class="card">${cb('photo_capture', d.c_photo, pc)}${cb('cover_use', d.c_cover, cu)}${cb('publish_photo', d.c_pubphoto, pp)}${cb('animate_portrait', d.c_animate, an)}${cb('ai_video', d.c_aivideo, av)}<button class="ghost">${esc(d.save)}</button></form>
 ${pc && !done ? `<div class="card" id="cam" data-max="3" data-msg='${esc(msg)}'>
 <div class="thumbs" id="thumbs">${photos.map((p: any) => `<div><img alt="" src="/api/g/media/${p.asset_id}"><form method="post" action="/api/g/fotos/${p.id}/eliminar-form"><button class="ghost" style="width:100%">${esc(d.discard)}</button></form></div>`).join('')}</div>
 <video id="vid" class="cam" autoplay playsinline muted hidden></video><canvas id="cv" hidden></canvas><div class="status" id="pst" role="status"></div>
@@ -269,10 +269,11 @@ ${pc && !done ? `<div class="card" id="cam" data-max="3" data-msg='${esc(msg)}'>
     await recordConsent(c.iv, c.lang, 'cover_use', !!b.photo_capture && !!b.cover_use);
     await recordConsent(c.iv, c.lang, 'publish_photo', !!b.photo_capture && !!b.publish_photo);
     await recordConsent(c.iv, c.lang, 'animate_portrait', !!b.photo_capture && !!b.publish_photo && !!b.animate_portrait);
+    await recordConsent(c.iv, c.lang, 'ai_video', !!b.photo_capture && !!b.publish_photo && !!b.ai_video);
     // Autorização retirada: o vídeo que usava a fotografia (ou a animação) deixa de ser servido; o ficheiro fica privado.
-    const noPhoto = !(b.photo_capture && b.publish_photo), noAnim = noPhoto || !b.animate_portrait;
+    const noPhoto = !(b.photo_capture && b.publish_photo), noAnim = noPhoto || !b.animate_portrait, noVeo = noPhoto || !b.ai_video;
     for (const e of await db.query(`SELECT e.id, a.meta FROM episodes e JOIN assets a ON a.id=e.video_asset_id WHERE e.interview_id=$1`, [c.iv.id])) {
-      if ((noPhoto && e.meta?.guestPhoto) || (noAnim && e.meta?.guestAnimated)) await db.query('UPDATE episodes SET video_asset_id=NULL WHERE id=$1', [e.id]);
+      if ((noPhoto && e.meta?.guestPhoto) || (noAnim && e.meta?.guestAnimated) || (noVeo && e.meta?.guestAiVideo)) await db.query('UPDATE episodes SET video_asset_id=NULL WHERE id=$1', [e.id]);
     }
     if (!b.photo_capture && c.iv.collection_status !== 'submitted') await removeAllPhotos(c.iv.id);
     await audit(db, 'guest', 'consent.photos_updated', c.iv.id);

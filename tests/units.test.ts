@@ -107,6 +107,30 @@ test('composição com parte animada produz MP4 com a duração do áudio', asyn
   assert.ok(Math.abs(d - 8) < 0.3, `duração do vídeo ${d}`);
 });
 
+test('vídeo Veo: som dos clipes (com corte no início) e imagem ficam com a mesma duração', async () => {
+  const { spawnSync } = await import('node:child_process');
+  const ffmpeg = (await import('@ffmpeg-installer/ffmpeg')).default.path, ffprobe = (await import('@ffprobe-installer/ffprobe')).default.path;
+  const sharp = (await import('sharp')).default;
+  const { encodeComposite, buildAudioTrack, mockTalkingClip } = await import('../src/video.ts');
+  const img = await sharp({ create: { width: 1280, height: 720, channels: 3, background: '#224' } }).jpeg().toBuffer();
+  const tts = spawnSync(ffmpeg, ['-v', 'error', '-f', 'lavfi', '-i', 'sine=frequency=200:duration=3', '-f', 'mp3', 'pipe:1'], { maxBuffer: 1e8 }).stdout;
+  const clip = await mockTalkingClip(ffmpeg, img, 4000, true);
+  const load = async () => clip;
+  const track = await buildAudioTrack(ffmpeg, [{ durMs: 1200, src: tts, ext: 'mp3' }, { durMs: 2400, src: load, ext: 'mp4', offsetMs: 400 }, { durMs: 1600 }]);
+  const mp4 = await encodeComposite(ffmpeg, [
+    { kind: 'still', startMs: 0, endMs: 1200, shots: [{ startMs: 0, endMs: 1200, scene: 'cover', text: 'Aviso' }] },
+    { kind: 'anim', startMs: 1200, endMs: 3600, base: img, clip: load, clipOffsetMs: 400, notice: 'AI-generated video · AI voice', who: { name: 'Ana', role: 'Guest' }, cues: [{ startMs: 0, endMs: 1200, text: 'Olá' }, { startMs: 1200, endMs: 2400, text: 'Mundo' }] },
+    { kind: 'still', startMs: 3600, endMs: 5200, shots: [{ startMs: 3600, endMs: 5200, scene: 'cover', text: '' }] },
+  ] as any, async () => img, track, undefined, 'wav');
+  const { writeFileSync, mkdtempSync } = await import('node:fs');
+  const { join } = await import('node:path'); const { tmpdir } = await import('node:os');
+  const f = join(mkdtempSync(join(tmpdir(), 'pe-')), 'v.mp4'); writeFileSync(f, mp4);
+  const dur = (sel: string) => parseFloat(spawnSync(ffprobe, ['-v', 'error', '-select_streams', sel, '-show_entries', 'stream=duration', '-of', 'csv=p=0', f]).stdout.toString());
+  const v = dur('v:0'), a = dur('a:0');
+  assert.ok(Math.abs(v - 5.2) < 0.1, `vídeo ${v}`);
+  assert.ok(Math.abs(a - v) < 0.1, `som ${a} face à imagem ${v}`);
+});
+
 test('limpeza de chaves coladas: tira prefixos de código, aspas e espaços sem mexer na chave', async () => {
   const { cleanSecret, secretFingerprint } = await import('../src/settings.ts');
   const k = 'fal_sk_abc123DEF456ghi789';
@@ -122,4 +146,37 @@ test('limpeza de chaves coladas: tira prefixos de código, aspas e espaços sem 
   assert.match(secretFingerprint('fal_sk_acn…437832d2'), /vista abreviada/);
   const { isApiKey } = await import('../src/settings.ts');
   assert.equal(isApiKey('FAL_KEY'), true); assert.equal(isApiKey('MOLONI_PASSWORD'), false, 'palavras-passe não são alteradas'); assert.equal(isApiKey('MAIL_FROM'), false);
+});
+
+test('Veo: falas divididas em pedaços que cabem num clipe, sem alterar o texto', async () => {
+  const { chunkText, veoDuration, VEO_MAX_WORDS } = await import('../src/veo-episode.ts');
+  assert.deepEqual(chunkText('Hello and welcome.'), ['Hello and welcome.']);
+  assert.deepEqual(chunkText(''), []);
+  const long = 'Energy storage matters because the grid needs flexibility. Prices fell 3.5 percent last year, and the trend continues. We expect, however, that regulation, investment and public acceptance will decide the pace of change in Portugal over the next decade.';
+  const parts = chunkText(long);
+  assert.ok(parts.length >= 3);
+  for (const x of parts) assert.ok(x.split(' ').length <= VEO_MAX_WORDS, x);
+  assert.equal(parts.join(' '), long, 'juntar os pedaços devolve o texto original');
+  assert.ok(parts.some(x => x.includes('3.5 percent')), 'números decimais não partem a frase');
+  const run = Array.from({ length: 40 }, (_, i) => `w${i}`).join(' ');
+  assert.equal(chunkText(run).join(' '), run);
+  assert.equal(veoDuration('Hello and welcome.'), 4);
+  assert.equal(veoDuration('one two three four five six seven eight nine ten'), 6);
+  assert.equal(veoDuration(Array(15).fill('word').join(' ')), 8);
+});
+
+test('Veo: comparação palavra a palavra entre o guião e o que se ouviu', async () => {
+  const { wordDiff, fidelityOk } = await import('../src/veo-episode.ts');
+  const t = 'Thank you, Ana, for sharing your time with us.';
+  assert.deepEqual(wordDiff(t, 'Thank you Ana for sharing your time with us'), { edits: 0, n: 9, wer: 0 });
+  assert.equal(wordDiff(t, 'Thank you, Anna, for sharing your time with us.').edits, 1);
+  assert.ok(fidelityOk(wordDiff(t, 'Thank you, Anna, for sharing your time with us.')), 'um nome mal transcrito não obriga a pagar outra vez');
+  assert.ok(!fidelityOk(wordDiff(t, 'Thank you for joining us today.')), 'texto diferente falha');
+  assert.ok(!fidelityOk(wordDiff(t, '')), 'clipe sem fala falha');
+});
+
+test('Veo: planos fixos cortados nas legendas', async () => {
+  const { stillShots } = await import('../src/veo-episode.ts');
+  const shots = stillShots('cover', 0, 4000, [{ startMs: 400, endMs: 2000, text: 'A' }, { startMs: 2000, endMs: 3600, text: 'B' }]);
+  assert.deepEqual(shots.map(x => [x.startMs, x.endMs, x.text]), [[0, 400, ''], [400, 2000, 'A'], [2000, 3600, 'B'], [3600, 4000, '']]);
 });
