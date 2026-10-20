@@ -34,6 +34,9 @@ export async function guestRoutes(app: FastifyInstance) {
       return gpage(reply, lang, d.expired, `<h1>${esc(d.expired)}</h1><p>${esc(d.expiredHelp)}</p>${q.sent ? flash(d.resendDone) : ''}
 <form method="post" action="/i/${esc((req.params as any).token)}/novo-link" class="card"><label for="em">${esc(d.yourEmail)}</label><input id="em" name="email" type="email" required autocomplete="email"><p><button class="accent">${esc(d.resendBtn)}</button></p></form>`);
     }
+    if (inv.purpose === 'preview') // validação do episódio: sem número de perguntas e sem «Não pretendo participar»
+      return gpage(reply, lang, d.reviewTitle, `<h1>${esc(d.reviewTitle)}</h1><p>${esc(d.reviewIntro(inv.host_name))}</p><p><strong>${esc(inv.title)}</strong></p><p class="hint">${esc(d.reviewSteps)}</p>
+<form method="post" action="/i/${esc((req.params as any).token)}/abrir"><p><button class="accent" style="width:100%">${esc(d.reviewOpen)}</button></p></form>`);
     const nQ = Number((await db.one('SELECT count(*)::int AS n FROM questions WHERE interview_id=$1', [inv.iid]))?.n);
     return gpage(reply, lang, d.inviteTitle, `<h1>${esc(inv.title)}</h1><p>${esc(d.invitedBy(inv.host_name))}</p><p class="hint">${esc(d.qCount(nQ))}</p>
 <form method="post" action="/i/${esc((req.params as any).token)}/abrir"><p><button class="accent" style="width:100%">${esc(d.open)}</button></p></form>
@@ -50,12 +53,13 @@ export async function guestRoutes(app: FastifyInstance) {
     await db.query(`INSERT INTO guest_sessions(id, interview_id, invitation_id, expires_at) VALUES ($1,$2,$3,$4)`, [sha256(token), inv.iid, inv.id, inv.expires_at]);
     await setSessionCookie(reply, 'gs', token, Math.max(60, Math.floor((new Date(inv.expires_at).getTime() - Date.now()) / 1000)));
     await audit(db, 'guest', 'invitation.opened', inv.iid);
-    return reply.redirect(inv.collection_status === 'submitted' ? '/entrevista/obrigado' : '/entrevista'); // o token deixa de aparecer no URL
+    // Validação: vai diretamente para o episódio a validar. O token deixa de aparecer no URL.
+    return reply.redirect(inv.purpose === 'preview' ? '/entrevista/episodio' : inv.collection_status === 'submitted' ? '/entrevista/obrigado' : '/entrevista');
   });
 
   app.post('/i/:token/recusar', async (req, reply) => {
     const inv = await loadInvitation((req.params as any).token);
-    if (inv && !inv.declined_at && !inv.revoked_at) {
+    if (inv && !inv.declined_at && !inv.revoked_at && inv.purpose !== 'preview') { // um link de validação não serve para recusar
       await db.query('UPDATE invitations SET declined_at=now() WHERE id=$1', [inv.id]);
       const owner = await db.one('SELECT u.email FROM users u JOIN interviews i ON i.owner_id=u.id WHERE i.id=$1', [inv.iid]);
       await audit(db, 'guest', 'invitation.declined', inv.iid);
@@ -74,7 +78,7 @@ export async function guestRoutes(app: FastifyInstance) {
         && rateLimit(`newlink:${inv.iid}`, 1, config.limits.resendCooldownSec * 1000) && rateLimit(`newlink-ip:${req.ip}`, 10, 3600_000)) {
       const iv = await db.one('SELECT * FROM interviews WHERE id=$1', [inv.iid]);
       const owner = await db.one('SELECT name FROM users WHERE id=$1', [iv.owner_id]);
-      await createInvitation(db, iv, { name: owner?.name ?? '' });
+      await createInvitation(db, iv, { name: owner?.name ?? '' }, inv.purpose === 'preview' ? { preview: true } : inv.purpose === 'followup' ? { followup: true } : {}); // mantém a finalidade
       await audit(db, 'guest', 'invitation.renewed', inv.iid);
     }
     return reply.redirect(`/i/${tk}?sent=1`);

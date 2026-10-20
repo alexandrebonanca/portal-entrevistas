@@ -4,6 +4,12 @@ export const normLang = (l?: string): Lang => (l === 'en' ? 'en' : 'pt-PT');
 const D = {
   'pt-PT': {
     inviteTitle: 'Convite para uma entrevista',
+    reviewTitle: 'Confirme e valide o conteúdo da entrevista',
+    reviewIntro: (h: string) => `${h} preparou o episódio a partir das suas respostas.`,
+    reviewSteps: 'Veja o vídeo e ouça o episódio, confirme que o conteúdo corresponde ao que disse e aprove esta versão ou peça alterações. Nada é publicado sem a sua aprovação.',
+    reviewOpen: 'Ver e validar a entrevista',
+    reviewSubject: (t: string) => `Confirme e valide o conteúdo da entrevista — ${t}`,
+    reviewAuth: 'Autorizações das fotografias (incluindo o vídeo gerado por IA)',
     invitedBy: (h: string) => `${h} convida-o(a) a responder a uma entrevista.`,
     qCount: (n: number) => `${n} pergunta${n === 1 ? '' : 's'} · pode responder no telemóvel, quando quiser`,
     open: 'Abrir entrevista', decline: 'Não pretendo participar', declined: 'Registámos que não pretende participar. Obrigado pela resposta.',
@@ -38,6 +44,12 @@ const D = {
   },
   en: {
     inviteTitle: 'Invitation to an interview',
+    reviewTitle: 'Please confirm and validate your interview',
+    reviewIntro: (h: string) => `${h} has prepared the episode from your answers.`,
+    reviewSteps: 'Watch the video and listen to the episode, confirm that it matches what you said, and approve this version or request changes. Nothing is published without your approval.',
+    reviewOpen: 'View and validate the interview',
+    reviewSubject: (t: string) => `Please review and validate your interview — ${t}`,
+    reviewAuth: 'Photo permissions (including the AI-generated video)',
     invitedBy: (h: string) => `${h} invites you to answer an interview.`,
     qCount: (n: number) => `${n} question${n === 1 ? '' : 's'} · answer on your phone, whenever suits you`,
     open: 'Open interview', decline: 'I do not wish to take part', declined: 'We have recorded that you do not wish to take part. Thank you for letting us know.',

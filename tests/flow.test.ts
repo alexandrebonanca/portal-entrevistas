@@ -206,15 +206,27 @@ test('pipeline: processar, rever guião, aprovar, gerar, aprovações e publicar
   // o entrevistado vê e aprova (nova sessão pelo link de pré-visualização)
   await post(`/entrevistas/${ivId}/episodio/${ep.id}/enviar-previa`, {}, owner);
   await flushOutbox(db);
-  const pm = await db.one(`SELECT text_body FROM emails WHERE interview_id=$1 AND subject LIKE 'Please review%'`, [ivId]);
+  const pm = await db.one(`SELECT subject, text_body, html AS html_body FROM emails WHERE interview_id=$1 AND subject LIKE 'Please review%'`, [ivId]);
+  // email de validação próprio: sem número de perguntas, sem «responder no telemóvel», sem recusa
+  assert.match(pm.subject, /validate your interview/);
+  assert.match(pm.text_body, /Please confirm and validate your interview/);
+  assert.doesNotMatch(pm.text_body, /question|whenever|do not wish/i);
+  assert.match(pm.html_body, /View and validate the interview/);
   const tk2 = /\/i\/([A-Za-z0-9_-]{40,})/.exec(pm.text_body)![1];
+  const landing = await get(`/i/${tk2}`);
+  assert.match(landing.body, /Please confirm and validate your interview/);
+  assert.doesNotMatch(landing.body, /recusar|do not wish|question/i, 'sem «Não pretendo participar» nem número de perguntas');
+  await post(`/i/${tk2}/recusar`, {}, '');
+  assert.equal((await db.one(`SELECT declined_at FROM invitations WHERE token_hash=$1`, [(await import('../src/lib.ts')).sha256(tk2)])).declined_at, null, 'um link de validação não recusa a entrevista');
   assert.equal((await get(`/i/${token}`)).statusCode, 200);
   assert.equal((await get('/entrevista', guest)).statusCode, 302, 'link antigo revogado invalida a sessão antiga');
   const open = await post(`/i/${tk2}/abrir`, {}, '');
-  assert.equal(open.headers.location, '/entrevista/obrigado');
+  assert.equal(open.headers.location, '/entrevista/episodio', 'abrir leva diretamente ao episódio a validar');
   const g2 = `gs=${cookies(open).gs}`;
   const prev = await get('/entrevista/episodio', g2);
-  assert.match(prev.body, /Episode preview/);
+  assert.match(prev.body, /<h1>Episode preview<\/h1>/, 'abre na pré-visualização do episódio');
+  assert.match(prev.body, /Please confirm and validate your interview/);
+  assert.match(prev.body, /href="\/entrevista\/fotos"/);
   await post('/entrevista/episodio/decisao', { decision: 'approved' }, g2);
 
   const pub = await post(`/entrevistas/${ivId}/episodio/${ep.id}/publicar`, { visibility: 'unlisted' }, owner);
