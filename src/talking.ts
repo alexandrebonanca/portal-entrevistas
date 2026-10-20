@@ -112,13 +112,13 @@ async function wavespeedHeygen(imageUrl: string, audioUrl: string, onStatus?: (s
 
 // ---------- Google Veo 3.1 (Gemini API) ----------
 async function veo(image: Buffer, text: string, onStatus?: (s: string) => Promise<void>) {
-  // (a direção de cena entra no texto do pedido)
+  // (a direção de cena entra no texto do pedido; a imagem segue o formato do SDK oficial @google/genai: bytesBase64Encoded + mimeType)
   const key = S('GEMINI_API_KEY');
   const headers = { 'x-goog-api-key': key, 'Content-Type': 'application/json' };
   const prompt = `The person in the image is a podcast host in a calm studio. They look at the camera and say, in a natural, warm voice: "${text.replace(/"/g, "'")}". ${presenterDirection()} No captions, no text on screen, no music.`;
   const op = await jsonFetch('https://generativelanguage.googleapis.com/v1beta/models/veo-3.1-fast-generate-preview:predictLongRunning', {
     method: 'POST', headers,
-    body: JSON.stringify({ instances: [{ prompt, image: { inlineData: { mimeType: 'image/jpeg', data: image.toString('base64') } } }], parameters: { aspectRatio: '16:9', durationSeconds: 8, personGeneration: 'allow_adult' } }),
+    body: JSON.stringify({ instances: [{ prompt, image: { bytesBase64Encoded: image.toString('base64'), mimeType: 'image/jpeg' } }], parameters: { aspectRatio: '16:9', durationSeconds: 8, personGeneration: 'allow_adult' } }),
   }, 'Veo');
   const t0 = Date.now();
   for (;;) {
