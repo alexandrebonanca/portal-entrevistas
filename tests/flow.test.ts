@@ -35,10 +35,11 @@ test('landing em inglês e primeira conta administradora', async () => {
   const r = await get('/');
   assert.equal(r.statusCode, 200);
   assert.match(r.body, /lang="en"/);
-  assert.match(r.body, /Interview the people you admire/);
+  assert.match(r.body, /Great interviews, recorded in your guest’s own time/);
+  assert.match(r.body, /<span class="wq">quiet<\/span><span class="wi">interview<\/span>/, 'logótipo e nome no cabeçalho');
   assert.match(r.body, /€10/);
   assert.match(r.body, /Up to <strong>5 interviews/);
-  assert.match(r.body, /fictional illustrations/);
+  assert.match(r.body, /fictional and do not depict any real person/, 'sem fotografias, as ilustrações são identificadas');
   const reg = await post('/registar', { name: 'Ana', email: 'ana@example.com', password: 'uma-palavra-passe-longa', terms: '1' }, '');
   assert.equal(reg.statusCode, 302);
   owner = `sid=${cookies(reg).sid}`;

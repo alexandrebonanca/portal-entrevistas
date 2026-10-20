@@ -20,8 +20,8 @@ export async function guestRoutes(app: FastifyInstance) {
     reply.headers({ ...H, 'Cache-Control': 'no-store' }).send(page({ lang, title, body: `<div class="narrow" style="padding:28px 20px 0">${body}</div>`, noindex: true, script, nav: '' }));
 
   const loadInvitation = async (token: string) =>
-    db.one(`SELECT inv.*, i.title, i.host_name, i.interaction_lang, i.guest_email, i.guest_name, i.id AS iid, i.collection_status
-            FROM invitations inv JOIN interviews i ON i.id=inv.interview_id WHERE inv.token_hash=$1`, [sha256(token)]);
+    db.one(`SELECT inv.*, i.title, COALESCE(NULLIF(i.host_name,''), u.name) AS host_name, i.interaction_lang, i.guest_email, i.guest_name, i.id AS iid, i.collection_status
+            FROM invitations inv JOIN interviews i ON i.id=inv.interview_id LEFT JOIN users u ON u.id=i.owner_id WHERE inv.token_hash=$1`, [sha256(token)]);
 
   // ---- convite: GET só mostra; nada é consumido ----
   app.get('/i/:token', async (req, reply) => {
@@ -54,7 +54,7 @@ export async function guestRoutes(app: FastifyInstance) {
     await setSessionCookie(reply, 'gs', token, Math.max(60, Math.floor((new Date(inv.expires_at).getTime() - Date.now()) / 1000)));
     await audit(db, 'guest', 'invitation.opened', inv.iid);
     // Validação: vai diretamente para o episódio a validar. O token deixa de aparecer no URL.
-    return reply.redirect(inv.purpose === 'preview' ? '/entrevista/episodio' : inv.collection_status === 'submitted' ? '/entrevista/obrigado' : '/entrevista');
+    return reply.redirect(inv.collection_status !== 'submitted' ? '/entrevista' : inv.purpose === 'preview' ? '/entrevista/episodio' : '/entrevista/obrigado');
   });
 
   app.post('/i/:token/recusar', async (req, reply) => {
@@ -78,7 +78,8 @@ export async function guestRoutes(app: FastifyInstance) {
         && rateLimit(`newlink:${inv.iid}`, 1, config.limits.resendCooldownSec * 1000) && rateLimit(`newlink-ip:${req.ip}`, 10, 3600_000)) {
       const iv = await db.one('SELECT * FROM interviews WHERE id=$1', [inv.iid]);
       const owner = await db.one('SELECT name FROM users WHERE id=$1', [iv.owner_id]);
-      await createInvitation(db, iv, { name: owner?.name ?? '' }, inv.purpose === 'preview' ? { preview: true } : inv.purpose === 'followup' ? { followup: true } : {}); // mantém a finalidade
+      const latest = (await db.one('SELECT purpose FROM invitations WHERE interview_id=$1 ORDER BY created_at DESC LIMIT 1', [inv.iid]))?.purpose ?? inv.purpose;
+      await createInvitation(db, iv, { name: owner?.name ?? '' }, latest === 'preview' ? { preview: true } : latest === 'followup' ? { followup: true } : {}); // mantém a finalidade do convite em vigor
       await audit(db, 'guest', 'invitation.renewed', inv.iid);
     }
     return reply.redirect(`/i/${tk}?sent=1`);

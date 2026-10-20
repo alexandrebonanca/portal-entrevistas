@@ -1,4 +1,5 @@
 import { config } from './config.ts';
+import { emailBrand } from './brand.ts';
 import type { Db } from './db.ts';
 import { esc } from './lib.ts';
 import { S, inEntity, entityOfInterview } from './settings.ts';
@@ -55,7 +56,7 @@ async function deliver(m: any): Promise<string> {
 
 export function emailShell(title: string, bodyHtml: string, button?: { label: string; url: string }) {
   return `<!doctype html><html><body style="margin:0;background:#f4f1ea;font-family:Georgia,serif;color:#1c1a17">
-<div style="max-width:560px;margin:0 auto;padding:32px 20px"><p style="letter-spacing:.14em;text-transform:uppercase;font:600 12px Arial,sans-serif;color:#8a5a2b">${esc(config.brand)}</p>
+<div style="max-width:560px;margin:0 auto;padding:32px 20px">${emailBrand()}
 <h1 style="font-size:24px;line-height:1.25;margin:8px 0 18px">${esc(title)}</h1><div style="font-size:16px;line-height:1.6">${bodyHtml}</div>
 ${button ? `<p style="margin:28px 0"><a href="${esc(button.url)}" style="background:#1c1a17;color:#fff;text-decoration:none;padding:14px 22px;border-radius:6px;font:600 15px Arial,sans-serif;display:inline-block">${esc(button.label)}</a></p>` : ''}
 <p style="font:13px Arial,sans-serif;color:#6b655c;margin-top:32px">${esc(config.brand)} · ${esc(config.supportEmail)}</p></div></body></html>`;

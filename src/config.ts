@@ -6,7 +6,7 @@ const bool = (v: string | undefined, d = false) => (v === undefined ? d : /^(1|t
 export const config = {
   port: Number(env.PORT ?? 3000),
   baseUrl: (env.BASE_URL ?? `http://localhost:${env.PORT ?? 3000}`).replace(/\/$/, ''),
-  brand: env.BRAND_NAME ?? 'Conversations',
+  brand: env.BRAND_NAME ?? 'quietinterview',
   supportEmail: env.SUPPORT_EMAIL ?? 'support@example.com',
   databaseUrl: env.DATABASE_URL ?? '',
   pgliteDir: env.PGLITE_DIR ?? './data/pglite',
@@ -16,7 +16,7 @@ export const config = {
   storage: { driver: env.STORAGE_DRIVER ?? 'local', dir: env.STORAGE_DIR ?? './storage',
     bucket: env.S3_BUCKET ?? '', region: env.S3_REGION ?? 'auto', endpoint: env.S3_ENDPOINT ?? '',
     accessKeyId: env.S3_ACCESS_KEY_ID ?? '', secretAccessKey: env.S3_SECRET_ACCESS_KEY ?? '' },
-  mail: { apiKey: env.MAILERSEND_API_KEY ?? '', from: env.MAIL_FROM ?? 'no-reply@example.com', fromName: env.MAIL_FROM_NAME ?? 'Conversations' },
+  mail: { apiKey: env.MAILERSEND_API_KEY ?? '', from: env.MAIL_FROM ?? 'no-reply@example.com', fromName: env.MAIL_FROM_NAME ?? 'quietinterview' },
   openai: {
     apiKey: env.OPENAI_API_KEY ?? '',
     mock: bool(env.AI_MOCK, false),

@@ -99,7 +99,7 @@ ${groups.size ? [...groups].map(([t, eps]) => `<section style="margin-top:28px">
   // ---- pré-visualização do entrevistado ----
   const guestEpisode = async (req: any) => {
     if (!req.guest) return null;
-    return db.one(`SELECT e.*, i.host_name, i.guest_name, i.review_policy, i.interaction_lang FROM episodes e JOIN interviews i ON i.id=e.interview_id
+    return db.one(`SELECT e.*, COALESCE(NULLIF(i.host_name,''), u.name) AS host_name, i.guest_name, i.review_policy, i.interaction_lang FROM episodes e JOIN interviews i ON i.id=e.interview_id LEFT JOIN users u ON u.id=i.owner_id
       WHERE e.interview_id=$1 AND e.status IN ('preview','published') AND e.stale=false ORDER BY e.created_at DESC LIMIT 1`, [req.guest.interviewId]);
   };
   app.get('/entrevista/subs/:file', async (req, reply) => {
@@ -123,7 +123,7 @@ ${playerHtml(ep, { audio: `/api/g/media/${ep.audio_asset_id}`, cover: `/api/g/me
 ${dec ? `<div class="flash">${esc(dec.decision === 'approved' ? d.approve : d.requestChanges)} — ${esc(fmtDate(dec.created_at))}${dec.decision === 'approved' && String(dec.video_asset_id ?? '') !== String(ep.video_asset_id ?? '') ? ` (${esc(d.versionChanged)})` : ''}</div>` : ''}
 <form method="post" action="/entrevista/episodio/decisao" class="card"><input type="hidden" name="video" value="${esc(ep.video_asset_id ?? '')}"><input type="hidden" name="episode" value="${esc(ep.id)}"><input type="hidden" name="audio" value="${esc(ep.audio_asset_id ?? '')}"><label for="nt">${esc(d.notePlaceholder)}</label><textarea id="nt" name="note"></textarea>
 <div class="row"><button name="decision" value="approved" class="accent">${esc(d.approve)}</button><button name="decision" value="changes" class="ghost">${esc(d.requestChanges)}</button></div>
-<p class="hint">Silence is never treated as approval.</p></form>
+<p class="hint">${esc(d.silence)}</p></form>
 <p class="sans"><a href="/entrevista/fotos">${esc(d.reviewAuth)}</a></p></div>`,
     }));
   });

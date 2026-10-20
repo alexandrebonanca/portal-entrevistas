@@ -1,5 +1,6 @@
 import { config } from './config.ts';
 import { esc } from './lib.ts';
+import { markSvg, faviconHref, wordmark } from './brand.ts';
 
 export const CSS = `
 :root{--bg:#f6f2ea;--ink:#1c1a17;--mute:#6b655c;--line:#ddd5c6;--card:#fffdf8;--accent:#b4691f;--accent-ink:#fff;--ok:#2f6b3f;--bad:#a1322b;--warn:#8a6a14}
@@ -10,7 +11,8 @@ a{color:var(--accent)}h1,h2,h3{line-height:1.2;font-weight:600}h1{font-size:clam
 .sans,button,input,select,textarea,label,.btn,nav,table,.pill{font-family:system-ui,-apple-system,'Segoe UI',sans-serif}
 .wrap{max-width:1040px;margin:0 auto;padding:0 20px}.narrow{max-width:640px;margin:0 auto;padding:0 20px}
 header.top{border-bottom:1px solid var(--line)}header.top .wrap{display:flex;align-items:center;justify-content:space-between;padding:14px 20px;gap:12px;flex-wrap:wrap}
-.brand{font:700 1rem system-ui;letter-spacing:.14em;text-transform:uppercase;color:var(--ink);text-decoration:none}
+.brand{display:inline-flex;align-items:center;gap:9px;font:600 1.18rem system-ui,-apple-system,'Segoe UI',sans-serif;letter-spacing:-.01em;color:var(--ink);text-decoration:none}
+.brand .mark{flex:none}.brand .wq{color:var(--accent);font-weight:400}.brand .wi{color:var(--ink)}
 nav a{margin-left:16px;font-size:.95rem;text-decoration:none;color:var(--ink)}nav a:hover{color:var(--accent)}
 .btn,button{display:inline-block;background:var(--ink);color:var(--bg);border:0;border-radius:8px;padding:12px 20px;font-size:1rem;font-weight:600;cursor:pointer;text-decoration:none;min-height:44px}
 .btn.accent,button.accent{background:var(--accent);color:var(--accent-ink)}.btn.ghost,button.ghost{background:transparent;color:var(--ink);border:1px solid var(--line)}
@@ -45,15 +47,15 @@ video.cam{width:100%;max-height:60vh;border-radius:12px;background:#000;transfor
 :focus-visible{outline:3px solid var(--accent);outline-offset:2px}
 `;
 
-export interface PageOpts { title: string; body: string; lang?: string; nav?: string; noindex?: boolean; desc?: string; script?: string; wide?: boolean }
+export interface PageOpts { title: string; body: string; lang?: string; nav?: string; noindex?: boolean; desc?: string; script?: string; wide?: boolean; head?: string; styles?: string }
 
 export function page(o: PageOpts) {
   return `<!doctype html><html lang="${o.lang ?? 'pt-PT'}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${esc(o.title)} · ${esc(config.brand)}</title>${o.desc ? `<meta name="description" content="${esc(o.desc)}">` : ''}
 ${o.noindex ? '<meta name="robots" content="noindex,nofollow"><meta name="referrer" content="same-origin">' : ''}
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23b4691f'/%3E%3Crect x='13' y='6' width='6' height='14' rx='3' fill='white'/%3E%3Cpath d='M9 15a7 7 0 0 0 14 0M16 22v4' stroke='white' stroke-width='2' fill='none'/%3E%3C/svg%3E">
-<style>${CSS}</style></head><body><a class="skip" href="#main">Skip to content</a>
-<header class="top"><div class="wrap"><a class="brand" href="/">${esc(config.brand)}</a><nav>${o.nav ?? ''}</nav></div></header>
+<link rel="icon" href="${faviconHref()}">${o.head ?? ''}
+<style>${CSS}${o.styles ?? ''}</style></head><body><a class="skip" href="#main">Skip to content</a>
+<header class="top"><div class="wrap"><a class="brand" href="/" aria-label="${esc(config.brand)}">${markSvg(28)}${wordmark()}</a><nav>${o.nav ?? ''}</nav></div></header>
 <main id="main">${o.body}</main>
 <footer><div class="wrap">${esc(config.brand)} · <a href="/privacy">Privacy</a> · ${esc(config.supportEmail)}</div></footer>
 ${o.script ? `<script src="/static/recorder.js" defer></script><script src="${o.script}" defer></script>` : ''}</body></html>`;

@@ -313,7 +313,7 @@ export async function renderVeoVideo(job: any, { db, progress }: Parameters<Hand
   const attemptsOf: Attempt[][] = chunks.map(() => []);
   let spentUsd = 0, failedUsd = 0, generated = 0, doneN = 0, next = 0;
   let busyStreak = 0; // falhas passageiras da Google seguidas, sem nenhum clipe pelo meio: com muitas, pára-se e tenta-se mais tarde
-  const problemOf = new Map<string, 'busy' | 'filtered' | 'error' | 'capped'>(); // porque é que um pedaço ficou sem clipe (para o relatório)
+  const problemOf = new Map<string, 'busy' | 'busycap' | 'filtered' | 'error' | 'capped'>(); // porque é que um pedaço ficou sem clipe (para o relatório)
   const capCause = new Map<string, string>(); // causa guardada quando o pedaço já esgotou o limite
   const submittedThisRun = new Set<string>(); // operações pagas nesta geração (as retomadas foram pagas antes)
   let abort: Error | null = null; // chave recusada, quota esgotada, autorização retirada ou erro inesperado: os dois trabalhadores param
@@ -362,7 +362,7 @@ export async function renderVeoVideo(job: any, { db, progress }: Parameters<Hand
         problemOf.set(c.key, 'capped');
         const last = await db.one(`SELECT error FROM veo_ops WHERE interview_id=$1 AND chunk_key=$2 AND state IN ('failed','expired') ORDER BY created_at DESC LIMIT 1`, [iv.id, c.key]);
         if (last?.error) capCause.set(c.key, String(last.error).slice(0, 160));
-      } else if (busyRecent >= 4) { problemOf.set(c.key, 'busy'); return atts; }
+      } else if (busyRecent >= 4) { problemOf.set(c.key, 'busycap'); return atts; }
     }
     while (!abort && !atts.some(passes) && atts.length + failures < maxAttempts) {
       // Transcrição por fazer (OpenAI ou ffprobe em falha): não se paga outro clipe; volta a verificar-se na próxima execução.
