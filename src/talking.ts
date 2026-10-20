@@ -120,10 +120,17 @@ export class VeoQuotaError extends PermanentError {}
 export class VeoCancelled extends PermanentError {}
 /** Falha passageira da Google numa operação (procura elevada, serviço indisponível): repete-se mais tarde e não conta para o limite. */
 export class VeoBusy extends Error {}
+/** A própria operação falhou na Google e não produziu vídeo (normalmente não é cobrada). */
+export class VeoOpError extends PermanentError {}
 /** Clipe bloqueado pelos filtros de segurança da Google (não há vídeo; normalmente não é cobrado). */
-export class VeoFiltered extends PermanentError {}
-const BUSY_TEXT = /high demand|try again later|temporar|unavailable|overload|internal error|backend error|deadline exceeded/i;
-const BUSY_CODES = new Set([4, 8, 13, 14]); // DEADLINE_EXCEEDED, RESOURCE_EXHAUSTED, INTERNAL, UNAVAILABLE
+export class VeoFiltered extends VeoOpError {}
+/** A CONSULTA de uma operação foi recusada (4xx): nada se sabe da operação, que pode ter sido feita e cobrada. */
+export class VeoPollError extends PermanentError {}
+// Passageiro só o que a Google diz que é passageiro (procura elevada, serviço indisponível).
+const BUSY_TEXT = /high demand|try again later|temporarily unavailable|service unavailable|overloaded/i;
+const BUSY_CODES = new Set([8, 14]); // RESOURCE_EXHAUSTED, UNAVAILABLE
+/** Chave recusada: 401/403, ou 400 com «API key» (é assim que a Gemini API responde a uma chave inválida). */
+export const isKeyRejected = (m: string) => /^Veo 40[13]/.test(m) || (/^Veo 400/.test(m) && /API[ _-]?key/i.test(m));
 
 const quiet = async (f?: (s: string) => Promise<void>, s = '') => { try { await f?.(s); } catch { /* o progresso nunca interrompe uma operação já paga */ } };
 
@@ -173,17 +180,17 @@ export async function veoAwait(opName: string, dur: number, onStatus?: (s: strin
     await sleep(pollMs);
     let st: any;
     try { st = await jsonFetch(`https://generativelanguage.googleapis.com/v1beta/${opName}`, { headers }, 'Veo'); fails = 0; }
-    catch (e) { if (e instanceof PermanentError || ++fails > 8) throw e; continue; }
+    catch (e: any) { if (e instanceof PermanentError) throw new VeoPollError(String(e.message)); if (++fails > 8) throw e; continue; }
     if (st.error) {
       const msg = String(st.error.message ?? JSON.stringify(st.error)).slice(0, 300);
       if (BUSY_TEXT.test(msg) || BUSY_CODES.has(Number(st.error.code))) throw new VeoBusy(`Veo: ${msg}`);
-      throw new PermanentError(`Veo: ${msg}`);
+      throw new VeoOpError(`Veo: ${msg}`);
     }
     if (st.done) {
       const gen = st.response?.generateVideoResponse;
       const uri = gen?.generatedSamples?.[0]?.video?.uri;
       if (!uri && (gen?.raiMediaFilteredCount || gen?.raiMediaFilteredReasons?.length)) throw new VeoFiltered(`Veo: clipe bloqueado pelos filtros da Google: ${String(gen.raiMediaFilteredReasons?.[0] ?? '').slice(0, 200)}`);
-      if (!uri) throw new PermanentError(`Veo não devolveu vídeo: ${JSON.stringify(st.response ?? {}).slice(0, 200)}`);
+      if (!uri) throw new VeoOpError(`Veo não devolveu vídeo: ${JSON.stringify(st.response ?? {}).slice(0, 200)}`);
       for (let k = 0; ; k++) {
         try { return { video: await download(uri, { 'x-goog-api-key': key }), billedSec: dur }; }
         catch (e) { if (k >= 3) throw e; await sleep(5000 * (k + 1)); }

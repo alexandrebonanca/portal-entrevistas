@@ -5,7 +5,7 @@ import { saveAsset, hasAudioStream } from './media.ts';
 import { transcribeClip, translateSubtitleCues, aiAvailable, type Word } from './ai/openai.ts';
 import { renderBases, subtitleFrame, encodeComposite, buildAudioTrack, mockTalkingClip, type Part, type Shot, type Scene, type AudioPiece } from './video.ts';
 import { cuesFromWords } from './subtitles.ts';
-import { veoSubmit, veoAwait, veoEpisodePrompt, VeoQuotaError, VeoCancelled, VeoBusy, VeoFiltered, VEO_MODEL, VEO_PRICE_PER_SEC } from './talking.ts';
+import { veoSubmit, veoAwait, veoEpisodePrompt, VeoQuotaError, VeoCancelled, VeoBusy, VeoFiltered, VeoOpError, isKeyRejected, VEO_MODEL, VEO_PRICE_PER_SEC } from './talking.ts';
 import { S } from './settings.ts';
 import { PermanentError, type Handler } from './jobs.ts';
 
@@ -313,7 +313,9 @@ export async function renderVeoVideo(job: any, { db, progress }: Parameters<Hand
   const attemptsOf: Attempt[][] = chunks.map(() => []);
   let spentUsd = 0, failedUsd = 0, generated = 0, doneN = 0, next = 0;
   let busyStreak = 0; // falhas passageiras da Google seguidas, sem nenhum clipe pelo meio: com muitas, pára-se e tenta-se mais tarde
-  const problemOf = new Map<string, 'busy' | 'filtered' | 'error'>(); // porque é que um pedaço ficou sem clipe (para o relatório)
+  const problemOf = new Map<string, 'busy' | 'filtered' | 'error' | 'capped'>(); // porque é que um pedaço ficou sem clipe (para o relatório)
+  const capCause = new Map<string, string>(); // causa guardada quando o pedaço já esgotou o limite
+  const submittedThisRun = new Set<string>(); // operações pagas nesta geração (as retomadas foram pagas antes)
   let abort: Error | null = null; // chave recusada, quota esgotada, autorização retirada ou erro inesperado: os dois trabalhadores param
   let timeouts = 0; // Google degradada: duas esperas esgotadas seguidas param o trabalho (as operações ficam pendentes e retomam-se)
   const pct = () => 5 + Math.round((doneN / Math.max(1, chunks.length)) * 70);
@@ -324,12 +326,12 @@ export async function renderVeoVideo(job: any, { db, progress }: Parameters<Hand
     if (!opId) return;
     const usd = dur * VEO_PRICE_PER_SEC;
     await db.tx(async tx => {
-      const r = await tx.one(`UPDATE veo_ops SET state=$2, error=$3 WHERE id=$1 AND state='pending' RETURNING id`, [opId, state, error.slice(0, 300)]);
+      const r = await tx.one(`UPDATE veo_ops SET state=$2, error=$3 WHERE id=$1 AND state='pending' RETURNING id, op_name`, [opId, state, error.slice(0, 300)]);
       if (!r) return;
       await tx.query('INSERT INTO usage_ledger(interview_id, kind, quantity, cost_usd, estimated) VALUES ($1,$2,$3,$4,true)', [iv.id, 'veo_usd', -dur, -usd]);
       await tx.query('INSERT INTO usage_ledger(interview_id, kind, quantity, cost_usd, estimated) VALUES ($1,$2,$3,$4,true)', [iv.id, 'veo_usd_failed', dur, usd]);
+      if (submittedThisRun.has(String(r.op_name))) failedUsd += usd; // só as desta geração entram no «pago nesta geração»
     });
-    failedUsd += usd;
   };
 
   const runChunk = async (c: Chunk): Promise<Attempt[]> => {
@@ -353,6 +355,15 @@ export async function renderVeoVideo(job: any, { db, progress }: Parameters<Hand
     // (as falhas passageiras da Google, estado 'busy', não contam: são da Google, não do pedaço)
     let failures = mock ? 0 : Number((await db.one(`SELECT count(*)::int AS n FROM veo_ops WHERE interview_id=$1 AND chunk_key=$2 AND state IN ('failed','expired')`, [iv.id, c.key]))?.n ?? 0);
     let busy = 0, lastReason: 'mismatch' | 'google' | null = atts.length ? 'mismatch' : null;
+    // Falhas passageiras recentes do pedaço: não gastam o limite, mas com muitas deixa de se submeter (teto entre execuções).
+    let busyRecent = mock ? 0 : Number((await db.one(`SELECT count(*)::int AS n FROM veo_ops WHERE interview_id=$1 AND chunk_key=$2 AND state='busy' AND created_at > now() - interval '36 hours'`, [iv.id, c.key]))?.n ?? 0);
+    if (!atts.some(passes)) {
+      if (atts.length + failures >= maxAttempts) { // limite já esgotado noutras gerações: não volta a ser tentado
+        problemOf.set(c.key, 'capped');
+        const last = await db.one(`SELECT error FROM veo_ops WHERE interview_id=$1 AND chunk_key=$2 AND state IN ('failed','expired') ORDER BY created_at DESC LIMIT 1`, [iv.id, c.key]);
+        if (last?.error) capCause.set(c.key, String(last.error).slice(0, 160));
+      } else if (busyRecent >= 4) { problemOf.set(c.key, 'busy'); return atts; }
+    }
     while (!abort && !atts.some(passes) && atts.length + failures < maxAttempts) {
       // Transcrição por fazer (OpenAI ou ffprobe em falha): não se paga outro clipe; volta a verificar-se na próxima execução.
       if (atts.length && !atts[atts.length - 1].checked) break;
@@ -389,6 +400,7 @@ export async function renderVeoVideo(job: any, { db, progress }: Parameters<Hand
             const s = await veoSubmit({ image: st.image, prompt: c.prompt, aspectRatio: st.vertical ? '9:16' : '16:9', durationSeconds: dur, onStatus, canSend });
             opName = s.opName; dur = s.dur;
             const usd = dur * VEO_PRICE_PER_SEC; spentUsd += usd;
+            submittedThisRun.add(opName);
             // A Google já aceitou (e cobra): registo da operação e do custo numa só transação, com novas tentativas.
             // Se não for possível registar, o trabalho pára em vez de voltar a submeter (o que pagaria duas vezes).
             for (let k = 0; ; k++) {
@@ -408,10 +420,13 @@ export async function renderVeoVideo(job: any, { db, progress }: Parameters<Hand
           try { video = (await veoAwait(opName, dur, onStatus)).video; }
           catch (e: any) {
             const m = String(e?.message ?? e);
-            // Falha passageira da Google: não conta para o limite. Bloqueio ou outra falha definitiva: conta.
-            // Chave recusada na consulta: a operação paga fica pendente (retoma-se com a chave certa), não é dada como falhada.
-            if (e instanceof VeoBusy) await moveToFailed(opId, dur, 'busy', m);
-            else if (e instanceof PermanentError && !/^Veo 40[13]/.test(m)) await moveToFailed(opId, dur, 'failed', m);
+            // Só uma operação que a própria Google deu como falhada (passageira, bloqueada ou sem vídeo) passa a «normalmente não cobrada».
+            // Chave recusada na consulta: a operação fica pendente (retoma-se com a chave certa) e o custo continua como pago.
+            // Outra recusa da CONSULTA (ex.: 404): não se sabe o que aconteceu à operação; fica 'failed' e o custo continua como pago.
+            if (isKeyRejected(m)) { /* fica 'pending' */ }
+            else if (e instanceof VeoBusy) await moveToFailed(opId, dur, 'busy', m);
+            else if (e instanceof VeoOpError) await moveToFailed(opId, dur, 'failed', m);
+            else if (e instanceof PermanentError) await db.query(`UPDATE veo_ops SET state='failed', error=$2 WHERE id=$1 AND state='pending'`, [opId, m.slice(0, 300)]);
             if (/tempo excedido/.test(m) && ++timeouts >= 2) abort ??= new PermanentError('O Google Veo não está a concluir os clipes (duas esperas de 20 min esgotadas): tente mais tarde. As operações pagas ficam pendentes e são retomadas.');
             throw e;
           }
@@ -429,7 +444,7 @@ export async function renderVeoVideo(job: any, { db, progress }: Parameters<Hand
       } catch (e: any) {
         const m = String(e?.message ?? e);
         if (e instanceof VeoCancelled || abort) break;
-        if (/^Veo 40[13]/.test(m)) { abort = new PermanentError(`A Google recusou a chave: ${m.slice(0, 200)}`); break; }
+        if (isKeyRejected(m)) { abort = new PermanentError(`A Google recusou a chave: ${m.slice(0, 200)}`); break; }
         if (e instanceof VeoQuotaError) { abort = new PermanentError(`${m} Os clipes já pagos ficam guardados e são reaproveitados.`); break; }
         console.error(`[veo] pedaço ${c.seg.id}/${c.k} falhou: ${m.slice(0, 300)}`);
         lastReason = 'google';
@@ -437,7 +452,7 @@ export async function renderVeoVideo(job: any, { db, progress }: Parameters<Hand
           // Procura elevada na Google: espera e tenta outra vez, sem gastar o limite do pedaço. Muitas seguidas: pára o trabalho.
           problemOf.set(c.key, 'busy');
           if (++busyStreak >= 5) { abort ??= new PermanentError(VEO_BUSY); break; }
-          if (++busy > 2) break; // fica em fotografia fixa nesta geração; numa próxima volta a tentar-se (não gastou o limite)
+          if (++busy > 2 || ++busyRecent >= 4) break; // fica em fotografia fixa nesta geração; numa próxima volta a tentar-se (não gastou o limite)
           const wait = 45_000 * busy;
           await progress(pct(), 100, `${label} — Google Veo com procura elevada: nova tentativa dentro de ${Math.round(wait / 1000)} s`);
           await sleep(wait);
@@ -533,8 +548,8 @@ export async function renderVeoVideo(job: any, { db, progress }: Parameters<Hand
 
   const fidelity = chunks.map((c, i) => {
     const best = chosen[i] ?? [...attemptsOf[i]].filter(a => a.checked).sort((x, y) => (x.hard ?? 99) - (y.hard ?? 99))[0];
-    const problem = chosen[i] ? null : best ? (best.checked ? 'mismatch' : 'unchecked') : (problemOf.get(c.key) ?? 'error');
-    return { segmentId: c.seg.id, role: c.seg.role, expected: c.text, heard: best?.heard ?? '', checked: !!best?.checked, edits: best?.edits ?? null, ok: !!chosen[i], attempts: attemptsOf[i].length, used: veoSegs.has(c.seg.id), problem };
+    const problem = chosen[i] ? null : best ? 'mismatch' : attemptsOf[i].some(a => !a.checked) ? 'unchecked' : (problemOf.get(c.key) ?? 'error');
+    return { segmentId: c.seg.id, role: c.seg.role, expected: c.text, heard: best?.heard ?? '', checked: !!best?.checked, edits: best?.edits ?? null, ok: !!chosen[i], attempts: attemptsOf[i].length, used: veoSegs.has(c.seg.id), problem, cause: capCause.get(c.key) ?? null };
   });
   const uniq = new Map<string, Attempt[]>(chunks.map((c, i) => [c.key, attemptsOf[i]]));
   const costUsd = mock ? 0 : [...uniq.values()].flat().reduce((x, a) => x + a.dur * VEO_PRICE_PER_SEC, 0);
@@ -542,7 +557,7 @@ export async function renderVeoVideo(job: any, { db, progress }: Parameters<Hand
   const usedRoles = new Set(segs.filter(s => veoSegs.has(s.id)).map(s => s.role));
   const meta = { engine: 'veo', model: VEO_MODEL, lang, guestPhoto: !!guestPhoto, hostPhoto: !!hostPhoto, guestAiVideo: usedRoles.has('guest'), hostAiVideo: usedRoles.has('host'),
     veoClips: chunks.length, veoSegments: veoSegs.size, fallbackSegments: fallbackSegs, generatedClips: generated, spentUsd: Math.max(0, spentUsd - failedUsd), failedUsd, veoUsd: costUsd,
-    googleBusy: [...problemOf.values()].includes('busy'),
+    googleBusy: fidelity.some(f => f.problem === 'busy'),
     fidelityIssues: fidelity.filter(f => !f.ok).length, fidelity, mock };
   const id = await saveAsset(db, { interviewId: iv.id, kind: 'episode_video', mime: 'video/mp4', ext: 'mp4', data: mp4, durationMs: t, meta });
   // Ligação ao episódio e fim das aprovações anteriores numa só transação, com as autorizações lidas no próprio momento.

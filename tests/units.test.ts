@@ -163,19 +163,26 @@ test('vídeo: pedaços de 1–2 fotogramas no início e no fim de uma parte anim
 });
 
 test('Veo: falhas da Google classificadas (procura elevada é passageira; filtros contam)', async () => {
-  const { veoAwait, veoSubmit, VeoBusy, VeoFiltered } = await import('../src/talking.ts');
+  const { veoAwait, veoSubmit, VeoBusy, VeoFiltered, VeoOpError, VeoPollError, isKeyRejected } = await import('../src/talking.ts');
   const { PermanentError } = await import('../src/jobs.ts');
   const real = globalThis.fetch;
   const reply = (body: any, status = 200) => (async () => new Response(JSON.stringify(body), { status })) as any;
   try {
     globalThis.fetch = reply({ name: 'op', done: true, error: { code: 8, message: 'This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.' } });
     await assert.rejects(veoAwait('op', 4, undefined, 60_000, 1), (e: any) => e instanceof VeoBusy && !(e instanceof PermanentError));
-    globalThis.fetch = reply({ name: 'op', done: true, error: { code: 14, message: 'Service unavailable' } });
+    globalThis.fetch = reply({ name: 'op', done: true, error: { code: 14, message: 'The service is currently unavailable.' } });
     await assert.rejects(veoAwait('op', 4, undefined, 60_000, 1), (e: any) => e instanceof VeoBusy);
     globalThis.fetch = reply({ name: 'op', done: true, response: { generateVideoResponse: { raiMediaFilteredCount: 1, raiMediaFilteredReasons: ['We encountered an issue with the audio for your prompt'] } } });
-    await assert.rejects(veoAwait('op', 4, undefined, 60_000, 1), (e: any) => e instanceof VeoFiltered && e instanceof PermanentError);
+    await assert.rejects(veoAwait('op', 4, undefined, 60_000, 1), (e: any) => e instanceof VeoFiltered && e instanceof VeoOpError && e instanceof PermanentError);
     globalThis.fetch = reply({ name: 'op', done: true, error: { code: 3, message: 'Invalid argument' } });
-    await assert.rejects(veoAwait('op', 4, undefined, 60_000, 1), (e: any) => e instanceof PermanentError && !(e instanceof VeoFiltered));
+    await assert.rejects(veoAwait('op', 4, undefined, 60_000, 1), (e: any) => e instanceof VeoOpError && !(e instanceof VeoFiltered));
+    globalThis.fetch = reply({ name: 'op', done: true, error: { code: 13, message: 'Internal error encountered.' } });
+    await assert.rejects(veoAwait('op', 4, undefined, 60_000, 1), (e: any) => e instanceof VeoOpError && !(e instanceof VeoBusy), 'erro interno conta para o limite');
+    // a CONSULTA recusada não diz nada sobre a operação: não é «falhada na Google»
+    globalThis.fetch = reply({ error: { message: 'API key not valid. Please pass a valid API key.' } }, 400);
+    await assert.rejects(veoAwait('op', 4, undefined, 60_000, 1), (e: any) => e instanceof VeoPollError && !(e instanceof VeoOpError) && isKeyRejected(e.message));
+    globalThis.fetch = reply({ error: { message: 'Requested entity was not found.' } }, 404);
+    await assert.rejects(veoAwait('op', 4, undefined, 60_000, 1), (e: any) => e instanceof VeoPollError && !isKeyRejected(e.message));
     globalThis.fetch = reply({ error: { message: 'backend unavailable' } }, 503);
     await assert.rejects(veoSubmit({ image: Buffer.from('x'), prompt: 'p', durationSeconds: 4 }), (e: any) => e instanceof VeoBusy, 'pedido recusado por indisponibilidade: passageiro');
   } finally { globalThis.fetch = real; }
