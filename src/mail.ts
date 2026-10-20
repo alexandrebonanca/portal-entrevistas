@@ -35,6 +35,9 @@ export async function flushOutbox(db: Db) {
   }
 }
 
+/** Endereço de resposta: o contacto de apoio, se for um email real (não o de exemplo). */
+export const replyTo = () => (/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(config.supportEmail) && !/@example\.(com|org)$/i.test(config.supportEmail) ? config.supportEmail : '');
+
 async function deliver(m: any): Promise<string> {
   if (!S('MAILERSEND_API_KEY')) {
     // Sem fornecedor configurado: regista na consola (desenvolvimento). Não é entrega real.
@@ -46,6 +49,8 @@ async function deliver(m: any): Promise<string> {
     headers: { Authorization: `Bearer ${S('MAILERSEND_API_KEY')}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({
       from: { email: S('MAIL_FROM') || config.mail.from, name: S('MAIL_FROM_NAME') || config.mail.fromName },
+      // Respostas vão para o contacto de apoio (o remetente é no-reply).
+      ...(replyTo() ? { reply_to: { email: replyTo(), name: config.brand } } : {}),
       to: [{ email: m.to_email }],
       subject: m.subject, html: m.html, text: m.text_body,
     }),
@@ -54,12 +59,13 @@ async function deliver(m: any): Promise<string> {
   return res.headers.get('x-message-id') ?? 'accepted';
 }
 
-export function emailShell(title: string, bodyHtml: string, button?: { label: string; url: string }) {
+/** Moldura dos emails. opts.after: texto secundário depois do botão; opts.footer: rodapé próprio (por omissão, marca e contacto). */
+export function emailShell(title: string, bodyHtml: string, button?: { label: string; url: string }, opts: { footer?: string; after?: string } = {}) {
   return `<!doctype html><html><body style="margin:0;background:#f4f1ea;font-family:Georgia,serif;color:#1c1a17">
 <div style="max-width:560px;margin:0 auto;padding:32px 20px">${emailBrand()}
 <h1 style="font-size:24px;line-height:1.25;margin:8px 0 18px">${esc(title)}</h1><div style="font-size:16px;line-height:1.6">${bodyHtml}</div>
-${button ? `<p style="margin:28px 0"><a href="${esc(button.url)}" style="background:#1c1a17;color:#fff;text-decoration:none;padding:14px 22px;border-radius:6px;font:600 15px Arial,sans-serif;display:inline-block">${esc(button.label)}</a></p>` : ''}
-<p style="font:13px Arial,sans-serif;color:#6b655c;margin-top:32px">${esc(config.brand)} · ${esc(config.supportEmail)}</p></div></body></html>`;
+${button ? `<p style="margin:28px 0"><a href="${esc(button.url)}" style="background:#1c1a17;color:#fff;text-decoration:none;padding:14px 22px;border-radius:6px;font:600 15px Arial,sans-serif;display:inline-block">${esc(button.label)}</a></p>` : ''}${opts.after ?? ''}
+${opts.footer ?? `<p style="font:13px Arial,sans-serif;color:#6b655c;margin-top:32px">${esc(config.brand)} · ${esc(config.supportEmail)}</p>`}</div></body></html>`;
 }
 
 /** Depois de corrigir a configuração (chave, remetente), as mensagens falhadas voltam à fila. */

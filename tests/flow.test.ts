@@ -70,6 +70,17 @@ test('criar entrevista, perguntas e convite', async () => {
   const mail = await db.one(`SELECT * FROM emails WHERE interview_id=$1 AND dedupe_key LIKE 'invite:%'`, [ivId]);
   assert.equal(mail.state, 'sent');
   token = /\/i\/([A-Za-z0-9_-]{40,})/.exec(mail.text_body)![1];
+  // convite da marca: explica o portal, sem título repetido, link pessoal com data, recusa e apoio depois do botão, rodapé com o endereço
+  assert.equal(mail.subject, 'Ana invites you to an interview — Fibra ótica em Portugal');
+  assert.match(mail.html, /<h1[^>]*>You are invited to an interview<\/h1>/);
+  assert.equal(mail.html.split('Fibra ótica em Portugal').length - 1, 1, 'o título aparece uma só vez no corpo');
+  assert.match(mail.html, /How quietinterview works:[\s\S]*Answer 2 questions[\s\S]*approve it before it is published/);
+  assert.match(mail.text_body, /This link is personal; you can answer until \d{1,2} \w+ \d{4}\./);
+  assert.ok(mail.html.indexOf('>Open interview</a>') < mail.html.indexOf('I do not wish to take part'), 'recusa e apoio depois do botão');
+  assert.match(mail.text_body, /quietinterview — interviews recorded in your own time · test\.local/);
+  assert.doesNotMatch(mail.html + mail.text_body, /convida-o\(a\)|Conversations/);
+  const { replyTo } = await import('../src/mail.ts');
+  assert.equal(replyTo(), '', 'sem contacto de apoio real, não há Reply-To');
   // perguntas bloqueadas depois do convite
   const edit = await post(`/entrevistas/${ivId}/perguntas`, { text: 'extra' }, owner);
   assert.match(edit.headers.location as string, /e=/);
