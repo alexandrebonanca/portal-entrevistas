@@ -262,6 +262,12 @@ test('Veo: comparação palavra a palavra entre o guião e o que se ouviu', asyn
     assert.ok(!fidelityOk(wordDiff(a, b)), `${a} / ${b}`);
   for (const [a, b] of [['A 5% fee.', 'A 5 percent fee.'], ['A €5 fee.', 'A €5 fee.'], ['We have three options.', 'We have 3 options.'], ['We sold 1,000 units.', 'We sold 1000 units.'], ['The fibre network.', 'The fiber network.'], ['A colourful neighbourhood.', 'A colorful neighborhood.'], ['Our counsellor.', 'Our counselor.'], ["Ana's view.", "Anna's view."]])
     assert.ok(fidelityOk(wordDiff(a, b, names)), `${a} / ${b}`);
+  // nenhum símbolo junto a um número desaparece; a forma dita por extenso coincide
+  for (const [a, b] of [['<2 bar', '2 bar'], ['<2 bar', '>2 bar'], ['±5%', '5%'], ['≤10 ohms', '10 ohms'], ['-$5 million', '$5 million'], ['"-3%"', '"3%"'], ['[-5]', '[5]'], ['Range:-5', 'Range: 5'], ['50¢', '50'], ['\u20123%', '3%'], ['~5 years', '5 years']])
+    assert.ok(!fidelityOk(wordDiff(a, b)), `${a} / ${b}`);
+  for (const [a, b] of [['<2 bar', 'less than 2 bar'], ['±5%', 'plus or minus 5%'], ['-$5 million', 'minus $5 million'], ['≤10 ohms', 'at most 10 ohms'], ['R&D teams', 'R and D teams'], ['The centred design.', 'The centered design.'], ['Fibres and metres.', 'Fibers and meters.']])
+    assert.ok(fidelityOk(wordDiff(a, b)), `${a} / ${b}`);
+  assert.ok(!fidelityOk(wordDiff('A timbre.', 'A timber.')), 'timbre/timber são palavras diferentes');
   // o nome só se tolera onde é usado como nome
   const { namesUsedIn } = await import('../src/veo-episode.ts');
   const people = personNames(['Will Grant', 'Paula Reis']);

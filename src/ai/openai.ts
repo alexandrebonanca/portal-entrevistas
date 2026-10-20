@@ -44,6 +44,18 @@ export async function transcribeWords(data: Buffer, ext: string): Promise<Word[]
   return (r.words ?? []).map((w: any) => ({ word: w.word, start: w.start, end: w.end }));
 }
 
+/** Transcrição de um clipe: palavras com tempos (para cortes e legendas) e texto completo, com símbolos (para comparar). */
+export async function transcribeClip(data: Buffer, ext: string): Promise<{ words: Word[]; text: string }> {
+  if (config.openai.mock) return { words: [], text: '' };
+  const c = await openai();
+  const mp3 = await toMp3ForTranscription(data, ext);
+  const r = await c.audio.transcriptions.create({
+    file: await toFile(mp3, 'clip.mp3', 'audio/mpeg'),
+    model: config.openai.models.transcribeTimestamps, response_format: 'verbose_json', timestamp_granularities: ['word'], language: 'en',
+  });
+  return { words: (r.words ?? []).map((w: any) => ({ word: w.word, start: w.start, end: w.end })), text: String(r.text ?? '') };
+}
+
 async function chatJson(system: string, user: string): Promise<any> {
   const c = await openai();
   const r = await c.chat.completions.create({

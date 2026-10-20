@@ -117,7 +117,7 @@ ${photos.length ? `<fieldset style="border:1px solid var(--line);border-radius:8
       const ent = await entityOfInterview(db, iv.id);
       const geminiKey = config.openai.mock || !!inEntity(ent, () => S('GEMINI_API_KEY'));
       const openaiKey = inEntity(ent, () => aiAvailable());
-      const lastVideoJob = await db.one(`SELECT state, error FROM jobs WHERE interview_id=$1 AND kind='render_video' ORDER BY created_at DESC LIMIT 1`, [iv.id]);
+      const lastVideoJob = await db.one(`SELECT state, error FROM jobs WHERE interview_id=$1 AND kind='render_video' AND input->>'episodeId'=$2 ORDER BY created_at DESC LIMIT 1`, [iv.id, ep.id]);
       const veoSpent = Number((await db.one(`SELECT COALESCE(sum(cost_usd),0)::float AS usd FROM usage_ledger WHERE interview_id=$1 AND kind='veo_usd'`, [iv.id]))?.usd ?? 0);
       const epScript = await db.one('SELECT segments, status FROM scripts WHERE id=$1', [ep.script_id]);
       const epSegs = epScript?.segments ?? [];
@@ -302,6 +302,8 @@ ${ep.visibility === 'public' ? `<form method="post" action="/entrevistas/${iv.id
     const iv = await guard(req, reply); if (!iv) return;
     const s = await db.one(`SELECT * FROM scripts WHERE interview_id=$1 AND status='approved' ORDER BY revision DESC LIMIT 1`, [iv.id]);
     if (!s) return back(reply, iv.id, undefined, 'Aprove primeiro o guião.');
+    if (await db.one(`SELECT 1 FROM approvals a JOIN episodes e ON e.id=a.episode_id WHERE e.script_id=$1 AND a.actor='guest' AND a.valid AND a.decision='changes' LIMIT 1`, [s.id]))
+      return back(reply, iv.id, undefined, 'O convidado pediu alterações a um episódio deste guião: reveja o guião e aprove uma nova revisão antes de gerar.');
     const b = req.body as any;
     const langs = ([] as string[]).concat(b.subtitle_langs ?? []).filter(l => SUBS.some(x => x[0] === l));
     const photos = ([] as string[]).concat(b.cover_photo ?? []).filter(x => /^[0-9a-f-]{36}$/i.test(x)).slice(0, 2);
@@ -358,7 +360,8 @@ ${ep.visibility === 'public' ? `<form method="post" action="/entrevistas/${iv.id
     const theme = String(b?.theme ?? '').trim().slice(0, 60);
     // Só publica a versão que foi verificada acima (o vídeo não mudou entretanto).
     const done = await db.one(`UPDATE episodes SET status='published', visibility=$2, published_at=now(), withdrawn_at=NULL, gallery=$3, theme=$4
-      WHERE id=$1 AND status='preview' AND NOT stale AND video_asset_id IS NOT DISTINCT FROM $5::uuid RETURNING id`, [ep.id, vis, vis === 'public' && !!b?.gallery, theme, ep.video_asset_id]);
+      WHERE id=$1 AND status='preview' AND NOT stale AND video_asset_id IS NOT DISTINCT FROM $5::uuid
+        AND NOT EXISTS (SELECT 1 FROM approvals a WHERE a.episode_id=$1 AND a.actor='guest' AND a.valid AND a.decision='changes') RETURNING id`, [ep.id, vis, vis === 'public' && !!b?.gallery, theme, ep.video_asset_id]);
     if (!done) return back(reply, iv.id, undefined, 'O episódio mudou entretanto (vídeo novo ou outra versão): reveja e aprove de novo.');
     await db.query(`UPDATE interviews SET publication_status='published' WHERE id=$1`, [iv.id]);
     await audit(db, req.user!.email, 'episode.published', iv.id, { visibility: vis, episodeId: ep.id });
@@ -376,8 +379,7 @@ ${ep.visibility === 'public' ? `<form method="post" action="/entrevistas/${iv.id
     if (engine === 'veo') {
       if (c.ep.status !== 'preview') return back(reply, c.iv.id, undefined, VEO_ONLY_PREVIEW);
       if ((await db.one('SELECT status FROM scripts WHERE id=$1', [c.ep.script_id]))?.status !== 'approved') return back(reply, c.iv.id, undefined, VEO_SCRIPT_REPLACED);
-      const g = await db.one(`SELECT decision FROM approvals WHERE episode_id=$1 AND actor='guest' AND valid ORDER BY created_at DESC LIMIT 1`, [c.ep.id]);
-      if (g?.decision === 'changes') return back(reply, c.iv.id, undefined, VEO_CHANGES);
+      if (await db.one(`SELECT 1 FROM approvals a JOIN episodes e ON e.id=a.episode_id WHERE e.script_id=$1 AND a.actor='guest' AND a.valid AND a.decision='changes' LIMIT 1`, [c.ep.script_id])) return back(reply, c.iv.id, undefined, VEO_CHANGES);
       if (!config.openai.mock && !inEntity(await entityOfInterview(db, c.iv.id), () => aiAvailable())) return back(reply, c.iv.id, undefined, 'Falta a chave da OpenAI (transcrição para verificar os clipes) em Definições.');
     }
     const n = Number((await db.one(`SELECT count(*)::int AS n FROM jobs WHERE interview_id=$1 AND kind='render_video'`, [c.iv.id])).n);

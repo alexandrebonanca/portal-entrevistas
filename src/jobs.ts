@@ -23,7 +23,7 @@ export async function runOne(db: Db, handlers: Record<string, Handler>): Promise
   await db.query(`UPDATE jobs SET state='failed', finished_at=now(), error=COALESCE(error, 'Interrompido e sem mais tentativas') WHERE state='running' AND locked_at < now() - interval '15 minutes' AND attempts >= max_attempts`);
   const job = await db.one(
     `UPDATE jobs SET state='running', attempts=attempts+1, locked_at=now(), started_at=COALESCE(started_at, now())
-     WHERE id = (SELECT id FROM jobs WHERE state='queued' AND run_after <= now() ORDER BY created_at LIMIT 1 FOR UPDATE SKIP LOCKED) RETURNING *`);
+     WHERE id = (SELECT id FROM jobs WHERE state='queued' AND run_after <= now() ORDER BY (kind='render_video'), created_at LIMIT 1 FOR UPDATE SKIP LOCKED) RETURNING *`); // vídeos (longos) depois dos trabalhos curtos
   if (!job) return false;
   const h = handlers[job.kind];
   try {

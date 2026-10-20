@@ -20,7 +20,7 @@ export async function flushOutbox(db: Db) {
   const rows = await db.query(`SELECT * FROM emails WHERE state IN ('pending','failed') AND attempts < 6 AND next_attempt_at <= now() ORDER BY created_at LIMIT 20`);
   for (const m of rows) {
     // Reserva a linha antes de enviar: dois processos não enviam a mesma mensagem.
-    const claimed = await db.one(`UPDATE emails SET state='sending', attempts=attempts+1 WHERE id=$1 AND state IN ('pending','failed') RETURNING id`, [m.id]);
+    const claimed = await db.one(`UPDATE emails SET state='sending', attempts=attempts+1 WHERE id=$1 AND state IN ('pending','failed') AND attempts < 6 AND next_attempt_at <= now() RETURNING id`, [m.id]);
     if (!claimed) continue;
     try {
       // Com entrevista: chaves da entidade do dono; sem entrevista (ex.: teste): mantém o contexto atual.

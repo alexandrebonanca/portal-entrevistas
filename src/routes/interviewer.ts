@@ -126,10 +126,12 @@ ${locked ? `<form method="post" action="/entrevistas/${iv.id}/adicional"><label 
     // Autorização retirada pelo entrevistador: o vídeo que usava a fotografia, a animação ou o Veo deixa de ser servido (o ficheiro fica privado).
     const photo = !!b.host_photo_rights, anim = photo && !!b.host_animate, ai = photo && !!b.host_ai_video;
     const guestSees = b.review_policy !== 'host_only'; // com «só o entrevistador aprova», o convidado não veria o seu vídeo Veo
-    for (const e of await db.query(`SELECT e.id, a.meta FROM episodes e JOIN assets a ON a.id=e.video_asset_id WHERE e.interview_id=$1`, [iv.id])) {
-      if ((!photo && e.meta?.hostPhoto) || (!anim && e.meta?.hostAnimated) || (!ai && e.meta?.hostAiVideo) || (!guestSees && e.meta?.guestAiVideo)) {
+    for (const e of await db.query(`SELECT e.id, e.status, a.meta FROM episodes e JOIN assets a ON a.id=e.video_asset_id WHERE e.interview_id=$1`, [iv.id])) {
+      const hostWithdrew = (!photo && e.meta?.hostPhoto) || (!anim && e.meta?.hostAnimated) || (!ai && e.meta?.hostAiVideo);
+      const guestCannotSee = !guestSees && e.meta?.guestAiVideo && e.status !== 'published'; // publicado: o convidado já o viu e aprovou
+      if (hostWithdrew || guestCannotSee) {
         await db.query('UPDATE episodes SET video_asset_id=NULL WHERE id=$1', [e.id]);
-        await audit(db, req.user!.email, 'episode.video_withdrawn_host_consent', iv.id);
+        await audit(db, req.user!.email, hostWithdrew ? 'episode.video_withdrawn_host_consent' : 'episode.video_removed_policy_host_only', iv.id);
       }
     }
     return reply.redirect(`/entrevistas/${iv.id}/editar?ok=` + encodeURIComponent('Guardado.'));

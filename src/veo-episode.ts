@@ -2,7 +2,7 @@ import { config } from './config.ts';
 import { storage } from './storage.ts';
 import { sha256 } from './lib.ts';
 import { saveAsset, hasAudioStream } from './media.ts';
-import { transcribeWords, translateSubtitleCues, aiAvailable, type Word } from './ai/openai.ts';
+import { transcribeClip, translateSubtitleCues, aiAvailable, type Word } from './ai/openai.ts';
 import { renderBases, subtitleFrame, encodeComposite, buildAudioTrack, mockTalkingClip, type Part, type Shot, type Scene, type AudioPiece } from './video.ts';
 import { cuesFromWords } from './subtitles.ts';
 import { veoSubmit, veoAwait, veoEpisodePrompt, VeoQuotaError, VeoCancelled, VEO_MODEL, VEO_PRICE_PER_SEC } from './talking.ts';
@@ -86,12 +86,16 @@ const NUMBER_WORDS = new Set(['zero', 'one', 'two', 'three', 'four', 'five', 'si
 const STOP = new Set(['i', 'a', 'an', 'and', 'as', 'at', 'he', 'she', 'it', 'is', 'in', 'on', 'or', 'of', 'to', 'we', 'you', 'they', 'his', 'her', 'him', 'me', 'my', 'us', 'our', 'the', 'this', 'that', 'was', 'are', 'be', 'by', 'for', 'with', 'who']);
 // Variantes ortográficas britânico/americano numa lista fechada de padrões (nada de «1 letra qualquer»).
 const LL_STEMS = new Set(['travel', 'model', 'cancel', 'label', 'level', 'signal', 'fuel', 'total', 'channel', 'counsel', 'dial', 'equal', 'marvel', 'jewel', 'quarrel', 'tunnel', 'panel', 'pencil', 'shovel', 'model']);
-const SPELL_FIXED: Record<string, string> = { fulfil: 'fulfill', fulfils: 'fulfills', enrolment: 'enrollment', enrolments: 'enrollments', skilful: 'skillful', instalment: 'installment', instalments: 'installments', judgement: 'judgment', judgements: 'judgments', ageing: 'aging', grey: 'gray', practise: 'practice', practised: 'practiced', practising: 'practicing', programme: 'program', programmes: 'programs', aluminium: 'aluminum', cosy: 'cozy', plough: 'plow', sceptical: 'skeptical', mum: 'mom' };
+const SPELL_FIXED: Record<string, string> = { fulfil: 'fulfill', fulfils: 'fulfills', enrolment: 'enrollment', enrolments: 'enrollments', skilful: 'skillful', instalment: 'installment', instalments: 'installments', judgement: 'judgment', judgements: 'judgments', ageing: 'aging', grey: 'gray', practise: 'practice', practised: 'practiced', practising: 'practicing', programme: 'program', programmes: 'programs', aluminium: 'aluminum', cosy: 'cozy', plough: 'plow', sceptical: 'skeptical' };
+// -re → -er só nestas palavras (timbre/timber são palavras diferentes).
+const RE_STEMS = new Set(['fib', 'calib', 'cent', 'met', 'lit', 'theat', 'spect', 'sab', 'somb', 'lust', 'meag', 'kilomet', 'centimet', 'millimet', 'manoeuv']);
 function spellCanon(w: string): string {
   let x = SPELL_FIXED[w] ?? w;
-  if (x.length >= 6) x = x.replace(/isation(s?)$/, 'ization$1').replace(/is(e|es|ed|ing|er|ers)$/, 'iz$1').replace(/ys(e|es|ed|ing)$/, 'yz$1').replace(/our(s|ed|ing|ite|ites|able|ful|hood|hoods|al|er|ers|less)?$/, 'or$1');
+  if (x.length >= 6) x = x.replace(/isation(s?)$/, 'ization$1').replace(/is(e|es|ed|ing|er|ers)$/, 'iz$1').replace(/ys(e|es|ed|ing)$/, 'yz$1').replace(/our(s|ed|ing|ite|ites|able|ful|hood|hoods|al|less)?$/, 'or$1');
   if (x.length >= 7) x = x.replace(/ence(s)?$/, 'ense$1');
-  if (x.length >= 5) x = x.replace(/([bt])re(s)?$/, '$1er$2').replace(/([bt])red$/, '$1ered').replace(/([bt])ring$/, '$1ering').replace(/ogue(s)?$/, 'og$1');
+  const re = /^(.+?[bt])r(e|es|ed|ing)$/.exec(x);
+  if (re && RE_STEMS.has(re[1])) x = `${re[1]}er${({ e: '', es: 's', ed: 'ed', ing: 'ing' } as Record<string, string>)[re[2]]}`; // fibre → fiber, centred → centered
+  if (x.length >= 5) x = x.replace(/ogue(s)?$/, 'og$1');
   const m = /^(.+l)l(ed|ing|er|ers|or|ors)$/.exec(x); // travelled → travel + ed; counsellor → counselor
   if (m && LL_STEMS.has(m[1])) x = `${m[1]}${m[2]}`;
   return x;
@@ -103,16 +107,24 @@ const CONTRACTIONS: [RegExp, string][] = [
 ];
 const SMALL_NUMBERS: Record<string, string> = { zero: '0', one: '1', two: '2', three: '3', four: '4', five: '5', six: '6', seven: '7', eight: '8', nine: '9', ten: '10', eleven: '11', twelve: '12', thirteen: '13', fourteen: '14', fifteen: '15', sixteen: '16', seventeen: '17', eighteen: '18', nineteen: '19', twenty: '20', thirty: '30', forty: '40', fifty: '50', sixty: '60', seventy: '70', eighty: '80', ninety: '90' };
 const SEP_CODE: Record<string, string> = { '.': 'p', ',': 'c', ':': 'k', '/': 's', '-': 'd' };
+// Símbolos que se dizem: passam às palavras ditas (assim «<2 bar» e «less than 2 bar» coincidem e «2 bar» não).
+const SYMBOL_WORDS: [RegExp, string][] = [
+  [/\+\/-|±/g, ' plus or minus '], [/≤|<=/g, ' at most '], [/≥|>=/g, ' at least '], [/</g, ' less than '], [/>/g, ' more than '],
+  [/[~≈]/g, ' about '], [/×/g, ' times '], [/¢/g, ' cent '], [/°/g, ' degrees '], [/‰/g, ' per mille '], [/&/g, ' and '],
+  [/%/g, ' percent '], [/€/g, ' euro '], [/\$/g, ' dollar '], [/£/g, ' pound '], [/¥/g, ' yen '],
+];
 export function normWords(s: string): string[] {
-  let x = s.toLowerCase().replace(/[’‘`]/g, "'").replace(/[–—−]/g, '-');
+  let x = s.toLowerCase().replace(/[’‘`]/g, "'").replace(/[\u2010-\u2015\u2212\uFE58\uFE63\uFF0D]/g, '-');
   for (const [re, r] of CONTRACTIONS) x = x.replace(re, r);
   x = x.replace(/'s\b/g, " 's"); // possessivo à parte: «Ana's» → «ana» + «s» (o nome compara-se sozinho)
-  // Símbolos que mudam o sentido de um número passam a palavras (nunca desaparecem na limpeza).
-  x = x.replace(/(\d),(?=\d{3}\b)/g, '$1')                 // 1,000 → 1000
-    .replace(/(^|[\s(])-(?=\d)/g, '$1minus ').replace(/(\d)\+/g, '$1 plus')
-    .replace(/%/g, ' percent ').replace(/€/g, ' euro ').replace(/\$/g, ' dollar ').replace(/£/g, ' pound ').replace(/¥/g, ' yen ')
-    // Grupos de algarismos com separadores internos ficam num só token com o separador codificado (2-5 ≠ 2.5 ≠ 2:5).
-    .replace(/\d+(?:[.,:/-]\d+)+/g, m => m.replace(/[.,:/-]/g, c => SEP_CODE[c]));
+  x = x.replace(/(\d),(?=\d{3}\b)/g, '$1'); // 1,000 → 1000
+  // Sinal de um número ou de um valor monetário, seja qual for o que vem antes (aspas, parênteses, dois pontos…).
+  x = x.replace(/(^|[^\p{L}\p{N}])-(?=[\d€$£¥.])/gu, '$1 minus ').replace(/(^|[^\p{L}\p{N}])\+(?=[\d€$£¥.])/gu, '$1 plus ').replace(/(\d)\+/g, '$1 plus ');
+  for (const [re, r] of SYMBOL_WORDS) x = x.replace(re, r);
+  // Grupos de algarismos com separadores internos ficam num só token com o separador codificado (2-5 ≠ 2.5 ≠ 2:5).
+  x = x.replace(/\d+(?:[.,:/-]\d+)+/g, m => m.replace(/[.,:/-]/g, c => SEP_CODE[c]));
+  // Qualquer outro símbolo vira um token próprio: nunca desaparece em silêncio (se faltar no ouvido, o clipe é recusado).
+  x = x.replace(/\p{S}/gu, c => ` sym${c.codePointAt(0)} `);
   return x.replace(/[^\p{L}\p{N}']+/gu, ' ').split(' ').map(w => w.replace(/^'+|'+$/g, '')).filter(w => w && !FILLERS.has(w)).map(w => SMALL_NUMBERS[w] ?? w);
 }
 const charDist = (a: string, b: string) => {
@@ -124,8 +136,8 @@ const charDist = (a: string, b: string) => {
   }
   return prev[b.length];
 };
-const CURRENCY_SIGN = new Set(['euro', 'euros', 'dollar', 'dollars', 'pound', 'pounds', 'yen', 'minus', 'plus', 'percent', 'cent', 'cents']);
-const critical = (w: string) => NEGATIONS.has(w) || NUMBER_WORDS.has(w) || CURRENCY_SIGN.has(w) || /\d/.test(w);
+const CURRENCY_SIGN = new Set(['euro', 'euros', 'dollar', 'dollars', 'pound', 'pounds', 'yen', 'minus', 'plus', 'percent', 'cent', 'cents', 'less', 'more', 'than', 'most', 'least', 'about', 'times', 'degrees', 'mille']);
+const critical = (w: string) => NEGATIONS.has(w) || NUMBER_WORDS.has(w) || CURRENCY_SIGN.has(w) || /\d/.test(w) || /^sym\d+$/.test(w);
 
 /** Nomes das PESSOAS da entrevista (entrevistador e convidado): só estes admitem outra grafia (Ana/Anna, Jose/José). */
 export function personNames(names: string[]): Set<string> {
@@ -215,7 +227,8 @@ export async function renderVeoVideo(job: any, { db, progress }: Parameters<Hand
   if (script?.status !== 'approved') throw new PermanentError(VEO_SCRIPT_REPLACED);
   const textOf = new Map<string, string>((script?.segments ?? []).map((s: any) => [s.id, s.textEnglish]));
   const consent = async (p: string) => !!(await db.one(`SELECT granted FROM consents WHERE interview_id=$1 AND purpose=$2 ORDER BY created_at DESC LIMIT 1`, [iv.id, p]))?.granted;
-  const guestAskedChanges = async () => (await db.one(`SELECT decision FROM approvals WHERE episode_id=$1 AND actor='guest' AND valid ORDER BY created_at DESC LIMIT 1`, [ep.id]))?.decision === 'changes';
+  // Pedido de alterações do convidado neste episódio ou noutro episódio do mesmo guião (um episódio novo não o apaga).
+  const guestAskedChanges = async () => !!(await db.one(`SELECT 1 FROM approvals a JOIN episodes e2 ON e2.id=a.episode_id WHERE e2.script_id=$1 AND a.actor='guest' AND a.valid AND a.decision='changes' LIMIT 1`, [ep.script_id]));
   if (await guestAskedChanges()) throw new PermanentError(VEO_CHANGES);
   // Lida de novo antes de cada envio à Google: uma autorização retirada ou um pedido de alterações a meio param o trabalho.
   const stillAllowed = async (role: 'host' | 'guest'): Promise<string | null> => {
@@ -273,22 +286,23 @@ export async function renderVeoVideo(job: any, { db, progress }: Parameters<Hand
   });
 
   // ---- transcrição de um clipe (repete a transcrição, nunca a geração paga) ----
-  const transcribe = async (video: Buffer, text: string, durSec: number): Promise<{ words: Word[]; checked: boolean }> => {
+  const transcribe = async (video: Buffer, text: string, durSec: number): Promise<{ words: Word[]; checked: boolean; text?: string }> => {
     if (mock) { // palavras sintéticas e coerentes com o texto, para exercitar cortes e legendas nos testes
       const w = text.split(/\s+/).filter(Boolean), step = Math.min(0.35, (durSec - 1) / Math.max(1, w.length));
-      return { words: w.map((x, k) => ({ word: x, start: 0.4 + k * step, end: 0.4 + (k + 0.9) * step })), checked: true };
+      return { words: w.map((x, k) => ({ word: x, start: 0.4 + k * step, end: 0.4 + (k + 0.9) * step })), checked: true, text };
     }
     const audioState = await hasAudioStream(video, 'mp4');
     if (audioState === 'no') return { words: [], checked: true };     // sem som: falha verificada, gera-se de novo
     if (audioState === 'error') return { words: [], checked: false }; // não se sabe: verifica-se outra vez mais tarde, sem pagar
     for (let k = 0; k < 3; k++) {
-      try { return { words: await transcribeWords(video, 'mp4'), checked: true }; }
+      try { const r = await transcribeClip(video, 'mp4'); return { words: r.words, text: r.text, checked: true }; }
       catch (e: any) { console.error(`[veo] transcrição falhou (tentativa ${k + 1}): ${String(e?.message ?? e).slice(0, 200)}`); await sleep(3000 * (k + 1)); }
     }
     return { words: [], checked: false };
   };
-  const judge = (c: Chunk, words: Word[], checked: boolean) => {
-    const heard = words.map(w => w.word.trim()).join(' ').replace(/\s+([,.;:!?])/g, '$1');
+  const judge = (c: Chunk, words: Word[], checked: boolean, fullText?: string) => {
+    // O texto completo da transcrição guarda os símbolos (%, €, <…) que as palavras com tempos podem perder.
+    const heard = (fullText?.trim() || words.map(w => w.word.trim()).join(' ')).replace(/\s+([,.;:!?])/g, '$1');
     const d = checked ? wordDiff(c.text, heard, namesUsedIn(c.text, personNameSet)) : null;
     return { heard, edits: d?.edits ?? null, hard: d?.hard ?? null, diffs: d?.diffs ?? [] };
   };
@@ -312,10 +326,11 @@ export async function renderVeoVideo(job: any, { db, progress }: Parameters<Hand
       if (!m.checked) { // a transcrição falhou da outra vez: repete-se (cêntimos), sem pagar o Veo de novo
         const video = await storage.get(a.storage_key);
         const tr = await transcribe(video, c.text, Number(m.dur ?? m.billedSec ?? 8));
-        const j = judge(c, tr.words, tr.checked);
+        const j = judge(c, tr.words, tr.checked, tr.text);
         m = { ...m, words: tr.words, checked: tr.checked, heard: j.heard, edits: j.edits, hard: j.hard, diffs: j.diffs };
         await db.query('UPDATE assets SET meta=$2 WHERE id=$1', [a.id, JSON.stringify(m)]);
       }
+      if (m.checked) { const j = judge(c, m.words ?? [], true, m.heard); m = { ...m, edits: j.edits, hard: j.hard, diffs: j.diffs }; } // regra atual
       atts.push({ assetId: a.id, storageKey: a.storage_key, words: m.words ?? [], heard: m.heard ?? '', checked: !!m.checked, edits: m.edits ?? null, hard: m.hard ?? null, dur: Number(m.dur ?? m.billedSec ?? 8) });
     }
     // Operações que falharam (ou expiraram) em execuções anteriores contam para o limite (o teto vale entre execuções).
@@ -373,7 +388,7 @@ export async function renderVeoVideo(job: any, { db, progress }: Parameters<Hand
               }
             }
           }
-          try { video = (await veoAwait(opName, dur, onStatus)).video; timeouts = 0; }
+          try { video = (await veoAwait(opName, dur, onStatus)).video; }
           catch (e: any) {
             const m = String(e?.message ?? e);
             // Chave recusada na consulta: a operação paga fica pendente (retoma-se com a chave certa), não é dada como falhada.
@@ -385,7 +400,7 @@ export async function renderVeoVideo(job: any, { db, progress }: Parameters<Hand
         generated++;
         const tr = await transcribe(video, c.text, dur);
         if (!tr.checked) abort ??= new PermanentError('A verificação dos clipes (transcrição) falhou: o trabalho parou para não pagar clipes que não se podem verificar. Os clipes pagos ficam guardados e são verificados na próxima geração.');
-        const j = judge(c, tr.words, tr.checked);
+        const j = judge(c, tr.words, tr.checked, tr.text);
         const meta = { chunkKey: c.key, segmentId: c.seg.id, role: c.seg.role, text: c.text, attempt: atts.length + 1, dur, billedSec: mock ? 0 : dur, words: tr.words, checked: tr.checked, ...j, model: VEO_MODEL, mock };
         const assetId = await saveAsset(db, { interviewId: iv.id, kind: 'veo_clip', mime: 'video/mp4', ext: 'mp4', data: video, durationMs: dur * 1000, meta });
         if (opId) await db.query(`UPDATE veo_ops SET state='done' WHERE id=$1`, [opId]);
