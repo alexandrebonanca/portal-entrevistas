@@ -120,7 +120,7 @@ ${groups.size ? [...groups].map(([t, eps]) => `<section style="margin-top:28px">
 ${ep.video_asset_id ? `<video controls preload="metadata" poster="/api/g/media/${ep.cover_asset_id}" src="/api/g/media/${ep.video_asset_id}" style="width:100%;border-radius:12px;background:#000;margin-bottom:18px"></video>` : ''}
 ${playerHtml(ep, { audio: `/api/g/media/${ep.audio_asset_id}`, cover: `/api/g/media/${ep.cover_asset_id}`, subs: (l, x) => `/entrevista/subs/${l}.${x}` }, { host: ep.host_name, guest: ep.guest_name })}
 ${dec ? `<div class="flash">${esc(dec.decision === 'approved' ? d.approve : d.requestChanges)} — ${esc(fmtDate(dec.created_at))}${dec.decision === 'approved' && String(dec.video_asset_id ?? '') !== String(ep.video_asset_id ?? '') ? ` (${esc(d.versionChanged)})` : ''}</div>` : ''}
-<form method="post" action="/entrevista/episodio/decisao" class="card"><input type="hidden" name="video" value="${esc(ep.video_asset_id ?? '')}"><label for="nt">${esc(d.notePlaceholder)}</label><textarea id="nt" name="note"></textarea>
+<form method="post" action="/entrevista/episodio/decisao" class="card"><input type="hidden" name="video" value="${esc(ep.video_asset_id ?? '')}"><input type="hidden" name="episode" value="${esc(ep.id)}"><input type="hidden" name="audio" value="${esc(ep.audio_asset_id ?? '')}"><label for="nt">${esc(d.notePlaceholder)}</label><textarea id="nt" name="note"></textarea>
 <div class="row"><button name="decision" value="approved" class="accent">${esc(d.approve)}</button><button name="decision" value="changes" class="ghost">${esc(d.requestChanges)}</button></div>
 <p class="hint">Silence is never treated as approval.</p></form></div>`,
     }));
@@ -131,7 +131,7 @@ ${dec ? `<div class="flash">${esc(dec.decision === 'approved' ? d.approve : d.re
     const b = req.body as any;
     const decision = b.decision === 'approved' ? 'approved' : 'changes';
     // Uma aprovação só vale para o vídeo que estava na página; um pedido de alterações vale sempre.
-    if (decision === 'approved' && String(b.video ?? '') !== String(ep.video_asset_id ?? '')) return reply.redirect('/entrevista/episodio?changed=1');
+    if (decision === 'approved' && (String(b.video ?? '') !== String(ep.video_asset_id ?? '') || (b.episode && String(b.episode) !== String(ep.id)) || (b.audio && String(b.audio) !== String(ep.audio_asset_id ?? '')))) return reply.redirect('/entrevista/episodio?changed=1');
     await db.query(`UPDATE approvals SET valid=false WHERE episode_id=$1 AND actor='guest'`, [ep.id]);
     await db.query(`INSERT INTO approvals(interview_id, kind, actor, episode_id, script_id, decision, note, video_asset_id) VALUES ($1,'episode','guest',$2,$3,$4,$5,$6)`, [ep.interview_id, ep.id, ep.script_id, decision, String(b.note ?? '').slice(0, 2000), ep.video_asset_id ?? null]);
     await audit(db, 'guest', `episode.${decision}`, ep.interview_id);

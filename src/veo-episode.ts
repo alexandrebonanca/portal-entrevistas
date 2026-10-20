@@ -86,12 +86,13 @@ const NUMBER_WORDS = new Set(['zero', 'one', 'two', 'three', 'four', 'five', 'si
 const STOP = new Set(['i', 'a', 'an', 'and', 'as', 'at', 'he', 'she', 'it', 'is', 'in', 'on', 'or', 'of', 'to', 'we', 'you', 'they', 'his', 'her', 'him', 'me', 'my', 'us', 'our', 'the', 'this', 'that', 'was', 'are', 'be', 'by', 'for', 'with', 'who']);
 // Variantes ortográficas britânico/americano numa lista fechada de padrões (nada de «1 letra qualquer»).
 const LL_STEMS = new Set(['travel', 'model', 'cancel', 'label', 'level', 'signal', 'fuel', 'total', 'channel', 'counsel', 'dial', 'equal', 'marvel', 'jewel', 'quarrel', 'tunnel', 'panel', 'pencil', 'shovel', 'model']);
+const SPELL_FIXED: Record<string, string> = { fulfil: 'fulfill', fulfils: 'fulfills', enrolment: 'enrollment', enrolments: 'enrollments', skilful: 'skillful', instalment: 'installment', instalments: 'installments', judgement: 'judgment', judgements: 'judgments', ageing: 'aging', grey: 'gray', practise: 'practice', practised: 'practiced', practising: 'practicing', programme: 'program', programmes: 'programs', aluminium: 'aluminum', cosy: 'cozy', plough: 'plow', sceptical: 'skeptical', mum: 'mom' };
 function spellCanon(w: string): string {
-  let x = w;
-  if (x.length >= 6) x = x.replace(/isation(s?)$/, 'ization$1').replace(/is(e|es|ed|ing)$/, 'iz$1').replace(/ys(e|es|ed|ing)$/, 'yz$1').replace(/our(s|ed|ing|ite|ites|able)?$/, 'or$1');
-  if (x.length >= 7) x = x.replace(/ence$/, 'ense');
-  if (x.length >= 5) x = x.replace(/tre(s)?$/, 'ter$1').replace(/ogue(s)?$/, 'og$1');
-  const m = /^(.+l)l(ed|ing|er|ers)$/.exec(x); // travelled → travel + ed
+  let x = SPELL_FIXED[w] ?? w;
+  if (x.length >= 6) x = x.replace(/isation(s?)$/, 'ization$1').replace(/is(e|es|ed|ing|er|ers)$/, 'iz$1').replace(/ys(e|es|ed|ing)$/, 'yz$1').replace(/our(s|ed|ing|ite|ites|able|ful|hood|hoods|al|er|ers|less)?$/, 'or$1');
+  if (x.length >= 7) x = x.replace(/ence(s)?$/, 'ense$1');
+  if (x.length >= 5) x = x.replace(/([bt])re(s)?$/, '$1er$2').replace(/([bt])red$/, '$1ered').replace(/([bt])ring$/, '$1ering').replace(/ogue(s)?$/, 'og$1');
+  const m = /^(.+l)l(ed|ing|er|ers|or|ors)$/.exec(x); // travelled → travel + ed; counsellor → counselor
   if (m && LL_STEMS.has(m[1])) x = `${m[1]}${m[2]}`;
   return x;
 }
@@ -100,10 +101,19 @@ const CONTRACTIONS: [RegExp, string][] = [
   [/\bi'm\b/g, 'i am'], [/'re\b/g, ' are'], [/'ve\b/g, ' have'], [/'ll\b/g, ' will'], [/'d\b/g, ' would'],
   [/\b(it|that|what|there|here|he|she|who|where|how|this)'s\b/g, '$1 is'], [/\blet's\b/g, 'let us'],
 ];
+const SMALL_NUMBERS: Record<string, string> = { zero: '0', one: '1', two: '2', three: '3', four: '4', five: '5', six: '6', seven: '7', eight: '8', nine: '9', ten: '10', eleven: '11', twelve: '12', thirteen: '13', fourteen: '14', fifteen: '15', sixteen: '16', seventeen: '17', eighteen: '18', nineteen: '19', twenty: '20', thirty: '30', forty: '40', fifty: '50', sixty: '60', seventy: '70', eighty: '80', ninety: '90' };
+const SEP_CODE: Record<string, string> = { '.': 'p', ',': 'c', ':': 'k', '/': 's', '-': 'd' };
 export function normWords(s: string): string[] {
-  let x = s.toLowerCase().replace(/[’‘`]/g, "'");
+  let x = s.toLowerCase().replace(/[’‘`]/g, "'").replace(/[–—−]/g, '-');
   for (const [re, r] of CONTRACTIONS) x = x.replace(re, r);
-  return x.replace(/[^\p{L}\p{N}']+/gu, ' ').split(' ').map(w => w.replace(/^'+|'+$/g, '')).filter(w => w && !FILLERS.has(w));
+  x = x.replace(/'s\b/g, " 's"); // possessivo à parte: «Ana's» → «ana» + «s» (o nome compara-se sozinho)
+  // Símbolos que mudam o sentido de um número passam a palavras (nunca desaparecem na limpeza).
+  x = x.replace(/(\d),(?=\d{3}\b)/g, '$1')                 // 1,000 → 1000
+    .replace(/(^|[\s(])-(?=\d)/g, '$1minus ').replace(/(\d)\+/g, '$1 plus')
+    .replace(/%/g, ' percent ').replace(/€/g, ' euro ').replace(/\$/g, ' dollar ').replace(/£/g, ' pound ').replace(/¥/g, ' yen ')
+    // Grupos de algarismos com separadores internos ficam num só token com o separador codificado (2-5 ≠ 2.5 ≠ 2:5).
+    .replace(/\d+(?:[.,:/-]\d+)+/g, m => m.replace(/[.,:/-]/g, c => SEP_CODE[c]));
+  return x.replace(/[^\p{L}\p{N}']+/gu, ' ').split(' ').map(w => w.replace(/^'+|'+$/g, '')).filter(w => w && !FILLERS.has(w)).map(w => SMALL_NUMBERS[w] ?? w);
 }
 const charDist = (a: string, b: string) => {
   let prev = Array.from({ length: b.length + 1 }, (_, j) => j);
@@ -114,11 +124,18 @@ const charDist = (a: string, b: string) => {
   }
   return prev[b.length];
 };
-const critical = (w: string) => NEGATIONS.has(w) || NUMBER_WORDS.has(w) || /\d/.test(w);
+const CURRENCY_SIGN = new Set(['euro', 'euros', 'dollar', 'dollars', 'pound', 'pounds', 'yen', 'minus', 'plus', 'percent', 'cent', 'cents']);
+const critical = (w: string) => NEGATIONS.has(w) || NUMBER_WORDS.has(w) || CURRENCY_SIGN.has(w) || /\d/.test(w);
 
 /** Nomes das PESSOAS da entrevista (entrevistador e convidado): só estes admitem outra grafia (Ana/Anna, Jose/José). */
 export function personNames(names: string[]): Set<string> {
   return new Set(names.flatMap(n => normWords(n)).filter(w => w.length >= 3 && !STOP.has(w)));
+}
+/** Dos nomes das pessoas, só os que este texto usa como nome (escritos com maiúscula): «will» minúsculo não é o Will. */
+export function namesUsedIn(text: string, people: Set<string>): Set<string> {
+  const out = new Set<string>();
+  for (const tok of text.split(/\s+/)) if (/^[("'“]?\p{Lu}/u.test(tok)) for (const w of normWords(tok)) if (people.has(w)) out.add(w);
+  return out;
 }
 
 /**
@@ -193,7 +210,9 @@ export async function renderVeoVideo(job: any, { db, progress }: Parameters<Hand
   if (!mock && !S('GEMINI_API_KEY')) throw new PermanentError('Falta a chave da Google (Gemini API) em Definições');
   // Sem transcrição não há verificação: não se paga nenhum clipe que depois não se possa verificar.
   if (!mock && !aiAvailable()) throw new PermanentError('Falta a chave da OpenAI (transcrição para verificar os clipes) em Definições');
-  const script = await db.one('SELECT segments FROM scripts WHERE id=$1', [ep.script_id]);
+  const script = await db.one('SELECT segments, status FROM scripts WHERE id=$1', [ep.script_id]);
+  // Só a partir do guião aprovado em vigor (um guião substituído pode ter o texto que o convidado contestou).
+  if (script?.status !== 'approved') throw new PermanentError(VEO_SCRIPT_REPLACED);
   const textOf = new Map<string, string>((script?.segments ?? []).map((s: any) => [s.id, s.textEnglish]));
   const consent = async (p: string) => !!(await db.one(`SELECT granted FROM consents WHERE interview_id=$1 AND purpose=$2 ORDER BY created_at DESC LIMIT 1`, [iv.id, p]))?.granted;
   const guestAskedChanges = async () => (await db.one(`SELECT decision FROM approvals WHERE episode_id=$1 AND actor='guest' AND valid ORDER BY created_at DESC LIMIT 1`, [ep.id]))?.decision === 'changes';
@@ -201,6 +220,9 @@ export async function renderVeoVideo(job: any, { db, progress }: Parameters<Hand
   // Lida de novo antes de cada envio à Google: uma autorização retirada ou um pedido de alterações a meio param o trabalho.
   const stillAllowed = async (role: 'host' | 'guest'): Promise<string | null> => {
     if (await guestAskedChanges()) return VEO_CHANGES;
+    const cur = await db.one(`SELECT e.status, e.stale, s.status AS script_status FROM episodes e LEFT JOIN scripts s ON s.id=e.script_id WHERE e.id=$1`, [ep.id]);
+    if (!cur || cur.stale || cur.status !== 'preview') return 'O episódio mudou durante a geração (publicado, retirado ou desatualizado): nada mais foi enviado à Google.';
+    if (cur.script_status !== 'approved') return VEO_SCRIPT_REPLACED;
     if (role === 'host') { const r = await db.one('SELECT host_ai_video, host_photo_rights FROM interviews WHERE id=$1', [iv.id]); return r?.host_ai_video && r?.host_photo_rights ? null : 'A autorização do entrevistador para o Google Veo foi retirada durante a geração: nada mais foi enviado à Google e o vídeo não foi ligado ao episódio.'; }
     const r = await db.one('SELECT review_policy FROM interviews WHERE id=$1', [iv.id]);
     return (await consent('ai_video')) && (await consent('publish_photo')) && r?.review_policy === 'guest_preview' ? null : 'A autorização do convidado para o Google Veo foi retirada durante a geração: nada mais foi enviado à Google e o vídeo não foi ligado ao episódio.';
@@ -267,7 +289,7 @@ export async function renderVeoVideo(job: any, { db, progress }: Parameters<Hand
   };
   const judge = (c: Chunk, words: Word[], checked: boolean) => {
     const heard = words.map(w => w.word.trim()).join(' ').replace(/\s+([,.;:!?])/g, '$1');
-    const d = checked ? wordDiff(c.text, heard, personNameSet) : null;
+    const d = checked ? wordDiff(c.text, heard, namesUsedIn(c.text, personNameSet)) : null;
     return { heard, edits: d?.edits ?? null, hard: d?.hard ?? null, diffs: d?.diffs ?? [] };
   };
 
@@ -362,6 +384,7 @@ export async function renderVeoVideo(job: any, { db, progress }: Parameters<Hand
         }
         generated++;
         const tr = await transcribe(video, c.text, dur);
+        if (!tr.checked) abort ??= new PermanentError('A verificação dos clipes (transcrição) falhou: o trabalho parou para não pagar clipes que não se podem verificar. Os clipes pagos ficam guardados e são verificados na próxima geração.');
         const j = judge(c, tr.words, tr.checked);
         const meta = { chunkKey: c.key, segmentId: c.seg.id, role: c.seg.role, text: c.text, attempt: atts.length + 1, dur, billedSec: mock ? 0 : dur, words: tr.words, checked: tr.checked, ...j, model: VEO_MODEL, mock };
         const assetId = await saveAsset(db, { interviewId: iv.id, kind: 'veo_clip', mime: 'video/mp4', ext: 'mp4', data: video, durationMs: dur * 1000, meta });
@@ -483,6 +506,7 @@ export async function renderVeoVideo(job: any, { db, progress }: Parameters<Hand
          AND (NOT $6::boolean OR (i.review_policy='guest_preview' AND COALESCE((SELECT c.granted FROM consents c WHERE c.interview_id=i.id AND c.purpose='ai_video' ORDER BY c.created_at DESC LIMIT 1), false)))
          AND (NOT $7::boolean OR COALESCE((SELECT c.granted FROM consents c WHERE c.interview_id=i.id AND c.purpose='publish_photo' ORDER BY c.created_at DESC LIMIT 1), false))
          AND COALESCE((SELECT a.decision FROM approvals a WHERE a.episode_id=e.id AND a.actor='guest' AND a.valid ORDER BY a.created_at DESC LIMIT 1), '') <> 'changes'
+         AND EXISTS (SELECT 1 FROM scripts sc WHERE sc.id=e.script_id AND sc.status='approved')
        RETURNING e.id`,
       [ep.id, id, lang, meta.hostAiVideo, meta.hostPhoto, meta.guestAiVideo, meta.guestPhoto]);
     // Só as aprovações caem (um pedido de alterações do convidado mantém-se visível).
@@ -508,4 +532,5 @@ export function stillShots(scene: Scene, a: number, b: number, cues: { startMs: 
 }
 
 export const VEO_ONLY_PREVIEW = 'O vídeo do Google Veo só se gera para um episódio em pré-visualização (antes da primeira publicação), para ser visto e aprovado. Para uma nova versão, regenere o guião ou recomece a produção.';
-export const VEO_CHANGES = 'O convidado pediu alterações a esta versão: reveja o guião antes de gerar o vídeo do Google Veo.';
+export const VEO_CHANGES = 'O convidado pediu alterações a esta versão: reveja o guião, aprove-o e gere um episódio novo antes do vídeo do Google Veo.';
+export const VEO_SCRIPT_REPLACED = 'O guião deste episódio foi substituído: aprove o guião revisto e gere o episódio de novo antes do vídeo do Google Veo.';

@@ -17,8 +17,15 @@ export function startWorker(db: Db, intervalMs = 2000) {
     finally { busy = false; }
   };
   const h = setInterval(tick, intervalMs);
+  // Emails (convites, pré-visualizações) num ciclo próprio: um vídeo do Veo de dezenas de minutos não os atrasa.
+  let mailing = false;
+  const mail = setInterval(async () => {
+    if (stopped || mailing || !busy) return; // com o worker livre, o tick já trata da outbox
+    mailing = true;
+    try { await flushOutbox(db); } catch (e: any) { console.error('[worker] outbox', e?.message ?? e); } finally { mailing = false; }
+  }, Math.max(intervalMs, 5000));
   void (process.env.RUN_WORKER === '0' ? Promise.resolve() : recoverOrphans(db).catch(e => console.error('[worker] recuperação', e?.message))).then(tick);
-  return { stop: () => { stopped = true; clearInterval(h); }, tick };
+  return { stop: () => { stopped = true; clearInterval(h); clearInterval(mail); }, tick };
 }
 
 if (import.meta.url === `file://${process.argv[1].replace(/\\/g, '/')}` || process.argv[1]?.endsWith('worker.ts')) {

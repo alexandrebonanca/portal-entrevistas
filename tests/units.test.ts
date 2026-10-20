@@ -257,6 +257,16 @@ test('Veo: comparação palavra a palavra entre o guião e o que se ouviu', asyn
   for (const [a, b] of [['the colour of energy', 'the color of energy'], ['in the city centre today', 'in the city center today'], ['we travelled a lot', 'we traveled a lot'], ['a strong defence plan', 'a strong defense plan'], ['the organisation grew', 'the organization grew']])
     assert.ok(fidelityOk(wordDiff(a, b)), `${a} / ${b}`);
   assert.ok(fidelityOk(wordDiff('Welcome, Jose.', 'Welcome, José.', names)), 'nome da pessoa com acento');
+  // sinais e símbolos dos números contam: o sentido muda
+  for (const [a, b] of [['Revenue grew -3% last year.', 'Revenue grew 3% last year.'], ['It moved -3%.', 'It moved +3%.'], ['A €5 million plan.', 'A $5 million plan.'], ['It takes 2-5 years.', 'It takes 2.5 years.'], ['A 5% fee.', 'A $5 fee.'], ['We have 10+ years.', 'We have 10 years.'], ['A ratio of 3:1.', 'A ratio of 3.1.'], ['About 1/2 of them.', 'About 1.2 of them.']])
+    assert.ok(!fidelityOk(wordDiff(a, b)), `${a} / ${b}`);
+  for (const [a, b] of [['A 5% fee.', 'A 5 percent fee.'], ['A €5 fee.', 'A €5 fee.'], ['We have three options.', 'We have 3 options.'], ['We sold 1,000 units.', 'We sold 1000 units.'], ['The fibre network.', 'The fiber network.'], ['A colourful neighbourhood.', 'A colorful neighborhood.'], ['Our counsellor.', 'Our counselor.'], ["Ana's view.", "Anna's view."]])
+    assert.ok(fidelityOk(wordDiff(a, b, names)), `${a} / ${b}`);
+  // o nome só se tolera onde é usado como nome
+  const { namesUsedIn } = await import('../src/veo-episode.ts');
+  const people = personNames(['Will Grant', 'Paula Reis']);
+  assert.ok(!fidelityOk(wordDiff('I will grant it.', 'I well grand it.', namesUsedIn('I will grant it.', people))), 'will/grant minúsculos não são nomes');
+  assert.ok(fidelityOk(wordDiff('Thank you, Will.', 'Thank you, Wil.', namesUsedIn('Thank you, Will.', people))));
   // trocas que mudam o sentido nunca passam, mesmo com uma letra de diferença ou com maiúscula a meio da frase
   for (const [a, b] of [['Yes, I approved the payment.', 'Yes, he approved the payment.'], ['We will hire people every year.', 'We will fire people every year.'], ['I have this market.', 'I hate this market.'], ['We lose clients.', 'We lost clients.'], ['We lost millions last year.', 'We lost billions last year.'], ['It starts in June.', 'It starts in July.'], ['The EU decided.', 'The US decided.'], ['Right.', 'Fight.'], ['We could do it.', 'We would do it.'], ['You must go.', 'You most go.'], ['It is there.', 'It is here.'], ['Prices rise.', 'Prices rose.'], ['Thank you, Ana.', 'Thank you and.']])
     assert.ok(!fidelityOk(wordDiff(a, b, names)), `${a} / ${b}`);
