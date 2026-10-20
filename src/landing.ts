@@ -67,17 +67,17 @@ export function landing(plans: any[]) {
   const video = hasVideo();
   return page({
     lang: 'en', title: 'Great interviews, recorded in your guest’s own time',
-    desc: `Invite an expert to answer your questions on their phone, whenever it suits them. ${config.brand} turns the answers into a reviewed English podcast with subtitles, a cover and an optional AI video. From ${cheapest}/month.`,
+    desc: `Invite people to share their professional culture and life experience, answering on their phone in their own time and language. ${config.brand} turns the answers into a reviewed English podcast and video with subtitles in five languages. From ${cheapest}/month.`,
     head: `<meta property="og:type" content="website"><meta property="og:site_name" content="${b}"><meta property="og:title" content="Great interviews, recorded in your guest’s own time">
-<meta property="og:description" content="Asynchronous interviews turned into reviewed podcasts and videos."><meta property="og:url" content="${esc(config.baseUrl)}/">${ogImage ? `<meta property="og:image" content="${esc(ogImage)}"><meta name="twitter:card" content="summary_large_image">` : ''}`,
+<meta property="og:description" content="Asynchronous interviews that share professional cultures and life experience across countries and languages."><meta property="og:url" content="${esc(config.baseUrl)}/">${ogImage ? `<meta property="og:image" content="${esc(ogImage)}"><meta name="twitter:card" content="summary_large_image">` : ''}`,
     styles: STYLES,
     nav: `<a href="#how">How it works</a><a href="/podcasts">Gallery</a><a href="#pricing">Pricing</a><a href="/entrar">Sign in</a><a class="btn accent" href="/registar">Get started</a>`,
     body: `
 <section class="lp-hero"><div class="wrap lp-grid">
   <div>
-    <p class="lp-eyebrow">Asynchronous interviews · podcast and video</p>
+    <p class="lp-eyebrow">Asynchronous interviews · podcast, video and subtitles</p>
     <h1>Great interviews, recorded in your guest’s own time.</h1>
-    <p class="lp-lead">Send one respectful invitation. Your guest answers your questions on their phone, whenever it suits them. ${b} turns the answers into a reviewed English podcast, with subtitles, a cover and, if you wish, an AI video.</p>
+    <p class="lp-lead">Invite people whose professional culture and life experience are worth sharing. They answer on their phone, in their own time and language. ${b} turns their answers into a reviewed English podcast and video, with subtitles in English, Portuguese, Spanish, French and German, so their stories travel across countries and generations.</p>
     <p class="row"><a class="btn accent" href="/registar">Start from ${cheapest} / month</a>${video ? '<a class="btn ghost" href="#tour">Watch the 1-minute video</a>' : '<a class="btn ghost" href="#how">See how it works</a>'}</p>
     <ul class="lp-trust"><li>No app for your guest</li><li>Consent at every step</li><li>Nothing published without approval</li></ul>
   </div>
@@ -97,8 +97,8 @@ ${video ? `
   <p class="lp-intro">The people worth hearing are rarely free for a live recording. ${b} removes the scheduling and the pressure: no ambush, no chasing, no hidden recording.</p>
   <div class="lp-steps">
     <article class="lp-step"><figure class="lp-photo">${img('interviewer', 'An interviewer preparing questions')}</figure><span class="lp-num">01</span><h3>You send the questions</h3><p>Write or record your goal and questions, add your photo and send one invitation by email.</p></article>
-    <article class="lp-step"><figure class="lp-photo">${img('guest', 'A microphone and laptop ready to record an answer')}</figure><span class="lp-num">02</span><h3>They answer in their own time</h3><p>A private link on their phone or laptop, no app, no account. They hear each question, record, listen back and confirm.</p></article>
-    <article class="lp-step"><figure class="lp-photo">${img('studio', 'A podcast microphone in a studio')}</figure><span class="lp-num">03</span><h3>We produce the episode</h3><p>A faithful English script you review, natural narration, timed subtitles and a cover. By default, your guest validates before anything goes live.</p></article>
+    <article class="lp-step"><figure class="lp-photo">${img('guest', 'A microphone and laptop ready to record an answer')}</figure><span class="lp-num">02</span><h3>They answer in their own time</h3><p>A private link on their phone or laptop, no app, no account. They hear each question, take time to reflect, answer in their own language and can record again before submitting.</p></article>
+    <article class="lp-step"><figure class="lp-photo">${img('studio', 'A podcast microphone in a studio')}</figure><span class="lp-num">03</span><h3>We produce the episode</h3><p>A faithful English script you review, natural narration, subtitles in five languages and a cover. By default, your guest validates before anything goes live.</p></article>
   </div>
 </section>
 
@@ -107,7 +107,7 @@ ${video ? `
   <div><h2 id="fmh">One interview, three ways to share it</h2>
     <ul class="lp-formats">
       <li><strong>Audio podcast</strong><span>A clear English episode with chapters, transcript and an audible AI disclosure.</span></li>
-      <li><strong>Video with photos and subtitles</strong><span>Authorized photos, close-ups of whoever is speaking and subtitles in the language you choose.</span></li>
+      <li><strong>Video with photos and subtitles</strong><span>Authorized photos, close-ups of whoever is speaking and subtitles in English, Portuguese, Spanish, French or German.</span></li>
       <li><strong>AI video</strong><span>Presenters animated from authorized photos, with a visible “AI-generated video” notice. Only with each person’s specific consent.</span></li>
     </ul>
     ${covers.length ? `<div class="lp-covers">${covers.map(([f, c]) => `<img src="/static/img/${f}.svg" alt="Sample podcast cover: ${esc(c)}" width="400" height="400" loading="lazy">`).join('')}</div>` : ''}

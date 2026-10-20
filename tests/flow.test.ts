@@ -39,7 +39,11 @@ test('landing em inglês e primeira conta administradora', async () => {
   assert.match(r.body, /<span class="wq">quiet<\/span><span class="wi">interview<\/span>/, 'logótipo e nome no cabeçalho');
   assert.match(r.body, /€10/);
   assert.match(r.body, /Up to <strong>5 interviews/);
-  assert.match(r.body, /fictional and do not depict any real person/, 'sem fotografias, as ilustrações são identificadas');
+  // fotografias licenciadas nos cinco lugares, com créditos; sem ilustrações, não há o aviso das ilustrações
+  for (const n of ['hero', 'interviewer', 'guest', 'studio', 'listen']) assert.match(r.body, new RegExp(`src="/static/img/photos/${n}\\.jpg"`));
+  assert.match(r.body, /Photos: Freepik/);
+  assert.doesNotMatch(r.body, /class="ill"|Illustrations on this page/);
+  assert.match(r.body, /professional culture and life experience[\s\S]*subtitles in English, Portuguese, Spanish, French and German/);
   // vídeo de apresentação: legendas por omissão, cartaz e aviso de IA (os ficheiros estáticos são servidos por server.ts)
   assert.match(r.body, /<video controls playsinline preload="none" poster="\/static\/video\/promo\.jpg"/);
   assert.match(r.body, /<track kind="captions" srclang="en" label="English" src="\/static\/video\/promo\.en\.vtt" default>/);
