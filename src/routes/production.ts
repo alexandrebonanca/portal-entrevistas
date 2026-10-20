@@ -21,6 +21,8 @@ const guestMustApprove = (iv: any, vmeta: any) => iv.review_policy === 'guest_pr
 /** Porque é que ainda não se pode pedir a validação ao convidado (null = pode). */
 const previewBlock = (iv: any, ep: any): string | null =>
   ep.stale ? 'Versão desatualizada: regenere o guião e o episódio antes de pedir a validação.'
+  : ep.status === 'published' ? 'O episódio já está publicado: a validação pede-se antes de publicar.'
+  : ep.status !== 'preview' ? 'O episódio não está em pré-visualização (foi retirado): a validação pede-se antes de publicar.'
   : iv.collection_status === 'cancelled' || iv.collection_status === 'expired' ? `A entrevista está ${iv.collection_status === 'cancelled' ? 'cancelada' : 'expirada'}: não é possível pedir a validação.`
   : iv.collection_status !== 'submitted' ? 'O entrevistado ainda tem perguntas por responder: envie a pré-visualização depois de ele as submeter.'
   : null;
@@ -164,7 +166,7 @@ ${(() => { const est = animationEstimate(ep, iv, animOk, !!(iv.host_photo_rights
   return `<fieldset style="flex-basis:100%;border:1px solid var(--line);border-radius:8px"><legend class="sans">Imagem e voz do vídeo</legend>
 <label class="check"><input type="radio" name="engine" value="still" checked> Fotografias fixas com a voz do episódio</label>
 <label class="check"><input type="radio" name="engine" value="lipsync" ${est.sec ? '' : 'disabled'}> Retratos com sincronização labial (Replicate), aviso visível «AI-animated portrait»</label>
-<p class="hint" style="margin:0 0 8px 30px">Entrevistador: ${iv.host_animate && iv.host_photo_rights && iv.host_photo_asset_id ? 'autorizado' : 'sem autorização ou sem fotografia (em Editar)'} · Convidado: ${animOk && guestHasPhoto ? 'autorizado' : 'sem autorização específica (o convidado pode dá-la em «Autorizações das fotografias», a partir do link do convite ou da pré-visualização)'}.
+<p class="hint" style="margin:0 0 8px 30px">Entrevistador: ${iv.host_animate && iv.host_photo_rights && iv.host_photo_asset_id ? 'autorizado' : 'sem autorização ou sem fotografia (em Editar)'} · Convidado: ${animOk && guestHasPhoto ? (ep.status === 'preview' ? 'autorizado' : 'autorizado, mas fica em fotografia fixa: só é animado num episódio em pré-visualização, para ver e aprovar o vídeo antes de ir para o ar') : 'sem autorização específica (o convidado pode dá-la em «Autorizações das fotografias», a partir do link do convite ou da pré-visualização)'}.
 ${est.sec ? `Fala a animar: ${Math.round(est.sec)} s · custo estimado ~$${est.usd.toFixed(2)} (Replicate) · demora ~${est.minutes} min.` : ''} Se alguma animação falhar, essa fala fica com a imagem fixa.</p>
 <label class="check"><input type="radio" name="engine" value="veo" ${ve.clips && !veoBlock ? '' : 'disabled'}> Google Veo: vídeo e voz gerados pelo modelo a partir da fotografia e do texto aprovado, aviso visível «AI-generated video · AI voice»</label>
 <p class="hint" style="margin:0 0 8px 30px">${veoBlock ? `<strong>${esc(veoBlock)}</strong> ` : ''}Entrevistador: ${hostVeo ? 'autorizado' : !iv.host_photo_asset_id ? 'sem fotografia (em Editar)' : 'sem autorização para o Veo (em Editar)'} · Convidado: ${guestVeo ? 'autorizado' : iv.review_policy !== 'guest_preview' ? 'não entra no Veo com a política «só o entrevistador aprova» (não veria o vídeo antes de publicar)' : !guestHasPhoto ? 'sem fotografia' : 'sem autorização para o Veo (o convidado pode dá-la em «Autorizações das fotografias», a partir do link do convite ou da pré-visualização)'}.

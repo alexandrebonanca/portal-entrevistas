@@ -432,6 +432,7 @@ export async function renderVeoVideo(job: any, { db, progress }: Parameters<Hand
           }
         }
         generated++; busyStreak = 0;
+        if (problemOf.get(c.key) === 'busy') problemOf.delete(c.key); // a procura elevada passou: o que contar é o resultado deste clipe
         const tr = await transcribe(video, c.text, dur);
         if (!tr.checked) abort ??= new PermanentError('A verificação dos clipes (transcrição) falhou: o trabalho parou para não pagar clipes que não se podem verificar. Os clipes pagos ficam guardados e são verificados na próxima geração.');
         const j = judge(c, tr.words, tr.checked, tr.text);
@@ -548,8 +549,7 @@ export async function renderVeoVideo(job: any, { db, progress }: Parameters<Hand
 
   const fidelity = chunks.map((c, i) => {
     const best = chosen[i] ?? [...attemptsOf[i]].filter(a => a.checked).sort((x, y) => (x.hard ?? 99) - (y.hard ?? 99))[0];
-    const why = problemOf.get(c.key);
-    const problem = chosen[i] ? null : why === 'busy' || why === 'busycap' ? why : best ? 'mismatch' : attemptsOf[i].some(a => !a.checked) ? 'unchecked' : (why ?? 'error');
+    const problem = chunkProblem(!!chosen[i], !!best, attemptsOf[i].some(a => !a.checked), problemOf.get(c.key));
     return { segmentId: c.seg.id, role: c.seg.role, expected: c.text, heard: best?.heard ?? '', checked: !!best?.checked, edits: best?.edits ?? null, ok: !!chosen[i], attempts: attemptsOf[i].length, used: veoSegs.has(c.seg.id), problem, cause: capCause.get(c.key) ?? null };
   });
   const uniq = new Map<string, Attempt[]>(chunks.map((c, i) => [c.key, attemptsOf[i]]));
@@ -595,6 +595,10 @@ export function stillShots(scene: Scene, a: number, b: number, cues: { startMs: 
   }
   return shots;
 }
+
+/** Porque é que um pedaço ficou sem clipe (relatório): a Google em procura elevada prevalece sobre uma tentativa anterior com diferenças. */
+export const chunkProblem = (chosen: boolean, hasChecked: boolean, anyUnchecked: boolean, why?: string) =>
+  chosen ? null : why === 'busy' || why === 'busycap' ? why : hasChecked ? 'mismatch' : anyUnchecked ? 'unchecked' : (why ?? 'error');
 
 export const VEO_ONLY_PREVIEW = 'O vídeo do Google Veo só se gera para um episódio em pré-visualização (antes da primeira publicação), para ser visto e aprovado. Para uma nova versão, regenere o guião ou recomece a produção.';
 export const VEO_CHANGES = 'O convidado pediu alterações a esta versão: reveja o guião, aprove-o e gere um episódio novo antes do vídeo do Google Veo.';

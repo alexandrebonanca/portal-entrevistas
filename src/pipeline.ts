@@ -247,11 +247,12 @@ export const handlers: Record<string, Handler> = {
     const frameFor = (sh: any) => subtitleFrame((bases as any)[sh.scene], sh.text);
 
     // Animação por fala: só com autorização específica de cada pessoa e fotografia autorizada.
+    // O convidado só é animado num episódio em pré-visualização: tem de ver e aprovar o vídeo antes de ir para o ar.
     const animHost = !!job.input.animate && iv.host_animate && !!hostPhoto;
-    const animGuest = !!job.input.animate && !!guestPhoto && (await consent('animate_portrait'));
+    const animGuest = !!job.input.animate && !!guestPhoto && ep.status === 'preview' && (await consent('animate_portrait'));
     const segs = timing.map((t: any, i: number) => ({ ...t, endMs: i + 1 < timing.length ? timing[i + 1].startMs : ep.duration_ms }))
       .filter((t: any) => !['disclosure', 'editorial_intro', 'editorial_outro'].includes(t.kind) && ((t.role === 'host' && animHost) || (t.role === 'guest' && animGuest)) && t.durationMs >= 800);
-    let mp4: Buffer, animated = 0, failed = 0, gpuUsd = 0;
+    let mp4: Buffer, animated = 0, failed = 0, gpuUsd = 0, guestAnimN = 0;
     if (segs.length) {
       const clips: (Buffer | null)[] = new Array(segs.length).fill(null);
       let doneN = 0, next = 0;
@@ -282,7 +283,7 @@ export const handlers: Record<string, Handler> = {
       };
       await Promise.all([worker(), worker(), worker()]);
       const ok = segs.map((sg: any, k: number) => ({ sg, clip: clips[k] })).filter((x: any) => x.clip);
-      animated = ok.length;
+      animated = ok.length; guestAnimN = ok.filter((x: any) => x.sg.role === 'guest').length;
       const layout = splitParts(ok.map((x: any) => ({ startMs: x.sg.startMs, endMs: x.sg.endMs })), ep.duration_ms);
       const cues = lang ? ep.subtitles[lang] as any[] : [];
       const parts: Part[] = layout.map(l => {
@@ -300,16 +301,18 @@ export const handlers: Record<string, Handler> = {
         async (i, n) => progress(10 + Math.round((i / n) * 60), 100, `A desenhar os fotogramas (${i} de ${n})`));
     }
     await progress(92, 100, 'A guardar o vídeo');
+    // Por papel: quem tem de aprovar depende de quem aparece de facto animado.
+    const guestAnimated = guestAnimN > 0, hostAnimated = animated - guestAnimN > 0;
     const id = await saveAsset(db, { interviewId: iv.id, kind: 'episode_video', mime: 'video/mp4', ext: 'mp4', data: mp4, durationMs: ep.duration_ms,
-      meta: { lang, shots: shots.length, guestPhoto: !!guestPhoto, hostPhoto: !!hostPhoto, animatedSegments: animated, failedAnimations: failed, guestAnimated: animGuest && animated > 0, hostAnimated: animHost && animated > 0, lipsyncUsd: gpuUsd } });
-    // Ligação com as autorizações lidas no próprio momento: uma retirada durante a geração não volta a pôr o vídeo no ar.
-    const guestAnimated = animGuest && animated > 0, hostAnimated = animHost && animated > 0;
+      meta: { lang, shots: shots.length, guestPhoto: !!guestPhoto, hostPhoto: !!hostPhoto, animatedSegments: animated, failedAnimations: failed, guestAnimated, hostAnimated, lipsyncUsd: gpuUsd } });
+    // Ligação com as autorizações lidas no próprio momento: uma retirada durante a geração não volta a pôr o vídeo no ar,
+    // e um vídeo com o convidado animado só se liga a um episódio ainda em pré-visualização (nunca a um já publicado).
     const linked = await db.one(
       `UPDATE episodes e SET video_asset_id=$2, video_lang=$3 FROM interviews i
        WHERE e.id=$1 AND i.id=e.interview_id AND NOT e.stale AND e.status<>'superseded'
          AND (NOT $4::boolean OR i.host_photo_rights) AND (NOT $5::boolean OR (i.host_animate AND i.host_photo_rights))
          AND (NOT $6::boolean OR COALESCE((SELECT c.granted FROM consents c WHERE c.interview_id=i.id AND c.purpose='publish_photo' ORDER BY c.created_at DESC LIMIT 1), false))
-         AND (NOT $7::boolean OR COALESCE((SELECT c.granted FROM consents c WHERE c.interview_id=i.id AND c.purpose='animate_portrait' ORDER BY c.created_at DESC LIMIT 1), false))
+         AND (NOT $7::boolean OR (e.status='preview' AND COALESCE((SELECT c.granted FROM consents c WHERE c.interview_id=i.id AND c.purpose='animate_portrait' ORDER BY c.created_at DESC LIMIT 1), false)))
        RETURNING e.id`,
       [ep.id, id, lang, !!hostPhoto, hostAnimated, !!guestPhoto, guestAnimated]);
     if (!linked) throw new PermanentError('Uma autorização foi retirada (ou o episódio mudou) durante a geração: o vídeo não foi ligado ao episódio e fica privado.');
@@ -405,7 +408,7 @@ export const handlers: Record<string, Handler> = {
 export function animationEstimate(ep: any, iv: any, guestConsent: boolean, hasHostPhoto: boolean, hasGuestPhoto: boolean) {
   const timing = (ep.technical?.timing ?? []) as any[];
   const sec = timing.filter(t => !['disclosure', 'editorial_intro', 'editorial_outro'].includes(t.kind)
-    && ((t.role === 'host' && iv.host_animate && hasHostPhoto) || (t.role === 'guest' && guestConsent && hasGuestPhoto))).reduce((a, t) => a + t.durationMs / 1000, 0);
+    && ((t.role === 'host' && iv.host_animate && hasHostPhoto) || (t.role === 'guest' && guestConsent && hasGuestPhoto && ep.status === 'preview'))).reduce((a, t) => a + t.durationMs / 1000, 0);
   return { sec, usd: estimateLipsyncUsd(sec), minutes: Math.ceil((sec * 8.6) / 3 / 60) + 2 };
 }
 

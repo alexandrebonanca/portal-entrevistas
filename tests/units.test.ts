@@ -334,3 +334,15 @@ test('Laboratório: Veo Lite disponível com o modelo e o preço certos', async 
   finally { globalThis.fetch = real; }
   assert.match(url, /models\/veo-3\.1-lite-generate-preview:predictLongRunning$/, 'o pedido vai para o modelo Lite');
 });
+
+test('relatório Veo: porque é que um pedaço ficou sem clipe', async () => {
+  const { chunkProblem } = await import('../src/veo-episode.ts');
+  assert.equal(chunkProblem(true, true, false, 'busy'), null, 'com clipe aprovado não há problema');
+  assert.equal(chunkProblem(false, true, false, 'busy'), 'busy', 'procura elevada prevalece sobre uma tentativa anterior com diferenças');
+  assert.equal(chunkProblem(false, true, false, 'busycap'), 'busycap');
+  assert.equal(chunkProblem(false, true, false, undefined), 'mismatch');
+  assert.equal(chunkProblem(false, true, false, 'capped'), 'mismatch', 'limite esgotado com tentativas verificadas: diferenças');
+  assert.equal(chunkProblem(false, false, true, undefined), 'unchecked');
+  assert.equal(chunkProblem(false, false, false, 'filtered'), 'filtered');
+  assert.equal(chunkProblem(false, false, false, undefined), 'error');
+});

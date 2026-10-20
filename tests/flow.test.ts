@@ -296,6 +296,7 @@ test('vozes escolhidas, agradecimento final, vídeo MP4 e galeria', async () => 
 
 test('animação por fala: só com autorização específica; aviso e reserva', async () => {
   const ep = await db.one(`SELECT * FROM episodes WHERE interview_id=$1 AND NOT stale ORDER BY created_at DESC LIMIT 1`, [ivId]);
+  await db.query(`UPDATE episodes SET status='preview', withdrawn_at=NULL WHERE id=$1`, [ep.id]); // o teste anterior retirou-o
   // sem autorizações: pedir animação gera vídeo sem falas animadas
   await post(`/entrevistas/${ivId}/episodio/${ep.id}/video`, { lang: 'en', animate: '1' }, owner);
   await drain();
@@ -329,7 +330,6 @@ test('animação por fala: só com autorização específica; aviso e reserva', 
 
   // com «só o entrevistador aprova», o convidado animado por IA tem de ver e aprovar o vídeo na mesma
   await db.query(`UPDATE interviews SET review_policy='host_only' WHERE id=$1`, [ivId]);
-  await db.query(`UPDATE episodes SET status='preview', withdrawn_at=NULL WHERE id=$1`, [ep.id]);
   await post(`/entrevistas/${ivId}/episodio/${ep.id}/aprovar`, { video: ep2.video_asset_id }, owner);
   const blockedAnim = await post(`/entrevistas/${ivId}/episodio/${ep.id}/publicar`, { visibility: 'unlisted' }, owner);
   assert.match(blockedAnim.headers.location as string, /e=/, 'sem a aprovação do convidado animado não publica');
@@ -340,6 +340,19 @@ test('animação por fala: só com autorização específica; aviso e reserva', 
   assert.match(prod, /<button class="accent" >Publicar/, 'com a aprovação do convidado, publicar fica disponível');
   await db.query(`UPDATE approvals SET valid=false WHERE episode_id=$1`, [ep.id]);
   await db.query(`UPDATE interviews SET review_policy='guest_preview' WHERE id=$1`, [ivId]);
+
+  // episódio já publicado: um vídeo novo nunca anima o convidado (só o entrevistador), nem se pede validação
+  await db.query(`UPDATE episodes SET status='published', visibility='unlisted' WHERE id=$1`, [ep.id]);
+  assert.match((await get(`/entrevistas/${ivId}/producao`, owner)).body, /só é animado num episódio em pré-visualização/);
+  await post(`/entrevistas/${ivId}/episodio/${ep.id}/video`, { lang: 'en', animate: '1' }, owner);
+  await drain();
+  const pubVideo = await db.one('SELECT video_asset_id FROM episodes WHERE id=$1', [ep.id]);
+  const pm = (await db.one('SELECT meta FROM assets WHERE id=$1', [pubVideo.video_asset_id])).meta;
+  assert.equal(pm.guestAnimated, false, 'convidado em fotografia fixa num episódio publicado'); assert.equal(pm.hostAnimated, true);
+  assert.ok(pm.animatedSegments > 0);
+  const pv = await post(`/entrevistas/${ivId}/episodio/${ep.id}/enviar-previa`, {}, owner);
+  assert.match(decodeURIComponent(pv.headers.location as string), /já está publicado/);
+  await db.query(`UPDATE episodes SET status='preview', video_asset_id=$2 WHERE id=$1`, [ep.id, ep2.video_asset_id]);
 
   // retirar a autorização de animação tira o vídeo do ar (o ficheiro fica privado)
   await post('/entrevista/fotos/autorizacoes', { photo_capture: '1', cover_use: '1', publish_photo: '1' }, g);
