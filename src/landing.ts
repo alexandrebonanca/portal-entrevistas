@@ -21,6 +21,8 @@ const FALLBACK: Record<string, { src: string; alt: string }> = {
 };
 const COVERS: [string, string][] = [['c1', 'The Long Table'], ['c2', 'Backstage'], ['c3', 'Open Mic']];
 const hasPhoto = (name: string) => existsSync(join(PHOTO_DIR, `${name}.jpg`));
+// Vídeo de apresentação (public/video/promo.mp4, com cartaz e legendas em inglês): a secção só aparece se existir.
+const hasVideo = () => existsSync(join(process.cwd(), 'public', 'video', 'promo.mp4'));
 const credits = () => { try { return readFileSync(join(PHOTO_DIR, 'credits.txt'), 'utf8').trim(); } catch { return ''; } };
 
 const STYLES = `
@@ -42,6 +44,8 @@ const STYLES = `
 .lp-formats strong{display:block;font:600 1.02rem system-ui,sans-serif}.lp-formats span{color:var(--mute)}
 .lp-covers{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-top:20px}.lp-covers img{width:100%;height:auto;border-radius:12px;display:block}
 .lp-cta{text-align:center;padding:40px 20px}
+.lp-video{margin:22px auto 0;max-width:880px}.lp-video video{width:100%;height:auto;aspect-ratio:16/9;border-radius:16px;background:#000;display:block}
+.lp-video figcaption{margin-top:8px}
 @media (max-width:820px){.lp-grid,.lp-split{grid-template-columns:1fr;gap:28px}.lp-hero{padding-top:32px}.lp-covers{grid-template-columns:repeat(3,1fr);gap:8px}}
 `;
 
@@ -60,6 +64,7 @@ export function landing(plans: any[]) {
   const illustrated = usedFallback.size > 0;
   const cr = credits();
   const ogImage = hasPhoto('hero') ? `${config.baseUrl}/static/img/photos/hero.jpg` : '';
+  const video = hasVideo();
   return page({
     lang: 'en', title: 'Great interviews, recorded in your guest’s own time',
     desc: `Invite an expert to answer your questions on their phone, whenever it suits them. ${config.brand} turns the answers into a reviewed English podcast with subtitles, a cover and an optional AI video. From ${cheapest}/month.`,
@@ -73,13 +78,21 @@ export function landing(plans: any[]) {
     <p class="lp-eyebrow">Asynchronous interviews · podcast and video</p>
     <h1>Great interviews, recorded in your guest’s own time.</h1>
     <p class="lp-lead">Send one respectful invitation. Your guest answers your questions on their phone, whenever it suits them. ${b} turns the answers into a reviewed English podcast, with subtitles, a cover and, if you wish, an AI video.</p>
-    <p class="row"><a class="btn accent" href="/registar">Start from ${cheapest} / month</a><a class="btn ghost" href="#how">See how it works</a></p>
+    <p class="row"><a class="btn accent" href="/registar">Start from ${cheapest} / month</a>${video ? '<a class="btn ghost" href="#tour">Watch the 1-minute video</a>' : '<a class="btn ghost" href="#how">See how it works</a>'}</p>
     <ul class="lp-trust"><li>No app for your guest</li><li>Consent at every step</li><li>Nothing published without approval</li></ul>
   </div>
   <figure class="lp-photo">${img('hero', 'A guest recording an interview answer', true)}
     <figcaption class="lp-chip">${markSvg(24)}<div><strong>Episode ready to review</strong><span>12 min · English · PT and ES subtitles</span></div></figcaption></figure>
 </div></section>
-
+${video ? `
+<section class="wrap lp-section" id="tour" aria-labelledby="tourh"><h2 id="tourh"><span translate="no">${b}</span> in one minute</h2>
+  <p class="lp-intro">Professional cultures and life lessons, shared across countries and generations: your guests answer in their own time, by default review before anything is published, and reach listeners in other languages.</p>
+  <figure class="lp-video"><video controls playsinline preload="none" poster="/static/video/promo.jpg" width="1280" height="720">
+    <source src="/static/video/promo.mp4" type="video/mp4"><track kind="captions" srclang="en" label="English" src="/static/video/promo.en.vtt" default>
+    <a href="/static/video/promo.mp4">Watch the video (MP4)</a></video>
+    <figcaption class="hint">AI-generated video and voices (Google Veo), with English captions. All people shown are fictional.</figcaption></figure>
+</section>
+` : ''}
 <section class="wrap lp-section" id="how" aria-labelledby="howh"><h2 id="howh">How it works</h2>
   <p class="lp-intro">The people worth hearing are rarely free for a live recording. ${b} removes the scheduling and the pressure: no ambush, no chasing, no hidden recording.</p>
   <div class="lp-steps">

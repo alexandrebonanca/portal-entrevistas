@@ -40,6 +40,12 @@ test('landing em inglês e primeira conta administradora', async () => {
   assert.match(r.body, /€10/);
   assert.match(r.body, /Up to <strong>5 interviews/);
   assert.match(r.body, /fictional and do not depict any real person/, 'sem fotografias, as ilustrações são identificadas');
+  // vídeo de apresentação: legendas por omissão, cartaz e aviso de IA (os ficheiros estáticos são servidos por server.ts)
+  assert.match(r.body, /<video controls playsinline preload="none" poster="\/static\/video\/promo\.jpg"/);
+  assert.match(r.body, /<track kind="captions" srclang="en" label="English" src="\/static\/video\/promo\.en\.vtt" default>/);
+  assert.match(r.body, /AI-generated video and voices \(Google Veo\)[^<]*All people shown are fictional/);
+  assert.match(r.body, /by default review before anything is published/, 'a política «só o entrevistador aprova» dispensa o convidado');
+  assert.match(r.body, /href="#tour">Watch the 1-minute video/);
   const reg = await post('/registar', { name: 'Ana', email: 'ana@example.com', password: 'uma-palavra-passe-longa', terms: '1' }, '');
   assert.equal(reg.statusCode, 302);
   owner = `sid=${cookies(reg).sid}`;

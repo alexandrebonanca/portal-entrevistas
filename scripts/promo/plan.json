@@ -1,0 +1,15 @@
+{
+  "card": 5.0,
+  "cardUrl": "quietinterview.com",
+  "notice": "AI-generated video · AI voice",
+  "clips": [
+    { "file": "01-elderly-fisherman.mp4", "start": 0.0, "end": 7.4, "cues": [[0.1, 2.3, "Everyone has a story worth hearing."], [3.7, 6.9, "Some of us just need time to tell it."]] },
+    { "file": "02-engineer-reading.mp4", "start": 1.9, "end": 7.9, "cues": [[2.4, 7.4, "With quietinterview, I get the questions and answer in my own time."]] },
+    { "file": "03-chef-recording.mp4", "start": 0.5, "end": 6.0, "cues": [[0.8, 2.8, "I can reflect on each question,"], [3.0, 5.6, "record my answer, and listen back."]] },
+    { "file": "04-doctor-recording.mp4", "start": 1.0, "end": 7.0, "cues": [[1.4, 3.6, "If I want, I record again."], [4.5, 6.5, "Nothing is published without my approval."]] },
+    { "file": "05-teacher-viewing.mp4", "start": 2.3, "end": 7.8, "cues": [[2.7, 4.6, "My photo can even be animated,"], [4.9, 7.4, "always clearly labelled as AI."]] },
+    { "file": "06-craftswoman-speaking.mp4", "start": 0.0, "end": 6.8, "cues": [[0.3, 2.5, "My words are carefully translated,"], [2.9, 6.4, "so my experience reaches people in many languages."]] },
+    { "file": "07-colleagues-listening.mp4", "start": 0.0, "end": 5.5, "cues": [[0.0, 2.4, "Professional cultures and life lessons,"], [2.4, 5.1, "shared across countries and generations."]] },
+    { "file": "08-podcast-desk.mp4", "start": 0.0, "end": 8.0, "cues": [[0.1, 1.1, "quietinterview."], [2.35, 3.45, "Great interviews,"], [3.85, 5.6, "recorded in your own time."]] }
+  ]
+}
