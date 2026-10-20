@@ -19,7 +19,7 @@ export async function createInvitation(db: Db, interview: any, host: { name: str
   const lang = normLang(interview.interaction_lang);
   const d = t(lang);
   const url = `${config.baseUrl}/i/${token}`;
-  const hostName = interview.host_name || host.name;
+  const hostName = interview.host_name || (await db.one('SELECT name FROM users WHERE id=$1', [interview.owner_id ?? null]))?.name || host.name;
   if (opts.preview) {
     // Validação do episódio: email próprio (sem número de perguntas, sem «responder no telemóvel», sem recusa).
     const body = `<p style="font-size:19px;margin:0 0 12px"><strong>${esc(d.reviewTitle)}</strong></p><p>${esc(d.reviewIntro(hostName))}</p>

@@ -56,7 +56,7 @@ export function landing(plans: any[]) {
   };
   // Capas de exemplo: só com a fotografia de quem ouve (sem ela, a figura grande já é uma capa), sem repetir as usadas como recurso.
   const usedFallback = new Set(Object.keys(FALLBACK).filter(n => !hasPhoto(n)).map(n => FALLBACK[n].src));
-  const covers = hasPhoto('listen') ? COVERS.filter(([f]) => !usedFallback.has(`${f}.svg`)) : [];
+  const covers = hasPhoto('listen') && COVERS.every(([f]) => !usedFallback.has(`${f}.svg`)) ? COVERS : [];
   const illustrated = usedFallback.size > 0;
   const cr = credits();
   const ogImage = hasPhoto('hero') ? `${config.baseUrl}/static/img/photos/hero.jpg` : '';

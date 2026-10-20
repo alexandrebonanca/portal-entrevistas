@@ -327,6 +327,20 @@ test('animação por fala: só com autorização específica; aviso e reserva', 
   const v = await get(`/entrevistas/${ivId}/episodio/${ep.id}/video.mp4`, owner);
   assert.equal(v.rawPayload.subarray(4, 8).toString('latin1'), 'ftyp');
 
+  // com «só o entrevistador aprova», o convidado animado por IA tem de ver e aprovar o vídeo na mesma
+  await db.query(`UPDATE interviews SET review_policy='host_only' WHERE id=$1`, [ivId]);
+  await db.query(`UPDATE episodes SET status='preview', withdrawn_at=NULL WHERE id=$1`, [ep.id]);
+  await post(`/entrevistas/${ivId}/episodio/${ep.id}/aprovar`, { video: ep2.video_asset_id }, owner);
+  const blockedAnim = await post(`/entrevistas/${ivId}/episodio/${ep.id}/publicar`, { visibility: 'unlisted' }, owner);
+  assert.match(blockedAnim.headers.location as string, /e=/, 'sem a aprovação do convidado animado não publica');
+  let prod = (await get(`/entrevistas/${ivId}/producao`, owner)).body;
+  assert.match(prod, /<td>Entrevistado<\/td>/); assert.match(prod, /<button class="accent" disabled>Publicar/);
+  await post('/entrevista/episodio/decisao', { decision: 'approved', video: ep2.video_asset_id }, g);
+  prod = (await get(`/entrevistas/${ivId}/producao`, owner)).body;
+  assert.match(prod, /<button class="accent" >Publicar/, 'com a aprovação do convidado, publicar fica disponível');
+  await db.query(`UPDATE approvals SET valid=false WHERE episode_id=$1`, [ep.id]);
+  await db.query(`UPDATE interviews SET review_policy='guest_preview' WHERE id=$1`, [ivId]);
+
   // retirar a autorização de animação tira o vídeo do ar (o ficheiro fica privado)
   await post('/entrevista/fotos/autorizacoes', { photo_capture: '1', cover_use: '1', publish_photo: '1' }, g);
   assert.equal((await db.one('SELECT video_asset_id FROM episodes WHERE id=$1', [ep.id])).video_asset_id, null);
@@ -476,6 +490,13 @@ test('alterar uma transcrição invalida guião e aprovações sem apagar versõ
   assert.deepEqual(revs.map((r: any) => r.revision), [1, 2]);
   assert.equal((await db.one(`SELECT count(*)::int n FROM approvals WHERE interview_id=$1 AND valid`, [ivId])).n, 0);
   assert.equal((await db.one(`SELECT bool_and(stale) s FROM episodes WHERE interview_id=$1`, [ivId])).s, true);
+  // versão desatualizada: não se pede a validação ao convidado (nem sai email)
+  const ep = await db.one(`SELECT id FROM episodes WHERE interview_id=$1 ORDER BY created_at DESC LIMIT 1`, [ivId]);
+  const before = (await db.one(`SELECT count(*)::int n FROM emails WHERE interview_id=$1`, [ivId])).n;
+  const r = await post(`/entrevistas/${ivId}/episodio/${ep.id}/enviar-previa`, {}, owner);
+  assert.match(decodeURIComponent(r.headers.location as string), /Versão desatualizada/);
+  assert.equal((await db.one(`SELECT count(*)::int n FROM emails WHERE interview_id=$1`, [ivId])).n, before);
+  assert.doesNotMatch((await get(`/entrevistas/${ivId}/producao`, owner)).body, /Enviar pré-visualização<\/button>/);
 });
 
 test('CSRF: pedidos de outra origem são recusados', async () => {

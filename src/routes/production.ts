@@ -15,6 +15,16 @@ import { S, inEntity, entityOfInterview } from '../settings.ts';
 const JOB_LABEL: Record<string, string> = { render_video: 'A gerar o vídeo do podcast', process_submission: 'A transcrever e a preparar o guião', prepare_script: 'A preparar o guião', generate_episode: 'A gerar o episódio', transcribe_asset: 'A transcrever' };
 const SUBS = [['en', 'English'], ['pt-PT', 'Português (PT)'], ['es', 'Español'], ['fr', 'Français'], ['de', 'Deutsch']];
 
+/** Quem aparece animado por IA (Google Veo ou animação por fala) tem de ver e aprovar o vídeo, seja qual for a política. */
+const guestMustApprove = (iv: any, vmeta: any) => iv.review_policy === 'guest_preview' || !!vmeta?.guestAiVideo || !!vmeta?.guestAnimated;
+
+/** Porque é que ainda não se pode pedir a validação ao convidado (null = pode). */
+const previewBlock = (iv: any, ep: any): string | null =>
+  ep.stale ? 'Versão desatualizada: regenere o guião e o episódio antes de pedir a validação.'
+  : iv.collection_status === 'cancelled' || iv.collection_status === 'expired' ? `A entrevista está ${iv.collection_status === 'cancelled' ? 'cancelada' : 'expirada'}: não é possível pedir a validação.`
+  : iv.collection_status !== 'submitted' ? 'O entrevistado ainda tem perguntas por responder: envie a pré-visualização depois de ele as submeter.'
+  : null;
+
 export async function productionRoutes(app: FastifyInstance) {
   const db = app.db;
   const consent = async (id: string, p: string) => !!(await db.one(`SELECT granted FROM consents WHERE interview_id=$1 AND purpose=$2 ORDER BY created_at DESC LIMIT 1`, [id, p]))?.granted;
@@ -128,8 +138,7 @@ ${photos.length ? `<fieldset style="border:1px solid var(--line);border-radius:8
       const hostAp = await db.one(`SELECT * FROM approvals WHERE episode_id=$1 AND actor='interviewer' AND valid AND decision='approved' AND video_asset_id IS NOT DISTINCT FROM $2::uuid`, [ep.id, ep.video_asset_id]);
       const guestAp = await db.one(`SELECT * FROM approvals WHERE episode_id=$1 AND actor='guest' AND valid ORDER BY created_at DESC LIMIT 1`, [ep.id]);
       const guestSameVideo = !!guestAp && String(guestAp.video_asset_id ?? '') === String(ep.video_asset_id ?? '');
-      // Quem aparece no vídeo gerado pelo Veo tem de o ver e aprovar, seja qual for a política.
-      const needGuest = iv.review_policy === 'guest_preview' || !!videoMeta?.guestAiVideo;
+      const needGuest = guestMustApprove(iv, videoMeta);
       const guestOk = !needGuest || (guestAp?.decision === 'approved' && guestSameVideo);
       const canPublish = !!hostAp && guestOk && pubOk && !ep.stale && issues.length === 0 && ep.status !== 'published';
       body += `<div class="card"><h2 style="margin-top:0">5. Episódio ${pill(ep.status, ep.status === 'published' ? 'ok' : '')} ${ep.stale ? pill('desatualizado', 'bad') : ''}</h2>
@@ -139,7 +148,7 @@ ${issues.length ? `<div class="flash bad"><strong>Controlo de qualidade:</strong
 <h3>Aprovações</h3><table class="sans"><tbody>
 <tr><td>Entrevistador</td><td>${hostAp ? pill('aprovou esta versão', 'ok') : pill('pendente')}</td><td>${!hostAp && !ep.stale ? `<form method="post" action="/entrevistas/${iv.id}/episodio/${ep.id}/aprovar"><input type="hidden" name="video" value="${esc(ep.video_asset_id ?? '')}"><button class="ghost">Aprovar esta versão${ep.video_asset_id ? ' (com o vídeo)' : ''}</button></form>` : ''}</td></tr>
 ${needGuest ? `<tr><td>Entrevistado</td><td>${guestAp ? (guestAp.decision === 'approved' ? (guestSameVideo ? pill('aprovou', 'ok') : pill('aprovou uma versão anterior do vídeo: pendente', 'warn')) : pill('pediu alterações', 'bad')) : pill('pendente')} ${guestAp?.note ? esc(guestAp.note) : ''}</td>
-<td>${iv.collection_status === 'submitted' ? `<form method="post" action="/entrevistas/${iv.id}/episodio/${ep.id}/enviar-previa"><button class="ghost">Enviar pré-visualização</button></form>` : '<span class="hint">disponível depois de o entrevistado submeter as respostas em falta</span>'}</td></tr>` : ''}</tbody></table>
+<td>${previewBlock(iv, ep) ? `<span class="hint">${esc(previewBlock(iv, ep)!)}</span>` : `<form method="post" action="/entrevistas/${iv.id}/episodio/${ep.id}/enviar-previa"><button class="ghost">Enviar pré-visualização</button></form>`}</td></tr>` : ''}</tbody></table>
 <h3>Vídeo do podcast</h3>
 ${ep.video_asset_id ? `<video controls preload="metadata" poster="/media/${ep.cover_asset_id}" src="/media/${ep.video_asset_id}" style="width:100%;max-width:720px;border-radius:10px;background:#000"></video>
 <p class="sans"><a class="btn" href="/entrevistas/${iv.id}/episodio/${ep.id}/video.mp4" download>Descarregar vídeo (MP4)</a> <span class="hint">Legendas: ${esc(ep.video_lang ?? 'sem legendas')}${videoMeta?.animatedSegments ? ` · ${videoMeta.animatedSegments} falas animadas${videoMeta.failedAnimations ? `, ${videoMeta.failedAnimations} com imagem fixa por falha` : ''} · custo da animação ~$${Number(videoMeta.lipsyncUsd ?? 0).toFixed(2)}` : ''}${videoMeta?.engine === 'veo' ? ` · Google Veo: ${videoMeta.veoClips} clipes (${videoMeta.generatedClips} gerados nesta vez${videoMeta.failedUsd !== undefined ? `, ~$${Number(videoMeta.spentUsd ?? 0).toFixed(2)} pagos nesta geração${videoMeta.failedUsd ? `, ~$${Number(videoMeta.failedUsd).toFixed(2)} em operações que falharam na Google` : ''}` : ''}) · clipes deste vídeo ~$${Number(videoMeta.veoUsd ?? 0).toFixed(2)}${videoMeta.fallbackSegments?.length ? ` · ${videoMeta.fallbackSegments.length} falas com imagem fixa` : ''}` : ''}${veoSpent ? ` · total pago ao Google Veo nesta entrevista ~$${veoSpent.toFixed(2)}` : ''}${veoFailed ? ` · operações falhadas na Google ~$${veoFailed.toFixed(2)} (normalmente não cobradas; confirme no painel da Google)` : ''}</span></p>
@@ -338,7 +347,8 @@ ${ep.visibility === 'public' ? `<form method="post" action="/entrevistas/${iv.id
 
   app.post('/entrevistas/:id/episodio/:eid/enviar-previa', async (req, reply) => {
     const c = await epGuard(req, reply); if (!c) return;
-    if (c.iv.collection_status !== 'submitted') return back(reply, c.iv.id, undefined, 'O entrevistado ainda tem perguntas por responder: envie a pré-visualização depois de ele as submeter.');
+    const blocked = previewBlock(c.iv, c.ep);
+    if (blocked) return back(reply, c.iv.id, undefined, blocked);
     if (!rateLimit(`prev:${c.iv.id}`, 3, 3600_000)) return back(reply, c.iv.id, undefined, 'Aguarde antes de reenviar.');
     // Novo link pessoal ao email original; o convidado vê a pré-visualização na sua área.
     const inv = await createInvitation(db, c.iv, { name: req.user!.name }, { preview: true });
@@ -356,7 +366,7 @@ ${ep.visibility === 'public' ? `<form method="post" action="/entrevistas/${iv.id
     const guestAp = await db.one(`SELECT decision, video_asset_id FROM approvals WHERE episode_id=$1 AND actor='guest' AND valid ORDER BY created_at DESC LIMIT 1`, [ep.id]);
     const issues: string[] = ep.technical?.qcIssues ?? [];
     const vmeta = ep.video_asset_id ? (await db.one('SELECT meta FROM assets WHERE id=$1', [ep.video_asset_id]))?.meta : null;
-    const needGuest = iv.review_policy === 'guest_preview' || !!vmeta?.guestAiVideo; // quem aparece no Veo aprova sempre
+    const needGuest = guestMustApprove(iv, vmeta);
     const guestOk = !needGuest || (guestAp?.decision === 'approved' && String(guestAp.video_asset_id ?? '') === String(ep.video_asset_id ?? ''));
     const ok = hostAp && guestOk && (await consent(iv.id, 'publish')) && !ep.stale && !issues.length && ep.status === 'preview';
     if (!ok) { await audit(db, req.user!.email, 'episode.publish_blocked', iv.id); return back(reply, iv.id, undefined, 'Publicação bloqueada: faltam aprovações válidas, autorização ou a versão está desatualizada.'); }

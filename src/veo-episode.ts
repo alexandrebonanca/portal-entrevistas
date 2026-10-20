@@ -548,7 +548,8 @@ export async function renderVeoVideo(job: any, { db, progress }: Parameters<Hand
 
   const fidelity = chunks.map((c, i) => {
     const best = chosen[i] ?? [...attemptsOf[i]].filter(a => a.checked).sort((x, y) => (x.hard ?? 99) - (y.hard ?? 99))[0];
-    const problem = chosen[i] ? null : best ? 'mismatch' : attemptsOf[i].some(a => !a.checked) ? 'unchecked' : (problemOf.get(c.key) ?? 'error');
+    const why = problemOf.get(c.key);
+    const problem = chosen[i] ? null : why === 'busy' || why === 'busycap' ? why : best ? 'mismatch' : attemptsOf[i].some(a => !a.checked) ? 'unchecked' : (why ?? 'error');
     return { segmentId: c.seg.id, role: c.seg.role, expected: c.text, heard: best?.heard ?? '', checked: !!best?.checked, edits: best?.edits ?? null, ok: !!chosen[i], attempts: attemptsOf[i].length, used: veoSegs.has(c.seg.id), problem, cause: capCause.get(c.key) ?? null };
   });
   const uniq = new Map<string, Attempt[]>(chunks.map((c, i) => [c.key, attemptsOf[i]]));

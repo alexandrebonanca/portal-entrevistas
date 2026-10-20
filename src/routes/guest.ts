@@ -368,7 +368,7 @@ ${s.complete ? `<form method="post" action="/entrevista/submeter" onsubmit="retu
     const c = await need(req, reply); if (!c) return;
     const { iv, lang } = c, d = t(lang);
     const sub = await db.one('SELECT * FROM submissions WHERE interview_id=$1 ORDER BY created_at DESC LIMIT 1', [iv.id]);
-    const ep = await db.one(`SELECT id FROM episodes WHERE interview_id=$1 AND status='preview' LIMIT 1`, [iv.id]);
+    const ep = await db.one(`SELECT id FROM episodes WHERE interview_id=$1 AND status='preview' AND stale=false LIMIT 1`, [iv.id]);
     return gpage(reply, lang, d.thanks, `<h1>${esc(d.thanks)}</h1><p>${esc(d.thanksText)}</p>
 <div class="card sans"><strong>${esc(d.receipt)}</strong><br>${esc(iv.title)}<br>${esc(fmtDate(sub?.created_at))}<br><code>${esc(sub?.id ?? '')}</code></div>
 <p class="hint">${esc(d.contact)} ${esc(config.supportEmail)}</p><p><a href="/entrevista/fotos">${esc(d.photoAuth)}</a></p>${ep ? `<p><a class="btn accent" href="/entrevista/episodio">${esc(d.episodePreview)}</a></p>` : ''}`);
