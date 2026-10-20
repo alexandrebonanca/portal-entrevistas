@@ -321,6 +321,7 @@ test('animação por fala: só com autorização específica; aviso e reserva', 
 
 test('vídeo com o Google Veo: autorização própria, som dos clipes, verificação e retirada', async () => {
   const ep = await db.one(`SELECT * FROM episodes WHERE interview_id=$1 AND NOT stale ORDER BY created_at DESC LIMIT 1`, [ivId]);
+  await db.query(`UPDATE episodes SET status='preview', withdrawn_at=NULL WHERE id=$1`, [ep.id]); // o teste anterior retirou-o
   const lastJob = () => db.one(`SELECT state, error, result FROM jobs WHERE kind='render_video' ORDER BY created_at DESC LIMIT 1`);
   // sem autorização para o Veo: a opção aparece desativada e um pedido forçado falha sem gerar nada
   let pg = await get(`/entrevistas/${ivId}/producao`, owner);
@@ -362,9 +363,32 @@ test('vídeo com o Google Veo: autorização própria, som dos clipes, verifica�
   ep2 = await db.one('SELECT video_asset_id FROM episodes WHERE id=$1', [ep.id]);
   assert.equal((await db.one('SELECT meta FROM assets WHERE id=$1', [ep2.video_asset_id])).meta.generatedClips, 0);
 
-  // retirar a autorização do Veo tira o vídeo do ar
+  // o vídeo novo invalida as aprovações anteriores e aparece na pré-visualização do convidado
+  assert.equal((await db.one(`SELECT count(*)::int n FROM approvals WHERE episode_id=$1 AND valid`, [ep.id])).n, 0);
+  assert.match((await get('/entrevista/episodio', g)).body, new RegExp(`<video[^>]+/api/g/media/${ep2.video_asset_id}`));
+  // operações pagas ficam registadas e concluídas (em modo simulado não há operações na Google)
+  assert.equal((await db.one(`SELECT count(*)::int n FROM veo_ops WHERE interview_id=$1 AND state='pending'`, [ivId])).n, 0);
+
+  // o entrevistador retira a autorização do Veo em Editar: o vídeo sai do ar
+  const iv = await db.one('SELECT * FROM interviews WHERE id=$1', [ivId]);
+  await post(`/entrevistas/${ivId}/guardar`, { title: iv.title, objective_text: iv.objective_text, host_name: iv.host_name, guest_name: iv.guest_name, guest_email: iv.guest_email, subtitle_langs: iv.subtitle_langs, review_policy: iv.review_policy, host_photo_rights: '1', host_animate: '1' }, owner);
+  assert.equal((await db.one('SELECT host_ai_video FROM interviews WHERE id=$1', [ivId])).host_ai_video, false);
+  assert.equal((await db.one('SELECT video_asset_id FROM episodes WHERE id=$1', [ep.id])).video_asset_id, null);
+
+  // de novo com as duas autorizações; depois o convidado retira a dele: o vídeo sai do ar
+  await db.query('UPDATE interviews SET host_ai_video=true WHERE id=$1', [ivId]);
+  await post(`/entrevistas/${ivId}/episodio/${ep.id}/video`, { lang: 'en', engine: 'veo' }, owner);
+  await drain();
+  assert.ok((await db.one('SELECT video_asset_id FROM episodes WHERE id=$1', [ep.id])).video_asset_id);
   await post('/entrevista/fotos/autorizacoes', { photo_capture: '1', cover_use: '1', publish_photo: '1' }, g);
   assert.equal((await db.one('SELECT video_asset_id FROM episodes WHERE id=$1', [ep.id])).video_asset_id, null);
+
+  // episódio publicado: o Veo é recusado (o vídeo tem de ser visto e aprovado antes)
+  await post('/entrevista/fotos/autorizacoes', { photo_capture: '1', cover_use: '1', publish_photo: '1', ai_video: '1' }, g);
+  await db.query(`UPDATE episodes SET status='published' WHERE id=$1`, [ep.id]);
+  const r = await post(`/entrevistas/${ivId}/episodio/${ep.id}/video`, { lang: 'en', engine: 'veo' }, owner);
+  assert.match(decodeURIComponent(r.headers.location as string), /já está publicado/);
+  await db.query(`UPDATE episodes SET status='preview' WHERE id=$1`, [ep.id]);
 });
 
 test('alterar uma transcrição invalida guião e aprovações sem apagar versões', async () => {

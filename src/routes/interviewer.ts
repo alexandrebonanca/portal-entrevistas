@@ -123,6 +123,14 @@ ${locked ? `<form method="post" action="/entrevistas/${iv.id}/adicional"><label 
         ['auto', 'pt', 'en', 'es', 'fr', 'de'].includes(b.answer_lang) ? b.answer_lang : 'auto', b.deadline || null,
         ['private', 'unlisted', 'public'].includes(b.planned_visibility) ? b.planned_visibility : 'private', String(b.personal_message ?? '').slice(0, 1500),
         subs.length ? subs : ['en'], b.review_policy === 'host_only' ? 'host_only' : 'guest_preview', !!b.host_photo_rights, b.question_voice === 'male' ? 'male' : 'female', b.guest_voice === 'male' ? 'male' : 'female', !!b.host_animate && !!b.host_photo_rights, !!b.host_ai_video && !!b.host_photo_rights]);
+    // Autorização retirada pelo entrevistador: o vídeo que usava a fotografia, a animação ou o Veo deixa de ser servido (o ficheiro fica privado).
+    const photo = !!b.host_photo_rights, anim = photo && !!b.host_animate, ai = photo && !!b.host_ai_video;
+    for (const e of await db.query(`SELECT e.id, a.meta FROM episodes e JOIN assets a ON a.id=e.video_asset_id WHERE e.interview_id=$1`, [iv.id])) {
+      if ((!photo && e.meta?.hostPhoto) || (!anim && e.meta?.hostAnimated) || (!ai && e.meta?.hostAiVideo)) {
+        await db.query('UPDATE episodes SET video_asset_id=NULL WHERE id=$1', [e.id]);
+        await audit(db, req.user!.email, 'episode.video_withdrawn_host_consent', iv.id);
+      }
+    }
     return reply.redirect(`/entrevistas/${iv.id}/editar?ok=` + encodeURIComponent('Guardado.'));
   });
 

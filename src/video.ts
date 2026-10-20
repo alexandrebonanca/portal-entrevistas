@@ -226,10 +226,14 @@ export async function encodeComposite(ffmpeg: string, parts: Part[], frameFor: (
   return withTemp(async dir => {
     const files: string[] = [];
     let frameNo = 0;
+    // Número de fotogramas por arredondamento acumulado sobre o tempo absoluto: a soma bate sempre certo com a linha
+    // temporal (o '-t' por pedaço perdia muitas vezes um fotograma no ffmpeg 4.1 e o desvio face ao som acumulava).
+    const fr = (ms: number) => Math.round(ms / 40);
     for (let p = 0; p < parts.length; p++) {
       const part = parts[p];
-      const dur = ((part.endMs - part.startMs) / 1000).toFixed(3);
+      const nFrames = fr(part.endMs) - fr(part.startMs);
       const out = join(dir, `part${String(p).padStart(4, '0')}.mp4`);
+      if (nFrames <= 0) continue;
       if (part.kind === 'still') {
         const lines: string[] = []; let last = '';
         for (const s of part.shots) {
@@ -241,7 +245,7 @@ export async function encodeComposite(ffmpeg: string, parts: Part[], frameFor: (
         lines.push(`file '${last.replace(/\\/g, '/')}'`);
         const list = join(dir, `list${p}.txt`);
         await writeFile(list, lines.join('\n'));
-        const r = await run(ffmpeg, ['-y', '-v', 'error', '-threads', '2', '-f', 'concat', '-safe', '0', '-i', list, '-vf', 'fps=25,format=yuv420p', ...enc, '-threads', '2', '-t', dur, '-an', out], 900_000);
+        const r = await run(ffmpeg, ['-y', '-v', 'error', '-threads', '2', '-f', 'concat', '-safe', '0', '-i', list, '-vf', 'fps=25,format=yuv420p', ...enc, '-threads', '2', '-frames:v', String(nFrames), '-an', out], 900_000);
         if (r.code !== 0) throw new Error('Falha a codificar parte fixa: ' + r.stderr.slice(-300));
       } else {
         // Parte animada cortada legenda a legenda: cada pedaço tem só 3 entradas (fundo, clipe cortado, aviso+legenda),
@@ -256,15 +260,16 @@ export async function encodeComposite(ffmpeg: string, parts: Part[], frameFor: (
         const pieces: string[] = [];
         for (let k = 0; k + 1 < pts.length; k++) {
           const a0 = pts[k], a1 = pts[k + 1];
-          if (a1 - a0 < 40) continue;
+          const n = fr(part.startMs + a1) - fr(part.startMs + a0);
+          if (n <= 0) continue;
           const mid = (a0 + a1) / 2;
           const text = part.cues.find(c => mid >= c.startMs && mid < c.endMs)?.text ?? '';
           const over = join(dir, `ov${p}_${k}.png`), piece = join(dir, `piece${p}_${k}.mp4`);
           await writeFile(over, await animatedOverlay(part.who, text, part.notice));
-          const d = ((a1 - a0) / 1000).toFixed(3);
+          const d = ((n * 40) / 1000).toFixed(3);
           const g = `[1:v]scale=-2:${H},setsar=1[c];[0:v]scale=${W}:${H},setsar=1[bg];[bg][c]overlay=(W-w)/2:(H-h)/2:eof_action=repeat[v0];[v0][2:v]overlay=0:0,fps=25,format=yuv420p[out]`;
-          const r = await run(ffmpeg, ['-y', '-v', 'error', '-threads', '2', '-loop', '1', '-t', d, '-i', base, '-ss', ((off + a0) / 1000).toFixed(3), '-t', d, '-i', clip, '-loop', '1', '-t', d, '-i', over,
-            '-filter_complex', g, '-map', '[out]', ...enc, '-threads', '2', '-t', d, '-an', piece], 600_000);
+          const r = await run(ffmpeg, ['-y', '-v', 'error', '-threads', '2', '-loop', '1', '-framerate', '25', '-i', base, '-ss', ((off + a0) / 1000).toFixed(3), '-t', d, '-i', clip, '-loop', '1', '-framerate', '25', '-i', over,
+            '-filter_complex', g, '-map', '[out]', ...enc, '-threads', '2', '-frames:v', String(n), '-an', piece], 600_000);
           if (r.code !== 0) throw new Error('Falha a codificar parte animada: ' + r.stderr.slice(-300));
           pieces.push(piece);
         }
@@ -279,7 +284,9 @@ export async function encodeComposite(ffmpeg: string, parts: Part[], frameFor: (
     const list = join(dir, 'parts.txt'), a = join(dir, `audio.${audioExt}`), out = join(dir, 'video.mp4');
     await writeFile(list, files.map(f => `file '${f.replace(/\\/g, '/')}'`).join('\n'));
     await writeFile(a, audio);
-    const r = await run(ffmpeg, ['-y', '-v', 'error', '-f', 'concat', '-safe', '0', '-i', list, '-i', a, '-map', '0:v', '-map', '1:a', '-c:v', 'copy', '-c:a', 'aac', '-b:a', '128k', '-shortest', '-movflags', '+faststart', out], 900_000);
+    const r = await run(ffmpeg, ['-y', '-v', 'error', '-f', 'concat', '-safe', '0', '-i', list, '-i', a, '-map', '0:v', '-map', '1:a', '-c:v', 'copy',
+      // AAC já codificado com a duração exata da imagem: copia-se sem '-shortest' (com cópia, cortava ~0,1 s ao som).
+      ...(audioExt === 'm4a' ? ['-c:a', 'copy'] : ['-c:a', 'aac', '-b:a', '128k', '-shortest']), '-movflags', '+faststart', out], 900_000);
     if (r.code !== 0) throw new Error('Falha a juntar as partes do vídeo: ' + r.stderr.slice(-300));
     return readFile(out);
   });
@@ -309,8 +316,8 @@ export async function stillClip(ffmpeg: string, image: Buffer, ms: number): Prom
 }
 
 /**
- * Faixa de áudio contínua (WAV) a partir de troços com duração exata: som de um clipe ou do áudio do episódio
- * (a partir de offsetMs, completado com silêncio se for curto) ou silêncio. Em PCM, juntar não desloca o som face à imagem.
+ * Faixa de áudio contínua (AAC em m4a) a partir de troços com duração exata: som de um clipe ou do áudio do episódio
+ * (a partir de offsetMs, completado com silêncio se for curto) ou silêncio. Os troços juntam-se em PCM (exato à amostra).
  */
 export type AudioPiece = { durMs: number; src?: Buffer | (() => Promise<Buffer>); ext?: string; offsetMs?: number };
 export async function buildAudioTrack(ffmpeg: string, pieces: AudioPiece[]): Promise<Buffer> {
@@ -330,10 +337,13 @@ export async function buildAudioTrack(ffmpeg: string, pieces: AudioPiece[]): Pro
       if (r.code !== 0) { r = await run(ffmpeg, silence, 60_000); if (r.code !== 0) throw new Error('Falha a gerar silêncio: ' + r.stderr.slice(-200)); }
       files.push(o);
     }
-    const list = join(dir, 'alist.txt'), out = join(dir, 'track.wav');
+    const list = join(dir, 'alist.txt'), wav = join(dir, 'track.wav'), out = join(dir, 'track.m4a');
     await writeFile(list, files.map(f => `file '${f.replace(/\\/g, '/')}'`).join('\n'));
-    const r = await run(ffmpeg, ['-y', '-v', 'error', '-f', 'concat', '-safe', '0', '-i', list, '-c', 'copy', out], 300_000);
+    let r = await run(ffmpeg, ['-y', '-v', 'error', '-f', 'concat', '-safe', '0', '-i', list, '-c', 'copy', wav], 300_000);
     if (r.code !== 0) throw new Error('Falha a juntar o áudio: ' + r.stderr.slice(-300));
+    // Uma única codificação contínua (não desloca o som); ~1 MB por minuto em vez de ~10 MB em PCM na memória.
+    r = await run(ffmpeg, ['-y', '-v', 'error', '-i', wav, '-c:a', 'aac', '-b:a', '128k', '-movflags', '+faststart', out], 600_000);
+    if (r.code !== 0) throw new Error('Falha a codificar o áudio: ' + r.stderr.slice(-300));
     return readFile(out);
   });
 }

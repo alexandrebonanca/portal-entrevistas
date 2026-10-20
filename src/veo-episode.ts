@@ -1,26 +1,43 @@
 import { config } from './config.ts';
 import { storage } from './storage.ts';
 import { sha256 } from './lib.ts';
-import { saveAsset } from './media.ts';
+import { saveAsset, hasAudioStream } from './media.ts';
 import { transcribeWords, translateSubtitleCues, type Word } from './ai/openai.ts';
 import { renderBases, subtitleFrame, encodeComposite, buildAudioTrack, mockTalkingClip, type Part, type Shot, type Scene, type AudioPiece } from './video.ts';
 import { cuesFromWords } from './subtitles.ts';
-import { veoGenerate, veoEpisodePrompt, VEO_MODEL, VEO_PRICE_PER_SEC } from './talking.ts';
+import { veoSubmit, veoAwait, veoEpisodePrompt, VeoQuotaError, VEO_MODEL, VEO_PRICE_PER_SEC } from './talking.ts';
 import { S } from './settings.ts';
 import { PermanentError, type Handler } from './jobs.ts';
 
 /**
  * Vídeo do episódio inteiramente com o Google Veo: cada fala autorizada é dividida em pedaços que cabem num clipe
  * (até 8 s), o Veo gera imagem E voz a partir da fotografia autorizada e do texto aprovado, e os clipes são colados.
- * O som do vídeo é o dos clipes (não o áudio sintético do episódio). Cada clipe é transcrito para verificar, palavra a
- * palavra, se o Veo disse o texto aprovado; se não disse, é gerado de novo (no máximo `veoRetries` vezes).
- * As legendas seguem o que foi efetivamente dito.
+ * O som do vídeo é o dos clipes (não o áudio sintético do episódio). Cada clipe é transcrito e comparado palavra a
+ * palavra com o guião: só entra no vídeo um clipe que diga o texto aprovado (toleram-se apenas grafias de nomes e
+ * variantes ortográficas, nunca negações nem números). Se não disser, é gerado de novo (no máximo `veoRetries`
+ * vezes); sem clipe aprovado, essa fala fica com a fotografia fixa e a voz do episódio. As legendas seguem o que foi dito.
  */
 
-export const VEO_MAX_WORDS = 15; // ~6 s de fala a 2,5 palavras/s: cabe num clipe de 8 s com folga
+export const VEO_MAX_WORDS = 15; // palavras FALADAS (~6 s a 2,5/s): cabe num clipe de 8 s com folga
 export const VEO_NOTICE = 'AI-generated video · AI voice';
 
-const wc = (s: string) => s.trim().split(/\s+/).filter(Boolean).length;
+const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
+
+/** Palavras efetivamente ditas: anos, decimais, números e siglas valem mais do que um token escrito. */
+function spokenToken(tok: string): number {
+  const t = tok.replace(/^[("'“‘]+|[)"'”’.,;:!?]+$/g, '');
+  if (!t) return 0;
+  let n: number;
+  if (/^\d{4}s?$/.test(t)) n = 3;                                     // 2023 → twenty twenty-three
+  else if (/\d[.,]\d/.test(t)) n = 3 + Math.max(0, t.replace(/\D/g, '').length - 2); // 3.5 → three point five
+  else if (/\d/.test(t)) { const d = t.replace(/\D/g, '').length; n = d <= 2 ? 1 : d <= 3 ? 2 : 3; }
+  else if (/^[A-Z]{2,6}s?$/.test(t)) n = t.replace(/s$/, '').length; // EU → E U
+  else n = 1;
+  if (t.includes('%')) n += 1;
+  if (t.includes('&')) n += 1;
+  return n;
+}
+export const spokenCount = (s: string) => s.trim().split(/\s+/).filter(Boolean).reduce((a, w) => a + spokenToken(w), 0);
 const snap = (ms: number) => Math.round(ms / 40) * 40; // 25 fps: cortes em fotogramas inteiros, sem desvio entre som e imagem
 
 /** Divide o texto por frases, depois por vírgulas e, em último caso, por palavras, sem alterar o texto. */
@@ -29,49 +46,109 @@ export function chunkText(text: string, maxWords = VEO_MAX_WORDS): string[] {
   if (!clean) return [];
   const units: string[] = [];
   const byWords = (s: string) => {
-    const w = s.split(' '), size = Math.ceil(w.length / Math.ceil(w.length / maxWords));
-    for (let i = 0; i < w.length; i += size) units.push(w.slice(i, i + size).join(' '));
+    let buf: string[] = [];
+    for (const w of s.split(' ')) {
+      if (buf.length && spokenCount([...buf, w].join(' ')) > maxWords) { units.push(buf.join(' ')); buf = []; }
+      buf.push(w);
+    }
+    if (buf.length) units.push(buf.join(' '));
   };
   for (const s of clean.split(/(?<=[.!?]["'”’)\]]*)\s+/)) {
-    if (wc(s) <= maxWords) { units.push(s); continue; }
+    if (spokenCount(s) <= maxWords) { units.push(s); continue; }
     let buf = '';
     for (const p of s.split(/(?<=[,;:])\s+/)) {
-      if (wc(p) > maxWords) { if (buf) { units.push(buf); buf = ''; } byWords(p); continue; }
-      if (buf && wc(buf) + wc(p) > maxWords) { units.push(buf); buf = p; } else buf = buf ? `${buf} ${p}` : p;
+      if (spokenCount(p) > maxWords) { if (buf) { units.push(buf); buf = ''; } byWords(p); continue; }
+      if (buf && spokenCount(buf) + spokenCount(p) > maxWords) { units.push(buf); buf = p; } else buf = buf ? `${buf} ${p}` : p;
     }
     if (buf) units.push(buf);
   }
   const out: string[] = [];
   let cur = '';
-  for (const u of units) { if (cur && wc(cur) + wc(u) > maxWords) { out.push(cur); cur = u; } else cur = cur ? `${cur} ${u}` : u; }
+  for (const u of units) { if (cur && spokenCount(cur) + spokenCount(u) > maxWords) { out.push(cur); cur = u; } else cur = cur ? `${cur} ${u}` : u; }
   if (cur) out.push(cur);
   return out;
 }
 
-/** Duração a pedir (o Veo cobra a duração pedida): fala estimada a 2,5 palavras/s mais ~1,2 s de entrada e saída. */
+/** Duração a pedir (o Veo cobra a duração pedida): fala estimada a 2,5 palavras/s mais ~1,5 s de entrada e saída. */
 export function veoDuration(text: string): 4 | 6 | 8 {
-  const sec = wc(text) / 2.5 + 1.2;
+  const sec = spokenCount(text) / 2.5 + 1.5;
   return sec <= 4 ? 4 : sec <= 6 ? 6 : 8;
 }
+const nextDuration = (d: number): 4 | 6 | 8 => (d <= 4 ? 6 : 8);
 
+// ---------- comparação palavra a palavra ----------
+const FILLERS = new Set(['uh', 'um', 'uhm', 'er', 'erm', 'ah', 'hmm', 'mm']);
+const NEGATIONS = new Set(['not', 'no', 'never', 'nor', 'none', 'nothing', 'nobody', 'neither', 'without', 'nowhere']);
+const NUMBER_WORDS = new Set(['zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten', 'eleven', 'twelve', 'thirteen', 'fourteen', 'fifteen', 'sixteen', 'seventeen', 'eighteen', 'nineteen', 'twenty', 'thirty', 'forty', 'fifty', 'sixty', 'seventy', 'eighty', 'ninety', 'hundred', 'thousand', 'million', 'billion', 'trillion', 'percent', 'half', 'first', 'second', 'third', 'once', 'twice', 'double', 'triple', 'point']);
+const CONTRACTIONS: [RegExp, string][] = [
+  [/\bcan't\b/g, 'can not'], [/\bcannot\b/g, 'can not'], [/\bwon't\b/g, 'will not'], [/\bshan't\b/g, 'shall not'], [/n't\b/g, ' not'],
+  [/\bi'm\b/g, 'i am'], [/'re\b/g, ' are'], [/'ve\b/g, ' have'], [/'ll\b/g, ' will'], [/'d\b/g, ' would'],
+  [/\b(it|that|what|there|here|he|she|who|where|how|this)'s\b/g, '$1 is'], [/\blet's\b/g, 'let us'],
+];
 export function normWords(s: string): string[] {
-  return s.toLowerCase().replace(/[’‘`]/g, "'").replace(/[^\p{L}\p{N}']+/gu, ' ').split(' ').map(w => w.replace(/^'+|'+$/g, '')).filter(Boolean);
+  let x = s.toLowerCase().replace(/[’‘`]/g, "'");
+  for (const [re, r] of CONTRACTIONS) x = x.replace(re, r);
+  return x.replace(/[^\p{L}\p{N}']+/gu, ' ').split(' ').map(w => w.replace(/^'+|'+$/g, '')).filter(w => w && !FILLERS.has(w));
 }
-
-/** Diferença palavra a palavra (distância de edição) entre o texto pedido e o que se ouviu. */
-export function wordDiff(expected: string, heard: string) {
-  const a = normWords(expected), b = normWords(heard);
+const charDist = (a: string, b: string) => {
   let prev = Array.from({ length: b.length + 1 }, (_, j) => j);
   for (let i = 1; i <= a.length; i++) {
     const cur = [i];
     for (let j = 1; j <= b.length; j++) cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
     prev = cur;
   }
-  const edits = prev[b.length];
-  return { edits, n: a.length, wer: a.length ? edits / a.length : (b.length ? 1 : 0) };
+  return prev[b.length];
+};
+const critical = (w: string) => NEGATIONS.has(w) || NUMBER_WORDS.has(w) || /\d/.test(w);
+
+/** Nomes próprios do texto pedido (maiúscula a meio da frase) e os nomes das pessoas: só estes admitem outra grafia. */
+export function properNames(text: string, extra: string[] = []): Set<string> {
+  const out = new Set<string>(extra.flatMap(n => normWords(n)));
+  const toks = text.split(/\s+/);
+  for (let i = 1; i < toks.length; i++) if (/^[("'“]?\p{Lu}/u.test(toks[i]) && !/[.!?]["'”)]*$/.test(toks[i - 1])) for (const w of normWords(toks[i])) out.add(w);
+  return out;
 }
-/** Tolera uma palavra diferente (ou até 15%): a transcrição automática também erra nomes próprios e números. */
-export const fidelityOk = (d: { edits: number; wer: number }) => d.edits <= 1 || d.wer <= 0.15;
+
+/**
+ * Diferenças entre o texto pedido e o ouvido. `hard` conta as que não se toleram: tudo exceto (a) outra grafia de um nome
+ * próprio e (b) uma variante ortográfica (1 letra, palavras ≥ 4 letras). Negações e números nunca se toleram.
+ */
+export function wordDiff(expected: string, heard: string, names: Set<string> = new Set()) {
+  const a = normWords(expected), b = normWords(heard);
+  const D: number[][] = Array.from({ length: a.length + 1 }, (_, i) => Array.from({ length: b.length + 1 }, (_, j) => (i === 0 ? j : j === 0 ? i : 0)));
+  for (let i = 1; i <= a.length; i++) for (let j = 1; j <= b.length; j++)
+    D[i][j] = Math.min(D[i - 1][j] + 1, D[i][j - 1] + 1, D[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+  const diffs: { expected: string; heard: string; tolerated: boolean }[] = [];
+  let i = a.length, j = b.length;
+  while (i > 0 || j > 0) {
+    if (i > 0 && j > 0 && D[i][j] === D[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1)) {
+      if (a[i - 1] !== b[j - 1]) {
+        const e = a[i - 1], h = b[j - 1];
+        const tolerated = !critical(e) && !critical(h) && ((names.has(e) && charDist(e, h) <= Math.max(2, Math.floor(e.length / 2))) || (Math.min(e.length, h.length) >= 4 && charDist(e, h) <= 1));
+        diffs.push({ expected: e, heard: h, tolerated });
+      }
+      i--; j--;
+    } else if (i > 0 && D[i][j] === D[i - 1][j] + 1) { diffs.push({ expected: a[i - 1], heard: '', tolerated: false }); i--; }
+    else { diffs.push({ expected: '', heard: b[j - 1], tolerated: false }); j--; }
+  }
+  const edits = D[a.length][b.length];
+  return { edits, hard: diffs.filter(d => !d.tolerated).length, n: a.length, wer: a.length ? edits / a.length : (b.length ? 1 : 0), diffs: diffs.reverse() };
+}
+export const fidelityOk = (d: { hard: number; n: number }) => d.n > 0 && d.hard === 0;
+
+/** Janela útil do clipe a partir dos tempos das palavras; tempos incoerentes → clipe inteiro. */
+export function trimWindow(words: Word[], clipMs: number, expected: string): { a: number; b: number } {
+  const full = { a: 0, b: clipMs };
+  if (!words.length) return full;
+  const ok = words.every((w, k) => Number.isFinite(w.start) && Number.isFinite(w.end) && w.start >= 0 && w.end >= w.start && w.end * 1000 <= clipMs + 150 && (k === 0 || w.start >= words[k - 1].start));
+  const span = words[words.length - 1].end - words[0].start;
+  if (!ok || span < words.length * 0.12) return full;
+  const ew = normWords(expected), hw = normWords(words.map(w => w.word).join(' '));
+  const headOk = !!ew.length && ew[0] === hw[0], tailOk = !!ew.length && ew[ew.length - 1] === hw[hw.length - 1];
+  const a = Math.max(0, Math.floor((words[0].start * 1000 - (headOk ? 200 : 700)) / 40) * 40);
+  const b = Math.min(clipMs, Math.ceil((words[words.length - 1].end * 1000 + (tailOk ? 350 : 800)) / 40) * 40);
+  return b - a >= 400 ? { a, b } : full;
+}
 
 /** Clipes e custo previstos (sem e com uma nova tentativa por clipe). */
 export function veoEstimate(timing: any[], segments: any[], hostOk: boolean, guestOk: boolean) {
@@ -81,18 +158,19 @@ export function veoEstimate(timing: any[], segments: any[], hostOk: boolean, gue
     if (t.kind === 'disclosure' || !(t.role === 'host' ? hostOk : guestOk)) continue;
     for (const c of chunkText(textOf.get(t.id) ?? '')) { clips++; sec += veoDuration(c); }
   }
-  return { clips, sec, usd: sec * VEO_PRICE_PER_SEC, usdMax: sec * VEO_PRICE_PER_SEC * 2, minutes: Math.ceil(clips / 2) * 1.5 + 2 };
+  return { clips, sec, usd: sec * VEO_PRICE_PER_SEC, usdMax: clips * 8 * VEO_PRICE_PER_SEC * 2, minutes: Math.ceil(clips / 2) * 1.5 + 2 };
 }
 
 type Seg = { id: string; role: 'host' | 'guest'; kind: string; startMs: number; durationMs: number; endMs: number; text: string };
-type Chunk = { seg: Seg; k: number; text: string; dur: 4 | 6 | 8 };
-type Attempt = { assetId: string; storageKey: string; words: Word[]; heard: string; checked: boolean; edits: number | null; wer: number | null; billedSec: number };
+type Chunk = { seg: Seg; k: number; text: string; dur: 4 | 6 | 8; key: string; prompt: string };
+type Attempt = { assetId: string; storageKey: string; words: Word[]; heard: string; checked: boolean; edits: number | null; hard: number | null; dur: number };
 
-const passes = (a: Attempt) => !a.checked || (a.words.length > 0 && fidelityOk({ edits: a.edits ?? 99, wer: a.wer ?? 1 }));
+const passes = (a: Attempt) => a.checked && a.words.length > 0 && a.hard === 0;
 
 export async function renderVeoVideo(job: any, { db, progress }: Parameters<Handler>[1]) {
   const ep = await db.one('SELECT * FROM episodes WHERE id=$1 AND interview_id=$2', [job.input.episodeId, job.interview_id]);
   if (!ep || ep.stale || ep.status === 'superseded') throw new PermanentError('Episódio inexistente ou desatualizado');
+  if (ep.status === 'published') throw new PermanentError('O episódio já está publicado: o vídeo do Google Veo só se gera antes da publicação, para ser visto e aprovado');
   const iv = await db.one('SELECT * FROM interviews WHERE id=$1', [ep.interview_id]);
   const timing = ep.technical?.timing as any[] | undefined;
   if (!timing?.length) throw new PermanentError('Este episódio foi gerado antes do vídeo existir: gere o episódio de novo');
@@ -101,6 +179,11 @@ export async function renderVeoVideo(job: any, { db, progress }: Parameters<Hand
   const script = await db.one('SELECT segments FROM scripts WHERE id=$1', [ep.script_id]);
   const textOf = new Map<string, string>((script?.segments ?? []).map((s: any) => [s.id, s.textEnglish]));
   const consent = async (p: string) => !!(await db.one(`SELECT granted FROM consents WHERE interview_id=$1 AND purpose=$2 ORDER BY created_at DESC LIMIT 1`, [iv.id, p]))?.granted;
+  // Lida de novo antes de cada envio à Google: uma autorização retirada a meio para o trabalho.
+  const stillAllowed = async (role: 'host' | 'guest') => {
+    if (role === 'host') { const r = await db.one('SELECT host_ai_video, host_photo_rights FROM interviews WHERE id=$1', [iv.id]); return !!(r?.host_ai_video && r?.host_photo_rights); }
+    return (await consent('ai_video')) && (await consent('publish_photo'));
+  };
   await progress(0, 100, 'A preparar as imagens');
   const asset = async (id: string | null) => { if (!id) return null; const a = await db.one('SELECT storage_key FROM assets WHERE id=$1 AND deleted_at IS NULL', [id]); return a ? storage.get(a.storage_key) : null; };
 
@@ -135,61 +218,128 @@ export async function renderVeoVideo(job: any, { db, progress }: Parameters<Hand
   };
   const start = { host: hostVeo ? await startImage(hostPhoto!) : null, guest: guestVeo ? await startImage(guestPhoto!) : null };
   const voice = { host: iv.question_voice === 'male' ? 'male' : 'female', guest: iv.guest_voice === 'male' ? 'male' : 'female' } as const;
+  const personNames = [iv.host_name ?? '', iv.guest_name ?? ''];
 
   const segs: Seg[] = timing.map((t: any, i: number) => ({ ...t, endMs: i + 1 < timing.length ? timing[i + 1].startMs : ep.duration_ms, text: t.kind === 'disclosure' ? config.aiDisclosure : textOf.get(t.id) ?? '' }));
   const chunks: Chunk[] = [];
-  for (const s of segs) if (s.kind !== 'disclosure' && start[s.role]) chunkText(s.text).forEach((text, k) => chunks.push({ seg: s, k, text, dur: veoDuration(text) }));
+  for (const s of segs) if (s.kind !== 'disclosure' && start[s.role]) chunkText(s.text).forEach((text, k) => {
+    const st = start[s.role]!, prompt = veoEpisodePrompt({ role: s.role, text, voice: voice[s.role] });
+    // A chave não inclui a duração: as tentativas com outra duração contam para o mesmo pedaço.
+    chunks.push({ seg: s, k, text, dur: veoDuration(text), prompt, key: sha256(`${st.hash}|${prompt}|${st.vertical ? '9:16' : '16:9'}|${VEO_MODEL}|${mock}`) });
+  });
 
-  // 1. Clipes: reaproveita tentativas já pagas (mesma imagem, texto, voz e duração); gera só o que falta.
+  // ---- transcrição de um clipe (repete a transcrição, nunca a geração paga) ----
+  const transcribe = async (video: Buffer, text: string, durSec: number): Promise<{ words: Word[]; checked: boolean }> => {
+    if (mock) { // palavras sintéticas e coerentes com o texto, para exercitar cortes e legendas nos testes
+      const w = text.split(/\s+/).filter(Boolean), step = Math.min(0.35, (durSec - 1) / Math.max(1, w.length));
+      return { words: w.map((x, k) => ({ word: x, start: 0.4 + k * step, end: 0.4 + (k + 0.9) * step })), checked: true };
+    }
+    if (!(await hasAudioStream(video, 'mp4'))) return { words: [], checked: true }; // sem som: falha, gera-se de novo
+    for (let k = 0; k < 3; k++) {
+      try { return { words: await transcribeWords(video, 'mp4'), checked: true }; }
+      catch (e: any) { console.error(`[veo] transcrição falhou (tentativa ${k + 1}): ${String(e?.message ?? e).slice(0, 200)}`); await sleep(3000 * (k + 1)); }
+    }
+    return { words: [], checked: false };
+  };
+  const judge = (c: Chunk, words: Word[], checked: boolean) => {
+    const heard = words.map(w => w.word.trim()).join(' ').replace(/\s+([,.;:!?])/g, '$1');
+    const d = checked ? wordDiff(c.text, heard, properNames(c.text, personNames)) : null;
+    return { heard, edits: d?.edits ?? null, hard: d?.hard ?? null, diffs: d?.diffs ?? [] };
+  };
+
+  // 1. Clipes: reaproveita tentativas já pagas e operações pagas por concluir; gera só o que falta.
   const maxAttempts = 1 + Math.max(0, Math.min(2, Number(job.input.veoRetries ?? 1)));
   const chosen: (Attempt | null)[] = new Array(chunks.length).fill(null);
   const attemptsOf: Attempt[][] = chunks.map(() => []);
   let spentUsd = 0, generated = 0, doneN = 0, next = 0;
-  let abort: Error | null = null; // chave recusada: os dois trabalhadores param (não se continua a pagar)
+  let abort: Error | null = null; // chave recusada, quota esgotada, autorização retirada ou erro inesperado: os dois trabalhadores param
+  const pct = () => 5 + Math.round((doneN / Math.max(1, chunks.length)) * 70);
+  const inflight = new Map<string, Promise<Attempt[]>>(); // pedaços iguais (mesmo papel e texto) geram-se uma só vez
+
+  const runChunk = async (c: Chunk): Promise<Attempt[]> => {
+    const st = start[c.seg.role]!;
+    const prev = await db.query(`SELECT id, storage_key, meta FROM assets WHERE interview_id=$1 AND kind='veo_clip' AND meta->>'chunkKey'=$2 AND deleted_at IS NULL ORDER BY created_at`, [iv.id, c.key]);
+    const atts: Attempt[] = [];
+    for (const a of prev) {
+      let m = a.meta;
+      if (!m.checked) { // a transcrição falhou da outra vez: repete-se (cêntimos), sem pagar o Veo de novo
+        const video = await storage.get(a.storage_key);
+        const tr = await transcribe(video, c.text, Number(m.dur ?? m.billedSec ?? 8));
+        const j = judge(c, tr.words, tr.checked);
+        m = { ...m, words: tr.words, checked: tr.checked, heard: j.heard, edits: j.edits, hard: j.hard, diffs: j.diffs };
+        await db.query('UPDATE assets SET meta=$2 WHERE id=$1', [a.id, JSON.stringify(m)]);
+      }
+      atts.push({ assetId: a.id, storageKey: a.storage_key, words: m.words ?? [], heard: m.heard ?? '', checked: !!m.checked, edits: m.edits ?? null, hard: m.hard ?? null, dur: Number(m.dur ?? m.billedSec ?? 8) });
+    }
+    // Operações que falharam em execuções anteriores contam para o limite (o teto vale entre execuções do trabalho).
+    let failures = mock ? 0 : Number((await db.one(`SELECT count(*)::int AS n FROM veo_ops WHERE interview_id=$1 AND chunk_key=$2 AND state='failed'`, [iv.id, c.key]))?.n ?? 0);
+    while (!abort && !atts.some(passes) && atts.length + failures < maxAttempts) {
+      // Duração: a prevista; se a tentativa anterior saiu cortada (fala até ao fim do clipe ou incompleta), a seguinte.
+      const last = atts[atts.length - 1];
+      let dur: 4 | 6 | 8 = c.dur;
+      if (last) {
+        const lastEnd = last.words.length ? last.words[last.words.length - 1].end : 0;
+        const short = normWords(last.heard).length < normWords(c.text).length * 0.85;
+        dur = (lastEnd > last.dur - 0.6 || short) ? nextDuration(last.dur) : (last.dur as 4 | 6 | 8);
+      }
+      const label = `Google Veo: clipe ${doneN + 1} de ${chunks.length}${atts.length + failures ? ' (nova tentativa: o texto dito não coincidia)' : ''}`;
+      await progress(pct(), 100, label);
+      const onStatus = async (s: string) => progress(pct(), 100, `${label} — ${s}`);
+      let opId: string | null = null;
+      try {
+        let video: Buffer;
+        if (mock) { video = await mockTalkingClip(ffmpeg, st.image, dur * 1000, st.vertical); }
+        else {
+          // Uma operação já paga e por concluir (trabalho interrompido, erro de rede) é retomada, não submetida de novo.
+          const pending = await db.one(`SELECT id, op_name, duration_sec FROM veo_ops WHERE interview_id=$1 AND chunk_key=$2 AND state='pending' AND created_at > now() - interval '36 hours' ORDER BY created_at LIMIT 1`, [iv.id, c.key]);
+          let opName: string;
+          if (pending) { opId = pending.id; opName = pending.op_name; dur = Number(pending.duration_sec) as 4 | 6 | 8; }
+          else {
+            if (!(await stillAllowed(c.seg.role))) { abort = new PermanentError(`A autorização do ${c.seg.role === 'host' ? 'entrevistador' : 'convidado'} para o Google Veo foi retirada durante a geração: nada mais foi enviado à Google e o vídeo não foi publicado.`); break; }
+            const s = await veoSubmit({ image: st.image, prompt: c.prompt, aspectRatio: st.vertical ? '9:16' : '16:9', durationSeconds: dur, onStatus });
+            opName = s.opName; dur = s.dur;
+            const usd = dur * VEO_PRICE_PER_SEC; spentUsd += usd;
+            opId = (await db.one(`INSERT INTO veo_ops(interview_id, chunk_key, op_name, duration_sec) VALUES ($1,$2,$3,$4) RETURNING id`, [iv.id, c.key, opName, dur])).id;
+            await db.query('INSERT INTO usage_ledger(interview_id, kind, quantity, cost_usd, estimated) VALUES ($1,$2,$3,$4,true)', [iv.id, 'veo_usd', dur, usd]);
+          }
+          try { video = (await veoAwait(opName, dur, onStatus)).video; }
+          catch (e) { if (e instanceof PermanentError) await db.query(`UPDATE veo_ops SET state='failed' WHERE id=$1`, [opId]); throw e; }
+        }
+        generated++;
+        const tr = await transcribe(video, c.text, dur);
+        const j = judge(c, tr.words, tr.checked);
+        const meta = { chunkKey: c.key, segmentId: c.seg.id, role: c.seg.role, text: c.text, attempt: atts.length + 1, dur, billedSec: mock ? 0 : dur, words: tr.words, checked: tr.checked, ...j, model: VEO_MODEL, mock };
+        const assetId = await saveAsset(db, { interviewId: iv.id, kind: 'veo_clip', mime: 'video/mp4', ext: 'mp4', data: video, durationMs: dur * 1000, meta });
+        if (opId) await db.query(`UPDATE veo_ops SET state='done' WHERE id=$1`, [opId]);
+        const a = await db.one('SELECT storage_key FROM assets WHERE id=$1', [assetId]);
+        atts.push({ assetId, storageKey: a.storage_key, words: tr.words, heard: j.heard, checked: tr.checked, edits: j.edits, hard: j.hard, dur });
+      } catch (e: any) {
+        const m = String(e?.message ?? e);
+        if (/^Veo 40[13]/.test(m)) { abort = new PermanentError(`A Google recusou a chave: ${m.slice(0, 200)}`); break; }
+        if (e instanceof VeoQuotaError) { abort = new PermanentError(`${m} Os clipes já pagos ficam guardados e são reaproveitados.`); break; }
+        failures++;
+        console.error(`[veo] pedaço ${c.seg.id}/${c.k} falhou: ${m.slice(0, 300)}`);
+      }
+    }
+    return atts;
+  };
+
   await progress(5, 100, `Google Veo: 0 de ${chunks.length} clipes`);
   const worker = async () => {
     while (next < chunks.length && !abort) {
-      const i = next++, c = chunks[i], st = start[c.seg.role]!;
-      const prompt = veoEpisodePrompt({ role: c.seg.role, text: c.text, voice: voice[c.seg.role] });
-      const chunkKey = sha256(`${st.hash}|${prompt}|${st.vertical ? '9:16' : '16:9'}|${c.dur}|${VEO_MODEL}|${mock}`);
-      const prev = await db.query(`SELECT id, storage_key, meta FROM assets WHERE interview_id=$1 AND kind='veo_clip' AND meta->>'chunkKey'=$2 AND deleted_at IS NULL ORDER BY created_at`, [iv.id, chunkKey]);
-      const atts: Attempt[] = prev.map((a: any) => ({ assetId: a.id, storageKey: a.storage_key, words: a.meta.words ?? [], heard: a.meta.heard ?? '', checked: !!a.meta.checked, edits: a.meta.edits ?? null, wer: a.meta.wer ?? null, billedSec: Number(a.meta.billedSec ?? 0) }));
-      let failures = 0;
-      while (!abort && !atts.some(passes) && atts.length + failures < maxAttempts) {
-        const label = `Google Veo: clipe ${doneN + 1} de ${chunks.length}${atts.length + failures ? ` (nova tentativa: o texto dito não coincidia)` : ''}`;
-        await progress(5 + Math.round((doneN / chunks.length) * 70), 100, label);
-        try {
-          const r = mock
-            ? { video: await mockTalkingClip(ffmpeg, st.image, c.dur * 1000, st.vertical), billedSec: c.dur }
-            : await veoGenerate({ image: st.image, prompt, aspectRatio: st.vertical ? '9:16' : '16:9', durationSeconds: c.dur, onStatus: s => progress(5 + Math.round((doneN / chunks.length) * 70), 100, `${label} — ${s}`) });
-          const usd = mock ? 0 : r.billedSec * VEO_PRICE_PER_SEC;
-          spentUsd += usd; generated++;
-          if (usd) await db.query('INSERT INTO usage_ledger(interview_id, kind, quantity, cost_usd, estimated) VALUES ($1,$2,$3,$4,true)', [iv.id, 'veo_usd', r.billedSec, usd]);
-          let words: Word[] = [], checked = false;
-          if (!mock) {
-            try { words = await transcribeWords(r.video, 'mp4'); checked = true; } catch (e: any) { console.error(`[veo] transcrição do clipe falhou (fica por verificar): ${String(e?.message ?? e).slice(0, 200)}`); }
-          }
-          const heard = words.map(w => w.word.trim()).join(' ').replace(/\s+([,.;:!?])/g, '$1');
-          const d = checked ? wordDiff(c.text, heard) : null;
-          const meta = { chunkKey, segmentId: c.seg.id, role: c.seg.role, text: c.text, attempt: atts.length + 1, heard, words, checked, edits: d?.edits ?? null, wer: d?.wer ?? null, billedSec: r.billedSec, model: VEO_MODEL, mock };
-          const assetId = await saveAsset(db, { interviewId: iv.id, kind: 'veo_clip', mime: 'video/mp4', ext: 'mp4', data: r.video, durationMs: r.billedSec * 1000, meta });
-          const a = await db.one('SELECT storage_key FROM assets WHERE id=$1', [assetId]);
-          atts.push({ assetId, storageKey: a.storage_key, words, heard, checked, edits: meta.edits, wer: meta.wer, billedSec: r.billedSec });
-        } catch (e: any) {
-          const m = String(e?.message ?? e);
-          if (/^Veo 40[13]/.test(m)) { abort = new PermanentError(`A Google recusou a chave: ${m.slice(0, 200)}`); break; }
-          failures++;
-          console.error(`[veo] clipe ${i + 1} (${c.seg.id}) falhou: ${m.slice(0, 300)}`);
-        }
-      }
-      attemptsOf[i] = atts;
-      // A melhor tentativa: a que passa; senão, a que tem fala e menos diferenças; sem fala nenhuma, fica a imagem fixa.
-      chosen[i] = atts.find(passes) ?? [...atts].filter(a => a.words.length > 0).sort((x, y) => (x.edits ?? 99) - (y.edits ?? 99))[0] ?? null;
-      doneN++;
-      await progress(5 + Math.round((doneN / chunks.length) * 70), 100, `Google Veo: ${doneN} de ${chunks.length} clipes`);
+      const i = next++, c = chunks[i];
+      try {
+        let p = inflight.get(c.key);
+        if (!p) { p = runChunk(c); inflight.set(c.key, p); }
+        const atts = await p;
+        attemptsOf[i] = atts;
+        chosen[i] = atts.find(passes) ?? null; // nunca um clipe que não disse o texto aprovado
+        doneN++;
+        await progress(pct(), 100, `Google Veo: ${doneN} de ${chunks.length} clipes`);
+      } catch (e: any) { abort ??= e instanceof PermanentError ? e : new Error(`Falha a gerar os clipes: ${String(e?.message ?? e).slice(0, 300)}`); }
     }
   };
-  await Promise.all([worker(), worker()]);
+  await Promise.allSettled([worker(), worker()]); // só termina quando os dois pararam (nenhum fica a gerar sozinho)
   if (abort) throw abort;
 
   // 2. Linha temporal: aviso inicial (capa + voz do episódio), falas do Veo, reserva em imagem fixa, cartão final.
@@ -216,15 +366,12 @@ export async function renderVeoVideo(job: any, { db, progress }: Parameters<Hand
     }
     veoSegs.add(s.id);
     for (const { c, ch } of mine) {
-      const a0 = ch!, clipMs = a0.billedSec * 1000, w = a0.words;
-      const a = w.length ? Math.max(0, Math.floor((w[0].start * 1000 - 200) / 40) * 40) : 0;
-      const b = w.length ? Math.min(clipMs, Math.ceil((w[w.length - 1].end * 1000 + 350) / 40) * 40) : clipMs;
-      const dur = Math.max(400, b - a);
-      const cues = w.length
-        ? cuesFromWords(w, { id: `${s.id}-${c.k}`, role: s.role, text: a0.heard, startMs: t - a, durationMs: clipMs }, 'en')
-        : [{ id: `${s.id}-${c.k}-0`, startMs: t, endMs: t + dur, text: c.text }];
+      const at = ch!, clipMs = at.dur * 1000, w = at.words;
+      const { a, b } = trimWindow(w, clipMs, c.text);
+      const dur = b - a;
+      const cues = cuesFromWords(w, { id: `${s.id}-${c.k}`, role: s.role, text: at.heard, startMs: t - a, durationMs: clipMs }, 'en');
       for (const q of cues) if (q.endMs > t && q.startMs < t + dur) veoCues.push({ id: q.id, startMs: Math.max(t, q.startMs), endMs: Math.min(t + dur, q.endMs), text: q.text });
-      const load = () => storage.get(a0.storageKey);
+      const load = () => storage.get(at.storageKey);
       parts.push({ kind: 'anim', startMs: t, endMs: t + dur, base: s.role === 'host' ? bases.animHost : bases.animGuest, clip: load, clipOffsetMs: a, notice: VEO_NOTICE, who: { name: names[s.role], role: s.role === 'host' ? 'Host' : 'Guest' }, cues: [] });
       audioPieces.push({ durMs: dur, src: load, ext: 'mp4', offsetMs: a });
       t += dur;
@@ -250,25 +397,38 @@ export async function renderVeoVideo(job: any, { db, progress }: Parameters<Hand
     else p.shots = stillShots(sceneOf.get(p) ?? 'cover', p.startMs, p.endMs, inside.map(c => ({ ...c, startMs: c.startMs + p.startMs, endMs: c.endMs + p.startMs })));
   }
 
-  // 4. Som (dos clipes) e montagem.
+  // 4. Som (dos clipes, codificado uma só vez em AAC) e montagem.
   await progress(78, 100, 'A juntar o som dos clipes');
-  const track = await buildAudioTrack(ffmpeg, audioPieces);
+  let track: Buffer | null = await buildAudioTrack(ffmpeg, audioPieces);
   await progress(80, 100, 'A montar o vídeo');
   const frameFor = (sh: Shot) => subtitleFrame((bases as any)[sh.scene], sh.text);
-  const mp4 = await encodeComposite(ffmpeg, parts, frameFor, track, async (i, n) => progress(80 + Math.round((i / n) * 12), 100, `A montar o vídeo (${i} de ${n} partes)`), 'wav');
+  const mp4 = await encodeComposite(ffmpeg, parts, frameFor, track, async (i, n) => progress(80 + Math.round((i / n) * 12), 100, `A montar o vídeo (${i} de ${n} partes)`), 'm4a');
+  track = null;
 
   const fidelity = chunks.map((c, i) => {
-    const ch = chosen[i];
-    return { segmentId: c.seg.id, role: c.seg.role, expected: c.text, heard: ch?.heard ?? '', checked: !!ch?.checked, edits: ch?.edits ?? null, ok: !!ch && passes(ch), attempts: attemptsOf[i].length, used: veoSegs.has(c.seg.id) };
+    const best = chosen[i] ?? [...attemptsOf[i]].filter(a => a.checked).sort((x, y) => (x.hard ?? 99) - (y.hard ?? 99))[0];
+    return { segmentId: c.seg.id, role: c.seg.role, expected: c.text, heard: best?.heard ?? '', checked: !!best?.checked, edits: best?.edits ?? null, ok: !!chosen[i], attempts: attemptsOf[i].length, used: veoSegs.has(c.seg.id) };
   });
-  const costUsd = mock ? 0 : attemptsOf.flat().reduce((x, a) => x + a.billedSec * VEO_PRICE_PER_SEC, 0);
+  const uniq = new Map<string, Attempt[]>(chunks.map((c, i) => [c.key, attemptsOf[i]]));
+  const costUsd = mock ? 0 : [...uniq.values()].flat().reduce((x, a) => x + a.dur * VEO_PRICE_PER_SEC, 0);
   await progress(94, 100, 'A guardar o vídeo');
   const usedRoles = new Set(segs.filter(s => veoSegs.has(s.id)).map(s => s.role));
   const meta = { engine: 'veo', model: VEO_MODEL, lang, guestPhoto: !!guestPhoto, hostPhoto: !!hostPhoto, guestAiVideo: usedRoles.has('guest'), hostAiVideo: usedRoles.has('host'),
     veoClips: chunks.length, veoSegments: veoSegs.size, fallbackSegments: fallbackSegs, generatedClips: generated, spentUsd, veoUsd: costUsd,
-    fidelityIssues: fidelity.filter(f => f.used && (!f.ok || !f.checked)).length, fidelity, mock };
+    fidelityIssues: fidelity.filter(f => !f.ok).length, fidelity, mock };
   const id = await saveAsset(db, { interviewId: iv.id, kind: 'episode_video', mime: 'video/mp4', ext: 'mp4', data: mp4, durationMs: t, meta });
-  await db.query('UPDATE episodes SET video_asset_id=$2, video_lang=$3 WHERE id=$1', [ep.id, id, lang]);
+  // Ligação ao episódio numa só instrução, com as autorizações lidas no próprio momento (fecha a corrida com uma retirada).
+  const linked = await db.one(
+    `UPDATE episodes e SET video_asset_id=$2, video_lang=$3 FROM interviews i
+     WHERE e.id=$1 AND i.id=e.interview_id AND NOT e.stale AND e.status NOT IN ('published','superseded')
+       AND (NOT $4::boolean OR (i.host_ai_video AND i.host_photo_rights)) AND (NOT $5::boolean OR i.host_photo_rights)
+       AND (NOT $6::boolean OR (COALESCE((SELECT c.granted FROM consents c WHERE c.interview_id=i.id AND c.purpose='ai_video' ORDER BY c.created_at DESC LIMIT 1), false)))
+       AND (NOT $7::boolean OR (COALESCE((SELECT c.granted FROM consents c WHERE c.interview_id=i.id AND c.purpose='publish_photo' ORDER BY c.created_at DESC LIMIT 1), false)))
+     RETURNING e.id`,
+    [ep.id, id, lang, meta.hostAiVideo, meta.hostPhoto, meta.guestAiVideo, meta.guestPhoto]);
+  if (!linked) throw new PermanentError('Uma autorização foi retirada (ou o episódio mudou) durante a geração: o vídeo não foi ligado ao episódio e fica privado. Os clipes pagos ficam guardados.');
+  // O vídeo com a imagem e a voz geradas é uma versão nova: as aprovações anteriores deixam de valer.
+  if (usedRoles.size) await db.query(`UPDATE approvals SET valid=false WHERE episode_id=$1 AND valid`, [ep.id]);
   await progress(100, 100, 'Concluído');
   return { videoAssetId: id, veoClips: chunks.length, generatedClips: generated, spentUsd, veoUsd: costUsd, fallbackSegments: fallbackSegs, fidelityIssues: meta.fidelityIssues };
 }
@@ -285,4 +445,3 @@ export function stillShots(scene: Scene, a: number, b: number, cues: { startMs: 
   }
   return shots;
 }
-

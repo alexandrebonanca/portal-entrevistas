@@ -117,6 +117,7 @@ ${groups.size ? [...groups].map(([t, eps]) => `<section style="margin-top:28px">
     return send(reply, page({
       lang: normLang(ep.interaction_lang), title: d.episodePreview, noindex: true, nav: '', script: '/static/player.js',
       body: `<div class="wrap" style="padding-top:28px">${flash(q.ok)}<h2>${esc(d.episodePreview)}</h2>
+${ep.video_asset_id ? `<video controls preload="metadata" poster="/api/g/media/${ep.cover_asset_id}" src="/api/g/media/${ep.video_asset_id}" style="width:100%;border-radius:12px;background:#000;margin-bottom:18px"></video>` : ''}
 ${playerHtml(ep, { audio: `/api/g/media/${ep.audio_asset_id}`, cover: `/api/g/media/${ep.cover_asset_id}`, subs: (l, x) => `/entrevista/subs/${l}.${x}` }, { host: ep.host_name, guest: ep.guest_name })}
 ${dec ? `<div class="flash">${esc(dec.decision === 'approved' ? d.approve : d.requestChanges)} — ${esc(fmtDate(dec.created_at))}</div>` : ''}
 <form method="post" action="/entrevista/episodio/decisao" class="card"><label for="nt">${esc(d.notePlaceholder)}</label><textarea id="nt" name="note"></textarea>

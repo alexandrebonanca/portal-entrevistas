@@ -78,6 +78,17 @@ export async function withTemp<T>(fn: (dir: string) => Promise<T>): Promise<T> {
   try { return await fn(dir); } finally { await rm(dir, { recursive: true, force: true }); }
 }
 
+/** O ficheiro tem pelo menos uma faixa de som? (um clipe do Veo sem som não pode ser aprovado) */
+export async function hasAudioStream(data: Buffer, ext: string): Promise<boolean> {
+  return withTemp(async dir => {
+    const f = join(dir, `in.${ext}`);
+    await writeFile(f, data);
+    const { ffprobe } = await bins();
+    const r = await run(ffprobe, ['-v', 'error', '-select_streams', 'a', '-show_entries', 'stream=index', '-of', 'csv=p=0', f], 30_000);
+    return r.code === 0 && r.stdout.trim().length > 0;
+  });
+}
+
 /** Valida que o ficheiro descodifica e devolve a duração real. */
 export async function probeAudio(data: Buffer, ext: string): Promise<{ ok: boolean; durationMs: number; silent: boolean }> {
   return withTemp(async dir => {

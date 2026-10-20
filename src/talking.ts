@@ -114,43 +114,70 @@ async function wavespeedHeygen(imageUrl: string, audioUrl: string, onStatus?: (s
 export const VEO_MODEL = 'veo-3.1-fast-generate-preview';
 export const VEO_PRICE_PER_SEC = 0.10; // Veo 3.1 Fast, 720p, com áudio
 
+/** Limite de pedidos da Google que não passa em minutos (quota esgotada): o trabalho pára em vez de esperar horas. */
+export class VeoQuotaError extends PermanentError {}
+
+const quiet = async (f?: (s: string) => Promise<void>, s = '') => { try { await f?.(s); } catch { /* o progresso nunca interrompe uma operação já paga */ } };
+
 /**
- * Um clipe do Veo a partir de uma imagem inicial (formato do SDK oficial @google/genai: bytesBase64Encoded + mimeType).
- * Cobrado pela duração pedida (4, 6 ou 8 s). Pedidos recusados (400/429) não são cobrados: o 429 espera e repete;
+ * Submete um clipe do Veo a partir de uma imagem inicial (formato do SDK oficial @google/genai: bytesBase64Encoded +
+ * mimeType). A partir do momento em que a Google aceita, o clipe é cobrado pela duração pedida (4, 6 ou 8 s).
+ * Pedidos recusados (400/429) não são cobrados: o 429 espera e repete (até ~5 min), depois desiste com VeoQuotaError;
  * uma duração não aceite neste modo passa a 8 s.
  */
-export async function veoGenerate(o: { image: Buffer; prompt: string; aspectRatio?: '16:9' | '9:16'; durationSeconds?: 4 | 6 | 8; onStatus?: (s: string) => Promise<void> }) {
-  const key = S('GEMINI_API_KEY');
-  const headers = { 'x-goog-api-key': key, 'Content-Type': 'application/json' };
-  let dur = o.durationSeconds ?? 8;
-  let op: any;
+export async function veoSubmit(o: { image: Buffer; prompt: string; aspectRatio?: '16:9' | '9:16'; durationSeconds?: 4 | 6 | 8; onStatus?: (s: string) => Promise<void> }): Promise<{ opName: string; dur: 4 | 6 | 8 }> {
+  const headers = { 'x-goog-api-key': S('GEMINI_API_KEY'), 'Content-Type': 'application/json' };
+  let dur: 4 | 6 | 8 = o.durationSeconds ?? 8;
   for (let attempt = 0; ; attempt++) {
     try {
-      op = await jsonFetch(`https://generativelanguage.googleapis.com/v1beta/models/${VEO_MODEL}:predictLongRunning`, {
+      const op = await jsonFetch(`https://generativelanguage.googleapis.com/v1beta/models/${VEO_MODEL}:predictLongRunning`, {
         method: 'POST', headers,
         body: JSON.stringify({ instances: [{ prompt: o.prompt, image: { bytesBase64Encoded: o.image.toString('base64'), mimeType: 'image/jpeg' } }], parameters: { aspectRatio: o.aspectRatio ?? '16:9', durationSeconds: dur, personGeneration: 'allow_adult' } }),
       }, 'Veo');
-      break;
+      if (!op?.name) throw new PermanentError('Veo não devolveu o identificador da operação');
+      return { opName: String(op.name), dur };
     } catch (e: any) {
       const m = String(e?.message ?? e);
       if (dur !== 8 && /^Veo 400/.test(m) && /duration/i.test(m)) { dur = 8; continue; }
-      if (/^Veo 429/.test(m) && attempt < 5) { await o.onStatus?.('Limite de pedidos do Google: a aguardar'); await sleep(30_000 * (attempt + 1)); continue; }
+      if (/^Veo 429/.test(m)) {
+        if (attempt >= 4) throw new VeoQuotaError('Limite de pedidos (quota) da Google esgotado: tente mais tarde.');
+        await quiet(o.onStatus, 'Limite de pedidos do Google: a aguardar');
+        await sleep(30_000 * (attempt + 1));
+        continue;
+      }
       throw e;
     }
   }
+}
+
+/** Espera pela operação e descarrega o vídeo. Erros passageiros (rede, 5xx, 429) repetem a consulta, nunca a submissão. */
+export async function veoAwait(opName: string, dur: number, onStatus?: (s: string) => Promise<void>, deadlineMs = 20 * 60_000) {
+  const key = S('GEMINI_API_KEY');
+  const headers = { 'x-goog-api-key': key };
   const t0 = Date.now();
+  let fails = 0;
   for (;;) {
-    if (Date.now() - t0 > 15 * 60_000) throw new Error('Veo: tempo excedido');
+    if (Date.now() - t0 > deadlineMs) throw new Error('Veo: tempo excedido (a operação fica pendente e é retomada na próxima tentativa)');
     await sleep(10_000);
-    const st = await jsonFetch(`https://generativelanguage.googleapis.com/v1beta/${op.name}`, { headers }, 'Veo');
+    let st: any;
+    try { st = await jsonFetch(`https://generativelanguage.googleapis.com/v1beta/${opName}`, { headers }, 'Veo'); fails = 0; }
+    catch (e) { if (e instanceof PermanentError || ++fails > 8) throw e; continue; }
     if (st.error) throw new PermanentError(`Veo: ${String(st.error.message ?? JSON.stringify(st.error)).slice(0, 300)}`);
     if (st.done) {
       const uri = st.response?.generateVideoResponse?.generatedSamples?.[0]?.video?.uri;
       if (!uri) throw new PermanentError(`Veo não devolveu vídeo (pode ter sido bloqueado pelos filtros): ${JSON.stringify(st.response ?? {}).slice(0, 200)}`);
-      return { video: await download(uri, { 'x-goog-api-key': key }), billedSec: dur };
+      for (let k = 0; ; k++) {
+        try { return { video: await download(uri, { 'x-goog-api-key': key }), billedSec: dur }; }
+        catch (e) { if (k >= 3) throw e; await sleep(5000 * (k + 1)); }
+      }
     }
-    await o.onStatus?.('A gerar no Google Veo');
+    await quiet(onStatus, 'A gerar no Google Veo');
   }
+}
+
+export async function veoGenerate(o: { image: Buffer; prompt: string; aspectRatio?: '16:9' | '9:16'; durationSeconds?: 4 | 6 | 8; onStatus?: (s: string) => Promise<void> }) {
+  const s = await veoSubmit(o);
+  return veoAwait(s.opName, s.dur, o.onStatus);
 }
 
 async function veo(image: Buffer, text: string, onStatus?: (s: string) => Promise<void>) {
