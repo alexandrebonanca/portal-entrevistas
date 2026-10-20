@@ -302,7 +302,17 @@ export const handlers: Record<string, Handler> = {
     await progress(92, 100, 'A guardar o vídeo');
     const id = await saveAsset(db, { interviewId: iv.id, kind: 'episode_video', mime: 'video/mp4', ext: 'mp4', data: mp4, durationMs: ep.duration_ms,
       meta: { lang, shots: shots.length, guestPhoto: !!guestPhoto, hostPhoto: !!hostPhoto, animatedSegments: animated, failedAnimations: failed, guestAnimated: animGuest && animated > 0, hostAnimated: animHost && animated > 0, lipsyncUsd: gpuUsd } });
-    await db.query('UPDATE episodes SET video_asset_id=$2, video_lang=$3 WHERE id=$1', [ep.id, id, lang]);
+    // Ligação com as autorizações lidas no próprio momento: uma retirada durante a geração não volta a pôr o vídeo no ar.
+    const guestAnimated = animGuest && animated > 0, hostAnimated = animHost && animated > 0;
+    const linked = await db.one(
+      `UPDATE episodes e SET video_asset_id=$2, video_lang=$3 FROM interviews i
+       WHERE e.id=$1 AND i.id=e.interview_id AND NOT e.stale AND e.status<>'superseded'
+         AND (NOT $4::boolean OR i.host_photo_rights) AND (NOT $5::boolean OR (i.host_animate AND i.host_photo_rights))
+         AND (NOT $6::boolean OR COALESCE((SELECT c.granted FROM consents c WHERE c.interview_id=i.id AND c.purpose='publish_photo' ORDER BY c.created_at DESC LIMIT 1), false))
+         AND (NOT $7::boolean OR COALESCE((SELECT c.granted FROM consents c WHERE c.interview_id=i.id AND c.purpose='animate_portrait' ORDER BY c.created_at DESC LIMIT 1), false))
+       RETURNING e.id`,
+      [ep.id, id, lang, !!hostPhoto, hostAnimated, !!guestPhoto, guestAnimated]);
+    if (!linked) throw new PermanentError('Uma autorização foi retirada (ou o episódio mudou) durante a geração: o vídeo não foi ligado ao episódio e fica privado.');
     await progress(100, 100, 'Concluído');
     return { videoAssetId: id, shots: shots.length, animated, failed, lipsyncUsd: gpuUsd };
   },
