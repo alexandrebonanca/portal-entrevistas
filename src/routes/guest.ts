@@ -219,6 +219,8 @@ ${q.audio_asset_id ? `<p><audio controls preload="none" src="/api/g/media/${q.au
     // Só ativos desta entrevista e de tipos que o convidado pode ouvir/ver.
     const a = await db.one(`SELECT * FROM assets WHERE id=$1 AND interview_id=$2 AND deleted_at IS NULL AND kind IN ('question_audio','question_tts','answer_audio','guest_photo','episode_audio','episode_cover','episode_video')`, [id, iv.id]);
     if (!a) return reply.code(404).send();
+    // Um vídeo desligado (autorização retirada, versão antiga) deixa de ser servido.
+    if (a.kind === 'episode_video' && !(await db.one('SELECT 1 FROM episodes WHERE interview_id=$1 AND video_asset_id=$2', [iv.id, id]))) return reply.code(404).send();
     return sendAsset(req, reply, a);
   });
 

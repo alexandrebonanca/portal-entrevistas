@@ -78,14 +78,15 @@ export async function withTemp<T>(fn: (dir: string) => Promise<T>): Promise<T> {
   try { return await fn(dir); } finally { await rm(dir, { recursive: true, force: true }); }
 }
 
-/** O ficheiro tem pelo menos uma faixa de som? (um clipe do Veo sem som não pode ser aprovado) */
-export async function hasAudioStream(data: Buffer, ext: string): Promise<boolean> {
+/** O ficheiro tem faixa de som? 'error' quando o ffprobe falha (não se sabe: não é o mesmo que «sem som»). */
+export async function hasAudioStream(data: Buffer, ext: string): Promise<'yes' | 'no' | 'error'> {
   return withTemp(async dir => {
     const f = join(dir, `in.${ext}`);
     await writeFile(f, data);
     const { ffprobe } = await bins();
-    const r = await run(ffprobe, ['-v', 'error', '-select_streams', 'a', '-show_entries', 'stream=index', '-of', 'csv=p=0', f], 30_000);
-    return r.code === 0 && r.stdout.trim().length > 0;
+    const r = await run(ffprobe, ['-v', 'error', '-select_streams', 'a', '-show_entries', 'stream=index', '-of', 'csv=p=0', f], 30_000).catch(() => ({ code: -1, stdout: '', stderr: '' }));
+    if (r.code !== 0) return 'error';
+    return r.stdout.trim().length > 0 ? 'yes' : 'no';
   });
 }
 

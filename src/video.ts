@@ -197,7 +197,8 @@ async function videoEncoder(ffmpeg: string): Promise<string[]> {
   if (encoderCache) return encoderCache;
   const r = await run(ffmpeg, ['-hide_banner', '-h', 'encoder=libx264'], 30_000).catch(() => ({ code: 1, stderr: '' }));
   encoderCache = r.code === 0 && !/Unknown encoder/i.test(r.stderr)
-    ? ['-c:v', 'libx264', '-preset', 'veryfast', '-crf', '24', '-pix_fmt', 'yuv420p', '-r', '25']
+    // Sem imagens B (-bf 0): pedaços de 1–2 fotogramas e pedaços longos ficam com os mesmos tempos e juntam-se sem desvio.
+    ? ['-c:v', 'libx264', '-preset', 'veryfast', '-crf', '24', '-bf', '0', '-pix_fmt', 'yuv420p', '-r', '25']
     : ['-c:v', 'mpeg4', '-q:v', '4', '-pix_fmt', 'yuv420p', '-r', '25'];
   return encoderCache;
 }
@@ -229,11 +230,13 @@ export async function encodeComposite(ffmpeg: string, parts: Part[], frameFor: (
     // Número de fotogramas por arredondamento acumulado sobre o tempo absoluto: a soma bate sempre certo com a linha
     // temporal (o '-t' por pedaço perdia muitas vezes um fotograma no ffmpeg 4.1 e o desvio face ao som acumulava).
     const fr = (ms: number) => Math.round(ms / 40);
+    let totalFrames = 0;
     for (let p = 0; p < parts.length; p++) {
       const part = parts[p];
       const nFrames = fr(part.endMs) - fr(part.startMs);
       const out = join(dir, `part${String(p).padStart(4, '0')}.mp4`);
       if (nFrames <= 0) continue;
+      totalFrames += nFrames;
       if (part.kind === 'still') {
         const lines: string[] = []; let last = '';
         for (const s of part.shots) {
@@ -267,7 +270,7 @@ export async function encodeComposite(ffmpeg: string, parts: Part[], frameFor: (
           const over = join(dir, `ov${p}_${k}.png`), piece = join(dir, `piece${p}_${k}.mp4`);
           await writeFile(over, await animatedOverlay(part.who, text, part.notice));
           const d = ((n * 40) / 1000).toFixed(3);
-          const g = `[1:v]scale=-2:${H},setsar=1[c];[0:v]scale=${W}:${H},setsar=1[bg];[bg][c]overlay=(W-w)/2:(H-h)/2:eof_action=repeat[v0];[v0][2:v]overlay=0:0,fps=25,format=yuv420p[out]`;
+          const g = `[1:v]setpts=PTS-STARTPTS,scale=-2:${H},setsar=1[c];[0:v]scale=${W}:${H},setsar=1[bg];[bg][c]overlay=(W-w)/2:(H-h)/2:eof_action=repeat[v0];[v0][2:v]overlay=0:0,fps=25,format=yuv420p[out]`;
           const r = await run(ffmpeg, ['-y', '-v', 'error', '-threads', '2', '-loop', '1', '-framerate', '25', '-i', base, '-ss', ((off + a0) / 1000).toFixed(3), '-t', d, '-i', clip, '-loop', '1', '-framerate', '25', '-i', over,
             '-filter_complex', g, '-map', '[out]', ...enc, '-threads', '2', '-frames:v', String(n), '-an', piece], 600_000);
           if (r.code !== 0) throw new Error('Falha a codificar parte animada: ' + r.stderr.slice(-300));
@@ -286,7 +289,8 @@ export async function encodeComposite(ffmpeg: string, parts: Part[], frameFor: (
     await writeFile(a, audio);
     const r = await run(ffmpeg, ['-y', '-v', 'error', '-f', 'concat', '-safe', '0', '-i', list, '-i', a, '-map', '0:v', '-map', '1:a', '-c:v', 'copy',
       // AAC já codificado com a duração exata da imagem: copia-se sem '-shortest' (com cópia, cortava ~0,1 s ao som).
-      ...(audioExt === 'm4a' ? ['-c:a', 'copy'] : ['-c:a', 'aac', '-b:a', '128k', '-shortest']), '-movflags', '+faststart', out], 900_000);
+      // MP3 (caminho antigo): completa com silêncio e corta à duração exata da imagem (o '-shortest' cortava ~0,1 s ao fim).
+      ...(audioExt === 'm4a' ? ['-c:a', 'copy'] : ['-af', 'apad', '-c:a', 'aac', '-b:a', '128k', '-t', ((totalFrames * 40) / 1000).toFixed(3)]), '-movflags', '+faststart', out], 900_000);
     if (r.code !== 0) throw new Error('Falha a juntar as partes do vídeo: ' + r.stderr.slice(-300));
     return readFile(out);
   });

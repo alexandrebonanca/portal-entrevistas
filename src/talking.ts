@@ -116,6 +116,8 @@ export const VEO_PRICE_PER_SEC = 0.10; // Veo 3.1 Fast, 720p, com áudio
 
 /** Limite de pedidos da Google que não passa em minutos (quota esgotada): o trabalho pára em vez de esperar horas. */
 export class VeoQuotaError extends PermanentError {}
+/** Envio não feito porque a autorização foi retirada ou o trabalho parou (nada saiu para a Google). */
+export class VeoCancelled extends PermanentError {}
 
 const quiet = async (f?: (s: string) => Promise<void>, s = '') => { try { await f?.(s); } catch { /* o progresso nunca interrompe uma operação já paga */ } };
 
@@ -125,10 +127,12 @@ const quiet = async (f?: (s: string) => Promise<void>, s = '') => { try { await 
  * Pedidos recusados (400/429) não são cobrados: o 429 espera e repete (até ~5 min), depois desiste com VeoQuotaError;
  * uma duração não aceite neste modo passa a 8 s.
  */
-export async function veoSubmit(o: { image: Buffer; prompt: string; aspectRatio?: '16:9' | '9:16'; durationSeconds?: 4 | 6 | 8; onStatus?: (s: string) => Promise<void> }): Promise<{ opName: string; dur: 4 | 6 | 8 }> {
+export async function veoSubmit(o: { image: Buffer; prompt: string; aspectRatio?: '16:9' | '9:16'; durationSeconds?: 4 | 6 | 8; onStatus?: (s: string) => Promise<void>; canSend?: () => Promise<boolean>; waitMs?: (attempt: number) => number }): Promise<{ opName: string; dur: 4 | 6 | 8 }> {
   const headers = { 'x-goog-api-key': S('GEMINI_API_KEY'), 'Content-Type': 'application/json' };
   let dur: 4 | 6 | 8 = o.durationSeconds ?? 8;
   for (let attempt = 0; ; attempt++) {
+    // Antes de CADA envio (também nas repetições após 429): autorização em vigor e trabalho não parado.
+    if (o.canSend && !(await o.canSend())) throw new VeoCancelled('Envio à Google cancelado: autorização retirada ou trabalho parado');
     try {
       const op = await jsonFetch(`https://generativelanguage.googleapis.com/v1beta/models/${VEO_MODEL}:predictLongRunning`, {
         method: 'POST', headers,
@@ -142,7 +146,7 @@ export async function veoSubmit(o: { image: Buffer; prompt: string; aspectRatio?
       if (/^Veo 429/.test(m)) {
         if (attempt >= 4) throw new VeoQuotaError('Limite de pedidos (quota) da Google esgotado: tente mais tarde.');
         await quiet(o.onStatus, 'Limite de pedidos do Google: a aguardar');
-        await sleep(30_000 * (attempt + 1));
+        await sleep(o.waitMs ? o.waitMs(attempt) : 30_000 * (attempt + 1));
         continue;
       }
       throw e;

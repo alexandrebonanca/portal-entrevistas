@@ -134,6 +134,48 @@ test('vídeo Veo: dezenas de partes animadas mantêm o número exato de fotogram
   assert.ok(Math.abs(a - t / 1000) < 0.08, `som ${a} face a ${t / 1000}`);
 });
 
+test('vídeo: pedaços de 1–2 fotogramas no início e no fim de uma parte animada não deslocam os tempos', async () => {
+  const { spawnSync } = await import('node:child_process');
+  const ffmpeg = (await import('@ffmpeg-installer/ffmpeg')).default.path, ffprobe = (await import('@ffprobe-installer/ffprobe')).default.path;
+  const sharp = (await import('sharp')).default;
+  const { encodeComposite, buildAudioTrack, mockTalkingClip } = await import('../src/video.ts');
+  const img = await sharp({ create: { width: 1280, height: 720, channels: 3, background: '#335' } }).jpeg().toBuffer();
+  const clip = await mockTalkingClip(ffmpeg, img, 6000, true);
+  const load = async () => clip;
+  // parte 1: pedaço de 1 fotograma no início; parte 2: pedaço de 2 fotogramas no fim; parte 3: 1 + meio + 2
+  const parts: any[] = [
+    { kind: 'still', startMs: 0, endMs: 1200, shots: [{ startMs: 0, endMs: 1200, scene: 'cover', text: '' }] },
+    { kind: 'anim', startMs: 1200, endMs: 5840, base: img, clip: load, clipOffsetMs: 520, cues: [{ startMs: 40, endMs: 4640, text: 'A' }] },
+    { kind: 'anim', startMs: 5840, endMs: 10560, base: img, clip: load, clipOffsetMs: 0, cues: [{ startMs: 0, endMs: 4640, text: 'B' }] },
+    { kind: 'anim', startMs: 10560, endMs: 15200, base: img, clip: load, clipOffsetMs: 280, cues: [{ startMs: 40, endMs: 4560, text: 'C' }] },
+  ];
+  const total = 15200;
+  const track = await buildAudioTrack(ffmpeg, [{ durMs: 1200 }, { durMs: 4640, src: load, ext: 'mp4', offsetMs: 520 }, { durMs: 4720, src: load, ext: 'mp4' }, { durMs: 4640, src: load, ext: 'mp4', offsetMs: 280 }]);
+  const mp4 = await encodeComposite(ffmpeg, parts, async () => img, track, undefined, 'm4a');
+  const { writeFileSync, mkdtempSync } = await import('node:fs');
+  const { join } = await import('node:path'); const { tmpdir } = await import('node:os');
+  const f = join(mkdtempSync(join(tmpdir(), 'pe-')), 'v.mp4'); writeFileSync(f, mp4);
+  const pts = spawnSync(ffprobe, ['-v', 'error', '-select_streams', 'v:0', '-show_entries', 'packet=pts_time', '-of', 'csv=p=0', f], { maxBuffer: 1e8 }).stdout.toString().trim().split(/\s+/).filter(Boolean).map(Number).sort((x, y) => x - y);
+  assert.equal(pts.length, total / 40, `fotogramas ${pts.length}`);
+  for (let i = 1; i < pts.length; i++) assert.ok(Math.abs(pts[i] - pts[i - 1] - 0.04) < 0.002, `passo irregular em ${i}: ${pts[i - 1]} → ${pts[i]}`);
+  const vdur = parseFloat(spawnSync(ffprobe, ['-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=duration', '-of', 'csv=p=0', f]).stdout.toString());
+  assert.ok(Math.abs(vdur - total / 1000) < 0.045, `duração da imagem ${vdur}`);
+});
+
+test('Veo: depois de um 429, nada volta a ser enviado sem confirmar a autorização', async () => {
+  const { veoSubmit, VeoCancelled } = await import('../src/talking.ts');
+  const real = globalThis.fetch;
+  let posts = 0, allowed = true;
+  globalThis.fetch = (async () => { posts++; allowed = false; return new Response(JSON.stringify({ error: { message: 'rate limit' } }), { status: 429 }); }) as any;
+  try {
+    await assert.rejects(veoSubmit({ image: Buffer.from('x'), prompt: 'p', durationSeconds: 4, canSend: async () => allowed, waitMs: () => 1 }), (e: any) => e instanceof VeoCancelled);
+    assert.equal(posts, 1, 'a autorização foi retirada durante a espera: não há segundo envio');
+    posts = 0; allowed = true;
+    await assert.rejects(veoSubmit({ image: Buffer.from('x'), prompt: 'p', durationSeconds: 4, canSend: async () => false, waitMs: () => 1 }), (e: any) => e instanceof VeoCancelled);
+    assert.equal(posts, 0, 'sem autorização, nem o primeiro envio');
+  } finally { globalThis.fetch = real; }
+});
+
 test('vídeo Veo: som dos clipes (com corte no início) e imagem ficam com a mesma duração', async () => {
   const { spawnSync } = await import('node:child_process');
   const ffmpeg = (await import('@ffmpeg-installer/ffmpeg')).default.path, ffprobe = (await import('@ffprobe-installer/ffprobe')).default.path;
@@ -193,9 +235,9 @@ test('Veo: falas divididas em pedaços que cabem num clipe, sem alterar o texto'
 });
 
 test('Veo: comparação palavra a palavra entre o guião e o que se ouviu', async () => {
-  const { wordDiff, fidelityOk, properNames } = await import('../src/veo-episode.ts');
+  const { wordDiff, fidelityOk, personNames } = await import('../src/veo-episode.ts');
   const t = 'Thank you, Ana, for sharing your time with us.';
-  const names = properNames(t, ['Ana Silva']);
+  const names = personNames(['Ana Silva', 'Jose Farias']);
   const same = wordDiff(t, 'Thank you Ana for sharing your time with us', names);
   assert.equal(same.edits, 0); assert.equal(same.n, 9); assert.ok(fidelityOk(same));
   const anna = wordDiff(t, 'Thank you, Anna, for sharing your time with us.', names);
@@ -209,9 +251,15 @@ test('Veo: comparação palavra a palavra entre o guião e o que se ouviu', asyn
   assert.ok(!fidelityOk(wordDiff('I support the merger.', 'I oppose the merger.')));
   assert.ok(!fidelityOk(wordDiff('Prices fell 3 percent.', 'Prices fell 4 percent.')));
   assert.ok(!fidelityOk(wordDiff('We had three options.', 'We had two options.')));
-  // contrações, hesitações e variantes ortográficas não contam
+  // contrações, hesitações e variantes ortográficas britânico/americano não contam
   assert.ok(fidelityOk(wordDiff("It's a market that doesn't work.", 'It is a market that does not work.')));
   assert.ok(fidelityOk(wordDiff('We need to realise the change.', 'Um, we need to realize the change.')));
+  for (const [a, b] of [['the colour of energy', 'the color of energy'], ['in the city centre today', 'in the city center today'], ['we travelled a lot', 'we traveled a lot'], ['a strong defence plan', 'a strong defense plan'], ['the organisation grew', 'the organization grew']])
+    assert.ok(fidelityOk(wordDiff(a, b)), `${a} / ${b}`);
+  assert.ok(fidelityOk(wordDiff('Welcome, Jose.', 'Welcome, José.', names)), 'nome da pessoa com acento');
+  // trocas que mudam o sentido nunca passam, mesmo com uma letra de diferença ou com maiúscula a meio da frase
+  for (const [a, b] of [['Yes, I approved the payment.', 'Yes, he approved the payment.'], ['We will hire people every year.', 'We will fire people every year.'], ['I have this market.', 'I hate this market.'], ['We lose clients.', 'We lost clients.'], ['We lost millions last year.', 'We lost billions last year.'], ['It starts in June.', 'It starts in July.'], ['The EU decided.', 'The US decided.'], ['Right.', 'Fight.'], ['We could do it.', 'We would do it.'], ['You must go.', 'You most go.'], ['It is there.', 'It is here.'], ['Prices rise.', 'Prices rose.'], ['Thank you, Ana.', 'Thank you and.']])
+    assert.ok(!fidelityOk(wordDiff(a, b, names)), `${a} / ${b}`);
 });
 
 test('Veo: corte do clipe só com tempos coerentes; números e siglas contam como palavras faladas', async () => {

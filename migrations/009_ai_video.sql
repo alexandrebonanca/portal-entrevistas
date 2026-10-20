@@ -12,3 +12,6 @@ CREATE TABLE veo_ops (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX veo_ops_chunk ON veo_ops(interview_id, chunk_key, state);
+
+-- Cada aprovação fica presa ao vídeo que foi visto: um vídeo novo exige aprovação nova (NULL = sem vídeo).
+ALTER TABLE approvals ADD COLUMN video_asset_id uuid;
