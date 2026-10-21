@@ -108,6 +108,9 @@ ${objT && !iv.objective_text ? `<p class="hint">Transcrição do objetivo gravad
 <label class="check"><input type="checkbox" name="objective_shared" value="1" ${iv.objective_shared ? 'checked' : ''}> Mostrar o objetivo ao entrevistado (caso contrário é interno)</label>
 <div class="row"><div class="grow"><label for="hn">Nome público do entrevistador</label><input id="hn" name="host_name" type="text" value="${esc(iv.host_name)}"></div>
 <div class="grow"><label for="gn">Nome do entrevistado</label><input id="gn" name="guest_name" type="text" value="${esc(iv.guest_name)}"></div></div>
+<div class="row"><div class="grow"><label for="ht">Função do entrevistador no vídeo (opcional)</label><input id="ht" name="host_title" type="text" maxlength="60" placeholder="Host" value="${esc(iv.host_title ?? '')}"></div>
+<div class="grow"><label for="gt">Função do entrevistado no vídeo (opcional)</label><input id="gt" name="guest_title" type="text" maxlength="60" placeholder="Guest" value="${esc(iv.guest_title ?? '')}"></div></div>
+<p class="hint">O nome e a função aparecem num rodapé animado quando cada um fala pela primeira vez no vídeo. Escreva a função em inglês, como o episódio (ex.: «Chief engineer, Lisbon»); sem função, aparece «Host» ou «Guest».</p>
 <label for="ge">Email do entrevistado</label><input id="ge" name="guest_email" type="email" value="${esc(iv.guest_email)}" ${locked ? 'readonly' : ''}>
 <div class="row"><div class="grow"><label for="il">Idioma da interação do entrevistado</label><select id="il" name="interaction_lang">${sel(iv.interaction_lang, LANGS)}</select></div>
 <div class="grow"><label for="al">Idioma esperado das respostas</label><select id="al" name="answer_lang"><option value="auto">Detetar automaticamente</option>${sel(iv.answer_lang, [['pt', 'Português'], ['en', 'English'], ['es', 'Español'], ['fr', 'Français'], ['de', 'Deutsch']])}</select></div></div>
@@ -161,12 +164,13 @@ ${locked ? `${fu!.info ? `<p class="hint sans">${esc(fu!.info)}</p>` : ''}${fu!.
     if (email && !isEmail(email)) return reply.redirect(`/entrevistas/${iv.id}/editar?e=` + encodeURIComponent('Email do entrevistado inválido.'));
     await db.query(
       `UPDATE interviews SET title=$2, objective_text=$3, objective_shared=$4, host_name=$5, guest_name=$6, guest_email=$7, interaction_lang=$8, answer_lang=$9,
-        deadline=$10, planned_visibility=$11, personal_message=$12, subtitle_langs=$13, review_policy=$14, host_photo_rights=$15, question_voice=$16, guest_voice=$17, host_animate=$18, host_ai_video=$19 WHERE id=$1`,
+        deadline=$10, planned_visibility=$11, personal_message=$12, subtitle_langs=$13, review_policy=$14, host_photo_rights=$15, question_voice=$16, guest_voice=$17, host_animate=$18, host_ai_video=$19, host_title=$20, guest_title=$21 WHERE id=$1`,
       [iv.id, locked ? iv.title : String(b.title ?? '').trim().slice(0, 140) || iv.title, locked ? iv.objective_text : String(b.objective_text ?? '').slice(0, 4000), !!b.objective_shared,
         String(b.host_name ?? '').slice(0, 100), String(b.guest_name ?? '').slice(0, 100), locked ? iv.guest_email : email, b.interaction_lang === 'en' ? 'en' : 'pt-PT',
         ['auto', 'pt', 'en', 'es', 'fr', 'de'].includes(b.answer_lang) ? b.answer_lang : 'auto', b.deadline || null,
         ['private', 'unlisted', 'public'].includes(b.planned_visibility) ? b.planned_visibility : 'private', String(b.personal_message ?? '').slice(0, 1500),
-        subs.length ? subs : ['en'], policy, !!b.host_photo_rights, b.question_voice === 'male' ? 'male' : 'female', b.guest_voice === 'male' ? 'male' : 'female', !!b.host_animate && !!b.host_photo_rights, !!b.host_ai_video && !!b.host_photo_rights]);
+        subs.length ? subs : ['en'], policy, !!b.host_photo_rights, b.question_voice === 'male' ? 'male' : 'female', b.guest_voice === 'male' ? 'male' : 'female', !!b.host_animate && !!b.host_photo_rights, !!b.host_ai_video && !!b.host_photo_rights,
+        String(b.host_title ?? '').replace(/\s+/g, ' ').trim().slice(0, 60), String(b.guest_title ?? '').replace(/\s+/g, ' ').trim().slice(0, 60)]);
     // Autorização retirada pelo entrevistador: o vídeo que usava a fotografia, a animação ou o Veo deixa de ser servido (o ficheiro fica privado).
     const photo = !!b.host_photo_rights, anim = photo && !!b.host_animate, ai = photo && !!b.host_ai_video;
     const guestSees = policy !== 'host_only'; // com «só o entrevistador aprova», o convidado não veria o seu vídeo Veo
