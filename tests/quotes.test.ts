@@ -12,7 +12,8 @@ process.env.BASE_URL = 'http://test.local';
 const { openDb, migrate } = await import('../src/db.ts');
 const { buildApp } = await import('../src/app.ts');
 const { saveSetting } = await import('../src/settings.ts');
-const { runOne } = await import('../src/jobs.ts');
+const J = await import('../src/jobs.ts');
+const { runOne } = J;
 const { handlers } = await import('../src/pipeline.ts');
 const { flushOutbox } = await import('../src/mail.ts');
 const { makeToneWav } = await import('../src/media.ts');
@@ -329,9 +330,23 @@ test('falhas e pausas: autorização retirada liberta tudo; quota esgotada pausa
   assert.deepEqual(await Q.quoteHousekeeping(db), { voided: 0, released: 1 });
   s = await quoteOf(q.id);
   assert.equal(s.status, 'void'); assert.equal(await avail(), a0);
-  // (e) aceite e sem arrancar em 24 h: anulado e libertado
+  // (e) aceite à espera da nossa fila (outro vídeo a correr): o prazo de 24 h ainda não conta; a página mostra a posição.
+  // Quando a via fica livre, o vídeo pode arrancar; se não arrancar nas 24 h seguintes, é anulado e libertado.
+  const other = await db.one(`INSERT INTO jobs(kind, input, state, attempts, locked_at, started_at) VALUES ('render_video', '{"engine":"veo"}', 'running', 1, now(), now()) RETURNING id`);
   q = await accept(await newQuote(HOST));
-  await db.query(`UPDATE jobs SET run_after=now() - interval '25 hours' WHERE id=$1`, [q.job_id]);
+  await db.query(`UPDATE jobs SET created_at=now() - interval '2 days', run_after=now() - interval '2 days' WHERE id=$1`, [q.job_id]);
+  assert.equal(await J.markReady(db), 0, 'a via está ocupada por outro vídeo');
+  assert.deepEqual(await Q.quoteHousekeeping(db), { voided: 0, released: 0 }, 'dois dias à espera da fila não contam');
+  const pg = (await get(`/entrevistas/${ivId}/orcamentos/${q.id}`, cli.cookie)).body;
+  assert.match(pg, /está na fila com 1 vídeo\(s\) à frente \(~30 min de espera\)/);
+  assert.match(pg, /a espera pelos vídeos à frente na fila não conta/);
+  const prog = JSON.parse((await get(`/entrevistas/${ivId}/progresso`, cli.cookie)).body);
+  assert.equal(prog.label, 'Em fila: 1 vídeo(s) à frente (~30 min)');
+  await db.query(`UPDATE jobs SET state='done', finished_at=now() WHERE id=$1`, [other.id]);
+  assert.equal(await J.markReady(db), 1);
+  assert.match((await get(`/entrevistas/${ivId}/orcamentos/${q.id}`, cli.cookie)).body, /é o próximo vídeo da fila/);
+  assert.deepEqual(await Q.quoteHousekeeping(db), { voided: 0, released: 0 }, 'acabou de poder arrancar');
+  await db.query(`UPDATE jobs SET ready_at=now() - interval '25 hours' WHERE id=$1`, [q.job_id]);
   assert.deepEqual(await Q.quoteHousekeeping(db), { voided: 0, released: 1 });
   assert.equal((await db.one('SELECT state FROM jobs WHERE id=$1', [q.job_id])).state, 'failed');
   assert.match((await quoteOf(q.id)).void_reason, /não arrancou em 24 h/);
@@ -344,6 +359,47 @@ test('falhas e pausas: autorização retirada liberta tudo; quota esgotada pausa
   await db.query(`UPDATE animation_quotes SET valid_until=now() - interval '1 minute' WHERE id=$1`, [d.id]);
   assert.deepEqual(await Q.quoteHousekeeping(db), { voided: 1, released: 0 });
   assert.equal((await quoteOf(d.id)).status, 'void');
+  await check();
+});
+
+test('reinício a meio da produção: não gasta tentativa e retoma sem pagar de novo os clipes feitos; depois da liquidação, o resultado é o mesmo', async () => {
+  await rejectAll();
+  const a0 = (await walletOf(cli.id)).available_cents;
+  const q = await accept(await newQuote(HOST));
+  const keys = new Set((q.selection as any[]).filter(x => !x.reused).flatMap(x => x.chunkKeys));
+  // 1.ª execução: alguns clipes feitos e a quota da Google esgota-se (os clipes ficam guardados; o orçamento continua em curso)
+  let n = 0;
+  V.veoMock.outcome = () => (++n <= 4 ? 'ok' : 'quota');
+  try { await drain(); } finally { V.veoMock.outcome = null; }
+  assert.equal((await quoteOf(q.id)).status, 'running');
+  const before = Number((await db.one(`SELECT count(*)::int n FROM veo_ops WHERE quote_id=$1 AND state='done'`, [q.id])).n);
+  assert.ok(before >= 4 && before < keys.size, `clipes feitos antes do reinício: ${before} de ${keys.size}`);
+  // O processo morre a meio da 3.ª (última) tentativa: no arranque o trabalho retoma, sem gastar a tentativa.
+  await db.query(`UPDATE jobs SET state='running', attempts=3, locked_at=now(), run_after=now() WHERE id=$1`, [q.job_id]);
+  assert.deepEqual(await J.recoverOrphans(db, handlers), { resumed: 1, failed: 0 });
+  let job = await db.one('SELECT * FROM jobs WHERE id=$1', [q.job_id]);
+  assert.deepEqual([job.state, job.attempts, job.interruptions], ['queued', 2, 1]);
+  await drain();
+  job = await db.one('SELECT * FROM jobs WHERE id=$1', [q.job_id]);
+  assert.deepEqual([job.state, job.attempts], ['done', 3], job.error ?? '');
+  let s = await quoteOf(q.id);
+  assert.deepEqual([s.status, s.charged_cents, s.released_cents], ['settled', q.price_cents, 0]);
+  // cada pedaço foi pago à Google uma só vez: os clipes de antes do reinício reaproveitaram-se
+  assert.deepEqual(await db.query(`SELECT chunk_key FROM veo_ops WHERE quote_id=$1 AND state<>'void' GROUP BY 1 HAVING count(*) > 1`, [q.id]), []);
+  const ops = Number((await db.one(`SELECT count(*)::int n FROM veo_ops WHERE quote_id=$1 AND state<>'void'`, [q.id])).n);
+  assert.equal(ops, keys.size);
+  // O processo morre depois da liquidação e antes de dar o trabalho por terminado: a retoma devolve o mesmo resultado.
+  await db.query(`UPDATE jobs SET state='running', locked_at=now() WHERE id=$1`, [q.job_id]);
+  assert.deepEqual(await J.recoverOrphans(db, handlers), { resumed: 1, failed: 0 });
+  await drain();
+  job = await db.one('SELECT * FROM jobs WHERE id=$1', [q.job_id]);
+  assert.equal(job.state, 'done'); assert.equal(job.result.resumedAfterSettlement, true); assert.equal(job.result.chargedCents, q.price_cents);
+  s = await quoteOf(q.id);
+  assert.deepEqual([s.status, s.charged_cents], ['settled', q.price_cents]);
+  assert.equal(Number((await db.one(`SELECT count(*)::int n FROM veo_ops WHERE quote_id=$1 AND state<>'void'`, [q.id])).n), ops, 'nada foi enviado outra vez');
+  assert.equal(Number((await db.one(`SELECT count(*)::int n FROM emails WHERE dedupe_key=$1`, [`quote-settled:${q.id}`])).n), 1);
+  const w = await walletOf(cli.id);
+  assert.deepEqual([w.available_cents, w.reserved_cents], [a0 - q.price_cents, 0]);
   await check();
 });
 

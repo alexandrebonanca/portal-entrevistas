@@ -3,7 +3,7 @@ import { config } from '../config.ts';
 import { esc, fmtDate, fmtDuration, sha256, rateLimit } from '../lib.ts';
 import { page, flash, pill, STATUS_LABEL } from '../views.ts';
 import { requireUser, ownedInterview, audit, sendAsset } from '../app.ts';
-import { enqueue, type EnqueueOpts } from '../jobs.ts';
+import { enqueue, videoQueue, laneOf, type EnqueueOpts } from '../jobs.ts';
 import type { Db } from '../db.ts';
 import { regenerationsUsed, REGEN_BLOCKED } from '../limits.ts';
 import { estimateCost, latestTranscript, animationEstimate } from '../pipeline.ts';
@@ -275,16 +275,19 @@ ${ep.visibility === 'public' ? `<form method="post" action="/entrevistas/${iv.id
     if (!req.user) return reply.code(401).send({ error: 'session' });
     const iv = await ownedInterview(app, req, (req.params as any).id);
     if (!iv) return reply.code(404).send({ error: 'not found' });
-    const j = await db.one(`SELECT kind, state, progress_done, progress_total, progress_label, started_at, created_at, run_after, error, now() AS server_now FROM jobs
-      WHERE interview_id=$1 ORDER BY (state IN ('queued','running')) DESC, created_at DESC LIMIT 1`, [iv.id]); // o que está a correr primeiro (os vídeos esperam pelos trabalhos curtos)
+    const j = await db.one(`SELECT id, kind, state, progress_done, progress_total, progress_label, started_at, created_at, run_after, error, now() AS server_now FROM jobs
+      WHERE interview_id=$1 ORDER BY (state IN ('queued','running')) DESC, created_at DESC LIMIT 1`, [iv.id]); // o que está a correr ou em fila primeiro (um trabalho por entrevista de cada vez)
     reply.header('Cache-Control', 'no-store');
     if (!j) return { active: false };
     const total = Number(j.progress_total) || 0, done = Math.min(Number(j.progress_done) || 0, total);
     const elapsedSec = j.started_at ? Math.max(0, (new Date(j.server_now).getTime() - new Date(j.started_at).getTime()) / 1000) : 0;
     // Estimativa pelo ritmo observado; só a partir de 5% feito, para não dar números absurdos no arranque.
     const etaSec = j.state === 'running' && total && done / total >= 0.05 ? Math.round((elapsedSec / done) * (total - done)) : null;
+    // Vídeo à espera na via dos vídeos: quantos estão à frente e quanto falta para a via ficar livre.
+    const fila = j.state === 'queued' && laneOf(j.kind) === 'video' && !paused(j) ? await videoQueue(db, j.id) : null;
+    const queued = fila ? (fila.ahead ? `Em fila: ${fila.ahead} vídeo(s) à frente (~${fila.minutes} min)` : 'Em fila: é o próximo vídeo') : 'Em fila';
     return { active: ['queued', 'running'].includes(j.state), kind: j.kind, title: JOB_LABEL[j.kind] ?? j.kind, state: j.state, percent: total ? Math.round((done / total) * 100) : 0,
-      label: j.state === 'queued' ? (paused(j) ? j.progress_label : 'Em fila') : j.progress_label, elapsedSec: Math.round(elapsedSec), etaSec, error: j.state === 'failed' ? j.error : null };
+      label: j.state === 'queued' ? (paused(j) ? j.progress_label : queued) : j.progress_label, elapsedSec: Math.round(elapsedSec), etaSec, error: j.state === 'failed' ? j.error : null };
   });
 
   // ---- ações ----

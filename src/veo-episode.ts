@@ -437,6 +437,18 @@ export async function renderVeoVideo(job: any, { db, progress }: Parameters<Hand
   const rebuildOf: string | null = typeof job.input.rebuild === 'string' ? job.input.rebuild : null;
   // Segunda barreira: sem orçamento aceite, o Veo só se gera a pedido do administrador (custo interno).
   if (!quoteId && !rebuildOf && !(await isAdminUser(db, job.input.requestedBy))) throw new PermanentError(VEO_NEEDS_QUOTE);
+  // Retoma depois de um reinício: se este trabalho já liquidou o orçamento (o processo caiu entre a liquidação e o fim),
+  // o resultado é o mesmo, sem gerar nem cobrar outra vez; o email do resultado (deduplicado) sai se ainda não saiu.
+  if (quoteId) {
+    const done = await db.one(`SELECT * FROM animation_quotes WHERE id=$1 AND interview_id=$2 AND job_id=$3 AND status='settled'`, [quoteId, job.interview_id, job.id]);
+    if (done) {
+      const iv0 = await db.one('SELECT id, title FROM interviews WHERE id=$1', [job.interview_id]);
+      await quoteSettledEmail(db, done, { charged: done.charged_cents ?? 0, released: done.released_cents ?? 0, owner: done.owner_id }, iv0);
+      const video = await db.one(`SELECT id FROM assets WHERE interview_id=$1 AND kind='episode_video' AND meta->>'quoteId'=$2 ORDER BY created_at DESC LIMIT 1`, [job.interview_id, quoteId]);
+      await progress(100, 100, 'Concluído');
+      return { videoAssetId: video?.id ?? null, resumedAfterSettlement: true, chargedCents: done.charged_cents ?? 0, releasedCents: done.released_cents ?? 0 };
+    }
+  }
   const ep = await db.one('SELECT * FROM episodes WHERE id=$1 AND interview_id=$2', [job.input.episodeId, job.interview_id]);
   if (!ep || ep.stale || ep.status === 'superseded') throw new PermanentError('Episódio inexistente ou desatualizado');
   if (ep.status !== 'preview') throw new PermanentError(VEO_ONLY_PREVIEW);

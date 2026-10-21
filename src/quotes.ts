@@ -22,7 +22,10 @@ import { withVat, eurPt } from './vat.ts';
 export const CAP_RATIO = 0.815;
 export const QUOTE_VALID_DAYS = 7;
 export const MIN_SPEECH_SEC = 4;
-/** Um orçamento aceite tem este prazo para começar (contado a partir do momento em que o trabalho pode arrancar). */
+/**
+ * Um orçamento aceite tem este prazo para começar, contado a partir do momento em que o trabalho pode arrancar
+ * (jobs.ready_at: via dos vídeos livre e nada à frente). A espera pelos vídeos à frente na fila não conta.
+ */
 export const START_DEADLINE_HOURS = 24;
 
 export interface AnimationRate {
@@ -257,21 +260,22 @@ export async function cancelQuote(db: Db, quoteId: string, actor: string): Promi
 }
 
 /**
- * Limpeza periódica: rascunhos fora da validade; orçamentos aceites ou em curso cujo trabalho falhou (também sem passar
- * pelo __onFail, ex.: interrompido por um reinício), terminou sem liquidar, não arrancou em 24 h ou ficou em pausa para
- * além da validade. Em todos, os créditos cativos voltam ao saldo.
+ * Limpeza periódica (no vigilante do worker, a cada minuto): rascunhos fora da validade; orçamentos aceites ou em curso
+ * cujo trabalho falhou (também sem passar pelo __onFail), terminou sem liquidar, não arrancou nas 24 h seguintes ao
+ * momento em que podia arrancar ou ficou em pausa para além da validade. Em todos, os créditos cativos voltam ao saldo.
  */
 export async function quoteHousekeeping(db: Db, now = new Date()) {
   const voided = (await db.query(`UPDATE animation_quotes SET status='void', void_reason='validade terminou', updated_at=now() WHERE status='draft' AND valid_until <= $1 RETURNING id`, [now])).length;
   let released = 0;
-  const rows = await db.query(`SELECT q.id, q.status, q.valid_until, j.id AS job, j.state, j.attempts, j.run_after FROM animation_quotes q LEFT JOIN jobs j ON j.id=q.job_id WHERE q.status IN ('accepted','running')`);
+  const rows = await db.query(`SELECT q.id, q.status, q.valid_until, j.id AS job, j.state, j.ready_at FROM animation_quotes q LEFT JOIN jobs j ON j.id=q.job_id WHERE q.status IN ('accepted','running')`);
   for (const r of rows) {
     const queued = r.state === 'queued';
     const reason = !r.job ? 'a produção não tem trabalho'
       : r.state === 'failed' ? 'a produção falhou'
       : r.state === 'done' ? 'a produção terminou sem liquidar'
       : queued && new Date(r.valid_until).getTime() <= now.getTime() ? 'a validade terminou antes de a produção acabar'
-      : queued && r.status === 'accepted' && Number(r.attempts) === 0 && new Date(r.run_after).getTime() <= now.getTime() - START_DEADLINE_HOURS * 3600_000 ? `a produção não arrancou em ${START_DEADLINE_HOURS} h`
+      // Ainda não começou (o orçamento passa a «em curso» no arranque) e já podia ter arrancado há mais de 24 h.
+      : queued && r.status === 'accepted' && r.ready_at && new Date(r.ready_at).getTime() <= now.getTime() - START_DEADLINE_HOURS * 3600_000 ? `a produção não arrancou em ${START_DEADLINE_HOURS} h`
       : null;
     if (!reason) continue;
     await db.tx(async t => {
@@ -301,7 +305,7 @@ export const GUARANTEES = [
   'O orçamento aceite é o máximo: nunca se cobra mais, mesmo que o motor repita clipes, passe a clipes de 8 s ou a Google suba o preço.',
   'Nada começa sem a sua aceitação. Na aceitação o valor fica cativo; no fim cobram-se só as falas animadas e verificadas palavra a palavra.',
   'Uma fala que fique em fotografia (texto que não coincidiu, filtro da Google, Google indisponível, teto ou disjuntor, autorização retirada) não se paga: o valor volta ao saldo e o relatório mostra o motivo.',
-  `Uma produção falhada, anulada, que não arranque em ${START_DEADLINE_HOURS} h ou cujo vídeo não fique ligado ao episódio custa 0 créditos.`,
+  `Uma produção falhada, anulada, que não arranque nas ${START_DEADLINE_HOURS} h seguintes ao momento em que pode começar (a espera pelos vídeos à frente na fila não conta) ou cujo vídeo não fique ligado ao episódio custa 0 créditos.`,
   'As falas já pagas reaproveitam-se a 0 créditos noutras versões do vídeo, mesmo que o motor mude.',
   'Se uma autorização for retirada depois da entrega, o que foi entregue continua cobrado; o vídeo pode ser reconstruído só com o entrevistador, a 0 créditos, e os clipes do convidado são apagados.',
 ];

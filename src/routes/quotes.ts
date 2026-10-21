@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { esc, fmtDate } from '../lib.ts';
 import { page, flash, pill } from '../views.ts';
 import { requireUser, ownedInterview, audit } from '../app.ts';
-import { enqueue } from '../jobs.ts';
+import { enqueue, videoQueue } from '../jobs.ts';
 import type { Db } from '../db.ts';
 import { inEntity } from '../settings.ts';
 import { seller, complaintsLink, TERMS_VERSION, WITHDRAWAL_DAYS } from '../legal.ts';
@@ -10,9 +10,14 @@ import { findWallet, spendBlock, cr } from '../wallet.ts';
 import { VEO_NOTICE } from '../veo-episode.ts';
 import { veoTier, veoLabel } from '../talking.ts';
 import { createQuote, acceptQuote, cancelQuote, quoteProblem, quoteBlock, rateForTier, candidateFalas, consumerVatRate, isConsumerOwner,
-  priceLabel, perMinuteLabel, acceptLabel, roleLabel, reasonLabel, GUARANTEES, QUOTE_STATUS, QuoteError } from '../quotes.ts';
+  priceLabel, perMinuteLabel, acceptLabel, roleLabel, reasonLabel, GUARANTEES, QUOTE_STATUS, QuoteError, START_DEADLINE_HOURS } from '../quotes.ts';
 
 const excerpt = (t: string, n = 90) => (t.length > n ? `${t.slice(0, n - 1)}…` : t);
+/** Posição na via dos vídeos, para o prazo do orçamento (por aceitar: o que está na fila agora; aceite: o que está à frente). */
+export const queueLabel = (f: { ahead: number; minutes: number; running: boolean }, draft: boolean) =>
+  f.running ? 'a produção já começou'
+  : !f.ahead ? (draft ? 'a fila de vídeos está livre: começa logo a seguir à aceitação' : 'é o próximo vídeo da fila')
+  : `${draft ? 'se aceitar agora, fica' : 'está'} na fila com ${f.ahead} vídeo(s) à frente (~${f.minutes} min de espera)`;
 const consent = async (db: Db, id: string, p: string) => !!(await db.one(`SELECT granted FROM consents WHERE interview_id=$1 AND purpose=$2 ORDER BY created_at DESC LIMIT 1`, [id, p]))?.granted;
 
 /**
@@ -39,7 +44,10 @@ export async function quoteSection(db: Db, iv: any, ep: any): Promise<string> {
 <p class="hint">${rate ? `Tarifa: ${esc(perMinuteLabel(rate.cents_per_min, vatRate))}, medidos no áudio do episódio (cada fala conta pelo menos 4 s). ` : ''}1 crédito = 1 € sem IVA. O orçamento é grátis e não cativa nada; só o titular da entrevista o aceita. Paga apenas as falas que saírem animadas e verificadas.</p>`;
     if (quotes.length) html += `<ul class="sans">${quotes.map((q: any) => { const [l, k] = QUOTE_STATUS[q.status] ?? [q.status, '']; return `<li><a href="/entrevistas/${iv.id}/orcamentos/${q.id}">Orçamento de ${fmtDate(q.created_at)}</a> · ${pill(l, k)} · ${esc(priceLabel(q.price_cents, vatRate))}${q.status === 'settled' ? ` · cobrados ${cr(q.charged_cents ?? 0)}, libertados ${cr(q.released_cents ?? 0)}` : ''}</li>`; }).join('')}</ul>`;
     if (block) return `${html}<p class="hint"><strong>${esc(block)}</strong></p>`;
-    if (open) return `${html}<p class="hint">Há um orçamento aceite em curso para este episódio: aguarde que a produção termine.</p>`;
+    if (open) {
+      const fila = open.status === 'accepted' ? await videoQueue(db, open.job_id) : null;
+      return `${html}<p class="hint">Há um orçamento aceite em curso para este episódio: aguarde que a produção termine.${fila && !fila.running ? ` ${esc(queueLabel(fila, false))}.` : ''}</p>`;
+    }
     if (!falas.length) return `${html}<p class="hint">Sem falas autorizadas para animar: o entrevistador autoriza o Google Veo em Editar; o convidado em «Autorizações das fotografias», e só com a política «o entrevistado aprova».</p>`;
     return `${html}<form method="post" action="/entrevistas/${iv.id}/episodio/${ep.id}/orcamento"><div style="overflow-x:auto"><table class="sans"><thead><tr><th>Animar</th><th>Fala</th><th>Segundos</th><th>Créditos</th></tr></thead><tbody>
 ${falas.map(f => `<tr><td><input type="checkbox" name="fala" value="${esc(f.id)}" checked aria-label="Animar a fala ${esc(f.id)}"></td><td>${esc(roleLabel(f.role))} · ${esc(excerpt(f.text))}</td><td>${f.sec} s</td><td>${cr(f.cents)}</td></tr>`).join('')}</tbody></table></div>
@@ -98,8 +106,8 @@ export async function quoteRoutes(app: FastifyInstance) {
       const avail = w?.available_cents ?? 0, wblock = spendBlock(w);
       const problem = q.status === 'draft' ? await quoteProblem(db, q) : null;
       const ep = await db.one('SELECT id, status, stale FROM episodes WHERE id=$1', [q.episode_id]);
-      const ahead = Number((await db.one(`SELECT count(*)::int AS n FROM jobs WHERE kind='render_video' AND state IN ('queued','running') AND id IS DISTINCT FROM $1::uuid`, [q.job_id ?? null]))?.n ?? 0);
       const job = q.job_id ? await db.one('SELECT state, progress_label, error, run_after FROM jobs WHERE id=$1', [q.job_id]) : null;
+      const fila = ['draft', 'accepted', 'running'].includes(q.status) ? await videoQueue(db, q.status === 'draft' ? null : q.job_id) : null;
       const [label, kind] = QUOTE_STATUS[q.status] ?? [q.status, ''];
       const settlement = new Map<string, any>(((q.settlement?.segments ?? []) as any[]).map(x => [x.segmentId, x]));
       const settled = q.status === 'settled';
@@ -135,7 +143,7 @@ ${settled ? `<div class="flash ok">Produção concluída: cobrados <strong>${cr(
 ${q.status === 'draft' ? `<tr><th>Saldo</th><td id="saldo">${cr(avail)} créditos → ${cr(Math.max(0, after))} créditos depois de aceitar${after < 0 ? ' (insuficiente)' : ''} <span class="hint">(o valor fica cativo até ao fim da produção)</span></td></tr>` : ''}
 <tr><th>Motor</th><td>${esc(q.rate.label)}, ${esc(q.rate.resolution)}, com imagem e voz geradas pelo modelo a partir da fotografia e do texto aprovado</td></tr>
 <tr><th>Validade</th><td>Até ${fmtDate(q.valid_until)}, com o preço fixo</td></tr>
-<tr><th>Prazo estimado</th><td>~${q.est_minutes ?? 2} min de geração depois de começar${ahead ? `; há ${ahead} vídeo(s) à frente na fila` : ''}</td></tr>
+<tr><th>Prazo estimado</th><td id="prazo">~${q.est_minutes ?? 2} min de geração depois de começar${fila ? `; ${esc(queueLabel(fila, q.status === 'draft'))}` : ''}<br><span class="hint">O prazo de ${START_DEADLINE_HOURS} h para começar conta a partir do momento em que a produção pode arrancar: a espera pelos vídeos à frente na fila não conta.</span></td></tr>
 </tbody></table></div>
 <div class="card"><h2 style="margin-top:0">Garantias</h2><ul>${GUARANTEES.map(g => `<li>${esc(g)}</li>`).join('')}</ul>
 ${consumer ? `<p><strong>Livre resolução.</strong> Tem ${WITHDRAWAL_DAYS} dias para pedir o reembolso do saldo não usado de cada carregamento. Ao pedir que a produção comece já, perde o direito de livre resolução sobre esta produção quando ela estiver concluída (DL 24/2014, art. 17.º, n.º 1, als. a) e l)).</p>` : ''}
