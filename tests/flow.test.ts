@@ -557,6 +557,40 @@ test('vídeo com o Google Veo: autorização própria, som dos clipes, verifica�
   await db.query(`UPDATE interviews SET review_policy='guest_preview' WHERE id=$1`, [ivId]);
 });
 
+test('vídeo IA só para o administrador, a não ser que ele o abra a todos em Definições', async () => {
+  await drain();
+  const { saveSetting } = await import('../src/settings.ts');
+  const ownerId = (await db.one('SELECT owner_id FROM interviews WHERE id=$1', [ivId])).owner_id;
+  const ep = await db.one(`SELECT * FROM episodes WHERE interview_id=$1 AND NOT stale ORDER BY created_at DESC LIMIT 1`, [ivId]);
+  const jobs = async () => Number((await db.one(`SELECT count(*)::int n FROM jobs WHERE interview_id=$1 AND kind='render_video'`, [ivId])).n);
+  await db.query(`UPDATE users SET role='interviewer' WHERE id=$1`, [ownerId]);
+  try {
+    const pg = await get(`/entrevistas/${ivId}/producao`, owner);
+    assert.match(pg.body, /value="lipsync" disabled/); assert.match(pg.body, /value="veo" disabled/);
+    assert.match(pg.body, /vai passar a ser feita por orçamento/);
+    const before = await jobs();
+    for (const body of [{ lang: 'en', engine: 'veo' }, { lang: 'en', engine: 'lipsync' }, { lang: 'en', animate: '1' }]) {
+      const r = await post(`/entrevistas/${ivId}/episodio/${ep.id}/video`, body, owner);
+      assert.match(decodeURIComponent(r.headers.location as string), /vai passar a ser feita por orçamento/);
+    }
+    assert.equal(await jobs(), before, 'nenhum trabalho pago entra na fila');
+    // fotografias fixas continuam disponíveis
+    const still = await post(`/entrevistas/${ivId}/episodio/${ep.id}/video`, { lang: 'en', engine: 'still' }, owner);
+    assert.match(decodeURIComponent(still.headers.location as string), /Geração do vídeo iniciada/);
+    await drain();
+    // o administrador abre o vídeo IA a todos: o entrevistador volta a poder pedi-lo
+    await saveSetting(db, 'AI_VIDEO_OPEN', '1');
+    const pg2 = await get(`/entrevistas/${ivId}/producao`, owner);
+    assert.doesNotMatch(pg2.body, /vai passar a ser feita por orçamento/);
+    const r2 = await post(`/entrevistas/${ivId}/episodio/${ep.id}/video`, { lang: 'en', animate: '1' }, owner);
+    assert.match(decodeURIComponent(r2.headers.location as string), /Geração do vídeo iniciada/);
+    await drain();
+  } finally {
+    await saveSetting(db, 'AI_VIDEO_OPEN', '');
+    await db.query(`UPDATE users SET role='admin' WHERE id=$1`, [ownerId]);
+  }
+});
+
 test('alterar uma transcrição invalida guião e aprovações sem apagar versões', async () => {
   const take = await db.one(`SELECT t.id FROM answer_takes t LIMIT 1`);
   await post(`/entrevistas/${ivId}/transcricoes/${take.id}`, { text: 'Texto corrigido pelo editor' }, owner);

@@ -11,7 +11,7 @@ import { createInvitation } from '../invites.ts';
 import { queueEmail, emailShell } from '../mail.ts';
 import { veoEstimate, VEO_ONLY_PREVIEW, VEO_CHANGES, VEO_SCRIPT_REPLACED, VEO_NO_CREDENTIALS } from '../veo-episode.ts';
 import { veoConfigured, veoTier, veoLabel } from '../talking.ts';
-import { inEntity, entityOfInterview } from '../settings.ts';
+import { inEntity, entityOfInterview, aiVideoOpen, AI_VIDEO_CLOSED } from '../settings.ts';
 import { guestMustApprove, videoMeta as loadVideoMeta } from '../approval.ts';
 
 const JOB_LABEL: Record<string, string> = { render_video: 'A gerar o vídeo do podcast', process_submission: 'A transcrever e a preparar o guião', prepare_script: 'A preparar o guião', generate_episode: 'A gerar o episódio', transcribe_asset: 'A transcrever' };
@@ -165,13 +165,15 @@ ${!ep.stale ? `<form method="post" action="/entrevistas/${iv.id}/episodio/${ep.i
 ${(() => { const est = animationEstimate(ep, iv, animOk, !!(iv.host_photo_rights && iv.host_photo_asset_id), guestHasPhoto);
   const hostVeo = !!(iv.host_ai_video && iv.host_photo_rights && iv.host_photo_asset_id), guestVeo = veoOk && guestHasPhoto && iv.review_policy === 'guest_preview';
   const ve = veoEstimate(ep.technical?.timing ?? [], epSegs, hostVeo, guestVeo, tier);
+  const aiOpen = aiVideoOpen(req.user);
   const veoBlock = ep.status !== 'preview' ? VEO_ONLY_PREVIEW : epScript?.status !== 'approved' ? VEO_SCRIPT_REPLACED : guestAp?.decision === 'changes' ? VEO_CHANGES : !veoKey ? VEO_NO_CREDENTIALS : !openaiKey ? 'Falta a chave da OpenAI (transcrição para verificar os clipes) em Definições.' : '';
   return `<fieldset style="flex-basis:100%;border:1px solid var(--line);border-radius:8px"><legend class="sans">Imagem e voz do vídeo</legend>
 <label class="check"><input type="radio" name="engine" value="still" checked> Fotografias fixas com a voz do episódio</label>
-<label class="check"><input type="radio" name="engine" value="lipsync" ${est.sec ? '' : 'disabled'}> Retratos com sincronização labial (Replicate), aviso visível «AI-animated portrait»</label>
+${aiOpen ? '' : `<p class="hint" style="margin:0 0 8px 30px"><strong>${esc(AI_VIDEO_CLOSED)}</strong></p>`}
+<label class="check"><input type="radio" name="engine" value="lipsync" ${est.sec && aiOpen ? '' : 'disabled'}> Retratos com sincronização labial (Replicate), aviso visível «AI-animated portrait»</label>
 <p class="hint" style="margin:0 0 8px 30px">Entrevistador: ${iv.host_animate && iv.host_photo_rights && iv.host_photo_asset_id ? 'autorizado' : 'sem autorização ou sem fotografia (em Editar)'} · Convidado: ${animOk && guestHasPhoto ? (ep.status === 'preview' ? 'autorizado' : 'autorizado, mas fica em fotografia fixa: só é animado num episódio em pré-visualização, para ver e aprovar o vídeo antes de ir para o ar') : 'sem autorização específica (o convidado pode dá-la em «Autorizações das fotografias», a partir do link do convite ou da pré-visualização)'}.
 ${est.sec ? `Fala a animar: ${Math.round(est.sec)} s · custo estimado ~$${est.usd.toFixed(2)} (Replicate) · demora ~${est.minutes} min.` : ''} Se alguma animação falhar, essa fala fica com a imagem fixa.</p>
-<label class="check"><input type="radio" name="engine" value="veo" ${ve.clips && !veoBlock ? '' : 'disabled'}> ${esc(veoLabel(tier))}: vídeo e voz gerados pelo modelo a partir da fotografia e do texto aprovado, aviso visível «AI-generated video · AI voice»</label>
+<label class="check"><input type="radio" name="engine" value="veo" ${ve.clips && !veoBlock && aiOpen ? '' : 'disabled'}> ${esc(veoLabel(tier))}: vídeo e voz gerados pelo modelo a partir da fotografia e do texto aprovado, aviso visível «AI-generated video · AI voice»</label>
 <p class="hint" style="margin:0 0 8px 30px">${veoBlock ? `<strong>${esc(veoBlock)}</strong> ` : ''}Entrevistador: ${hostVeo ? 'autorizado' : !iv.host_photo_asset_id ? 'sem fotografia (em Editar)' : 'sem autorização para o Veo (em Editar)'} · Convidado: ${guestVeo ? 'autorizado' : iv.review_policy !== 'guest_preview' ? 'não entra no Veo com a política «só o entrevistador aprova» (não veria o vídeo antes de publicar)' : !guestHasPhoto ? 'sem fotografia' : 'sem autorização para o Veo (o convidado pode dá-la em «Autorizações das fotografias», a partir do link do convite ou da pré-visualização)'}.
 ${ve.clips ? `${ve.clips} clipes, ${ve.sec} s faturados a ~$${ve.usdPerSec.toFixed(2)}/s · custo estimado ~$${ve.usd.toFixed(2)}, até ~$${ve.usdMax.toFixed(2)} se todos precisarem de nova tentativa · demora ~${ve.minutes} min.` : ''}
 A voz é a do modelo (não a do episódio) e pode variar entre clipes. Cada clipe é transcrito e comparado palavra a palavra com o guião; se não coincidir, é gerado de novo uma vez, e se continuar a não coincidir essa fala fica com a fotografia fixa e a voz do episódio (nunca entra um clipe que diga outra coisa). O mesmo para quem não autorizou. Só antes de publicar; o vídeo novo exige nova aprovação${iv.review_policy === 'guest_preview' ? ' (o convidado vê-o na pré-visualização)' : ''}.</p></fieldset>`; })()}<label for="vl" style="margin:0">Legendas no vídeo</label><select id="vl" name="lang" style="width:auto">${Object.keys(ep.subtitles ?? {}).map(l => `<option value="${esc(l)}" ${l === (ep.video_lang ?? 'pt-PT') ? 'selected' : ''}>${esc(l)}</option>`).join('')}<option value="">Sem legendas</option></select><button class="ghost">${ep.video_asset_id ? 'Gerar de novo' : 'Gerar vídeo'}</button>${ep.video_asset_id || hostAp || guestAp ? '<span class="hint" style="flex-basis:100%">Um vídeo novo exige nova aprovação de quem já aprovou.</span>' : ''}</form>
@@ -395,6 +397,8 @@ ${ep.visibility === 'public' ? `<form method="post" action="/entrevistas/${iv.id
     const b = req.body as any;
     const lang = String(b?.lang ?? '');
     const engine = b?.engine === 'veo' ? 'veo' : b?.engine === 'lipsync' || b?.animate ? 'lipsync' : 'still';
+    // Vídeo IA pago ao fornecedor: só o administrador, até haver orçamentos com créditos (ou se ele o abrir a todos).
+    if (engine !== 'still' && !aiVideoOpen(req.user)) return back(reply, c.iv.id, undefined, AI_VIDEO_CLOSED);
     if (engine === 'veo') {
       if (c.ep.status !== 'preview') return back(reply, c.iv.id, undefined, VEO_ONLY_PREVIEW);
       if ((await db.one('SELECT status FROM scripts WHERE id=$1', [c.ep.script_id]))?.status !== 'approved') return back(reply, c.iv.id, undefined, VEO_SCRIPT_REPLACED);

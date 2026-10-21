@@ -185,7 +185,7 @@ export const scopedS = (keys: readonly string[], key: string): string => {
 };
 
 export async function saveSetting(db: Db, key: string, value: string) {
-  if (!SETTING_DEFS.some(d => d.key === key) && key !== 'SIGNUPS_OPEN') throw new Error('Definição desconhecida');
+  if (!SETTING_DEFS.some(d => d.key === key) && key !== 'SIGNUPS_OPEN' && key !== 'AI_VIDEO_OPEN') throw new Error('Definição desconhecida');
   value = prepareSetting(key, value);
   if (!value) {
     await db.query('DELETE FROM settings WHERE key=$1', [key]); cache.delete(key); return;
@@ -193,6 +193,13 @@ export async function saveSetting(db: Db, key: string, value: string) {
   await db.query(`INSERT INTO settings(key, value_enc) VALUES ($1,$2) ON CONFLICT (key) DO UPDATE SET value_enc=$2, updated_at=now()`, [key, encrypt(value)]);
   cache.set(key, value);
 }
+
+/**
+ * Vídeo IA (Google Veo e retratos animados): pago ao fornecedor por cada geração. Até haver orçamentos pagos com créditos,
+ * só o administrador o pede, a não ser que ele o abra a todos em Definições (AI_VIDEO_OPEN, global).
+ */
+export const aiVideoOpen = (u: { role?: string } | null | undefined) => u?.role === 'admin' || cache.get('AI_VIDEO_OPEN') === '1';
+export const AI_VIDEO_CLOSED = 'A animação por IA (Google Veo e retratos animados) vai passar a ser feita por orçamento, aceite antes de gerar e pago com créditos. Ainda não está disponível na sua conta: por agora, o vídeo sai com as fotografias e a voz do episódio.';
 
 /** Mostra só o fim de um segredo; o valor completo nunca volta ao browser. */
 export const mask = (v: string) => (v ? '••••••••' + v.slice(-4) : '');

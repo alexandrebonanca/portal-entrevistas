@@ -213,7 +213,8 @@ ${g === 'Stripe' ? `<p class="hint sans">Endpoint do webhook a registar no Strip
 ${g === 'Google' ? `<p class="hint sans">${esc(VERTEX_HINT)}</p>` : ''}
 ${SETTING_DEFS.filter(d => d.group === g).map(d => `<label for="f_${d.key}">${esc(d.label)} <span class="hint">${S(d.key) ? (fromDb(d.key) ? '· definido' : '· definido por variável de ambiente') : '· por definir'}</span></label>
 ${settingInput(d, S(d.key), d.options?.[0]?.[0] ?? '')}`).join('')}</div>`).join('')}
-<div class="card"><h2 style="margin-top:0">Registo de utilizadores</h2><label class="check"><input type="checkbox" name="signups_open" value="1" ${signups ? 'checked' : ''}> Permitir que novos utilizadores se registem (e subscrevam um plano)</label></div>
+<div class="card"><h2 style="margin-top:0">Registo de utilizadores</h2><label class="check"><input type="checkbox" name="signups_open" value="1" ${signups ? 'checked' : ''}> Permitir que novos utilizadores se registem (e subscrevam um plano)</label>
+<label class="check"><input type="checkbox" name="ai_video_open" value="1" ${S('AI_VIDEO_OPEN') === '1' ? 'checked' : ''}> Permitir vídeo IA (Google Veo e retratos animados) a todos os entrevistadores, sem orçamento — pago pelas chaves do portal ou da entidade. Desligado: só o administrador o pede.</label></div>
 <p><button class="accent">Guardar definições</button></p></form>
 <div class="card"><h2 style="margin-top:0">Planos</h2><p class="hint sans">Alterar o preço afeta apenas novas subscrições; as existentes mantêm o preço contratado no Stripe.</p>
 ${plans.map((p: any) => `<form method="post" action="/admin/planos/${esc(p.id)}" class="row" style="margin:8px 0"><strong style="min-width:90px">${esc(p.id)}</strong><input name="name" value="${esc(p.name)}" aria-label="Nome" style="width:140px"><input name="price" type="number" step="0.01" min="0" value="${(p.price_cents / 100).toFixed(2)}" aria-label="Preço mensal (EUR)" style="width:110px">€/mês<input name="limit" type="number" min="0" value="${p.interviews_per_month}" aria-label="Entrevistas por mês" style="width:90px">entrevistas/mês<label class="check" style="margin:0"><input type="checkbox" name="active" value="1" ${p.active ? 'checked' : ''}> ativo</label><button class="ghost">Guardar</button></form>`).join('')}</div>`);
@@ -230,6 +231,7 @@ ${plans.map((p: any) => `<form method="post" action="/admin/planos/${esc(p.id)}"
       else if (b[d.key] !== undefined) await saveSetting(db, d.key, v === '-' ? '' : v);
     }
     await saveSetting(db, 'SIGNUPS_OPEN', b.signups_open ? '1' : '0');
+    await saveSetting(db, 'AI_VIDEO_OPEN', b.ai_video_open ? '1' : '');
     if (['MAILERSEND_API_KEY', 'MAIL_FROM', 'MAIL_FROM_NAME'].some(k => typeof b[k] === 'string' && b[k].trim())) await retryFailedEmails(db);
     await audit(db, req.user!.email, 'admin.settings_saved', null, { keys: SETTING_DEFS.filter(d => typeof b[d.key] === 'string' && b[d.key].trim()).map(d => d.key) });
     return back(reply, '/admin/definicoes', 'Definições guardadas.');
