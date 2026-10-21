@@ -27,9 +27,6 @@ export async function guestReview(db: Db, iv: { id: string; review_policy?: stri
   return ep ? { scope: approvalScope(iv, await videoMeta(db, ep.video_asset_id)), published: ep.status === 'published' } : null;
 }
 
-/** Alcance da aprovação no episódio que o convidado veria agora, ou null sem episódio. */
-export const guestReviewScope = async (db: Db, iv: { id: string; review_policy?: string }): Promise<ApprovalScope | null> => (await guestReview(db, iv))?.scope ?? null;
-
 /** O convidado decide (aprova ou pede alterações) só num episódio por publicar em que a aprovação dele conta. */
 export const guestDecides = (r: GuestReview | null | undefined) => !!r && r.scope !== 'none' && !r.published;
 
