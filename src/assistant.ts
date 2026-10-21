@@ -54,9 +54,12 @@ const SYNONYMS: string[][] = [
   ['convite', 'convites', 'convidar', 'convidei', 'convido', 'convida', 'convidamos', 'invite', 'invites', 'invitation', 'invitations', 'invited', 'inviting'],
   ['convidado', 'convidada', 'convidados', 'entrevistado', 'entrevistada', 'entrevistados', 'guest', 'guests', 'interviewee'],
   ['entrevistador', 'entrevistadora', 'interviewer', 'host', 'anfitriao'],
-  ['publicar', 'publicacao', 'publicado', 'publicada', 'publico', 'publish', 'published', 'publishing', 'publication', 'public'],
+  ['publicar', 'publicacao', 'publicado', 'publicada', 'publico', 'partilhar', 'partilho', 'partilha', 'partilhado', 'partilhada', 'publish', 'published', 'publishing', 'publication'],
+  // Quem vê o episódio (separado de «publicar»: «Who can see the episode?» não é a política de revisão). «Pública» (galeria
+  // pública) chega aqui pela raiz «public».
+  ['visibilidade', 'visibility', 'visivel', 'visiveis', 'visible', 'public'],
   ['privacidade', 'privado', 'privada', 'privacy', 'private', 'rgpd', 'gdpr', 'confidencial', 'confidential'],
-  ['apagar', 'apague', 'eliminar', 'eliminacao', 'remover', 'delete', 'deleted', 'deletion', 'remove', 'erase', 'esquecimento'],
+  ['apagar', 'apague', 'apago', 'apaga', 'eliminar', 'elimino', 'elimina', 'eliminacao', 'remover', 'removo', 'delete', 'deleted', 'deletion', 'remove', 'erase', 'esquecimento'],
   ['legenda', 'legendas', 'legendado', 'subtitle', 'subtitles', 'caption', 'captions', 'srt', 'vtt'],
   ['lingua', 'linguas', 'idioma', 'idiomas', 'language', 'languages', 'portugues', 'ingles', 'english', 'portuguese', 'espanhol', 'frances', 'alemao', 'spanish', 'french', 'german'],
   ['voz', 'vozes', 'voice', 'voices', 'narracao', 'narrador', 'narration', 'narrated', 'narrator'],
@@ -77,15 +80,17 @@ const SYNONYMS: string[][] = [
   ['pergunta', 'perguntas', 'question', 'questions', 'questao', 'questoes'],
   ['resposta', 'respostas', 'answer', 'answers', 'answered', 'answering', 'responder', 'respondi', 'respond'],
   ['autorizacao', 'autorizacoes', 'consentimento', 'consentimentos', 'consent', 'consents', 'permission', 'permissions', 'autorizar', 'autorizo', 'autorizei', 'authorise', 'authorize', 'authorisation', 'authorization'],
-  ['cancelar', 'cancel', 'cancelamento', 'cancelled', 'canceled', 'cancelada'],
+  ['cancelar', 'cancelo', 'cancela', 'anular', 'anulo', 'anula', 'cancel', 'cancelamento', 'cancelled', 'canceled', 'cancelada'],
   ['reenviar', 'resend', 'reenvio', 'reenviei'],
   ['email', 'emails', 'mail', 'correio', 'spam', 'mailersend'],
   ['conta', 'account', 'perfil', 'profile'],
   ['entidade', 'entidades', 'entity', 'entities', 'organizacao', 'organisation', 'organization', 'empresa', 'company'],
   ['chave', 'chaves', 'key', 'keys', 'api', 'token', 'credenciais', 'credentials'],
   ['custo', 'custos', 'cost', 'costs', 'estimativa', 'estimate', 'gasto', 'utilizacao', 'usage'],
-  ['gestao', 'gere', 'gerir', 'gestora', 'gestor', 'manages', 'managed', 'operator', 'proprietario', 'propriedade', 'owner', 'owned', 'dono', 'certif'],
-  ['venda', 'vende', 'vendedor', 'comercializa', 'comercializado', 'sells', 'seller', 'sold', 'telecert', 'nif', 'reclamacoes', 'complaints'],
+  // Os nomes das empresas (Certif, Telecert) ficam só nas palavras-chave da entrada «quem gere»: num grupo, puxavam outras entradas.
+  ['gestao', 'gere', 'gerir', 'manages', 'managed', 'operator', 'operates', 'operated', 'runs', 'owns', 'behind', 'proprietario', 'propriedade', 'owner', 'owned', 'dono'],
+  ['gestor', 'gestora', 'gestores', 'manager', 'managers'],
+  ['venda', 'vende', 'vendedor', 'comercializa', 'comercializado', 'sells', 'seller', 'sold', 'nif', 'reclamacoes', 'complaints'],
   ['telemovel', 'telemoveis', 'celular', 'phone', 'mobile', 'smartphone', 'iphone', 'android', 'tablet'],
   ['app', 'aplicacao', 'instalar', 'install', 'application', 'apps'],
   ['registar', 'registo', 'signup', 'register', 'registration'],
@@ -118,6 +123,7 @@ const PHRASES: [RegExp, string][] = [
   [/\bde novo\b|\boutra vez\b|\bonce more\b|\bover again\b/g, ' regravar '], [/\bmais tarde\b/g, ' maistarde '],
   [/\bcomo funciona\b|\bhow (it|does it|does this|do(es)? (the|this) \w+) works?\b|\bwhat is this\b|\bo que e isto\b/g, ' comofunciona '],
   [/\bate quando\b|\buntil when\b/g, ' prazo '], [/\b(minha|my) (foto|fotografia|photo|picture)\b/g, ' minhafoto '],
+  [/\bquem (pode|consegue) (ver|ouvir)\b|\bwho can (see|watch|listen to|listen|hear)\b/g, ' visibilidade '],
 ];
 
 /** Raiz simples (plurais e terminações frequentes); palavras curtas e números ficam como estão. */
@@ -129,6 +135,19 @@ function stem(t: string) {
   return t;
 }
 
+/**
+ * Terminações verbais portuguesas frequentes (apago, apagar, apagou, apagamos…) reduzidas à raiz, para «apago» encontrar
+ * «apagar» e «partilho» encontrar «partilhar». Só em palavras de 5 ou mais letras e deixando pelo menos 4.
+ */
+const VERB_ENDINGS = ['amos', 'emos', 'imos', 'ar', 'er', 'ir', 'am', 'em', 'ou', 'ei', 'o', 'a'];
+function vstem(t: string) {
+  if (t.length < 5 || /\d/.test(t)) return t;
+  for (const suf of VERB_ENDINGS) if (t.endsWith(suf) && t.length - suf.length >= 4) return t.slice(0, -suf.length);
+  return t;
+}
+// Também pela raiz (apago → apag ← apagar), sem nunca passar à frente de uma palavra escrita num grupo.
+for (const g of SYNONYMS) for (const w of g) { const r = vstem(stem(w)); if (!SYN.has(r)) SYN.set(r, g[0]); }
+
 /** Palavras de um texto para a pesquisa: sem acentos, sem palavras vazias, com sinónimos e raízes. */
 export function tokens(text: string): string[] {
   let s = ` ${fold(text).replace(/[^a-z0-9]+/g, ' ')} `;
@@ -136,7 +155,9 @@ export function tokens(text: string): string[] {
   const out: string[] = [];
   for (const w of s.split(' ')) {
     if (!w || STOP.has(w)) continue;
-    const t = SYN.get(w) ?? SYN.get(stem(w)) ?? stem(w);
+    // «apagamos»: a terminação verbal sai antes do plural (senão ficava «apagam»).
+    const st = stem(w), root = /[aei]mos$/.test(w) && vstem(w) !== w ? vstem(w) : vstem(st);
+    const t = SYN.get(w) ?? SYN.get(st) ?? SYN.get(root) ?? SYN.get(vstem(st)) ?? root;
     if (t.length > 1 || /^\d$/.test(t)) out.push(t);
   }
   return out;
@@ -157,7 +178,8 @@ export const MIN_SCORE = 2.5;
 /**
  * Pesquisa local: cada palavra da pergunta conta nas palavras-chave (2,5), na pergunta (1,5) e na resposta (0,5) da entrada,
  * pesada pela raridade na base (palavras que aparecem em todo o lado valem pouco). Exige pelo menos uma palavra
- * nas palavras-chave ou na pergunta da entrada. Devolve as melhores (por omissão, 3).
+ * nas palavras-chave ou na pergunta da entrada. Devolve as melhores (por omissão, 3); num empate ganha a que tem mais
+ * nas palavras-chave e só depois a ordem definida pelo administrador.
  */
 export function searchFaq(entries: FaqEntry[], query: string, limit = 3): Hit[] {
   const qt = [...new Set(tokens(query))];
@@ -165,28 +187,34 @@ export function searchFaq(entries: FaqEntry[], query: string, limit = 3): Hit[] 
   const docs = entries.map(e => ({ e, k: new Set(tokens(e.keywords)), q: new Set(tokens(fillVars(e.question))), a: new Set(tokens(fillVars(e.answer))) }));
   const n = docs.length;
   const idf = new Map(qt.map(t => [t, Math.log(1 + n / (1 + docs.filter(d => d.k.has(t) || d.q.has(t) || d.a.has(t)).length))]));
-  const hits: Hit[] = [];
+  const hits: (Hit & { kw: number })[] = [];
   for (const d of docs) {
-    let score = 0, strong = 0;
+    let score = 0, strong = 0, kw = 0;
     for (const t of qt) {
       const k = hit(d.k, t), q = hit(d.q, t);
       const m = 2.5 * k + 1.5 * q + 0.5 * hit(d.a, t); // conta em cada campo onde aparece
       if (k || q) strong++;
       score += m * idf.get(t)!;
+      kw += k * idf.get(t)!;
     }
     score /= Math.sqrt(qt.length); // perguntas compridas não ganham só por terem mais palavras
-    if (strong && score >= MIN_SCORE) hits.push({ entry: d.e, score });
+    if (strong && score >= MIN_SCORE) hits.push({ entry: d.e, score, kw });
   }
-  return hits.sort((a, b) => b.score - a.score || a.entry.sort - b.entry.sort).slice(0, limit);
+  const same = (a: number, b: number) => Math.abs(a - b) < 1e-9;
+  return hits.sort((a, b) => (same(a.score, b.score) ? (same(a.kw, b.kw) ? a.entry.sort - b.entry.sort : b.kw - a.kw) : b.score - a.score))
+    .slice(0, limit).map(({ entry, score }) => ({ entry, score }));
 }
 
 /** Língua provável da pergunta (pelas palavras mais comuns); null quando não dá para dizer. */
 const PT_HINT = new Set('como posso nao que os um uma para com minha minhas meu meus onde quando qual quanto quero porque e do da esta isto fazer pode ser tenho foi ja voce sobre pelo gravar resposta pergunta convite entrevista'.split(' '));
 const EN_HINT = new Set('how can i the my what where when why who which is are was do does to an of for with it this not did will would should could be have you your about there record answer question invite interview'.split(' '));
 export function detectLang(q: string): FaqLang | null {
+  // Sinais de espanhol ou francês: nenhuma das duas línguas da base; fica a da página.
+  if (/[ñ¿¡èùœëïîûÿ]/i.test(q)) return null;
   let pt = 0, en = 0;
   for (const w of fold(q).split(/[^a-z]+/)) { if (PT_HINT.has(w)) pt++; if (EN_HINT.has(w)) en++; }
-  if (/[ãõçáéíóúâêô]/i.test(q)) pt += 2;
+  if (/[ãõ]/i.test(q)) pt += 2; // o til nas vogais só existe em português
+  else if (pt && /[çáéíóúâêô]/i.test(q)) pt++; // os outros acentos também são espanhóis ou franceses: só confirmam
   return pt > en ? 'pt' : en > pt ? 'en' : null;
 }
 

@@ -168,10 +168,10 @@ export const FAQ_SEED: SeedEntry[] = [
   { key: 'politica-revisao', audience: 'interviewer',
     pt: ['O que é a política de revisão e publicação?',
       `Define quem aprova antes de publicar. «O entrevistado vê e aprova a versão final antes de publicar» é a opção por omissão e a recomendada. «Só o entrevistador aprova» dispensa a aprovação do entrevistado, exceto num vídeo em que ele apareça animado por IA, que ele vê e aprova sempre. A política é comunicada no convite; depois de enviado o convite, já não pode passar a «Só o entrevistador aprova».`,
-      'política de revisão, aprovação, quem aprova, entrevistado aprova, só o entrevistador, política de publicação'],
+      'política de revisão, aprovação, quem aprova, entrevistado aprova, só o entrevistador'],
     en: ['What is the review and publication policy?',
       `It sets who approves before publishing. «O entrevistado vê e aprova a versão final antes de publicar» (the guest sees and approves the final version) is the default and recommended option. «Só o entrevistador aprova» (only the interviewer approves) skips the guest's approval, except for a video in which they appear animated by AI, which they always see and approve. The policy is stated in the invitation; once the invitation is sent, it can no longer change to «only the interviewer approves».`,
-      'review policy, approval, who approves, guest approves, only interviewer, publication policy'] },
+      'review policy, approval, who approves, guest approves, only interviewer'] },
 
   { key: 'validacao-entrevistado', audience: 'interviewer',
     pt: ['Como peço ao entrevistado para validar o episódio?',
@@ -183,11 +183,11 @@ export const FAQ_SEED: SeedEntry[] = [
 
   { key: 'publicar', audience: 'interviewer',
     pt: ['Como publico o episódio e que visibilidades existem?',
-      `Em «Publicar», escolha «Privado» (só pessoas autorizadas no portal), «Não listado» (quem tem o link; não é o mesmo que privado) ou «Público» (indexável pelos motores de pesquisa). Para publicar é preciso a sua aprovação válida, a do entrevistado quando é exigida, a autorização de publicação do entrevistado, a versão atual (não desatualizada) e nenhum alerta de qualidade. Nada é publicado automaticamente.`,
-      'publicar, publicação, visibilidade, privado, não listado, público, link do episódio, partilhar episódio'],
+      `Em «Publicar», escolha a visibilidade do episódio: «Privado» (só pessoas autorizadas no portal), «Não listado» (quem tem o link; não é o mesmo que privado) ou «Público» (indexável pelos motores de pesquisa). Para publicar é preciso a sua aprovação válida, a do entrevistado quando é exigida, a autorização de publicação do entrevistado, a versão atual (não desatualizada) e nenhum alerta de qualidade. Nada é publicado automaticamente.`,
+      'publicar, publicação, visibilidade, privado, não listado, público, link do episódio, partilhar episódio, quem pode ver, quem pode ouvir'],
     en: ['How do I publish the episode, and what visibility options are there?',
-      `Under «Publicar» (Publish), choose «Privado» (private: only authorised people on the portal), «Não listado» (unlisted: anyone with the link; not the same as private) or «Público» (public: indexable by search engines). Publishing requires your valid approval, the guest's when it is required, the guest's publication permission, the current version (not outdated) and no quality alerts. Nothing is published automatically.`,
-      'publish, publication, visibility, private, unlisted, public, episode link, share episode'] },
+      `Under «Publicar» (Publish), choose the episode's visibility: «Privado» (private: only authorised people on the portal), «Não listado» (unlisted: anyone with the link; not the same as private) or «Público» (public: indexable by search engines). Publishing requires your valid approval, the guest's when it is required, the guest's publication permission, the current version (not outdated) and no quality alerts. Nothing is published automatically.`,
+      'publish, publication, visibility, private, unlisted, public, episode link, share episode, who can see, who can listen'] },
 
   { key: 'galeria', audience: 'interviewer',
     pt: ['O que é a galeria pública «Podcasts gerados»?',
@@ -442,10 +442,10 @@ export const FAQ_SEED: SeedEntry[] = [
   { key: 'quem-gere', audience: 'all',
     pt: ['Quem gere e quem comercializa o {brand}?',
       `O {brand} é propriedade da {ownerName}, que o gere. O serviço é comercializado (vendido ao cliente final) pela {sellerName}. A identificação de ambas, o NIF de quem comercializa e o Livro de Reclamações estão no rodapé de todas as páginas.`,
-      'quem gere, gestora, proprietário, dono, quem vende, comercializa, empresa, NIF, livro de reclamações, Certif, Telecert, responsável'],
+      'quem gere, gestora, proprietário, dono, dono do portal, quem vende, comercializa, empresa, NIF, livro de reclamações, Certif, Telecert, responsável, portal, site, plataforma'],
     en: ['Who operates and who sells {brand}?',
       `{brand} is owned and operated by {ownerName}. The service is sold to end customers by {sellerName}. Both are identified in the footer of every page, together with the seller's VAT number and the Portuguese complaints book (Livro de Reclamações).`,
-      'who operates, operator, owner, who sells, seller, company, VAT, complaints book, Certif, Telecert, responsible'] },
+      'who operates, operator, owner, owns, runs, run, behind, who sells, seller, company, VAT, complaints book, Certif, Telecert, responsible, portal, website, site, platform'] },
 ];
 
 /** Insere as entradas da semente que ainda não existem (por chave e língua); nunca altera as existentes. */
