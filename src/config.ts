@@ -2,9 +2,22 @@ import { randomBytes } from 'node:crypto';
 
 const env = process.env;
 const bool = (v: string | undefined, d = false) => (v === undefined ? d : /^(1|true|yes)$/i.test(v));
+/**
+ * Proxies à frente da aplicação (para o IP de quem pede, usado nos limites por IP). TRUST_PROXY: número de saltos
+ * (por exemplo 1 com só o balanceador do Render), lista de endereços/redes, ou true/false. Sem valor fica `true`
+ * (confia em todo o X-Forwarded-For, que o cliente pode forjar): defina o número certo de saltos em produção.
+ */
+export const parseTrustProxy = (v: string | undefined): boolean | number | string => {
+  const s = String(v ?? '').trim();
+  if (!s || /^true$/i.test(s)) return true;
+  if (/^false$/i.test(s)) return false;
+  if (/^\d+$/.test(s)) return Number(s);
+  return s;
+};
 
 export const config = {
   port: Number(env.PORT ?? 3000),
+  trustProxy: parseTrustProxy(env.TRUST_PROXY),
   baseUrl: (env.BASE_URL ?? `http://localhost:${env.PORT ?? 3000}`).replace(/\/$/, ''),
   brand: env.BRAND_NAME ?? 'quietinterview',
   // Endereço mostrado no cartão final dos vídeos.
@@ -37,6 +50,10 @@ export const config = {
   openai: {
     apiKey: env.OPENAI_API_KEY ?? '',
     mock: bool(env.AI_MOCK, false),
+    // Assistente da página de ajuda (fora de `models`, que entra na chave de deduplicação da geração dos episódios).
+    assistantModel: env.OPENAI_MODEL_ASSISTANT ?? env.OPENAI_MODEL_TEXT ?? 'gpt-4.1',
+    // Teto global de respostas do assistente redigidas pela IA por hora (todas as contas juntas); acima disto, só a pesquisa local.
+    assistantAiPerHour: Number(env.ASSISTANT_AI_PER_HOUR ?? 120),
     models: {
       transcribe: env.OPENAI_MODEL_TRANSCRIBE ?? 'gpt-4o-transcribe',
       transcribeTimestamps: env.OPENAI_MODEL_TIMESTAMPS ?? 'whisper-1',

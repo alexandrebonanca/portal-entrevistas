@@ -6,6 +6,7 @@ import { sendAsset, audit } from '../app.ts';
 import { toVtt, toSrt, type Cue } from '../subtitles.ts';
 import { t, normLang } from '../i18n.ts';
 import { approvalScope, videoMeta, guestDecides, reviewCopy } from '../approval.ts';
+import { guestHelpNav } from '../support.ts';
 
 export interface PlayerUrls { audio: string; cover: string; subs: (lang: string, ext: 'vtt' | 'srt') => string }
 
@@ -121,7 +122,7 @@ ${groups.size ? [...groups].map(([t, eps]) => `<section style="margin-top:28px">
     const pubDay = ep.published_at ? new Date(ep.published_at).toLocaleDateString(lang === 'en' ? 'en-GB' : 'pt-PT', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'Europe/Lisbon' }) : '';
     const q = req.query as any;
     return send(reply, page({
-      lang, title: d.episodePreview, noindex: true, nav: '', script: '/static/player.js',
+      lang, title: d.episodePreview, noindex: true, nav: guestHelpNav(req.guest, lang), script: '/static/player.js',
       body: `<div class="wrap" style="padding-top:28px">${flash(q.ok)}${q.changed ? `<div class="flash bad">${esc(d.versionChanged)}</div>` : ''}<h1>${esc(d.episodePreview)}</h1>
 <p class="sans"><strong>${esc(c.title)}</strong></p><p>${esc(d.reviewIntro(ep.host_label ?? ''))} ${esc(c.steps)}</p>
 ${review.published ? `<p class="hint">${pubDay ? `${esc(d.publishedOn(pubDay))} ` : ''}${esc(d.contact)} ${esc(config.supportEmail)}</p>` : ''}

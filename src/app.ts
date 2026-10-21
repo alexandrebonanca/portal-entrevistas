@@ -17,18 +17,28 @@ import { entityRoutes } from './routes/entities.ts';
 import { labRoutes } from './routes/lab.ts';
 import { quoteRoutes } from './routes/quotes.ts';
 import { introRoutes } from './routes/intro.ts';
+import { supportRoutes } from './routes/support.ts';
+import { assistantAdminRoutes } from './routes/assistant.ts';
+import { seedAssistant } from './assistant-faq.ts';
 import { loadSettings } from './settings.ts';
 
 declare module 'fastify' {
   interface FastifyInstance { db: Db }
-  interface FastifyRequest { user?: { id: string; email: string; name: string; role: string; entity_id: string | null }; guest?: { interviewId: string; invitationId: string } }
+  interface FastifyRequest {
+    // support_unread: respostas do suporte por ler; support_inbox: pedidos por ler na caixa do administrador.
+    user?: { id: string; email: string; name: string; role: string; entity_id: string | null; support_unread?: number; support_inbox?: number };
+    guest?: { interviewId: string; invitationId: string; supportUnread?: number };
+    // Sessão de convidado cujo convite deixou de valer (cancelado, recusado ou substituído): só lê os pedidos ao suporte.
+    guestHelp?: { interviewId: string; supportUnread?: number };
+  }
 }
 
 export async function buildApp(db: Db): Promise<FastifyInstance> {
   assertProductionConfig();
-  const app = Fastify({ logger: config.production ? { level: 'info', redact: ['req.headers.cookie', 'req.headers.authorization'] } : false, bodyLimit: config.limits.maxUploadMb * 1024 * 1024, trustProxy: true });
+  const app = Fastify({ logger: config.production ? { level: 'info', redact: ['req.headers.cookie', 'req.headers.authorization'] } : false, bodyLimit: config.limits.maxUploadMb * 1024 * 1024, trustProxy: config.trustProxy as any });
   app.decorate('db', db);
   await loadSettings(db);
+  await seedAssistant(db); // entradas novas da semente do assistente; as existentes (e as alterações do administrador) ficam
   await app.register(cookie);
   await app.register(formbody);
   app.addContentTypeParser('application/json', { parseAs: 'buffer' }, (_req, body, done) => done(null, body));
@@ -39,6 +49,15 @@ export async function buildApp(db: Db): Promise<FastifyInstance> {
   app.addHook('onRequest', async (req) => {
     const ct = req.headers['content-type'];
     if (ct && /^(audio|video|image)\//.test(ct)) req.headers['content-type'] = ct.split(';')[0].trim();
+  });
+
+  // Em produção, sem TRUST_PROXY definido: regista uma vez quantos endereços traz o X-Forwarded-For (sem os mostrar),
+  // para acertar o número de saltos dos proxies.
+  let xffLogged = false;
+  app.addHook('onRequest', async (req) => {
+    if (xffLogged || !config.production || config.trustProxy !== true || !req.headers['x-forwarded-for']) return;
+    xffLogged = true;
+    req.log.info({ xffEntries: String(req.headers['x-forwarded-for']).split(',').length }, 'X-Forwarded-For: número de endereços (defina TRUST_PROXY)');
   });
 
   app.addHook('onSend', async (_req, reply, payload) => {
@@ -71,14 +90,22 @@ export async function buildApp(db: Db): Promise<FastifyInstance> {
   app.addHook('preHandler', async (req) => {
     const sid = req.cookies?.sid;
     if (sid) {
-      const u = await db.one(`SELECT u.id,u.email,u.name,u.role,u.entity_id FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.id=$1 AND s.expires_at>now() AND u.active`, [sha256(sid)]);
+      // Contadores do suporte interno para a navegação (índices parciais: só as linhas por ler).
+      const u = await db.one(`SELECT u.id,u.email,u.name,u.role,u.entity_id,
+          (SELECT count(*)::int FROM support_threads t WHERE t.user_id=u.id AND t.unread_user) AS support_unread,
+          CASE WHEN u.role='admin' THEN (SELECT count(*)::int FROM support_threads t WHERE t.unread_admin) ELSE 0 END AS support_inbox
+        FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.id=$1 AND s.expires_at>now() AND u.active`, [sha256(sid)]);
       if (u) req.user = u;
     }
     const gs = req.cookies?.gs;
     if (gs) {
-      const g = await db.one(`SELECT gs.interview_id, gs.invitation_id FROM guest_sessions gs JOIN invitations i ON i.id=gs.invitation_id
-        WHERE gs.id=$1 AND gs.expires_at>now() AND i.revoked_at IS NULL AND i.declined_at IS NULL AND i.expires_at>now()`, [sha256(gs)]);
-      if (g) req.guest = { interviewId: g.interview_id, invitationId: g.invitation_id };
+      const g = await db.one(`SELECT gs.interview_id, gs.invitation_id, (i.revoked_at IS NULL AND i.declined_at IS NULL AND i.expires_at>now()) AS active,
+          (SELECT count(*)::int FROM support_threads t WHERE t.interview_id=gs.interview_id AND t.unread_user) AS support_unread
+        FROM guest_sessions gs JOIN invitations i ON i.id=gs.invitation_id
+        WHERE gs.id=$1 AND gs.expires_at>now()`, [sha256(gs)]);
+      if (g?.active) req.guest = { interviewId: g.interview_id, invitationId: g.invitation_id, supportUnread: g.support_unread };
+      // Convite cancelado, recusado ou substituído: a sessão (até ao prazo dela) só serve para ler as respostas do suporte.
+      else if (g) req.guestHelp = { interviewId: g.interview_id, supportUnread: g.support_unread };
     }
   });
 
@@ -94,6 +121,8 @@ export async function buildApp(db: Db): Promise<FastifyInstance> {
   await labRoutes(app);
   await quoteRoutes(app);
   await introRoutes(app);
+  await supportRoutes(app);
+  await assistantAdminRoutes(app);
 
   app.setNotFoundHandler((req, reply) => {
     reply.code(404).type('text/html').send('<!doctype html><meta charset=utf-8><title>404</title><p style="font:18px system-ui;padding:40px">404 — página não encontrada. <a href="/">Início</a>');

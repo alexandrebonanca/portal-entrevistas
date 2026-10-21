@@ -7,6 +7,7 @@ import { SETTING_DEFS, S, saveEntitySetting, entityHas, entityValue, inEntity, s
 import { serviceTest, settingInput, VERTEX_HINT } from './admin.ts';
 import { STRIPE_EVENTS } from '../billing.ts';
 import { retryFailedEmails } from '../mail.ts';
+import { helpNav } from '../support.ts';
 
 const GROUPS = ['OpenAI', 'Stripe', 'MailerSend', 'Moloni ON', 'Replicate', 'fal.ai', 'WaveSpeed', 'Google', SELLER_GROUP];
 const SELLER_ENTITY_HINT = 'Só conta se a entidade tiver Stripe própria: é então ela que vende, e estes dados (sem os valores globais) aparecem nos termos e na lista «por faturar». Nunca se inventam: sem a denominação, o NIF e a morada, os pagamentos com a Stripe da entidade ficam suspensos.';
@@ -15,7 +16,7 @@ const VEO_ENTITY_HINT = 'Se a entidade tiver conta de serviço ou chave Gemini p
 export async function entityRoutes(app: FastifyInstance) {
   const db = app.db;
   const isUuid = (v: string) => /^[0-9a-f-]{36}$/i.test(v);
-  const nav = (u: any) => `<a href="/painel">Painel</a><a href="/account">Conta</a>${u.role === 'admin' ? '<a href="/admin/entidades">Entidades</a><a href="/admin/utilizadores">Utilizadores</a><a href="/admin/definicoes">Definições</a>' : '<a href="/entidade">Entidade</a>'}<form method="post" action="/sair" style="display:inline"><button class="ghost" style="padding:6px 12px;min-height:0;margin-left:16px">Sair</button></form>`;
+  const nav = (u: any) => `<a href="/painel">Painel</a><a href="/account">Conta</a>${helpNav(u)}${u.role === 'admin' ? '<a href="/admin/entidades">Entidades</a><a href="/admin/utilizadores">Utilizadores</a><a href="/admin/definicoes">Definições</a>' : '<a href="/entidade">Entidade</a>'}<form method="post" action="/sair" style="display:inline"><button class="ghost" style="padding:6px 12px;min-height:0;margin-left:16px">Sair</button></form>`;
   const view = (req: any, reply: any, title: string, body: string) => reply.type('text/html; charset=utf-8').send(page({ title, body: `<div class="wrap" style="padding-top:32px">${body}</div>`, nav: nav(req.user), noindex: true }));
   const back = (reply: any, url: string, ok?: string, e?: string) => reply.redirect(url + (ok ? `?ok=${encodeURIComponent(ok)}` : e ? `?e=${encodeURIComponent(e)}` : ''));
 

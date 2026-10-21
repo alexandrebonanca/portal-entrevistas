@@ -107,7 +107,7 @@ ${video ? `
   <div class="lp-steps">
     <article class="lp-step"><figure class="lp-photo">${img('interviewer', 'An interviewer preparing questions')}</figure><span class="lp-num">01</span><h3>You send the questions</h3><p>Write or record your goal and questions, add your photo and send one invitation by email.</p></article>
     <article class="lp-step"><figure class="lp-photo">${img('guest', 'A microphone and laptop ready to record an answer')}</figure><span class="lp-num">02</span><h3>They answer in their own time</h3><p>A private link on their phone or laptop, no app, no account. They hear each question, take time to reflect, answer in their own language and can record again before submitting.</p></article>
-    <article class="lp-step"><figure class="lp-photo">${img('studio', 'A podcast microphone in a studio')}</figure><span class="lp-num">03</span><h3>We produce the episode</h3><p>A faithful English script you review, natural narration, subtitles in five languages and a cover. By default, your guest validates before anything goes live.</p></article>
+    <article class="lp-step"><figure class="lp-photo">${img('studio', 'A podcast microphone in a studio')}</figure><span class="lp-num">03</span><h3>We produce the episode</h3><p>A faithful English script you review, natural narration, subtitles in five languages and a cover. By default, your interviewee validates before anything goes live.</p></article>
   </div>
 </section>
 
@@ -128,7 +128,7 @@ ${video ? `
     <div class="card"><h3>Consent first</h3><p>Recording, AI processing, photo use, AI video and publication are separate, unticked choices, stored with the exact text shown.</p></div>
     <div class="card"><h3>Never invented</h3><p>Every line points to what was actually said. AI video clips are checked word by word against the approved script.</p></div>
     <div class="card"><h3>Synthetic means disclosed</h3><p>Episodes open with an audible notice, and animated portraits carry a visible label. No cloned voices.</p></div>
-    <div class="card"><h3>Guest approves</h3><p>By default, your guest sees and validates the final version, and always does when they appear in an AI video. Silence is never approval.</p></div>
+    <div class="card"><h3>Interviewee approves</h3><p>By default, your interviewee sees and validates the final version, and always does when they appear in an AI video. Silence is never approval.</p></div>
     <div class="card"><h3>Originals stay private</h3><p>Raw recordings and unused photos are never published. Withdrawing an episode takes one click.</p></div>
     <div class="card"><h3>You stay in control</h3><p>Nothing paid runs until you press “process”, and you review every script before it is narrated.</p></div>
   </div>

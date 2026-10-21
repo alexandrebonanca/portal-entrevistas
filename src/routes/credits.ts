@@ -7,6 +7,7 @@ import { inEntity } from '../settings.ts';
 import { seller, sellerId, checkoutBlock, contactEmail, complaintsLink, TERMS_VERSION, type Seller } from '../legal.ts';
 import { withVat, vatOf, eurEn, eurPt, fmtRate, type VatDecision } from '../vat.ts';
 import { findWallet, spendBlock, packFor, cr, crEn, ENTRY_LABEL, TOPUP_PACKS, TOPUP_MIN_CENTS, TOPUP_MAX_CENTS, CREDIT_VALID_MONTHS, REFUND_WINDOW_DAYS, EXTRA_INTERVIEW_CENTS, EXTRA_REGEN_CENTS } from '../wallet.ts';
+import { helpNav } from '../support.ts';
 
 /** Mensagem nas duas línguas (a área de faturação é em inglês; o português é obrigatório para os consumidores). */
 const both = (m: { pt: string; en: string }) => `${m.en} · ${m.pt}`;
@@ -36,7 +37,7 @@ const STATUS: Record<string, [string, '' | 'ok' | 'bad' | 'warn']> = {
 export async function creditRoutes(app: FastifyInstance) {
   const db = app.db;
   const send = (reply: any, html: string) => reply.type('text/html; charset=utf-8').send(html);
-  const nav = `<a href="/painel">Dashboard</a><a href="/account">Account</a><a href="/conta/creditos">Credits</a><form method="post" action="/sair" style="display:inline"><button class="ghost" style="padding:6px 12px;min-height:0;margin-left:16px">Sign out</button></form>`;
+  const nav = (u: any) => `<a href="/painel">Dashboard</a><a href="/account">Account</a><a href="/conta/creditos">Credits</a>${helpNav(u, 'en')}<form method="post" action="/sair" style="display:inline"><button class="ghost" style="padding:6px 12px;min-height:0;margin-left:16px">Sign out</button></form>`;
   const profileOf = (userId: string) => db.one('SELECT * FROM billing_profiles WHERE user_id=$1', [userId]);
   const back = (reply: any, e: string, extra = '') => reply.redirect('/conta/creditos?e=' + encodeURIComponent(e.slice(0, 500)) + extra);
 
@@ -104,7 +105,7 @@ ${lots.length ? `<div class="card sans" style="overflow-x:auto"><h2 style="margi
 <div class="card sans" style="overflow-x:auto"><h2 style="margin-top:0">Statement <span class="hint" lang="pt-PT">· Extrato de créditos</span></h2><p class="hint">This statement is not an invoice or a receipt: the invoice is issued for each top-up. · Este extrato não é fatura nem recibo.</p>
 ${entries.length ? `<table><thead><tr><th>Date</th><th>Movement</th><th>Credits</th></tr></thead><tbody>${entries.map(entryRow).join('')}</tbody></table>` : '<p class="hint">No movements yet. · Sem movimentos.</p>'}</div>
 <p class="hint">Seller · <span lang="pt-PT">Vendedora</span>: ${sellerId(s)} · <a href="/termos">Terms of sale · Termos e condições</a> · ${complaintsLink(s)}</p></div>`;
-      return send(reply, page({ lang: 'en', title: 'Credits', body, nav, noindex: true }));
+      return send(reply, page({ lang: 'en', title: 'Credits', body, nav: nav(req.user), noindex: true }));
     });
   });
 
@@ -146,7 +147,7 @@ ${missing ? flash(`You need ${crEn(missing)} more credits; the next top-up optio
 <form method="post" action="/conta/creditos/carregar"><input type="hidden" name="valor" value="${cents / 100}">${voltar ? `<input type="hidden" name="voltar" value="${esc(voltar)}">` : ''}
 <label class="check"><input type="checkbox" name="terms" value="1" required> <span>I accept the <a href="/termos">terms of sale</a> (<span lang="pt-PT">termos e condições, incluindo as regras dos créditos</span>) and the <a href="/privacidade-pagamentos">payments privacy notice</a>.</span></label>
 <button class="accent" ${block || !stripeConfigured() ? 'disabled' : ''}>${esc(button)}</button> <a href="/conta/creditos">Cancel · Cancelar</a></form></div>${RULES}</div>`;
-      return send(reply, page({ lang: 'en', title: 'Top up credits', body, nav, noindex: true }));
+      return send(reply, page({ lang: 'en', title: 'Top up credits', body, nav: nav(req.user), noindex: true }));
     });
   });
 

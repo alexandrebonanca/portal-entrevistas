@@ -5,6 +5,7 @@ import { audit, sendAsset } from '../app.ts';
 import { enqueue } from '../jobs.ts';
 import { lipsyncModel, replicatePricePerSec } from '../lipsync.ts';
 import { S } from '../settings.ts';
+import { helpNav } from '../support.ts';
 import { PROVIDERS, providerReady, isVeoProvider, veoBackend, veoModel, verifySignedAsset, presenterDirection } from '../talking.ts';
 
 /** Laboratório (só administradores): experiências com retratos fictícios. */
@@ -15,7 +16,7 @@ export async function labRoutes(app: FastifyInstance) {
     if (req.user.role !== 'admin') { reply.code(403).send('Acesso reservado a administradores'); return false; }
     return true;
   };
-  const nav = `<a href="/painel">Painel</a><a href="/admin/utilizadores">Utilizadores</a><a href="/admin/definicoes">Definições</a><a href="/admin/laboratorio">Laboratório</a>`;
+  const nav = (u: any) => `<a href="/painel">Painel</a><a href="/admin/utilizadores">Utilizadores</a><a href="/admin/definicoes">Definições</a><a href="/admin/laboratorio">Laboratório</a>${helpNav(u)}`;
 
   app.get('/admin/laboratorio', async (req, reply) => {
     if (!guard(req, reply)) return;
@@ -54,7 +55,7 @@ ${r.result?.videoAssetId ? `<video controls src="/admin/laboratorio/media/${r.re
 <p class="hint">Extrapolação para 4 min de rosto em ecrã: ~$${r.result.estCostUsd != null && r.result.audioSec ? ((r.result.estCostUsd / r.result.audioSec) * 240).toFixed(2) : '—'} (proporcional; confirme no painel da Replicate).</p>` : ''}
 ${r.result?.portraitAssetId ? `<details><summary class="sans">Retrato fictício usado</summary><img alt="Retrato fictício gerado por IA" src="/admin/laboratorio/media/${r.result.portraitAssetId}" style="max-width:240px;border-radius:8px"></details>` : ''}
 ${r.error ? `<p class="hint" style="color:var(--bad)">${esc(r.error)}</p>` : ''}</div>`).join('')}</div>`;
-    return reply.type('text/html; charset=utf-8').send(page({ title: 'Laboratório', body, nav, noindex: true }));
+    return reply.type('text/html; charset=utf-8').send(page({ title: 'Laboratório', body, nav: nav(req.user), noindex: true }));
   });
 
   app.post('/admin/laboratorio/lipsync', async (req, reply) => {

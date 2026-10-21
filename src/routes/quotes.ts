@@ -11,6 +11,7 @@ import { VEO_NOTICE, veoWithoutQuote } from '../veo-episode.ts';
 import { veoTier, veoLabel } from '../talking.ts';
 import { createQuote, acceptQuote, cancelQuote, quoteProblem, quoteBlock, rateForTier, candidateFalas, consumerVatRate, isConsumerOwner,
   priceLabel, perMinuteLabel, acceptLabel, roleLabel, reasonLabel, GUARANTEES, QUOTE_STATUS, QuoteError, START_DEADLINE_HOURS, ENTITY_VEO_NO_QUOTE } from '../quotes.ts';
+import { helpNav } from '../support.ts';
 
 const excerpt = (t: string, n = 90) => (t.length > n ? `${t.slice(0, n - 1)}…` : t);
 /** Posição na via dos vídeos, para o prazo do orçamento (por aceitar: o que está na fila agora; aceite: o que está à frente). */
@@ -60,7 +61,7 @@ ${falas.map(f => `<tr><td><input type="checkbox" name="fala" value="${esc(f.id)}
 
 export async function quoteRoutes(app: FastifyInstance) {
   const db = app.db;
-  const send = (reply: any, title: string, body: string) => reply.type('text/html; charset=utf-8').send(page({ title, body, noindex: true, nav: `<a href="/painel">Painel</a><a href="/conta/creditos">Créditos</a>` }));
+  const send = (reply: any, title: string, body: string) => reply.type('text/html; charset=utf-8').send(page({ title, body, noindex: true, nav: `<a href="/painel">Painel</a><a href="/conta/creditos">Créditos</a>${helpNav(reply.request.user)}` }));
   const toProd = (reply: any, id: string, ok?: string, e?: string) => reply.redirect(`/entrevistas/${id}/producao${ok ? '?ok=' + encodeURIComponent(ok) : e ? '?e=' + encodeURIComponent(e) : ''}`);
   const toQuote = (reply: any, id: string, qid: string, ok?: string, e?: string) => reply.redirect(`/entrevistas/${id}/orcamentos/${qid}${ok ? '?ok=' + encodeURIComponent(ok) : e ? '?e=' + encodeURIComponent(e) : ''}`);
   const uuid = (v: unknown): v is string => typeof v === 'string' && /^[0-9a-f-]{36}$/i.test(v);

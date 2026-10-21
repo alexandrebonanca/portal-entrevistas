@@ -19,6 +19,7 @@ import { walletFor, findWallet, spend, spendBlock, cr, EXTRA_REGEN_CENTS, type W
 import { paidConsentHtml, paidConsentOk, isConsumer } from './credits.ts';
 import { quoteSection } from './quotes.ts';
 import { introProductionHint } from './intro.ts';
+import { helpNav } from '../support.ts';
 
 /** Os retratos animados (Replicate) ficam reservados ao administrador. */
 const ANIMATE_ADMIN_ONLY = 'Os retratos animados por IA (Replicate) estão reservados ao administrador. A animação com o Google Veo faz-se por orçamento, na secção «Animação por IA».';
@@ -301,7 +302,7 @@ ${ep.visibility === 'public' ? `<form method="post" action="/entrevistas/${iv.id
 <form method="post" action="/entrevistas/${iv.id}/producao/recomecar" onsubmit="return confirm('Arquivar o guião e o episódio atuais e recomeçar a produção?')"><button class="danger" ${scriptBefore && !canRegen ? 'disabled' : ''}>Recomeçar produção</button></form>${scriptBefore ? `${regenHint}${canRegen ? `<p class="hint">Depois de recomeçar, processar de novo custa ${cr(EXTRA_REGEN_CENTS)} crédito.</p>` : ''}` : ''}</div>`;
     }
     body += '</div>';
-    return reply.type('text/html; charset=utf-8').send(page({ title: 'Produção', body, noindex: true, script: live ? '/static/progress.js' : '/static/player.js', nav: `<a href="/painel">Painel</a>` }));
+    return reply.type('text/html; charset=utf-8').send(page({ title: 'Produção', body, noindex: true, script: live ? '/static/progress.js' : '/static/player.js', nav: `<a href="/painel">Painel</a>${helpNav(req.user)}` }));
   });
 
   // Estado dos trabalhos em JSON, para a barra de progresso (só o dono/admin).

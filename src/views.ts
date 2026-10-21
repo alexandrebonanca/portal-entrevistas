@@ -47,6 +47,8 @@ video.cam{width:100%;max-height:60vh;border-radius:12px;background:#000;transfor
 .pbar{height:14px;border-radius:99px;background:var(--line);overflow:hidden}.pfill{height:100%;width:0;background:var(--accent);border-radius:99px;transition:width .6s ease}
 @media (prefers-reduced-motion:reduce){.pfill{transition:none}}
 :focus-visible{outline:3px solid var(--accent);outline-offset:2px}
+.badge{display:inline-block;min-width:1.5em;padding:0 .45em;border-radius:99px;background:var(--accent);color:var(--accent-ink);font:700 .75rem/1.6 system-ui,-apple-system,'Segoe UI',sans-serif;text-align:center;vertical-align:1px}
+.vh{position:absolute!important;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}
 `;
 
 const COUNTRY: Record<string, [string, string]> = { EE: ['Estónia', 'Estonia'], PT: ['Portugal', 'Portugal'] };

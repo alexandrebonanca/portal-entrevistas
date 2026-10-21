@@ -10,9 +10,18 @@ import { seller, sellerWarnings, sameCompany, savedStripeAccount } from '../lega
 import { REGIME_LABEL, regionalRate, countryName, eurPt, fmtRate } from '../vat.ts';
 import { queueEmail, emailShell, flushOutbox, retryFailedEmails } from '../mail.ts';
 import { allRates, recommendedCentsPerMin, QUOTE_STATUS } from '../quotes.ts';
+import { helpNav } from '../support.ts';
 
 /** Campo de uma definição: segredo (nunca devolvido), lista de opções ou texto. `blank` é a opção sem valor guardado. */
 export function settingInput(d: SettingDef, value: string, blank: string, blankLabel?: string) {
+  // Conta de serviço: caixa de várias linhas (o ficheiro tem várias; um campo de palavra-passe atrai o gestor de
+  // palavras-passe do browser) com o texto mascarado, e um botão que lê o ficheiro .json no browser, sem a área de transferência.
+  if (d.key === 'VERTEX_SA_JSON') return `<textarea id="f_${d.key}" name="${d.key}" rows="3" autocomplete="off" data-lpignore="true" spellcheck="false" style="font:.85rem ui-monospace,monospace;-webkit-text-security:disc" placeholder="${esc(maskSetting(d.key, value) || (d.hint ?? ''))}"></textarea>
+<p class="hint sans" style="margin:4px 0 12px"><button type="button" class="ghost" data-json-pick="f_${d.key}">Escolher o ficheiro .json</button><input type="file" accept=".json,application/json" data-json-into="f_${d.key}" hidden> <span id="f_${d.key}_st" role="status"></span></p>
+<script>(()=>{const f=document.querySelector('[data-json-into="f_${d.key}"]'),b=document.querySelector('[data-json-pick="f_${d.key}"]'),t=document.getElementById('f_${d.key}'),s=document.getElementById('f_${d.key}_st');
+const say=()=>{const v=t.value.trim();s.textContent=!v?'':(v.match(/"type"\\s*:/g)||[]).length>1?'Atenção: o texto parece colado mais do que uma vez ('+v.length+' caracteres).':v[0]!=='{'?'Atenção: isto não parece o ficheiro .json da conta de serviço ('+v.length+' caracteres).':v.length+' caracteres prontos: carregue em «Guardar e testar».';};
+b.addEventListener('click',()=>f.click());t.addEventListener('input',say);
+f.addEventListener('change',async()=>{const x=f.files&&f.files[0];if(!x)return;try{t.value=await x.text();say();}catch(e){s.textContent='Não foi possível ler o ficheiro: escolha-o de novo.';}f.value='';});})();</script>`;
   if (d.options) return `<select id="f_${d.key}" name="${d.key}">${blankLabel !== undefined ? `<option value="" ${value ? '' : 'selected'}>${esc(blankLabel)}</option>` : ''}${d.options.map(([v, l]) => `<option value="${esc(v)}" ${(value || blank) === v ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select>`;
   return `<input id="f_${d.key}" name="${d.key}" type="${d.secret ? 'password' : 'text'}" autocomplete="${d.secret ? 'new-password' : 'off'}" data-lpignore="true" spellcheck="false" placeholder="${esc(d.secret ? maskSetting(d.key, value) || (d.hint ?? '') : (d.hint ?? ''))}" value="${d.secret ? '' : esc(value)}">`;
 }
@@ -106,10 +115,12 @@ export async function serviceTest(db: any, g: string, userEmail: string): Promis
   return msg;
 }
 
+/** Navegação do administrador, com «Suporte» e o número de pedidos por ler, e a base do assistente virtual. */
+export const adminNav = (u?: any) => `<a href="/painel">Painel</a><a href="/admin/utilizadores">Utilizadores</a><a href="/admin/definicoes">Definições</a><a href="/admin/faturacao">Faturação</a><a href="/admin/creditos">Créditos</a><a href="/admin/laboratorio">Laboratório</a>${helpNav(u)}<a href="/admin/assistente">Assistente</a><form method="post" action="/sair" style="display:inline"><button class="ghost" style="padding:6px 12px;min-height:0;margin-left:16px">Sair</button></form>`;
+
 export async function adminRoutes(app: FastifyInstance) {
   const db = app.db;
-  const adminNav = `<a href="/painel">Painel</a><a href="/admin/utilizadores">Utilizadores</a><a href="/admin/definicoes">Definições</a><a href="/admin/faturacao">Faturação</a><a href="/admin/creditos">Créditos</a><a href="/admin/laboratorio">Laboratório</a><form method="post" action="/sair" style="display:inline"><button class="ghost" style="padding:6px 12px;min-height:0;margin-left:16px">Sair</button></form>`;
-  const view = (reply: any, title: string, body: string) => reply.type('text/html; charset=utf-8').send(page({ title, body: `<div class="wrap" style="padding-top:32px">${body}</div>`, nav: adminNav, noindex: true }));
+  const view = (reply: any, title: string, body: string) => reply.type('text/html; charset=utf-8').send(page({ title, body: `<div class="wrap" style="padding-top:32px">${body}</div>`, nav: adminNav(reply.request.user), noindex: true }));
   const guard = (req: any, reply: any) => {
     if (!req.user) { reply.redirect('/entrar'); return false; }
     if (req.user.role !== 'admin') { reply.code(403).send('Acesso reservado a administradores'); return false; }

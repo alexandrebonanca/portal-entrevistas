@@ -9,6 +9,7 @@ import { S, inEntity } from '../settings.ts';
 import { seller, sellerId, checkoutBlock, contactEmail, homeConsumerRate, termsBody, paymentsPrivacyBody, complaintsLink, TERMS_VERSION, WITHDRAWAL_DAYS, type Seller } from '../legal.ts';
 import { withVat, eurEn, eurPt, fmtRate, normNif, normPostal, normVatNumber, isEuCountry, outsideVatTerritory, countryName, EU_COUNTRIES, OUTSIDE_EU, type VatDecision } from '../vat.ts';
 import { queueEmail, emailShell } from '../mail.ts';
+import { helpNav } from '../support.ts';
 
 /** Mensagem nas duas línguas (a área de faturação é em inglês; o português é obrigatório para os consumidores). */
 const both = (m: { pt: string; en: string }) => `${m.en} · ${m.pt}`;
@@ -25,7 +26,7 @@ const VAT_STATUS: Record<string, string> = { pending: 'checking in VIES', verifi
 export async function billingRoutes(app: FastifyInstance) {
   const db = app.db;
   const send = (reply: any, html: string) => reply.type('text/html; charset=utf-8').send(html);
-  const nav = `<a href="/painel">Dashboard</a><a href="/account">Account</a><a href="/conta/creditos">Credits</a><form method="post" action="/sair" style="display:inline"><button class="ghost" style="padding:6px 12px;min-height:0;margin-left:16px">Sign out</button></form>`;
+  const nav = (u: any) => `<a href="/painel">Dashboard</a><a href="/account">Account</a><a href="/conta/creditos">Credits</a>${helpNav(u, 'en')}<form method="post" action="/sair" style="display:inline"><button class="ghost" style="padding:6px 12px;min-height:0;margin-left:16px">Sign out</button></form>`;
   const profileOf = (userId: string) => db.one('SELECT * FROM billing_profiles WHERE user_id=$1', [userId]);
   const back = (reply: any, e: string, anchor = '') => reply.redirect('/account?e=' + encodeURIComponent(e.slice(0, 500)) + anchor);
   const okBack = (reply: any, m: string) => reply.redirect('/account?ok=' + encodeURIComponent(m));
@@ -122,7 +123,7 @@ ${profileCard}
 ${customerId ? '<form method="post" action="/billing/portal"><button class="ghost">Manage card, Stripe receipts &amp; cancellation</button></form><p class="hint">Stripe receipts are proof of payment only. Your invoice (<span lang="pt-PT">fatura-recibo</span>) is issued separately by the seller and sent by email.</p>' : ''}
 <p class="hint">Seller · <span lang="pt-PT">Vendedora</span>: ${sellerId(s)} · <a href="/termos">Terms of sale · Termos e condições</a> · <a href="/privacidade-pagamentos">Payments privacy · Privacidade nos pagamentos</a> · ${complaintsLink(s)}</p>`}
 </div>`;
-    return send(reply, page({ lang: 'en', title: 'Account', body, nav, noindex: true }));
+    return send(reply, page({ lang: 'en', title: 'Account', body, nav: nav(req.user), noindex: true }));
   };
 
   app.post('/billing/profile', async (req, reply) => {
@@ -231,7 +232,7 @@ ${customerId ? '<form method="post" action="/billing/portal"><button class="ghos
 <div class="card sans"><p>Contrato: subscrição <strong>${esc(sub.plan_name ?? sub.plan_id ?? '')}</strong> de ${esc(config.brand)}, iniciada em ${fmtDate(sub.contract_started_at)}.<br>Cliente: ${esc(profile.name)} · ${esc(req.user.email)}</p>
 <p>Ao confirmar, a subscrição é cancelada de imediato. Devolvemos o valor pago, descontada a parte do serviço já prestada, no prazo de 14 dias e pelo mesmo meio de pagamento. Enviamos a confirmação deste pedido para ${esc(req.user.email)}.</p>
 <form method="post" action="/billing/livre-resolucao"><button class="danger">Confirmar a desistência</button> <a href="/account">Voltar</a></form></div></div>`;
-    return send(reply, page({ title: 'Desistir do contrato', body, nav, noindex: true }));
+    return send(reply, page({ title: 'Desistir do contrato', body, nav: nav(req.user), noindex: true }));
   });
 
   app.post('/billing/livre-resolucao', async (req, reply) => {

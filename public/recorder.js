@@ -8,6 +8,10 @@
   };
   PE.fmt = (s) => Math.floor(s / 60) + ':' + String(Math.floor(s % 60)).padStart(2, '0');
 
+  // Aviso do navegador antes de sair da página a meio de uma gravação ou de um envio (por exemplo, pela ligação «Ajuda»).
+  let busy = 0;
+  window.addEventListener('beforeunload', (e) => { if (busy > 0) { e.preventDefault(); e.returnValue = ''; } });
+
   /** Pede o microfone SÓ quando chamado a partir de um gesto do utilizador. Ao chegar a maxSec pára e avisa (onLimit). */
   PE.startRecording = async function (onTick, maxSec, onLimit) {
     if (!navigator.mediaDevices || !window.MediaRecorder) throw Object.assign(new Error('unsupported'), { code: 'none' });
@@ -25,6 +29,7 @@
     const done = new Promise((res) => (stopped = res));
     mr.ondataavailable = (e) => e.data && e.data.size && chunks.push(e.data);
     mr.onstop = () => {
+      busy = Math.max(0, busy - 1);
       clearInterval(timer);
       stream.getTracks().forEach((t) => t.stop()); // liberta o microfone
       document.removeEventListener('visibilitychange', onVis);
@@ -34,6 +39,7 @@
     document.addEventListener('visibilitychange', onVis);
     stream.getAudioTracks().forEach((t) => (t.onended = () => { if (mr.state !== 'inactive') mr.stop(); })); // chamada/bloqueio
     mr.start(1000); // timeslice: os chunks só fazem sentido juntos no contentor
+    busy++;
     timer = setInterval(() => {
       const s = (Date.now() - t0) / 1000;
       onTick && onTick(s);
@@ -44,6 +50,10 @@
 
   /** Envio com repetição e chave de idempotência; só "guardado" quando o servidor confirma. */
   PE.upload = async function (url, blob, extra) {
+    busy++;
+    try { return await send(url, blob, extra); } finally { busy = Math.max(0, busy - 1); }
+  };
+  async function send(url, blob, extra) {
     const id = (crypto.randomUUID && crypto.randomUUID()) || String(Date.now()) + Math.random();
     let last;
     for (let i = 0; i < 4; i++) {
@@ -57,5 +67,5 @@
       await new Promise((res) => setTimeout(res, 800 * 2 ** i));
     }
     throw last;
-  };
+  }
 })();
