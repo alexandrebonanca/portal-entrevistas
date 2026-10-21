@@ -5,13 +5,14 @@ import { page, flash, pill } from '../views.ts';
 import { audit } from '../app.ts';
 import { quotaFor, createCheckout, createPortal, stripeConfigured, verifyStripeSignature, applyStripeEvent, ACTIVE_STATUSES } from '../billing.ts';
 import { S, inEntity } from '../settings.ts';
+import { helpNav } from '../support.ts';
 
 const eur = (c: number) => `€${(c / 100).toFixed(c % 100 ? 2 : 0)}`;
 
 export async function billingRoutes(app: FastifyInstance) {
   const db = app.db;
   const send = (reply: any, html: string) => reply.type('text/html; charset=utf-8').send(html);
-  const nav = `<a href="/painel">Dashboard</a><a href="/account">Account</a><form method="post" action="/sair" style="display:inline"><button class="ghost" style="padding:6px 12px;min-height:0;margin-left:16px">Sign out</button></form>`;
+  const nav = (u: any) => `<a href="/painel">Dashboard</a><a href="/account">Account</a>${helpNav(u, 'en')}<form method="post" action="/sair" style="display:inline"><button class="ghost" style="padding:6px 12px;min-height:0;margin-left:16px">Sign out</button></form>`;
 
   app.get('/account', async (req, reply) => {
     if (!req.user) return reply.redirect('/entrar');
@@ -32,7 +33,7 @@ ${req.user.role === 'admin' ? '' : `<h2>${active ? 'Change plan' : 'Choose a pla
 ${stripeConfigured() ? '' : '<p class="hint">Online payments are not enabled yet. Please contact us to activate your plan.</p>'}
 ${req.user.role !== 'admin' && (await db.one('SELECT stripe_customer_id FROM users WHERE id=$1', [req.user.id]))?.stripe_customer_id ? '<form method="post" action="/billing/portal"><button class="ghost">Manage billing, invoices &amp; cancellation</button></form>' : ''}`}
 </div>`;
-    return send(reply, page({ lang: 'en', title: 'Account', body, nav, noindex: true }));
+    return send(reply, page({ lang: 'en', title: 'Account', body, nav: nav(req.user), noindex: true }));
   };
 
   app.post('/subscribe/:plan', async (req, reply) => {

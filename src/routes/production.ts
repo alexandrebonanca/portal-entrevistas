@@ -13,6 +13,7 @@ import { veoEstimate, VEO_ONLY_PREVIEW, VEO_CHANGES, VEO_SCRIPT_REPLACED, VEO_NO
 import { veoConfigured, veoTier, veoLabel } from '../talking.ts';
 import { inEntity, entityOfInterview, aiVideoOpen, AI_VIDEO_CLOSED } from '../settings.ts';
 import { guestMustApprove, videoMeta as loadVideoMeta } from '../approval.ts';
+import { helpNav } from '../support.ts';
 
 const JOB_LABEL: Record<string, string> = { render_video: 'A gerar o vídeo do podcast', process_submission: 'A transcrever e a preparar o guião', prepare_script: 'A preparar o guião', generate_episode: 'A gerar o episódio', transcribe_asset: 'A transcrever' };
 const SUBS = [['en', 'English'], ['pt-PT', 'Português (PT)'], ['es', 'Español'], ['fr', 'Français'], ['de', 'Deutsch']];
@@ -198,7 +199,7 @@ ${ep.visibility === 'public' ? `<form method="post" action="/entrevistas/${iv.id
 <form method="post" action="/entrevistas/${iv.id}/producao/recomecar" onsubmit="return confirm('Arquivar o guião e o episódio atuais e recomeçar a produção?')"><button class="danger">Recomeçar produção</button></form></div>`;
     }
     body += '</div>';
-    return reply.type('text/html; charset=utf-8').send(page({ title: 'Produção', body, noindex: true, script: live ? '/static/progress.js' : '/static/player.js', nav: `<a href="/painel">Painel</a>` }));
+    return reply.type('text/html; charset=utf-8').send(page({ title: 'Produção', body, noindex: true, script: live ? '/static/progress.js' : '/static/player.js', nav: `<a href="/painel">Painel</a>${helpNav(req.user)}` }));
   });
 
   // Estado dos trabalhos em JSON, para a barra de progresso (só o dono/admin).

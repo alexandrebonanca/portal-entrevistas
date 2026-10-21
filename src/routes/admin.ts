@@ -6,6 +6,7 @@ import { audit } from '../app.ts';
 import { quotaFor, ACTIVE_STATUSES, stripe } from '../billing.ts';
 import { SETTING_DEFS, S, maskSetting, saveSetting, fromDb, secretFingerprint, settingsFormError, type SettingDef } from '../settings.ts';
 import { queueEmail, emailShell, flushOutbox, retryFailedEmails } from '../mail.ts';
+import { helpNav } from '../support.ts';
 
 /** Campo de uma definição: segredo (nunca devolvido), lista de opções ou texto. `blank` é a opção sem valor guardado. */
 export function settingInput(d: SettingDef, value: string, blank: string, blankLabel?: string) {
@@ -75,10 +76,12 @@ export async function serviceTest(db: any, g: string, userEmail: string): Promis
   return msg;
 }
 
+/** Navegação do administrador, com «Suporte» e o número de pedidos por ler. */
+export const adminNav = (u?: any) => `<a href="/painel">Painel</a><a href="/admin/utilizadores">Utilizadores</a><a href="/admin/definicoes">Definições</a><a href="/admin/laboratorio">Laboratório</a>${helpNav(u)}<form method="post" action="/sair" style="display:inline"><button class="ghost" style="padding:6px 12px;min-height:0;margin-left:16px">Sair</button></form>`;
+
 export async function adminRoutes(app: FastifyInstance) {
   const db = app.db;
-  const adminNav = `<a href="/painel">Painel</a><a href="/admin/utilizadores">Utilizadores</a><a href="/admin/definicoes">Definições</a><a href="/admin/laboratorio">Laboratório</a><form method="post" action="/sair" style="display:inline"><button class="ghost" style="padding:6px 12px;min-height:0;margin-left:16px">Sair</button></form>`;
-  const view = (reply: any, title: string, body: string) => reply.type('text/html; charset=utf-8').send(page({ title, body: `<div class="wrap" style="padding-top:32px">${body}</div>`, nav: adminNav, noindex: true }));
+  const view = (reply: any, title: string, body: string) => reply.type('text/html; charset=utf-8').send(page({ title, body: `<div class="wrap" style="padding-top:32px">${body}</div>`, nav: adminNav(reply.request.user), noindex: true }));
   const guard = (req: any, reply: any) => {
     if (!req.user) { reply.redirect('/entrar'); return false; }
     if (req.user.role !== 'admin') { reply.code(403).send('Acesso reservado a administradores'); return false; }

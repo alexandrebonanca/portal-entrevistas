@@ -11,6 +11,7 @@ import { createInvitation } from '../invites.ts';
 import { aiAvailable, readQuestion, READING_VOICES } from '../ai/openai.ts';
 import { storage } from '../storage.ts';
 import { inEntity, entityOfInterview } from '../settings.ts';
+import { guestHelpNav } from '../support.ts';
 
 const H = { 'Content-Type': 'text/html; charset=utf-8' };
 
@@ -18,7 +19,7 @@ export async function guestRoutes(app: FastifyInstance) {
   const db = app.db;
 
   const gpage = (reply: FastifyReply, lang: Lang, title: string, body: string, script?: string) =>
-    reply.headers({ ...H, 'Cache-Control': 'no-store' }).send(page({ lang, title, body: `<div class="narrow" style="padding:28px 20px 0">${body}</div>`, noindex: true, script, nav: '' }));
+    reply.headers({ ...H, 'Cache-Control': 'no-store' }).send(page({ lang, title, body: `<div class="narrow" style="padding:28px 20px 0">${body}</div>`, noindex: true, script, nav: guestHelpNav(reply.request.guest, lang) }));
 
   const loadInvitation = async (token: string) =>
     db.one(`SELECT inv.*, i.title, COALESCE(NULLIF(i.host_name,''), u.name) AS host_name, i.interaction_lang, i.guest_email, i.guest_name, i.id AS iid, i.collection_status, i.review_policy
@@ -126,7 +127,7 @@ ${iv.objective_shared && iv.objective_text ? `<h2>${esc(d.objective)}</h2><p>${e
 <h2>${esc(d.beforeStart)}</h2><p>${esc(consentLongFor(lang, iv.review_policy))}</p><p class="hint">${esc(d.consentIntro)}</p>
 <form method="post" action="/entrevista/consentimentos" class="card">${cb('participation', d.c_participation, false, true)}${cb('processing', d.c_processing, processing)}${cb('publish', consentText(lang, 'publish', iv.review_policy), publish)}${cb('adult', d.adults, false, true)}
 <p><button class="accent" style="width:100%">${esc(d.start)}</button></p></form>
-<p class="hint">${esc(d.contact)} ${esc(config.supportEmail)}</p>`);
+<p class="hint">${esc(d.contact)} ${esc(config.supportEmail)} · <a href="/entrevista/ajuda">${esc(d.supportTitle)}</a></p>`);
     }
     const qs = await db.query(`SELECT q.*, a.status FROM questions q LEFT JOIN answers a ON a.question_id=q.id WHERE q.interview_id=$1 ORDER BY q.position`, [iv.id]);
     const next = qs.find((q: any) => !q.status) ?? qs[0];
@@ -376,7 +377,7 @@ ${s.complete ? `<form method="post" action="/entrevista/submeter" onsubmit="retu
       && (await guestReviewScope(db, iv)) !== 'none';
     return gpage(reply, lang, d.thanks, `<h1>${esc(d.thanks)}</h1><p>${esc(d.thanksText)}</p>
 <div class="card sans"><strong>${esc(d.receipt)}</strong><br>${esc(iv.title)}<br>${esc(fmtDate(sub?.created_at))}<br><code>${esc(sub?.id ?? '')}</code></div>
-<p class="hint">${esc(d.contact)} ${esc(config.supportEmail)}</p><p><a href="/entrevista/fotos">${esc(d.photoAuth)}</a></p>${ep ? `<p><a class="btn accent" href="/entrevista/episodio">${esc(d.episodePreview)}</a></p>` : ''}`);
+<p class="hint">${esc(d.contact)} ${esc(config.supportEmail)} · <a href="/entrevista/ajuda">${esc(d.supportTitle)}</a></p><p><a href="/entrevista/fotos">${esc(d.photoAuth)}</a></p>${ep ? `<p><a class="btn accent" href="/entrevista/episodio">${esc(d.episodePreview)}</a></p>` : ''}`);
   });
 }
 

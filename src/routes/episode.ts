@@ -6,6 +6,7 @@ import { sendAsset, audit } from '../app.ts';
 import { toVtt, toSrt, type Cue } from '../subtitles.ts';
 import { t, normLang } from '../i18n.ts';
 import { approvalScope, videoMeta } from '../approval.ts';
+import { guestHelpNav } from '../support.ts';
 
 export interface PlayerUrls { audio: string; cover: string; subs: (lang: string, ext: 'vtt' | 'srt') => string }
 
@@ -118,7 +119,7 @@ ${groups.size ? [...groups].map(([t, eps]) => `<section style="margin-top:28px">
     const scope = approvalScope(ep, await videoMeta(db, ep.video_asset_id));
     const q = req.query as any;
     return send(reply, page({
-      lang: normLang(ep.interaction_lang), title: d.episodePreview, noindex: true, nav: '', script: '/static/player.js',
+      lang: normLang(ep.interaction_lang), title: d.episodePreview, noindex: true, nav: guestHelpNav(req.guest, normLang(ep.interaction_lang)), script: '/static/player.js',
       body: `<div class="wrap" style="padding-top:28px">${flash(q.ok)}${q.changed ? `<div class="flash bad">${esc(d.versionChanged)}</div>` : ''}<h1>${esc(d.episodePreview)}</h1>
 <p class="sans"><strong>${esc(d.reviewTitle)}</strong></p><p>${esc(d.reviewIntro(ep.host_label ?? ''))} ${esc(scope === 'video' ? d.reviewStepsVideo : scope === 'none' ? d.reviewStepsView : d.reviewSteps)}</p>
 ${ep.video_asset_id ? `<video controls preload="metadata" poster="/api/g/media/${ep.cover_asset_id}" src="/api/g/media/${ep.video_asset_id}" style="width:100%;border-radius:12px;background:#000;margin-bottom:18px"></video>` : ''}

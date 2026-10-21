@@ -6,6 +6,7 @@ import { audit } from '../app.ts';
 import { SETTING_DEFS, S, saveEntitySetting, entityHas, entityValue, inEntity, settingsFormError, ownsAny, VEO_CRED_KEYS } from '../settings.ts';
 import { serviceTest, settingInput, VERTEX_HINT } from './admin.ts';
 import { retryFailedEmails } from '../mail.ts';
+import { helpNav } from '../support.ts';
 
 const GROUPS = ['OpenAI', 'Stripe', 'MailerSend', 'Moloni ON', 'Replicate', 'fal.ai', 'WaveSpeed', 'Google'];
 const VEO_ENTITY_HINT = 'Se a entidade tiver conta de serviço ou chave Gemini próprias, o Veo dela usa só essas (e paga no projeto Google dela); as globais servem só às entidades sem credenciais Google.';
@@ -13,7 +14,7 @@ const VEO_ENTITY_HINT = 'Se a entidade tiver conta de serviço ou chave Gemini p
 export async function entityRoutes(app: FastifyInstance) {
   const db = app.db;
   const isUuid = (v: string) => /^[0-9a-f-]{36}$/i.test(v);
-  const nav = (u: any) => `<a href="/painel">Painel</a><a href="/account">Conta</a>${u.role === 'admin' ? '<a href="/admin/entidades">Entidades</a><a href="/admin/utilizadores">Utilizadores</a><a href="/admin/definicoes">Definições</a>' : '<a href="/entidade">Entidade</a>'}<form method="post" action="/sair" style="display:inline"><button class="ghost" style="padding:6px 12px;min-height:0;margin-left:16px">Sair</button></form>`;
+  const nav = (u: any) => `<a href="/painel">Painel</a><a href="/account">Conta</a>${helpNav(u)}${u.role === 'admin' ? '<a href="/admin/entidades">Entidades</a><a href="/admin/utilizadores">Utilizadores</a><a href="/admin/definicoes">Definições</a>' : '<a href="/entidade">Entidade</a>'}<form method="post" action="/sair" style="display:inline"><button class="ghost" style="padding:6px 12px;min-height:0;margin-left:16px">Sair</button></form>`;
   const view = (req: any, reply: any, title: string, body: string) => reply.type('text/html; charset=utf-8').send(page({ title, body: `<div class="wrap" style="padding-top:32px">${body}</div>`, nav: nav(req.user), noindex: true }));
   const back = (reply: any, url: string, ok?: string, e?: string) => reply.redirect(url + (ok ? `?ok=${encodeURIComponent(ok)}` : e ? `?e=${encodeURIComponent(e)}` : ''));
 
