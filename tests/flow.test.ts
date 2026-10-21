@@ -47,6 +47,7 @@ test('landing em inglês e primeira conta administradora', async () => {
   // vídeo de apresentação: legendas por omissão, cartaz e aviso de IA (os ficheiros estáticos são servidos por server.ts)
   assert.match(r.body, /<video controls playsinline preload="none" poster="\/static\/video\/promo\.jpg"/);
   assert.match(r.body, /<track kind="captions" srclang="en" label="English" src="\/static\/video\/promo\.en\.vtt" default>/);
+  assert.match(r.body, /<track kind="captions" srclang="pt-PT" label="Português" src="\/static\/video\/promo\.pt\.vtt">/, 'legendas em português disponíveis');
   assert.match(r.body, /AI-generated video and voices \(Google Veo\)[^<]*All people shown are fictional/);
   assert.match(r.body, /by default review before anything is published/, 'a política «só o entrevistador aprova» dispensa o convidado');
   assert.match(r.body, /href="#tour">Watch the 1-minute video/);

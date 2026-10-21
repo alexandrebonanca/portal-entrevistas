@@ -6,6 +6,7 @@ import { page, flash, pill } from '../views.ts';
 import { setSessionCookie, audit, sendAsset } from '../app.ts';
 import { t, normLang, consentText, consentLongFor, CONSENT_VERSION, type Lang, type ConsentPurpose } from '../i18n.ts';
 import { guestReview, guestDecides, reviewCopy } from '../approval.ts';
+import { hasVideo, promoVideo } from '../landing.ts';
 import { sniff, stripJpegMetadata, saveAsset, probeAudio } from '../media.ts';
 import { queueEmail, emailShell } from '../mail.ts';
 import { createInvitation } from '../invites.ts';
@@ -45,9 +46,14 @@ export async function guestRoutes(app: FastifyInstance) {
 <form method="post" action="/i/${esc((req.params as any).token)}/abrir"><p><button class="accent" style="width:100%">${esc(review ? c.open : d.open)}</button></p></form>`);
     }
     const nQ = Number((await db.one('SELECT count(*)::int AS n FROM questions WHERE interview_id=$1', [inv.iid]))?.n);
+    // Vídeo explicativo (sem preços nem reprodução automática) no primeiro convite: só com «o entrevistado aprova», porque
+    // promete que nada é publicado sem a aprovação dele. Legendas em português e em inglês, a da língua do convite ligada.
+    const promo = inv.purpose === 'invite' && inv.review_policy === 'guest_preview' && hasVideo()
+      ? `<figure style="margin:24px 0 0"><p class="sans" style="margin:0 0 8px"><strong>${esc(d.promoTitle)}</strong></p>${promoVideo(lang, d.promoFallback, 'width:100%;height:auto;aspect-ratio:16/9;border-radius:12px;background:#000;display:block')}
+<figcaption class="hint" style="margin-top:8px">${esc(d.promoCaption)}</figcaption></figure>` : '';
     return gpage(reply, lang, d.inviteTitle, `<h1>${esc(inv.title)}</h1><p>${esc(d.invitedBy(inv.host_name))}</p><p class="hint">${esc(d.qCount(nQ))}</p>
 <form method="post" action="/i/${esc((req.params as any).token)}/abrir"><p><button class="accent" style="width:100%">${esc(d.open)}</button></p></form>
-<form method="post" action="/i/${esc((req.params as any).token)}/recusar" onsubmit="return confirm('${esc(d.decline)}?')"><p><button class="ghost" style="width:100%">${esc(d.decline)}</button></p></form>`);
+<form method="post" action="/i/${esc((req.params as any).token)}/recusar" onsubmit="return confirm('${esc(d.decline)}?')"><p><button class="ghost" style="width:100%">${esc(d.decline)}</button></p></form>${promo}`);
   });
 
   app.post('/i/:token/abrir', async (req, reply) => {

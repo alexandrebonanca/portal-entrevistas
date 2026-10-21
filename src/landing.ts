@@ -23,8 +23,15 @@ const FALLBACK: Record<string, { src: string; alt: string }> = {
 };
 const COVERS: [string, string][] = [['c1', 'The Long Table'], ['c2', 'Backstage'], ['c3', 'Open Mic']];
 const hasPhoto = (name: string) => existsSync(join(PHOTO_DIR, `${name}.jpg`));
-// Vídeo de apresentação (public/video/promo.mp4, com cartaz e legendas em inglês): a secção só aparece se existir.
-const hasVideo = () => existsSync(join(process.cwd(), 'public', 'video', 'promo.mp4'));
+// Vídeo de apresentação (public/video/promo.mp4, com cartaz e legendas em inglês e em português): só aparece se existir.
+export const hasVideo = () => existsSync(join(process.cwd(), 'public', 'video', 'promo.mp4'));
+/**
+ * Leitor do vídeo de apresentação, sem reprodução automática (preload="none"): legendas em inglês e em português, com a da
+ * língua de quem vê ligada por omissão. Usado na landing e na página do convite ao convidado.
+ */
+export const promoVideo = (lang: 'en' | 'pt-PT', fallback: string, style = '') => `<video controls playsinline preload="none" poster="/static/video/promo.jpg" width="1280" height="720"${style ? ` style="${style}"` : ''}>
+    <source src="/static/video/promo.mp4" type="video/mp4"><track kind="captions" srclang="en" label="English" src="/static/video/promo.en.vtt"${lang === 'en' ? ' default' : ''}><track kind="captions" srclang="pt-PT" label="Português" src="/static/video/promo.pt.vtt"${lang === 'pt-PT' ? ' default' : ''}>
+    <a href="/static/video/promo.mp4">${esc(fallback)}</a></video>`;
 const credits = () => { try { return readFileSync(join(PHOTO_DIR, 'credits.txt'), 'utf8').trim(); } catch { return ''; } };
 
 const STYLES = `
@@ -91,10 +98,8 @@ export function landing(plans: any[]) {
 ${video ? `
 <section class="wrap lp-section" id="tour" aria-labelledby="tourh"><h2 id="tourh"><span translate="no">${b}</span> in one minute</h2>
   <p class="lp-intro">Professional cultures and life lessons, shared across countries and generations: your guests answer in their own time, by default review before anything is published, and reach listeners in other languages.</p>
-  <figure class="lp-video"><video controls playsinline preload="none" poster="/static/video/promo.jpg" width="1280" height="720">
-    <source src="/static/video/promo.mp4" type="video/mp4"><track kind="captions" srclang="en" label="English" src="/static/video/promo.en.vtt" default>
-    <a href="/static/video/promo.mp4">Watch the video (MP4)</a></video>
-    <figcaption class="hint">AI-generated video and voices (Google Veo), with English captions. All people shown are fictional.</figcaption></figure>
+  <figure class="lp-video">${promoVideo('en', 'Watch the video (MP4)')}
+    <figcaption class="hint">AI-generated video and voices (Google Veo), with English and Portuguese captions. All people shown are fictional.</figcaption></figure>
 </section>
 ` : ''}
 <section class="wrap lp-section" id="how" aria-labelledby="howh"><h2 id="howh">How it works</h2>

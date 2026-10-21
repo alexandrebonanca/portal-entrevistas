@@ -158,3 +158,49 @@ test('episódio já publicado: o convidado vê e ouve, sem formulário de aprova
   assert.match(again.text_body, /already been published/);
   assert.match((await get(`/i/${tokenOf(again.text_body)}`)).body, /<h1>Your interview episode<\/h1>/);
 });
+
+test('vídeo explicativo no convite: só com «o entrevistado aprova», sem preços nem reprodução automática, legendas PT e EN', async () => {
+  const { readFileSync } = await import('node:fs');
+  const invite = async (title: string, policy: string, lang: string) => {
+    const c = await post('/entrevistas', { title }, admin);
+    const id = /entrevistas\/([0-9a-f-]{36})/.exec(c.headers.location as string)![1];
+    await post(`/entrevistas/${id}/perguntas`, { text: 'Primeira?' }, admin);
+    await post(`/entrevistas/${id}/guardar`, { title, objective_text: 'Objetivo', host_name: 'Ana', guest_name: 'Rui', guest_email: 'rui@example.com', interaction_lang: lang, review_policy: policy, subtitle_langs: 'en' }, admin);
+    assert.match(msgOf(await post(`/entrevistas/${id}/convidar`, {}, admin)), /ok=/);
+    await flushOutbox(db);
+    return { id, tk: tokenOf((await inviteMails(id))[0].text_body) };
+  };
+  const pt = await invite('Convite com vídeo', 'guest_preview', 'pt-PT');
+  let page = (await get(`/i/${pt.tk}`)).body;
+  assert.match(page, /<strong>Como funciona, em 1 minuto<\/strong>/);
+  assert.match(page, /<video controls playsinline preload="none" poster="\/static\/video\/promo\.jpg"/);
+  assert.doesNotMatch(page, /autoplay/i, 'sem reprodução automática');
+  assert.match(page, /<track kind="captions" srclang="pt-PT" label="Português" src="\/static\/video\/promo\.pt\.vtt" default>/, 'legendas em português ligadas para um convite em português');
+  assert.match(page, /<track kind="captions" srclang="en" label="English" src="\/static\/video\/promo\.en\.vtt">/);
+  assert.match(page, /Vídeo e vozes gerados por IA \(Google Veo\), com legendas em português e em inglês\. Todas as pessoas mostradas são fictícias\./);
+  assert.doesNotMatch(page, /€|\$|\bVAT\b|\bIVA\b|preço|price|crédito|credit/i, 'sem preços');
+  const en = await invite('Invitation with video', 'guest_preview', 'en');
+  page = (await get(`/i/${en.tk}`)).body;
+  assert.match(page, /<track kind="captions" srclang="en" label="English" src="\/static\/video\/promo\.en\.vtt" default>/);
+  assert.match(page, /<track kind="captions" srclang="pt-PT" label="Português" src="\/static\/video\/promo\.pt\.vtt">/);
+  assert.match(page, /How it works, in 1 minute/);
+  // «só o entrevistador aprova»: o vídeo promete a aprovação do convidado, por isso não aparece
+  const host = await invite('Sem vídeo', 'host_only', 'pt-PT');
+  assert.doesNotMatch((await get(`/i/${host.tk}`)).body, /<video/);
+  // perguntas adicionais e validação do episódio: o convidado já conhece o portal
+  await createInvitation(db, await db.one('SELECT * FROM interviews WHERE id=$1', [pt.id]), { name: 'Ana' }, { followup: true });
+  await flushOutbox(db);
+  assert.doesNotMatch((await get(`/i/${tokenOf((await inviteMails(pt.id))[0].text_body)}`)).body, /<video/);
+
+  // legendas em português: as 16 do inglês, com os mesmos tempos e texto traduzido
+  const cues = (f: string) => readFileSync(join(process.cwd(), 'public', 'video', f), 'utf8').replace(/\r/g, '').trim().split(/\n\n+/).slice(1).map(b => b.split('\n'));
+  const [ptCues, enCues] = [cues('promo.pt.vtt'), cues('promo.en.vtt')];
+  assert.equal(readFileSync(join(process.cwd(), 'public', 'video', 'promo.pt.vtt'), 'utf8').split(/\r?\n/)[0], 'WEBVTT');
+  assert.equal(ptCues.length, 16); assert.equal(enCues.length, 16);
+  ptCues.forEach((c, i) => {
+    assert.deepEqual(c.slice(0, 2), enCues[i].slice(0, 2), `número e tempos da legenda ${i + 1}`);
+    assert.ok(c[2]?.trim(), `texto da legenda ${i + 1}`);
+  });
+  assert.equal(ptCues[6][2], 'Nada é publicado sem a minha aprovação.');
+  assert.equal(ptCues.filter((c, i) => c[2] !== enCues[i][2]).length, 15, 'traduzidas (só a marca fica igual)');
+});
