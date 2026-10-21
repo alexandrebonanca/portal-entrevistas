@@ -25,6 +25,8 @@ declare module 'fastify' {
     // support_unread: respostas do suporte por ler; support_inbox: pedidos por ler na caixa do administrador.
     user?: { id: string; email: string; name: string; role: string; entity_id: string | null; support_unread?: number; support_inbox?: number };
     guest?: { interviewId: string; invitationId: string; supportUnread?: number };
+    // Sessão de convidado cujo convite deixou de valer (cancelado, recusado ou substituído): só lê os pedidos ao suporte.
+    guestHelp?: { interviewId: string; supportUnread?: number };
   }
 }
 
@@ -94,11 +96,13 @@ export async function buildApp(db: Db): Promise<FastifyInstance> {
     }
     const gs = req.cookies?.gs;
     if (gs) {
-      const g = await db.one(`SELECT gs.interview_id, gs.invitation_id,
+      const g = await db.one(`SELECT gs.interview_id, gs.invitation_id, (i.revoked_at IS NULL AND i.declined_at IS NULL AND i.expires_at>now()) AS active,
           (SELECT count(*)::int FROM support_threads t WHERE t.interview_id=gs.interview_id AND t.unread_user) AS support_unread
         FROM guest_sessions gs JOIN invitations i ON i.id=gs.invitation_id
-        WHERE gs.id=$1 AND gs.expires_at>now() AND i.revoked_at IS NULL AND i.declined_at IS NULL AND i.expires_at>now()`, [sha256(gs)]);
-      if (g) req.guest = { interviewId: g.interview_id, invitationId: g.invitation_id, supportUnread: g.support_unread };
+        WHERE gs.id=$1 AND gs.expires_at>now()`, [sha256(gs)]);
+      if (g?.active) req.guest = { interviewId: g.interview_id, invitationId: g.invitation_id, supportUnread: g.support_unread };
+      // Convite cancelado, recusado ou substituído: a sessão (até ao prazo dela) só serve para ler as respostas do suporte.
+      else if (g) req.guestHelp = { interviewId: g.interview_id, supportUnread: g.support_unread };
     }
   });
 

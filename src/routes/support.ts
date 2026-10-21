@@ -60,13 +60,13 @@ ${o.noForm ?? (x ? `<p>${esc(x.note)}</p>${supportForm(x.action, o.d, o.form ?? 
 <section id="pedidos" aria-labelledby="h-pedidos"><h2 id="h-pedidos">${esc(o.d.supportMine)}</h2>${threadList(o.rows, o.base, o.d, o.lang)}</section>`;
 };
 
-/** Pedido visto por quem o fez: mensagens, resposta, fechar/reabrir. */
-const threadBody = (th: any, msgs: any[], base: string, d: Dict, lang: string, o: { ok?: string; e?: string; message?: string }) => {
+/** Pedido visto por quem o fez: mensagens, resposta, fechar/reabrir (só leitura para o convidado cujo convite deixou de valer). */
+const threadBody = (th: any, msgs: any[], base: string, d: Dict, lang: string, o: { ok?: string; e?: string; message?: string; readOnly?: string }) => {
   const you = (m: any) => (m.author === 'admin' ? d.supportTeam : m.author === 'assistant' ? d.supportAssistant : d.supportYou);
   return `<p class="sans"><a href="${base}">← ${esc(d.supportBack)}</a></p>
 <h1 style="font-size:1.7rem">${esc(th.subject)}</h1><p>${statusPill(th.status, d)}</p>${flash(o.ok)}${flash(o.e, 'bad')}
 ${conversation(msgs, you, lang)}
-${th.status === 'closed'
+${o.readOnly ? `<div class="card"><p style="margin:0">${esc(o.readOnly)}</p></div>` : th.status === 'closed'
     ? `<div class="card"><p style="margin-top:0">${esc(d.supportClosedNote)}</p><form method="post" action="${base}/${th.id}/reabrir"><button class="ghost">${esc(d.supportReopen)}</button></form></div>`
     : `<form method="post" action="${base}/${th.id}/responder" class="card"><label for="sp-r" style="margin-top:0">${esc(d.supportReply)}</label><textarea id="sp-r" name="message" required maxlength="${SUPPORT_MAX_BODY}" rows="5">${esc(o.message ?? '')}</textarea>
 <p class="hint">${esc(d.supportMaxHint(SUPPORT_MAX_BODY))}</p><p><button class="accent">${esc(d.supportReplyBtn)}</button></p></form>
@@ -225,24 +225,36 @@ export async function supportRoutes(app: FastifyInstance) {
   }
 
   // ================= convidados (na língua da entrevista) =================
-  const guestCtx = async (req: FastifyRequest, reply: FastifyReply) => {
-    if (!req.guest) { reply.redirect('/'); return null; }
-    const iv = await db.one('SELECT id, title, interaction_lang, collection_status FROM interviews WHERE id=$1', [req.guest.interviewId]);
+  type GuestC = { iv: any; lang: Lang; d: Dict; g: { supportUnread?: number }; readOnly: boolean };
+  /**
+   * Convidado com sessão ativa (req.guest) ou só de leitura (req.guestHelp: convite cancelado, recusado ou substituído,
+   * até ao prazo da sessão): este vê os seus pedidos e as respostas, mas não escreve (`write` leva-o à página de ajuda).
+   */
+  const guestCtx = async (req: FastifyRequest, reply: FastifyReply, write = false): Promise<GuestC | null> => {
+    const g = req.guest ?? req.guestHelp;
+    if (!g) { reply.redirect('/'); return null; }
+    const readOnly = !req.guest;
+    if (readOnly && write) { reply.redirect('/entrevista/ajuda', 303); return null; }
+    const iv = await db.one('SELECT id, title, interaction_lang, collection_status FROM interviews WHERE id=$1', [g.interviewId]);
     if (!iv) { reply.redirect('/'); return null; }
     const lang = normLang(iv.interaction_lang);
-    return { iv, lang, d: t(lang) };
+    return { iv, lang, d: t(lang), g, readOnly };
   };
   const guestPage = (req: FastifyRequest, reply: FastifyReply, lang: Lang, title: string, body: string, code = 200) =>
-    reply.code(code).headers(HTML).send(page({ lang, title, body: `<div class="narrow" style="padding:28px 20px 0">${body}</div>`, noindex: true, nav: guestHelpNav(req.guest, lang), styles: HELP_CSS }));
-  const guestAs = (c: { iv: any; lang: Lang }): AsCtx => ({ audience: 'guest', lang: c.lang, base: '/entrevista/ajuda', asker: `guest:${c.iv.id}`, canEscalate: true });
+    reply.code(code).headers(HTML).send(page({ lang, title, body: `<div class="narrow" style="padding:28px 20px 0">${body}</div>`, noindex: true, nav: guestHelpNav(req.guest ?? req.guestHelp, lang), styles: HELP_CSS }));
+  // Os convidados ficam sempre na pesquisa local: a pergunta nunca segue para a IA (não há aviso nem autorização para isso).
+  const guestAs = (c: { iv: any; lang: Lang }): AsCtx => ({ audience: 'guest', lang: c.lang, base: '/entrevista/ajuda', asker: `guest:${c.iv.id}`, canEscalate: true, ai: false });
   const guestThreadOf = async (req: FastifyRequest, interviewId: string) => {
     const id = (req.params as any).id;
     return isUuid(id) ? db.one('SELECT * FROM support_threads WHERE id=$1 AND interview_id=$2', [id, interviewId]) : undefined;
   };
 
-  const guestHelp = async (req: FastifyRequest, reply: FastifyReply, c: { iv: any; lang: Lang; d: Dict }, o: { e?: string; form?: { subject?: string; message?: string }; as?: AsState } = {}, code = 200) => {
+  const guestHelp = async (req: FastifyRequest, reply: FastifyReply, c: GuestC, o: { e?: string; form?: { subject?: string; message?: string }; as?: AsState } = {}, code = 200) => {
     const q = req.query as any;
     const rows = await db.query('SELECT * FROM support_threads WHERE interview_id=$1 ORDER BY updated_at DESC LIMIT 100', [c.iv.id]);
+    if (c.readOnly) return guestPage(req, reply, c.lang, c.d.helpTitle, helpBody({
+      d: c.d, lang: c.lang, intro: '', assistant: '', base: '/entrevista/ajuda', rows, noForm: `<p>${esc(c.d.supportReadOnly(config.supportEmail))}</p>`,
+    }), code);
     const as = await assistantSection(db, guestAs(c), o.as ?? asStateFrom(q));
     return guestPage(req, reply, c.lang, c.d.helpTitle, helpBody({
       d: c.d, lang: c.lang, intro: c.d.supportIntro, assistant: as.html, base: '/entrevista/ajuda', rows,
@@ -258,17 +270,17 @@ export async function supportRoutes(app: FastifyInstance) {
   });
 
   app.post('/entrevista/ajuda/assistente', async (req, reply) => {
-    const c = await guestCtx(req, reply); if (!c) return;
+    const c = await guestCtx(req, reply, true); if (!c) return;
     return ask(req, reply, guestAs(c), (st, code) => guestHelp(req, reply, c, { as: st }, code));
   });
 
   app.post('/entrevista/ajuda/assistente/:id/ajudou', async (req, reply) => {
-    const c = await guestCtx(req, reply); if (!c) return;
+    const c = await guestCtx(req, reply, true); if (!c) return;
     return feedback(req, reply, guestAs(c));
   });
 
   app.post('/entrevista/ajuda/assistente/:id/suporte', async (req, reply) => {
-    const c = await guestCtx(req, reply); if (!c) return;
+    const c = await guestCtx(req, reply, true); if (!c) return;
     const b = (req.body ?? {}) as any;
     const x = await escalation(req, guestAs(c));
     if (!x) return guestHelp(req, reply, c, { as: { err: c.d.asExpired } }, 404);
@@ -285,7 +297,7 @@ export async function supportRoutes(app: FastifyInstance) {
   });
 
   app.post('/entrevista/ajuda', async (req, reply) => {
-    const c = await guestCtx(req, reply); if (!c) return;
+    const c = await guestCtx(req, reply, true); if (!c) return;
     const b = (req.body ?? {}) as any;
     const form = { subject: String(b.subject ?? '').slice(0, 300), message: String(b.message ?? '').slice(0, SUPPORT_MAX_BODY * 2) };
     const body = cleanBody(b.message);
@@ -296,13 +308,14 @@ export async function supportRoutes(app: FastifyInstance) {
     return reply.redirect(`/entrevista/ajuda/${id}?ok=sent`);
   });
 
-  const guestThread = async (req: FastifyRequest, reply: FastifyReply, c: { iv: any; lang: Lang; d: Dict }, th: any, o: { e?: string; message?: string } = {}, code = 200) => {
+  const guestThread = async (req: FastifyRequest, reply: FastifyReply, c: GuestC, th: any, o: { e?: string; message?: string } = {}, code = 200) => {
     const q = req.query as any;
     if (th.unread_user) {
       await db.query('UPDATE support_threads SET unread_user=false WHERE id=$1', [th.id]);
-      req.guest!.supportUnread = Math.max(0, (req.guest!.supportUnread ?? 1) - 1);
+      c.g.supportUnread = Math.max(0, (c.g.supportUnread ?? 1) - 1);
     }
-    return guestPage(req, reply, c.lang, th.subject, threadBody(th, await threadMessages(db, th.id), '/entrevista/ajuda', c.d, c.lang, { ok: okMsg(c.d, q.ok), e: o.e ?? errMsg(c.d, q.e), message: o.message }), code);
+    return guestPage(req, reply, c.lang, th.subject, threadBody(th, await threadMessages(db, th.id), '/entrevista/ajuda', c.d, c.lang,
+      { ok: okMsg(c.d, q.ok), e: o.e ?? errMsg(c.d, q.e), message: o.message, readOnly: c.readOnly ? c.d.supportReadOnly(config.supportEmail) : undefined }), code);
   };
 
   app.get('/entrevista/ajuda/:id', async (req, reply) => {
@@ -313,7 +326,7 @@ export async function supportRoutes(app: FastifyInstance) {
   });
 
   app.post('/entrevista/ajuda/:id/responder', async (req, reply) => {
-    const c = await guestCtx(req, reply); if (!c) return;
+    const c = await guestCtx(req, reply, true); if (!c) return;
     const th = await guestThreadOf(req, c.iv.id);
     if (!th) return reply.code(404).send('Not found');
     if (th.status === 'closed') return reply.redirect(`/entrevista/ajuda/${th.id}?e=closed`);
@@ -327,7 +340,7 @@ export async function supportRoutes(app: FastifyInstance) {
 
   for (const [action, close] of [['fechar', true], ['reabrir', false]] as const) {
     app.post(`/entrevista/ajuda/:id/${action}`, async (req, reply) => {
-      const c = await guestCtx(req, reply); if (!c) return;
+      const c = await guestCtx(req, reply, true); if (!c) return;
       const th = await guestThreadOf(req, c.iv.id);
       if (!th) return reply.code(404).send('Not found');
       await setThreadStatus(db, th.id, close);
@@ -380,7 +393,7 @@ ${rows.map((r: any) => `<tr><td>${r.unread_admin ? '<strong>' : ''}<a href="/adm
       req.user!.support_inbox = Math.max(0, (req.user!.support_inbox ?? 1) - 1);
     }
     // Contexto atual de quem pediu: o utilizador (perfil e entidade) ou a entrevista do convidado.
-    let ctx = '', who = 'Utilizador';
+    let ctx = '', who = 'Utilizador', warn = '';
     if (th.user_id) {
       const u = await db.one('SELECT u.id, u.name, u.email, u.role, u.active, e.name AS entity_name FROM users u LEFT JOIN entities e ON e.id=u.entity_id WHERE u.id=$1', [th.user_id]);
       who = u?.name ?? who;
@@ -393,16 +406,22 @@ ${rows.map((r: any) => `<tr><td>${r.unread_admin ? '<strong>' : ''}<a href="/adm
       ctx = iv ? `<strong>Convidado:</strong> ${esc(iv.guest_name || '—')}${iv.guest_email ? ` · ${esc(iv.guest_email)}` : ''}<br>
 <strong>Entrevista:</strong> <a href="/entrevistas/${iv.id}">${esc(iv.title)}</a> · <strong>Estado:</strong> ${esc(STATUS_LABEL[iv.collection_status] ?? iv.collection_status)} · ${esc(STATUS_LABEL[iv.production_status] ?? iv.production_status)} · ${esc(STATUS_LABEL[iv.publication_status] ?? iv.publication_status)}<br>
 <strong>Entrevistador:</strong> <a href="/admin/utilizadores/${iv.owner_id}">${esc(iv.owner_name)}</a> · ${esc(iv.owner_email)}` : '';
+      // Sem convite válido, o convidado só lê as respostas no navegador onde já o tinha aberto (até ao prazo) e não escreve.
+      const inv = iv ? await db.one(`SELECT bool_or(revoked_at IS NULL AND declined_at IS NULL AND expires_at>now()) AS valid, bool_or(declined_at IS NOT NULL) AS declined FROM invitations WHERE interview_id=$1`, [iv.id]) : null;
+      if (iv && (iv.collection_status === 'cancelled' || !inv?.valid)) {
+        const why = iv.collection_status === 'cancelled' ? 'entrevista cancelada' : inv?.declined ? 'convite recusado' : 'link expirado ou revogado';
+        warn = `<div class="flash bad">O convidado já não tem um convite válido (${why}): só consegue ler as respostas no navegador onde abriu o convite, até ao fim do prazo desse convite, e não pode escrever. Se a resposta for importante (por exemplo, um pedido sobre os seus dados), contacte-o também por email${iv.guest_email ? `: ${esc(iv.guest_email)}` : ''}.</div>`;
+      }
     }
     const label = (m: any) => (m.author === 'admin' ? `Suporte${m.author_name ? ` (${m.author_name})` : ''}` : m.author === 'assistant' ? 'Assistente virtual' : m.author === 'guest' ? `Convidado (${who})` : who);
     const closed = th.status === 'closed';
     return adminPage(req, reply, th.subject, `<p class="sans"><a href="/admin/suporte">← Suporte</a></p>
 <h1 style="font-size:1.7rem">${esc(th.subject)}</h1>${flash(okMsg(PT, q.ok))}${flash(errMsg(PT, q.e), 'bad')}
 <div class="card sans"><p style="margin:0">${statusPill(th.status, PT)} · <strong>Origem:</strong> ${esc(ORIGIN_LABEL[th.origin] ?? th.origin)} · <strong>Língua:</strong> ${esc(LANG_LABEL[th.lang] ?? th.lang)} · <strong>Entidade:</strong> ${esc(th.entity_name ?? '—')} · aberto em ${esc(when(th.created_at, 'pt-PT'))}</p>
-<p style="margin:8px 0 0">${ctx}</p></div>
+<p style="margin:8px 0 0">${ctx}</p></div>${warn}
 <div class="narrow" style="margin:0;padding:0">${conversation(await threadMessages(db, th.id), label, 'pt-PT')}</div>
 <form method="post" action="/admin/suporte/${th.id}/responder" class="card"><label for="sp-r" style="margin-top:0">Responder${th.lang === 'en' ? ' (em inglês, a língua de quem pediu)' : ''}</label><textarea id="sp-r" name="message" required maxlength="${SUPPORT_MAX_BODY}" rows="6"></textarea>
-<p class="hint">A resposta fica visível na página de ajuda de quem pediu, com o aviso de resposta por ler. Não é enviado email.${closed ? ' Responder reabre o pedido como «Respondido».' : ''}</p><p><button class="accent">Enviar resposta</button></p></form>
+<p class="hint">A resposta fica visível na página de ajuda de quem pediu, com o aviso de resposta por ler. Não é enviado email.${closed ? ' Responder reabre o pedido como «Respondido».' : ''} Não escreva palavras-passe nem chaves nas respostas: ficam guardadas no pedido, à vista de quem pediu e de todos os administradores.</p><p><button class="accent">Enviar resposta</button></p></form>
 <form method="post" action="/admin/suporte/${th.id}/${closed ? 'reabrir' : 'fechar'}"><button class="ghost">${closed ? 'Reabrir pedido' : 'Fechar pedido'}</button></form>`);
   });
 

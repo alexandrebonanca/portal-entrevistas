@@ -58,7 +58,8 @@ const D = {
     // ajuda e suporte interno (sem email)
     helpNav: 'Ajuda', helpTitle: 'Ajuda', supportTitle: 'Falar com o suporte',
     supportUnreadSr: (n: number) => `${n} ${n === 1 ? 'resposta por ler' : 'respostas por ler'}`,
-    supportIntro: 'Escreva a sua dúvida ou o problema que encontrou. A equipa do portal responde nesta página, não por email: volte aqui pelo seu link para ler a resposta.',
+    supportIntro: 'Escreva a sua dúvida ou o problema que encontrou. A equipa do portal responde nesta página, não por email: para ler a resposta, volte aqui pelo link do convite enquanto for válido. Se o convite for cancelado ou recusado, continua a poder lê-la neste navegador até ao fim do prazo do convite.',
+    supportReadOnly: (email: string) => `O seu convite já não está ativo (foi cancelado, recusado ou substituído por um link novo). Neste navegador pode continuar a ler as respostas aos seus pedidos até ao fim do prazo do convite, mas não pode escrever. Se recebeu um link novo, abra-o; caso contrário, contacte quem o convidou ou ${email}.`,
     supportSubject: 'Assunto (opcional)', supportMessage: 'Mensagem', supportMaxHint: (n: number) => `Até ${n} caracteres. Não inclua palavras-passe nem dados de pagamento.`,
     supportSend: 'Enviar ao suporte', supportSent: 'Pedido enviado. A resposta aparece nesta página.', supportReplySent: 'Mensagem enviada.',
     supportMine: 'Os seus pedidos', supportNone: 'Ainda não fez nenhum pedido.', supportReply: 'Responder', supportReplyBtn: 'Enviar resposta',
@@ -138,7 +139,8 @@ const D = {
     // help and in-portal support (no email)
     helpNav: 'Help', helpTitle: 'Help', supportTitle: 'Contact support',
     supportUnreadSr: (n: number) => `${n} unread ${n === 1 ? 'reply' : 'replies'}`,
-    supportIntro: 'Write your question or the problem you found. The portal team replies on this page, not by email: come back here through your link to read the reply.',
+    supportIntro: 'Write your question or the problem you found. The portal team replies on this page, not by email: to read the reply, come back here through your invitation link while it is valid. If the invitation is cancelled or declined, you can still read it in this browser until the invitation deadline.',
+    supportReadOnly: (email: string) => `Your invitation is no longer active (it was cancelled, declined or replaced by a new link). In this browser you can still read the replies to your requests until the invitation deadline, but you cannot write. If you received a new link, open it; otherwise, contact the person who invited you or ${email}.`,
     supportSubject: 'Subject (optional)', supportMessage: 'Message', supportMaxHint: (n: number) => `Up to ${n} characters. Do not include passwords or payment details.`,
     supportSend: 'Send to support', supportSent: 'Request sent. The reply will appear on this page.', supportReplySent: 'Message sent.',
     supportMine: 'Your requests', supportNone: 'You have not sent any requests yet.', supportReply: 'Reply', supportReplyBtn: 'Send reply',

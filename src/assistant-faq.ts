@@ -432,10 +432,10 @@ export const FAQ_SEED: SeedEntry[] = [
 
   { key: 'convidado-suporte', audience: 'guest',
     pt: ['Como falo com o suporte?',
-      `Nesta página, em «Falar com o suporte», escreva a mensagem e carregue em «Enviar ao suporte». A equipa do portal responde aqui, não por email: volte a esta página pelo seu link para ler a resposta; a ligação «Ajuda» mostra quando há respostas por ler. Para alterar respostas já submetidas, contacte também quem o convidou.`,
+      `Nesta página, em «Falar com o suporte», escreva a mensagem e carregue em «Enviar ao suporte». A equipa do portal responde aqui, não por email: para ler a resposta, volte a esta página pelo link do convite enquanto for válido; a ligação «Ajuda» mostra quando há respostas por ler. Se o convite for cancelado ou recusado, ainda pode ler as respostas no navegador onde o abriu, até ao fim do prazo do convite, mas já não pode escrever. Para alterar respostas já submetidas, contacte também quem o convidou.`,
       'suporte, ajuda, contactar, falar com alguém, problema, erro, dúvida, pessoa'],
     en: ['How do I contact support?',
-      `On this page, under «Contact support», write your message and press «Send to support». The portal team replies here, not by email: come back to this page through your link to read the reply; the «Help» link shows when there are unread replies. To change answers you have already submitted, also contact the interviewer.`,
+      `On this page, under «Contact support», write your message and press «Send to support». The portal team replies here, not by email: to read the reply, come back to this page through your invitation link while it is valid; the «Help» link shows when there are unread replies. If the invitation is cancelled or declined, you can still read the replies in the browser where you opened it, until the invitation deadline, but you can no longer write. To change answers you have already submitted, also contact the interviewer.`,
       'support, help, contact, talk to someone, problem, error, question, person'] },
 
   // ======================= todos =======================
