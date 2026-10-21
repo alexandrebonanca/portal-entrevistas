@@ -623,3 +623,22 @@ test('operação pendente na geração: credencial retirada fica pendente e pár
     await db.query(`UPDATE veo_ops SET state='expired' WHERE interview_id=$1 AND state='pending'`, [ivId]);
   }
 });
+
+test('nenhum pedaço com clipe: o vídeo não se liga ao episódio e as aprovações mantêm-se', async () => {
+  await rejectAll();
+  const ep0 = await db.one('SELECT video_asset_id FROM episodes WHERE id=$1', [epId]);
+  // o entrevistador aprova a versão atual (com o vídeo que lá está)
+  assert.match(msg(await post(`/entrevistas/${ivId}/episodio/${epId}/aprovar`, { video: ep0.video_asset_id ?? '' }, cli.cookie)), /Versão aprovada/);
+  const ap = await db.one(`SELECT id FROM approvals WHERE episode_id=$1 AND actor='interviewer' AND valid AND decision='approved'`, [epId]);
+  V.veoMock.outcome = () => 'filtered'; // a Google recusa todos os clipes
+  try {
+    assert.match(msg(await post(`/entrevistas/${ivId}/episodio/${epId}/video`, { engine: 'veo', lang: 'en' }, admin)), /Geração do vídeo iniciada/);
+    await drain();
+  } finally { V.veoMock.outcome = null; }
+  const j = await lastJob();
+  assert.equal(j.state, 'failed');
+  assert.match(j.error, /Nenhuma fala ficou animada e a Google não devolveu nenhum clipe \([^)]*recusada pelo filtro da Google[^)]*\): o vídeo não foi ligado ao episódio e as aprovações mantêm-se\./);
+  assert.equal((await db.one('SELECT video_asset_id FROM episodes WHERE id=$1', [epId])).video_asset_id, ep0.video_asset_id, 'o vídeo do episódio não mudou');
+  assert.equal((await db.one('SELECT valid FROM approvals WHERE id=$1', [ap.id])).valid, true, 'a aprovação mantém-se');
+  assert.match((await get(`/entrevistas/${ivId}/producao`, cli.cookie)).body, /A última geração do vídeo não terminou: Nenhuma fala ficou animada/);
+});

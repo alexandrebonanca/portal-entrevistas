@@ -131,6 +131,21 @@ test('Vertex: o Lite que recuse a imagem inicial pára com uma mensagem clara', 
   assert.equal(calls.filter(c => c.url.includes(':predictLongRunning')).length, 1, 'não repete o pedido');
 });
 
+test('Veo: modelo inexistente ou desligado no envio (404) pára com uma indicação clara, sem repetir nem cobrar', async () => {
+  // Gemini API depois de 22/10/2026: o modelo deixa de existir
+  delete process.env.VERTEX_SA_JSON; process.env.GEMINI_API_KEY = 'AIza-falsa';
+  fake(() => json({ error: { code: 404, message: 'models/veo-3.1-fast-generate-preview is not found for API version v1beta, or is not supported for predictLongRunning.', status: 'NOT_FOUND' } }, 404));
+  await assert.rejects(t.veoSubmit({ image: Buffer.from('x'), prompt: 'p', durationSeconds: 8 }),
+    (e: any) => e instanceof t.VeoUnsupported && /já não está disponível na Gemini API \(nada foi cobrado\): configure a conta de serviço do Vertex AI em Definições → Google\./.test(e.message) && /is not found/.test(e.message) && !t.isKeyRejected(e.message));
+  assert.equal(calls.length, 1, 'não repete o pedido');
+  // Vertex AI: modelo que não existe na região escolhida
+  process.env.VERTEX_SA_JSON = SA_JSON; process.env.VERTEX_LOCATION = 'europe-west4'; calls = [];
+  fake(c => (c.url.includes(':predictLongRunning') ? json({ error: { code: 404, message: 'Publisher Model `veo-3.1-fast-generate-001` was not found.', status: 'NOT_FOUND' } }, 404) : json({})));
+  await assert.rejects(t.veoSubmit({ image: Buffer.from('x'), prompt: 'p', durationSeconds: 8 }),
+    (e: any) => e instanceof t.VeoUnsupported && /não está disponível no Vertex AI em europe-west4 \(nada foi cobrado\): confirme a região e o modelo/.test(e.message));
+  assert.equal(calls.filter(c => c.url.includes(':predictLongRunning')).length, 1);
+});
+
 test('Vertex: resposta da operação (vídeo em base64, pendente, filtrado, erro) consultada pelo nome', async () => {
   const mp4 = Buffer.from('....ftypmp42 vídeo falso');
   let polls = 0;

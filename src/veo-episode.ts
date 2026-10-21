@@ -921,6 +921,13 @@ export async function renderVeoVideo(job: any, { db, progress }: Parameters<Hand
       falaOut.set(s.id, { clips: null, reason: falaReasonOf(unitProblem(false, !!best, u.atts.some(a => !a.checked), u.problem)) });
     }
   }
+  // Nenhum pedaço teve clipe (ex.: a Google recusou ou falhou todos os pedidos, ou o modelo deixou de existir): um vídeo só
+  // com fotografias não substitui o que está no episódio nem faz cair as aprovações. Num orçamento, os créditos cativos
+  // voltam todos ao saldo. (Com clipes que não passaram na verificação, o vídeo liga-se com o relatório por fala, como antes.)
+  if (![...falaOut.values()].some(o => o.clips) && ![...units.values()].some(u => u.atts.length)) {
+    const why = [...new Set([...falaOut.values()].map(o => FALA_REASON[o.reason ?? 'google'] ?? o.reason))].join('; ');
+    throw new PermanentError(`Nenhuma fala ficou animada e a Google não devolveu nenhum clipe (${why || 'sem falas a animar'}): o vídeo não foi ligado ao episódio e as aprovações mantêm-se.${quote ? ' Os créditos cativos voltam todos ao saldo.' : ''}`);
+  }
 
   // 4. Linha temporal: aviso inicial (capa + voz do episódio), falas do Veo, reserva em imagem fixa, cartão final.
   const parts: Part[] = [], audioPieces: AudioPiece[] = [];
