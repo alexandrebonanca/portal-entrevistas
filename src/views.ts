@@ -51,13 +51,21 @@ video.cam{width:100%;max-height:60vh;border-radius:12px;background:#000;transfor
 
 const COUNTRY: Record<string, [string, string]> = { EE: ['Estónia', 'Estonia'], PT: ['Portugal', 'Portugal'] };
 
-/** Entidade proprietária e gestora do portal e quem o comercializa (português nas páginas em português, inglês nas outras). */
+/** Entidade proprietária e gestora do portal (português nas páginas em português, inglês nas outras). */
 export function ownerLine(lang = 'pt-PT') {
-  const o = config.owner, pt = /^pt/i.test(lang), seller = config.seller.name;
+  const o = config.owner, pt = /^pt/i.test(lang);
   const country = COUNTRY[o.country]?.[pt ? 0 : 1] ?? o.country;
   const site = o.site.replace(/^https?:\/\/(www\.)?/i, '').replace(/\/$/, '');
-  const tail = pt ? (seller ? `, que o gere, e é comercializado pela ${esc(seller)}` : ', que o gere') : (seller ? ` and sold by ${esc(seller)}` : '');
-  return `${pt ? `O ${esc(config.brand)} é propriedade da` : `${esc(config.brand)} is owned and operated by`} ${esc(o.name)}${country ? ` (${esc(country)})` : ''}${tail} · <a href="${esc(o.site)}" rel="noopener">${esc(site)}</a> · <a href="mailto:${esc(o.email)}">${esc(o.email)}</a>`;
+  return `${pt ? `O ${esc(config.brand)} é propriedade da` : `${esc(config.brand)} is owned and operated by`} ${esc(o.name)}${country ? ` (${esc(country)})` : ''}${pt ? ', que o gere' : ''} · <a href="${esc(o.site)}" rel="noopener">${esc(site)}</a> · <a href="mailto:${esc(o.email)}">${esc(o.email)}</a>`;
+}
+
+/** Quem comercializa o serviço (vende ao cliente final), com NIF, morada e o Livro de Reclamações Eletrónico. */
+export function sellerLine(lang = 'pt-PT') {
+  const s = config.seller, pt = /^pt/i.test(lang);
+  if (!s.name) return '';
+  return [`${pt ? 'Comercializado pela' : 'Sold by'} ${esc(s.name)}`, s.vat ? `${pt ? 'NIF' : 'VAT'} ${esc(s.vat)}` : '', s.address ? esc(s.address) : '',
+    s.complaintsUrl ? `<a href="${esc(s.complaintsUrl)}" rel="noopener">${pt ? 'Livro de Reclamações' : 'Complaints book (Livro de Reclamações)'}</a>` : '']
+    .filter(Boolean).join(' · ');
 }
 
 export interface PageOpts { title: string; body: string; lang?: string; nav?: string; noindex?: boolean; desc?: string; script?: string; wide?: boolean; head?: string; styles?: string }
@@ -70,7 +78,7 @@ ${o.noindex ? '<meta name="robots" content="noindex,nofollow"><meta name="referr
 <style>${CSS}${o.styles ?? ''}</style></head><body><a class="skip" href="#main">Skip to content</a>
 <header class="top"><div class="wrap"><a class="brand" href="/" aria-label="${esc(config.brand)}">${markSvg(28)}${wordmark()}</a><nav>${o.nav ?? ''}</nav></div></header>
 <main id="main">${o.body}</main>
-<footer><div class="wrap"><p>${esc(config.brand)} · <a href="/privacy">Privacy</a> · ${esc(config.supportEmail)}</p><p>${ownerLine(o.lang)}</p></div></footer>
+<footer><div class="wrap"><p>${esc(config.brand)} · <a href="/privacy">Privacy</a> · ${esc(config.supportEmail)}</p><p>${ownerLine(o.lang)}</p>${sellerLine(o.lang) ? `<p>${sellerLine(o.lang)}</p>` : ''}</div></footer>
 ${o.script ? `<script src="/static/recorder.js" defer></script><script src="${o.script}" defer></script>` : ''}</body></html>`;
 }
 

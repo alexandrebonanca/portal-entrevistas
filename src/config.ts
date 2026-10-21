@@ -16,7 +16,12 @@ export const config = {
     email: env.OWNER_EMAIL ?? 'certifinternational@gmail.com',
   },
   // Quem comercializa o serviço (vende ao cliente final); a entidade gestora é a de cima.
-  seller: { name: env.SELLER_NAME ?? 'Telecert' },
+  seller: {
+    name: env.SELLER_NAME ?? 'Telecert Consultoria Lda',
+    vat: env.SELLER_VAT ?? 'PT514907274',
+    address: env.SELLER_ADDRESS ?? 'Avenida 5 de Outubro, 38A, 8000-077 Faro',
+    complaintsUrl: env.SELLER_COMPLAINTS_URL ?? 'https://www.livroreclamacoes.pt/Inicio/',
+  },
   databaseUrl: env.DATABASE_URL ?? '',
   pgliteDir: env.PGLITE_DIR ?? './data/pglite',
   secret: env.APP_SECRET ?? (env.NODE_ENV === 'production' ? '' : 'dev-only-secret-' + randomBytes(8).toString('hex')),
