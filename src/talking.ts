@@ -260,7 +260,7 @@ export async function veoSubmit(o: { image: Buffer; prompt: string; aspectRatio?
       if (backend === 'gemini' && negative && /^Veo 400/.test(m) && /negative/i.test(m)) { geminiNegativeOk = false; continue; }
       // O Lite no Vertex: a ficha da Google contradiz-se sobre a imagem inicial; se a recusar, pára com uma indicação clara.
       if (backend === 'vertex' && tier === 'lite' && /^Veo 400/.test(m) && /image|not supported|unsupported/i.test(m))
-        throw new VeoUnsupported(`O Veo 3.1 Lite (${model}) recusou a imagem inicial no Vertex AI (nada foi cobrado): escolha o Veo 3.1 Fast em Definições → Google. Resposta da Google: ${m.replace(/^Veo 400:\s*/, '').slice(0, 160)}`);
+        throw new VeoUnsupported(`O Veo 3.1 Lite (${model}) recusou o pedido com imagem inicial no Vertex AI (nada foi cobrado): escolha o Veo 3.1 Fast em Definições → Google. Resposta da Google: ${m.replace(/^Veo 400:\s*/, '').slice(0, 160)}`);
       if (/^Veo 429/.test(m)) {
         if (attempt >= 4) throw new VeoQuotaError('Limite de pedidos (quota) da Google esgotado: tente mais tarde.');
         await quiet(o.onStatus, 'Limite de pedidos do Google: a aguardar');
