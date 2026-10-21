@@ -135,6 +135,23 @@ export const helpRequest = (system: string, user: string) => ({
   model: config.openai.assistantModel, temperature: 0.2, response_format: { type: 'json_object' as const }, max_completion_tokens: HELP_MAX_TOKENS,
   messages: [{ role: 'system' as const, content: system }, { role: 'user' as const, content: user }],
 });
+/**
+ * Assistente de composição da página de edição (o prompt vem de src/compose.ts): JSON com sugestões curtas,
+ * pedido de 30 s e COMPOSE_MAX_TOKENS no máximo. Uma resposta cortada pelo teto conta como falha.
+ */
+export async function composeHelp(system: string, user: string): Promise<any> {
+  const c = await openai();
+  const r = await c.chat.completions.create(composeRequest(system, user), { timeout: 30_000 });
+  const ch = r?.choices?.[0];
+  if (ch?.finish_reason === 'length') throw new Error('resposta do assistente de composição cortada pelo teto de tokens');
+  return JSON.parse(ch?.message?.content ?? '{}');
+}
+/** Cinco perguntas com a razão de cada uma, ou a revisão de quinze, cabem com folga. */
+export const COMPOSE_MAX_TOKENS = 1500;
+export const composeRequest = (system: string, user: string) => ({
+  model: config.openai.assistantModel, temperature: 0.5, response_format: { type: 'json_object' as const }, max_completion_tokens: COMPOSE_MAX_TOKENS,
+  messages: [{ role: 'system' as const, content: system }, { role: 'user' as const, content: user }],
+});
 /** Resposta do modelo; uma resposta cortada pelo teto de tokens conta como falha (ficam as entradas da pesquisa local). */
 export function parseHelp(r: any): { answer: string; answered: boolean } {
   const ch = r?.choices?.[0];

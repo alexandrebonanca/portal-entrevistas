@@ -16,6 +16,7 @@ header.top{border-bottom:1px solid var(--line)}header.top .wrap{display:flex;ali
 header.top nav{display:flex;flex-wrap:wrap;align-items:center;gap:6px 18px}header.top nav form button{margin-left:0!important}
 nav a{font-size:.95rem;text-decoration:none;color:var(--ink)}nav a:hover{color:var(--accent)}
 @media (max-width:560px){header.top nav{gap:6px 14px}nav a{font-size:.9rem}nav a.btn{padding:8px 14px;min-height:36px}}
+[hidden]{display:none!important}
 .btn,button{display:inline-block;background:var(--ink);color:var(--bg);border:0;border-radius:8px;padding:12px 20px;font-size:1rem;font-weight:600;cursor:pointer;text-decoration:none;min-height:44px}
 .btn.accent,button.accent{background:var(--accent);color:var(--accent-ink)}.btn.ghost,button.ghost{background:transparent;color:var(--ink);border:1px solid var(--line)}
 button.danger{background:var(--bad);color:#fff}button:disabled{opacity:.5;cursor:not-allowed}
@@ -47,6 +48,11 @@ video.cam{width:100%;max-height:60vh;border-radius:12px;background:#000;transfor
 .pbar{height:14px;border-radius:99px;background:var(--line);overflow:hidden}.pfill{height:100%;width:0;background:var(--accent);border-radius:99px;transition:width .6s ease}
 @media (prefers-reduced-motion:reduce){.pfill{transition:none}}
 :focus-visible{outline:3px solid var(--accent);outline-offset:2px}
+.compose{position:fixed;right:16px;bottom:16px;width:min(380px,calc(100vw - 32px));max-height:min(80vh,760px);overflow:auto;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px;box-shadow:0 12px 32px rgba(0,0,0,.22);z-index:30;font-family:system-ui}
+.compose textarea{min-height:56px}.compose .row{gap:8px;flex-wrap:wrap}.compose button{font-size:.9rem;padding:9px 14px;min-height:40px}.compose h2{font-size:1.05rem;margin:0}
+.compose-tips{margin:10px 0;padding-left:18px;font-size:.9rem;color:var(--mute)}.compose-tips li{margin:4px 0}.compose-item{border-top:1px solid var(--line);padding:10px 0;font-size:.95rem}.compose-item p{margin:4px 0}.compose-item.used{opacity:.6}
+#nq,#fq{scroll-margin-top:40vh}.compose-fab{position:fixed;right:16px;bottom:16px;z-index:29;box-shadow:0 6px 18px rgba(0,0,0,.22)}
+@media (min-width:1180px){.compose{top:88px;max-height:none}body.compose-open .editor{margin-left:max(0px,calc((100vw - 1440px)/2));max-width:min(1040px,calc(100vw - 420px))}}
 .badge{display:inline-block;min-width:1.5em;padding:0 .45em;border-radius:99px;background:var(--accent);color:var(--accent-ink);font:700 .75rem/1.6 system-ui,-apple-system,'Segoe UI',sans-serif;text-align:center;vertical-align:1px}
 .vh{position:absolute!important;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}
 `;

@@ -2,6 +2,8 @@ import { randomBytes } from 'node:crypto';
 
 const env = process.env;
 const bool = (v: string | undefined, d = false) => (v === undefined ? d : /^(1|true|yes)$/i.test(v));
+/** Número positivo de uma variável; vazia ou inválida fica o valor por omissão (um teto nunca pode desaparecer por engano). */
+export const positive = (v: string | undefined, d: number) => { const n = Number(v); return v !== undefined && v.trim() !== '' && Number.isFinite(n) && n > 0 ? n : d; };
 /**
  * Proxies à frente da aplicação (para o IP de quem pede, usado nos limites por IP). TRUST_PROXY: número de saltos
  * (por exemplo 1 com só o balanceador do Render), lista de endereços/redes, ou true/false. Sem valor fica `true`
@@ -53,7 +55,11 @@ export const config = {
     // Assistente da página de ajuda (fora de `models`, que entra na chave de deduplicação da geração dos episódios).
     assistantModel: env.OPENAI_MODEL_ASSISTANT ?? env.OPENAI_MODEL_TEXT ?? 'gpt-4.1',
     // Teto global de respostas do assistente redigidas pela IA por hora (todas as contas juntas); acima disto, só a pesquisa local.
-    assistantAiPerHour: Number(env.ASSISTANT_AI_PER_HOUR ?? 120),
+    assistantAiPerHour: positive(env.ASSISTANT_AI_PER_HOUR, 120),
+    // Tetos globais de pedidos ao assistente de composição da página de edição (todas as contas juntas): por hora
+    // (em memória) e por dia (na base de dados).
+    composeAiPerHour: positive(env.COMPOSE_AI_PER_HOUR, 200),
+    composeAiPerDay: positive(env.COMPOSE_AI_PER_DAY, 1000),
     models: {
       transcribe: env.OPENAI_MODEL_TRANSCRIBE ?? 'gpt-4o-transcribe',
       transcribeTimestamps: env.OPENAI_MODEL_TIMESTAMPS ?? 'whisper-1',
