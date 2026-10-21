@@ -1049,6 +1049,8 @@ export function stillShots(scene: Scene, a: number, b: number, cues: { startMs: 
 export const chunkProblem = (chosen: boolean, hasChecked: boolean, anyUnchecked: boolean, why?: string) =>
   chosen ? null : why === 'busy' || why === 'busycap' ? why : hasChecked ? 'mismatch' : anyUnchecked ? 'unchecked' : (why ?? 'error');
 
+/** Qualquer vídeo (fotografias, retratos animados ou Veo) só entra num episódio por publicar: nunca vai para o ar sem ser visto e aprovado. */
+export const VIDEO_ONLY_PREVIEW = 'Um vídeo novo só se gera para um episódio em pré-visualização (antes de publicar), para ser visto e aprovado antes de ir para o ar. Num episódio publicado ou retirado, para uma nova versão regenere o guião ou recomece a produção.';
 export const VEO_ONLY_PREVIEW = 'O vídeo do Google Veo só se gera para um episódio em pré-visualização (antes da primeira publicação), para ser visto e aprovado. Para uma nova versão, regenere o guião ou recomece a produção.';
 export const VEO_CHANGES = 'O convidado pediu alterações a esta versão: reveja o guião, aprove-o e gere um episódio novo antes do vídeo do Google Veo.';
 export const VEO_BUSY = 'O Google Veo está com procura elevada e recusou vários clipes seguidos: tente gerar de novo mais tarde. Os clipes já obtidos ficam guardados e são reaproveitados; as operações que falharam normalmente não são cobradas.';

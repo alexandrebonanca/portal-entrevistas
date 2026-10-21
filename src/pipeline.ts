@@ -12,7 +12,7 @@ import { readQuestion, generateFictionalPortrait } from './ai/openai.ts';
 import { cuesFromWords, fixOverlaps, checkCues, type Cue } from './subtitles.ts';
 import { composeCover } from './cover.ts';
 import { PermanentError, type Handler } from './jobs.ts';
-import { renderVeoVideo, releaseQuoteOfJob } from './veo-episode.ts';
+import { renderVeoVideo, releaseQuoteOfJob, VIDEO_ONLY_PREVIEW } from './veo-episode.ts';
 import { reverseDebit } from './wallet.ts';
 
 const usage = (db: Db, interviewId: string, kind: string, quantity: number, cost: number) =>
@@ -226,6 +226,8 @@ export const handlers: Record<string, Handler> = {
     if (job.input.animate && !(await requestedByAdmin(db, job.input.requestedBy))) throw new PermanentError('Os retratos animados por IA só se geram a pedido do administrador: o vídeo não foi gerado.');
     const ep = await db.one('SELECT * FROM episodes WHERE id=$1 AND interview_id=$2', [job.input.episodeId, job.interview_id]);
     if (!ep || ep.stale || ep.status === 'superseded') throw new PermanentError('Episódio inexistente ou desatualizado');
+    // Num episódio publicado o vídeo novo iria logo para o ar sem ser visto e aprovado (e num retirado não serve).
+    if (ep.status !== 'preview') throw new PermanentError(VIDEO_ONLY_PREVIEW);
     const iv = await db.one('SELECT * FROM interviews WHERE id=$1', [ep.interview_id]);
     const timing = ep.technical?.timing as any[] | undefined;
     if (!timing?.length) throw new PermanentError('Este episódio foi gerado antes do vídeo existir: gere o episódio de novo');
@@ -310,16 +312,17 @@ export const handlers: Record<string, Handler> = {
     const id = await saveAsset(db, { interviewId: iv.id, kind: 'episode_video', mime: 'video/mp4', ext: 'mp4', data: mp4, durationMs: ep.duration_ms,
       meta: { lang, shots: shots.length, guestPhoto: !!guestPhoto, hostPhoto: !!hostPhoto, animatedSegments: animated, failedAnimations: failed, guestAnimated, hostAnimated, lipsyncUsd: gpuUsd } });
     // Ligação com as autorizações lidas no próprio momento: uma retirada durante a geração não volta a pôr o vídeo no ar,
-    // e um vídeo com o convidado animado só se liga a um episódio ainda em pré-visualização (nunca a um já publicado).
+    // e o vídeo só se liga a um episódio ainda em pré-visualização: publicado a meio da geração, o vídeo novo não entra
+    // no ar sem nova aprovação (as aprovações ficam presas ao vídeo que foi visto).
     const linked = await db.one(
       `UPDATE episodes e SET video_asset_id=$2, video_lang=$3 FROM interviews i
-       WHERE e.id=$1 AND i.id=e.interview_id AND NOT e.stale AND e.status<>'superseded'
+       WHERE e.id=$1 AND i.id=e.interview_id AND NOT e.stale AND e.status='preview'
          AND (NOT $4::boolean OR i.host_photo_rights) AND (NOT $5::boolean OR (i.host_animate AND i.host_photo_rights))
          AND (NOT $6::boolean OR COALESCE((SELECT c.granted FROM consents c WHERE c.interview_id=i.id AND c.purpose='publish_photo' ORDER BY c.created_at DESC LIMIT 1), false))
          AND (NOT $7::boolean OR (e.status='preview' AND COALESCE((SELECT c.granted FROM consents c WHERE c.interview_id=i.id AND c.purpose='animate_portrait' ORDER BY c.created_at DESC LIMIT 1), false)))
        RETURNING e.id`,
       [ep.id, id, lang, !!hostPhoto, hostAnimated, !!guestPhoto, guestAnimated]);
-    if (!linked) throw new PermanentError('Uma autorização foi retirada (ou o episódio mudou) durante a geração: o vídeo não foi ligado ao episódio e fica privado.');
+    if (!linked) throw new PermanentError('Uma autorização foi retirada ou o episódio mudou durante a geração (publicado, retirado ou substituído): o vídeo não foi ligado ao episódio e fica privado. Um vídeo novo só entra num episódio em pré-visualização, para ser visto e aprovado antes de ir para o ar.');
     await progress(100, 100, 'Concluído');
     return { videoAssetId: id, shots: shots.length, animated, failed, lipsyncUsd: gpuUsd };
   },

@@ -11,7 +11,7 @@ import { aiAvailable, reviewScript, validateScript, episodeVoice } from '../ai/o
 import { playerHtml } from './episode.ts';
 import { createInvitation } from '../invites.ts';
 import { queueEmail, emailShell } from '../mail.ts';
-import { veoEstimate, VEO_ONLY_PREVIEW, VEO_CHANGES, VEO_SCRIPT_REPLACED, VEO_NO_CREDENTIALS, VEO_NEEDS_QUOTE } from '../veo-episode.ts';
+import { veoEstimate, VEO_ONLY_PREVIEW, VIDEO_ONLY_PREVIEW, VEO_CHANGES, VEO_SCRIPT_REPLACED, VEO_NO_CREDENTIALS, VEO_NEEDS_QUOTE } from '../veo-episode.ts';
 import { veoConfigured, veoTier, veoLabel } from '../talking.ts';
 import { inEntity, entityOfInterview } from '../settings.ts';
 import { guestMustApprove, videoMeta as loadVideoMeta } from '../approval.ts';
@@ -38,9 +38,34 @@ const previewBlock = (iv: any, ep: any, vmeta: any): string | null =>
   : iv.collection_status !== 'submitted' ? 'O entrevistado ainda tem perguntas por responder: envie a pré-visualização depois de ele as submeter.'
   : null;
 
+/**
+ * Porque é que o episódio não se pode publicar agora (null = pode): o mesmo motivo na página e na recusa. Um episódio
+ * retirado não volta a ser publicado; com um vídeo a ser gerado, espera-se por ele (só entra antes da publicação).
+ */
+export function publishBlock(o: { ep: any; pubOk: boolean; videoBusy: boolean; hostAp: boolean; needGuest: boolean; guestAp: any }): string | null {
+  const { ep, guestAp } = o;
+  if (ep.status === 'published') return 'O episódio já está publicado.';
+  if (ep.status === 'withdrawn') return 'Este episódio foi retirado e não volta a ser publicado. Para publicar uma nova versão, regenere o guião ou recomece a produção.';
+  if (ep.status !== 'preview') return 'Esta versão do episódio foi substituída por outra.';
+  if (ep.stale) return 'Versão desatualizada: as respostas ou as transcrições mudaram depois do episódio; regenere o guião e o episódio.';
+  if ((ep.technical?.qcIssues ?? []).length) return 'Há alertas do controlo de qualidade: corrija e regenere o episódio antes de publicar.';
+  if (!o.pubOk) return 'O entrevistado não autorizou a publicação.';
+  if (o.videoBusy) return 'Há um vídeo a ser gerado para este episódio: publique depois de ele terminar e de o rever.';
+  if (!o.hostAp) return `Falta a sua aprovação desta versão${ep.video_asset_id ? ' (com o vídeo atual)' : ''}.`;
+  if (o.needGuest) {
+    if (!guestAp) return 'Falta a aprovação do entrevistado: envie-lhe a pré-visualização.';
+    if (guestAp.decision !== 'approved') return 'O entrevistado pediu alterações a esta versão.';
+    if (String(guestAp.video_asset_id ?? '') !== String(ep.video_asset_id ?? '')) return 'O entrevistado aprovou uma versão anterior do vídeo: envie-lhe de novo a pré-visualização.';
+  }
+  return null;
+}
+
 export async function productionRoutes(app: FastifyInstance) {
   const db = app.db;
   const consent = async (id: string, p: string) => !!(await db.one(`SELECT granted FROM consents WHERE interview_id=$1 AND purpose=$2 ORDER BY created_at DESC LIMIT 1`, [id, p]))?.granted;
+  /** Vídeo deste episódio na fila ou a ser gerado (pedido direto, orçamento ou reconstrução). */
+  const videoBusy = async (ivId: string, epId: string) =>
+    !!(await db.one(`SELECT 1 FROM jobs WHERE interview_id=$1 AND kind='render_video' AND state IN ('queued','running') AND input->>'episodeId'=$2 LIMIT 1`, [ivId, epId]));
 
   const guard = async (req: any, reply: any) => {
     if (!requireUser(req, reply)) return null;
@@ -211,8 +236,9 @@ ${episodeBefore ? payFields : ''}<button class="accent" ${episodeBefore && !canR
       const guestAp = await db.one(`SELECT * FROM approvals WHERE episode_id=$1 AND actor='guest' AND valid ORDER BY created_at DESC LIMIT 1`, [ep.id]);
       const guestSameVideo = !!guestAp && String(guestAp.video_asset_id ?? '') === String(ep.video_asset_id ?? '');
       const needGuest = guestMustApprove(iv, videoMeta);
-      const guestOk = !needGuest || (guestAp?.decision === 'approved' && guestSameVideo);
-      const canPublish = !!hostAp && guestOk && pubOk && !ep.stale && issues.length === 0 && ep.status !== 'published';
+      // O motivo concreto (retirado, vídeo a ser gerado, aprovação em falta…) aparece junto do botão e na recusa.
+      const pubBlock = publishBlock({ ep, pubOk, videoBusy: await videoBusy(iv.id, ep.id), hostAp: !!hostAp, needGuest, guestAp });
+      const canPublish = !pubBlock;
       const isAdmin = req.user!.role === 'admin';
       // Animação por orçamento (titular que não é administrador; o administrador só prepara o rascunho do cliente).
       const quoteHtml = !ep.stale ? await quoteSection(db, iv, ep) : '';
@@ -231,29 +257,30 @@ ${videoMeta?.googleBusy ? '<div class="flash">O Google Veo estava com procura el
 ${videoMeta?.engine === 'veo' ? `<details ${videoMeta.fidelityIssues || videoMeta.fallbackSegments?.length ? 'open' : ''}><summary class="sans">Fidelidade ao guião: ${videoMeta.fidelityIssues ? `${videoMeta.fidelityIssues} pedaço(s) sem clipe aprovado (não disseram o texto aprovado ou não foi possível verificar); essas falas ficaram com a fotografia fixa e a voz do episódio` : 'todos os clipes dizem o texto aprovado'}</summary>
 <table class="sans"><thead><tr><th>Fala</th><th>Guião</th><th>Ouvido no vídeo</th><th>Resultado</th></tr></thead><tbody>${(videoMeta.fidelity ?? []).map((f: any) => `<tr><td>${esc(f.segmentId)}</td><td>${esc(f.expected)}</td><td>${esc(f.heard || '—')}</td><td>${f.ok ? pill(f.edits ? 'coincide (grafia de nome)' : 'coincide', 'ok') : f.problem === 'busy' ? pill('Google indisponível (procura elevada): fotografia fixa', 'warn') : f.problem === 'busycap' ? pill('em pausa após 4 falhas da Google em 36 h (gere de novo mais tarde): fotografia fixa', 'warn') : f.problem === 'filtered' ? pill('bloqueado pelos filtros da Google: fotografia fixa', 'warn') : f.problem === 'capped' ? pill(`limite de tentativas esgotado${f.cause ? ` (${f.cause})` : ''}: fotografia fixa`, 'warn') : f.problem === 'capped_budget' ? pill('teto do orçamento atingido: fotografia fixa, não cobrada', 'warn') : f.problem === 'breaker' ? pill('disjuntor (demasiadas repetições falhadas): fotografia fixa, não cobrada', 'warn') : f.problem === 'no_clips' ? pill('clipes já pagos indisponíveis: fotografia fixa', 'warn') : f.problem === 'unchecked' ? pill('não verificado: fotografia fixa', 'warn') : f.problem === 'error' ? pill('falhou na Google: fotografia fixa', 'warn') : !f.checked ? pill('não verificado: fotografia fixa', 'warn') : pill(`${f.edits ?? '?'} diferença(s): fotografia fixa`, 'bad')}${f.ok && !f.used ? ' <span class="hint">(outra parte da fala falhou: fala em fotografia fixa)</span>' : ''}${f.attempts > 1 ? ` <span class="hint">${f.attempts} tentativas</span>` : ''}${f.reused ? ' <span class="hint">(reaproveitado: fala já paga)</span>' : ''}</td></tr>`).join('')}</tbody></table></details>` : ''}` : '<p class="hint">Ainda não foi gerado.</p>'}
 ${!live && lastVideoJob?.state === 'failed' ? `<div class="flash bad">A última geração do vídeo não terminou: ${esc(String(lastVideoJob.error ?? '').slice(0, 400))}</div>` : ''}
-${!ep.stale ? `<form method="post" action="/entrevistas/${iv.id}/episodio/${ep.id}/video" class="row" onsubmit="return confirm('Gerar o vídeo?')">
+${!ep.stale ? `${ep.status !== 'preview' ? `<p class="hint"><strong>${esc(VIDEO_ONLY_PREVIEW)}</strong></p>` : `<form method="post" action="/entrevistas/${iv.id}/episodio/${ep.id}/video" class="row" onsubmit="return confirm('Gerar o vídeo?')">
 ${(() => { const est = animationEstimate(ep, iv, animOk, !!(iv.host_photo_rights && iv.host_photo_asset_id), guestHasPhoto);
   const hostVeo = !!(iv.host_ai_video && iv.host_photo_rights && iv.host_photo_asset_id), guestVeo = veoOk && guestHasPhoto && iv.review_policy === 'guest_preview';
   const ve = veoEstimate(ep.technical?.timing ?? [], epSegs, hostVeo, guestVeo, tier);
-  const veoBlock = ep.status !== 'preview' ? VEO_ONLY_PREVIEW : epScript?.status !== 'approved' ? VEO_SCRIPT_REPLACED : guestAp?.decision === 'changes' ? VEO_CHANGES : !veoKey ? VEO_NO_CREDENTIALS : !openaiKey ? 'Falta a chave da OpenAI (transcrição para verificar os clipes) em Definições.' : '';
+  const veoBlock = epScript?.status !== 'approved' ? VEO_SCRIPT_REPLACED : guestAp?.decision === 'changes' ? VEO_CHANGES : !veoKey ? VEO_NO_CREDENTIALS : !openaiKey ? 'Falta a chave da OpenAI (transcrição para verificar os clipes) em Definições.' : '';
   return `<fieldset style="flex-basis:100%;border:1px solid var(--line);border-radius:8px"><legend class="sans">Imagem e voz do vídeo</legend>
 <label class="check"><input type="radio" name="engine" value="still" checked> Fotografias fixas com a voz do episódio</label>
 ${!isAdmin ? `<p class="hint" style="margin:0 0 8px 30px">A animação por IA (Google Veo) faz-se por orçamento, na secção «Animação por IA» abaixo: aceita antes de gerar e paga só as falas animadas e verificadas.</p></fieldset>` : `<label class="check"><input type="radio" name="engine" value="lipsync" ${est.sec ? '' : 'disabled'}> Retratos com sincronização labial (Replicate), aviso visível «AI-animated portrait»</label>
-<p class="hint" style="margin:0 0 8px 30px">Entrevistador: ${iv.host_animate && iv.host_photo_rights && iv.host_photo_asset_id ? 'autorizado' : 'sem autorização ou sem fotografia (em Editar)'} · Convidado: ${animOk && guestHasPhoto ? (ep.status === 'preview' ? 'autorizado' : 'autorizado, mas fica em fotografia fixa: só é animado num episódio em pré-visualização, para ver e aprovar o vídeo antes de ir para o ar') : 'sem autorização específica (o convidado pode dá-la em «Autorizações das fotografias», a partir do link do convite ou da pré-visualização)'}.
+<p class="hint" style="margin:0 0 8px 30px">Entrevistador: ${iv.host_animate && iv.host_photo_rights && iv.host_photo_asset_id ? 'autorizado' : 'sem autorização ou sem fotografia (em Editar)'} · Convidado: ${animOk && guestHasPhoto ? 'autorizado' : 'sem autorização específica (o convidado pode dá-la em «Autorizações das fotografias», a partir do link do convite ou da pré-visualização)'}.
 ${est.sec ? `Fala a animar: ${Math.round(est.sec)} s · custo estimado ~$${est.usd.toFixed(2)} (Replicate) · demora ~${est.minutes} min.` : ''} Se alguma animação falhar, essa fala fica com a imagem fixa.</p>
 <label class="check"><input type="radio" name="engine" value="veo" ${ve.clips && !veoBlock ? '' : 'disabled'}> ${esc(veoLabel(tier))}: vídeo e voz gerados pelo modelo a partir da fotografia e do texto aprovado, aviso visível «AI-generated video · AI voice»</label>
 <p class="hint" style="margin:0 0 8px 30px">${veoBlock ? `<strong>${esc(veoBlock)}</strong> ` : ''}Entrevistador: ${hostVeo ? 'autorizado' : !iv.host_photo_asset_id ? 'sem fotografia (em Editar)' : 'sem autorização para o Veo (em Editar)'} · Convidado: ${guestVeo ? 'autorizado' : iv.review_policy !== 'guest_preview' ? 'não entra no Veo com a política «só o entrevistador aprova» (não veria o vídeo antes de publicar)' : !guestHasPhoto ? 'sem fotografia' : 'sem autorização para o Veo (o convidado pode dá-la em «Autorizações das fotografias», a partir do link do convite ou da pré-visualização)'}.
 ${ve.clips ? `${ve.clips} clipes, ${ve.sec} s faturados a ~$${ve.usdPerSec.toFixed(2)}/s · custo estimado ~$${ve.usd.toFixed(2)}, até ~$${ve.usdMax.toFixed(2)} se todos precisarem de nova tentativa · demora ~${ve.minutes} min.` : ''}
-A voz é a do modelo (não a do episódio) e pode variar entre clipes. Cada clipe é transcrito e comparado palavra a palavra com o guião; se não coincidir, é gerado de novo uma vez, e se continuar a não coincidir essa fala fica com a fotografia fixa e a voz do episódio (nunca entra um clipe que diga outra coisa). O mesmo para quem não autorizou. Só antes de publicar; o vídeo novo exige nova aprovação${iv.review_policy === 'guest_preview' ? ' (o convidado vê-o na pré-visualização)' : ''}. Pedido pelo administrador: custo interno, sem orçamento.</p></fieldset>`}`; })()}<label for="vl" style="margin:0">Legendas no vídeo</label><select id="vl" name="lang" style="width:auto">${Object.keys(ep.subtitles ?? {}).map(l => `<option value="${esc(l)}" ${l === (ep.video_lang ?? 'pt-PT') ? 'selected' : ''}>${esc(l)}</option>`).join('')}<option value="">Sem legendas</option></select><button class="ghost">${ep.video_asset_id ? 'Gerar de novo' : 'Gerar vídeo'}</button>${ep.video_asset_id || hostAp || guestAp ? '<span class="hint" style="flex-basis:100%">Um vídeo novo exige nova aprovação de quem já aprovou.</span>' : ''}</form>
+A voz é a do modelo (não a do episódio) e pode variar entre clipes. Cada clipe é transcrito e comparado palavra a palavra com o guião; se não coincidir, é gerado de novo uma vez, e se continuar a não coincidir essa fala fica com a fotografia fixa e a voz do episódio (nunca entra um clipe que diga outra coisa). O mesmo para quem não autorizou. Só antes de publicar; o vídeo novo exige nova aprovação${iv.review_policy === 'guest_preview' ? ' (o convidado vê-o na pré-visualização)' : ''}. Pedido pelo administrador: custo interno, sem orçamento.</p></fieldset>`}`; })()}<label for="vl" style="margin:0">Legendas no vídeo</label><select id="vl" name="lang" style="width:auto">${Object.keys(ep.subtitles ?? {}).map(l => `<option value="${esc(l)}" ${l === (ep.video_lang ?? 'pt-PT') ? 'selected' : ''}>${esc(l)}</option>`).join('')}<option value="">Sem legendas</option></select><button class="ghost">${ep.video_asset_id ? 'Gerar de novo' : 'Gerar vídeo'}</button>${ep.video_asset_id || hostAp || guestAp ? '<span class="hint" style="flex-basis:100%">Um vídeo novo exige nova aprovação de quem já aprovou.</span>' : ''}</form>`}
 ${quoteHtml}
 ${ep.video_asset_id && ep.status !== 'published' ? `<form method="post" action="/entrevistas/${iv.id}/episodio/${ep.id}/video/retirar" onsubmit="return confirm('Tirar o vídeo deste episódio? O ficheiro fica guardado em privado.')"><button class="ghost">Tirar o vídeo do episódio (volta à versão sem vídeo)</button></form>` : ''}
 <p class="hint">Capa durante o aviso inicial e o agradecimento final; composição de estúdio com as duas fotografias autorizadas durante a apresentação; a partir da primeira pergunta, só quem fala, em grande plano. As legendas ficam gravadas na imagem, numa só língua. Só entram fotografias autorizadas (a do convidado exige autorização de publicação).</p>` : ''}
 ${!pubOk ? '<div class="flash bad">O entrevistado não autorizou a publicação.</div>' : ''}
-${ep.status !== 'published' ? `<form method="post" action="/entrevistas/${iv.id}/episodio/${ep.id}/publicar" onsubmit="return confirm('Publicar agora?')"><label for="vis">Modalidade</label><select id="vis" name="visibility"><option value="private">Privado (só pessoas autorizadas)</option><option value="unlisted" ${iv.planned_visibility === 'unlisted' ? 'selected' : ''}>Não listado (quem tem o link; não equivale a privado)</option><option value="public" ${iv.planned_visibility === 'public' ? 'selected' : ''}>Público (indexável)</option></select>
+${ep.status === 'withdrawn' ? `<p class="sans">Retirado em ${fmtDate(ep.withdrawn_at)}.</p><p class="hint">${esc(pubBlock ?? '')}</p>`
+  : ep.status !== 'published' ? `<form method="post" action="/entrevistas/${iv.id}/episodio/${ep.id}/publicar" onsubmit="return confirm('Publicar agora?')"><label for="vis">Modalidade</label><select id="vis" name="visibility"><option value="private">Privado (só pessoas autorizadas)</option><option value="unlisted" ${iv.planned_visibility === 'unlisted' ? 'selected' : ''}>Não listado (quem tem o link; não equivale a privado)</option><option value="public" ${iv.planned_visibility === 'public' ? 'selected' : ''}>Público (indexável)</option></select>
 <fieldset style="border:1px solid var(--line);border-radius:8px;margin-top:12px"><legend class="sans">Galeria pública «Podcasts gerados»</legend>
 <label class="check"><input type="checkbox" name="gallery" value="1"> Permito que este episódio fique na galeria pública do portal, para consulta, organizada por temas (só para episódios públicos).</label>
 <label for="th">Tema</label><input id="th" name="theme" type="text" list="themes" maxlength="60" placeholder="Ex.: Energia, Telecomunicações, Hotelaria"><datalist id="themes">${(await db.query(`SELECT DISTINCT theme FROM episodes WHERE theme<>'' ORDER BY theme`)).map((t: any) => `<option value="${esc(t.theme)}">`).join('')}</datalist></fieldset>
-<p><button class="accent" ${canPublish ? '' : 'disabled'}>Publicar</button></p>${canPublish ? '' : '<p class="hint">Publicar exige: aprovação válida do entrevistador' + (needGuest ? ' e do entrevistado' : '') + ', autorização de publicação, versão atual e sem alertas de qualidade.</p>'}</form>`
+<p><button class="accent" ${canPublish ? '' : 'disabled'}>Publicar</button></p>${canPublish ? '' : `<p class="hint">Ainda não é possível publicar: ${esc(pubBlock ?? '')} (Publicar exige a aprovação válida do entrevistador${needGuest ? ' e do entrevistado' : ''}, a autorização de publicação, a versão atual e nenhum alerta de qualidade.)</p>`}</form>`
   : `<p class="sans">Publicado (${esc(ep.visibility)}) em ${fmtDate(ep.published_at)}${ep.visibility !== 'private' ? ` · <a href="/e/${ep.slug}">/e/${esc(ep.slug)}</a>` : ''}</p>
 ${ep.visibility === 'public' ? `<form method="post" action="/entrevistas/${iv.id}/episodio/${ep.id}/galeria" class="card"><strong class="sans">Galeria pública «Podcasts gerados»</strong>
 <label class="check"><input type="checkbox" name="gallery" value="1" ${ep.gallery ? 'checked' : ''}> Mostrar na galeria pública, organizada por temas</label>
@@ -460,12 +487,11 @@ ${ep.visibility === 'public' ? `<form method="post" action="/entrevistas/${iv.id
     // Aprovações válidas e do vídeo atual (quem aprovou viu este vídeo).
     const hostAp = await db.one(`SELECT 1 FROM approvals WHERE episode_id=$1 AND actor='interviewer' AND valid AND decision='approved' AND video_asset_id IS NOT DISTINCT FROM $2::uuid`, [ep.id, ep.video_asset_id]);
     const guestAp = await db.one(`SELECT decision, video_asset_id FROM approvals WHERE episode_id=$1 AND actor='guest' AND valid ORDER BY created_at DESC LIMIT 1`, [ep.id]);
-    const issues: string[] = ep.technical?.qcIssues ?? [];
     const vmeta = ep.video_asset_id ? (await db.one('SELECT meta FROM assets WHERE id=$1', [ep.video_asset_id]))?.meta : null;
     const needGuest = guestMustApprove(iv, vmeta);
-    const guestOk = !needGuest || (guestAp?.decision === 'approved' && String(guestAp.video_asset_id ?? '') === String(ep.video_asset_id ?? ''));
-    const ok = hostAp && guestOk && (await consent(iv.id, 'publish')) && !ep.stale && !issues.length && ep.status === 'preview';
-    if (!ok) { await audit(db, req.user!.email, 'episode.publish_blocked', iv.id); return back(reply, iv.id, undefined, 'Publicação bloqueada: faltam aprovações válidas, autorização ou a versão está desatualizada.'); }
+    // O motivo é o mesmo da página (ex.: episódio retirado, e não «faltam aprovações»).
+    const blocked = publishBlock({ ep, pubOk: await consent(iv.id, 'publish'), videoBusy: await videoBusy(iv.id, ep.id), hostAp: !!hostAp, needGuest, guestAp });
+    if (blocked) { await audit(db, req.user!.email, 'episode.publish_blocked', iv.id, { reason: blocked }); return back(reply, iv.id, undefined, `Publicação bloqueada: ${blocked}`); }
     const b = req.body as any;
     const theme = String(b?.theme ?? '').trim().slice(0, 60);
     // Só publica a versão que foi verificada acima (o vídeo não mudou entretanto).
@@ -488,10 +514,11 @@ ${ep.visibility === 'public' ? `<form method="post" action="/entrevistas/${iv.id
     // os retratos animados só para o administrador. O pipeline volta a verificar (segunda barreira).
     if (engine === 'veo' && req.user!.role !== 'admin') return back(reply, c.iv.id, undefined, VEO_NEEDS_QUOTE);
     if (engine === 'lipsync' && req.user!.role !== 'admin') return back(reply, c.iv.id, undefined, ANIMATE_ADMIN_ONLY);
+    // Só num episódio por publicar: num publicado, o vídeo novo iria logo para o ar sem nova aprovação.
+    if (c.ep.status !== 'preview') return back(reply, c.iv.id, undefined, engine === 'veo' ? VEO_ONLY_PREVIEW : VIDEO_ONLY_PREVIEW);
     // Clique repetido: não se paga duas vezes a mesma geração.
     if (await db.one(`SELECT 1 FROM jobs WHERE interview_id=$1 AND kind='render_video' AND (state='queued' OR (state='running' AND locked_at > now() - interval '15 minutes'))`, [c.iv.id])) return back(reply, c.iv.id, undefined, 'Já há um vídeo a ser gerado; aguarde que termine.');
     if (engine === 'veo') {
-      if (c.ep.status !== 'preview') return back(reply, c.iv.id, undefined, VEO_ONLY_PREVIEW);
       if ((await db.one('SELECT status FROM scripts WHERE id=$1', [c.ep.script_id]))?.status !== 'approved') return back(reply, c.iv.id, undefined, VEO_SCRIPT_REPLACED);
       if (await db.one(`SELECT 1 FROM approvals a JOIN episodes e ON e.id=a.episode_id WHERE e.script_id=$1 AND a.actor='guest' AND a.valid AND a.decision='changes' LIMIT 1`, [c.ep.script_id])) return back(reply, c.iv.id, undefined, VEO_CHANGES);
       const ent = await entityOfInterview(db, c.iv.id);

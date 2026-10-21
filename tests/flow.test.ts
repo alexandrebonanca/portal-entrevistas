@@ -287,6 +287,15 @@ test('vozes escolhidas, agradecimento final, vídeo MP4 e galeria', async () => 
   assert.equal(last.transformationType, 'editorial_outro'); assert.equal(last.speakerRole, 'host');
   assert.ok(ep.technical.timing.length >= 3);
 
+  // retirado (teste anterior): nenhum vídeo novo e publicar fica desativado com o motivo certo
+  assert.equal(ep.status, 'withdrawn');
+  const wd = await post(`/entrevistas/${ivId}/episodio/${ep.id}/video`, { lang: 'pt-PT' }, owner);
+  assert.match(decodeURIComponent(wd.headers.location as string), /só se gera para um episódio em pré-visualização/);
+  const wdPage = (await get(`/entrevistas/${ivId}/producao`, owner)).body;
+  assert.doesNotMatch(wdPage, />Publicar<\/button>/); assert.match(wdPage, /foi retirado e não volta a ser publicado/);
+  assert.match(decodeURIComponent((await post(`/entrevistas/${ivId}/episodio/${ep.id}/publicar`, { visibility: 'unlisted' }, owner)).headers.location as string), /bloqueada: Este episódio foi retirado/);
+  await db.query(`UPDATE episodes SET status='preview', withdrawn_at=NULL WHERE id=$1`, [ep.id]);
+
   const v = await post(`/entrevistas/${ivId}/episodio/${ep.id}/video`, { lang: 'pt-PT' }, owner);
   assert.match(v.headers.location as string, /ok=/);
   const again = await post(`/entrevistas/${ivId}/episodio/${ep.id}/video`, { lang: 'pt-PT' }, owner);
@@ -368,21 +377,33 @@ test('animação por fala: só com autorização específica; aviso e reserva', 
   await db.query(`UPDATE approvals SET valid=false WHERE episode_id=$1`, [ep.id]);
   await db.query(`UPDATE interviews SET review_policy='guest_preview' WHERE id=$1`, [ivId]);
 
-  // episódio já publicado: um vídeo novo nunca anima o convidado (só o entrevistador), nem se pede validação
-  await db.query(`UPDATE episodes SET status='published', visibility='unlisted' WHERE id=$1`, [ep.id]);
-  assert.match((await get(`/entrevistas/${ivId}/producao`, owner)).body, /só é animado num episódio em pré-visualização/);
-  await post(`/entrevistas/${ivId}/episodio/${ep.id}/video`, { lang: 'en', animate: '1' }, owner);
+  // episódio já publicado: nenhum vídeo novo (iria logo para o ar sem ser visto e aprovado), nem se pede validação
+  const videoJobs = async () => Number((await db.one(`SELECT count(*)::int n FROM jobs WHERE interview_id=$1 AND kind='render_video'`, [ivId])).n);
+  await db.query(`UPDATE episodes SET status='published', visibility='unlisted', published_at=now() WHERE id=$1`, [ep.id]);
+  const pubPage = (await get(`/entrevistas/${ivId}/producao`, owner)).body;
+  assert.match(pubPage, /Um vídeo novo só se gera para um episódio em pré-visualização/);
+  assert.doesNotMatch(pubPage, new RegExp(`action="/entrevistas/${ivId}/episodio/${ep.id}/video"`), 'sem o formulário do vídeo');
+  const n0 = await videoJobs();
+  const refused = await post(`/entrevistas/${ivId}/episodio/${ep.id}/video`, { lang: 'en', animate: '1' }, owner);
+  assert.match(decodeURIComponent(refused.headers.location as string), /só se gera para um episódio em pré-visualização/);
+  assert.equal(await videoJobs(), n0, 'nada entra na fila');
+  // vídeo pedido antes da publicação: publicar espera por ele; se o episódio sair entretanto, o vídeo não é ligado
+  await db.query(`UPDATE episodes SET status='preview' WHERE id=$1`, [ep.id]);
+  assert.match((await post(`/entrevistas/${ivId}/episodio/${ep.id}/video`, { lang: 'en', animate: '1' }, owner)).headers.location as string, /ok=/);
+  assert.match(decodeURIComponent((await post(`/entrevistas/${ivId}/episodio/${ep.id}/publicar`, { visibility: 'unlisted' }, owner)).headers.location as string), /bloqueada: Há um vídeo a ser gerado para este episódio/);
+  assert.match((await get(`/entrevistas/${ivId}/producao`, owner)).body, /Ainda não é possível publicar: Há um vídeo a ser gerado/);
+  await db.query(`UPDATE episodes SET status='published' WHERE id=$1`, [ep.id]); // (publicado por outra via enquanto o vídeo esperava)
   await drain();
+  const late = await db.one(`SELECT state, error FROM jobs WHERE kind='render_video' ORDER BY created_at DESC LIMIT 1`);
+  assert.equal(late.state, 'failed'); assert.match(late.error, /só se gera para um episódio em pré-visualização/);
   const pubVideo = await db.one('SELECT video_asset_id FROM episodes WHERE id=$1', [ep.id]);
-  const pm = (await db.one('SELECT meta FROM assets WHERE id=$1', [pubVideo.video_asset_id])).meta;
-  assert.equal(pm.guestAnimated, false, 'convidado em fotografia fixa num episódio publicado'); assert.equal(pm.hostAnimated, true);
-  assert.ok(pm.animatedSegments > 0);
+  assert.equal(pubVideo.video_asset_id, ep2.video_asset_id, 'o vídeo no ar não mudou');
   const pv = await post(`/entrevistas/${ivId}/episodio/${ep.id}/enviar-previa`, {}, owner);
   assert.match(decodeURIComponent(pv.headers.location as string), /já está publicado/);
 
   // «só o entrevistador aprova» sem o convidado animado: não se lhe pede aprovação nem se fala de animação
   await db.query(`UPDATE interviews SET review_policy='host_only' WHERE id=$1`, [ivId]);
-  await db.query(`UPDATE episodes SET status='preview' WHERE id=$1`, [ep.id]);
+  await db.query(`UPDATE episodes SET status='preview', video_asset_id=NULL WHERE id=$1`, [ep.id]); // (sem o vídeo em que o convidado aparece animado)
   const view = await get('/entrevista/episodio', g);
   assert.match(view.body, /Publication is decided by the interviewer/);
   assert.doesNotMatch(view.body, /animated by AI, confirm|action="\/entrevista\/episodio\/decisao"/);
