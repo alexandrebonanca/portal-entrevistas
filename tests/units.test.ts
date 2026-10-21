@@ -244,13 +244,15 @@ test('limpeza de chaves coladas: tira prefixos de código, aspas e espaços sem 
 });
 
 test('Veo: falas divididas em pedaços que cabem num clipe, sem alterar o texto', async () => {
-  const { chunkText, veoDuration, VEO_MAX_WORDS } = await import('../src/veo-episode.ts');
+  const { chunkText, veoDuration, spokenCount, VEO_HARD_MAX_WORDS } = await import('../src/veo-episode.ts');
   assert.deepEqual(chunkText('Hello and welcome.'), ['Hello and welcome.']);
   assert.deepEqual(chunkText(''), []);
   const long = 'Energy storage matters because the grid needs flexibility. Prices fell 3.5 percent last year, and the trend continues. We expect, however, that regulation, investment and public acceptance will decide the pace of change in Portugal over the next decade.';
   const parts = chunkText(long);
   assert.ok(parts.length >= 3);
-  for (const x of parts) assert.ok(x.split(' ').length <= VEO_MAX_WORDS, x);
+  // até 15 palavras ditas; uma cauda de 1–3 palavras cola-se ao pedaço vizinho até 18 (nunca um clipe só para ela)
+  for (const x of parts) assert.ok(x.split(' ').length <= VEO_HARD_MAX_WORDS, x);
+  assert.ok(parts.every(x => spokenCount(x) > 3), 'sem pedaços de 1–3 palavras');
   assert.equal(parts.join(' '), long, 'juntar os pedaços devolve o texto original');
   assert.ok(parts.some(x => x.includes('3.5 percent')), 'números decimais não partem a frase');
   const run = Array.from({ length: 40 }, (_, i) => `w${i}`).join(' ');
@@ -314,7 +316,7 @@ test('Veo: corte do clipe só com tempos coerentes; números e siglas contam com
   assert.deepEqual(trimWindow([], 6000, 'x'), { a: 0, b: 6000 });
   assert.equal(spokenCount('In 2023, the EU invested 3.5 billion euros in R&D.'), 16);
   assert.ok(veoDuration('In 2023, the EU invested 3.5 billion euros in R&D.') === 8);
-  for (const x of chunkText('In 2023, 2024 and 2025 the EU, the USA and the UK invested 3.5, 4.5 and 5.5 billion euros in R&D, AI and 5G networks across 27 countries.')) assert.ok(spokenCount(x) <= 15, x);
+  for (const x of chunkText('In 2023, 2024 and 2025 the EU, the USA and the UK invested 3.5, 4.5 and 5.5 billion euros in R&D, AI and 5G networks across 27 countries.')) assert.ok(spokenCount(x) <= 18, x);
 });
 
 test('Veo: planos fixos cortados nas legendas', async () => {

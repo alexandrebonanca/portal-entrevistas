@@ -4,6 +4,7 @@ import { handlers } from './pipeline.ts';
 import { flushOutbox } from './mail.ts';
 import { openDb, migrate } from './db.ts';
 import { walletHousekeeping } from './wallet.ts';
+import { quoteHousekeeping } from './quotes.ts';
 
 /** Ciclo do worker: emails da outbox e trabalhos pesados (FFmpeg, IA) fora do ciclo de pedidos HTTP. */
 export function startWorker(db: Db, intervalMs = 2000) {
@@ -25,13 +26,13 @@ export function startWorker(db: Db, intervalMs = 2000) {
     mailing = true;
     try { await flushOutbox(db); } catch (e: any) { console.error('[worker] outbox', e?.message ?? e); } finally { mailing = false; }
   }, Math.max(intervalMs, 5000));
-  // Carteiras de créditos num ciclo próprio (de hora a hora): aviso 30 dias antes da validade, caducidade dos lotes e
-  // devolução do crédito de regenerações falhadas. Corre mesmo com o worker ocupado num vídeo longo.
+  // Carteiras de créditos num ciclo próprio (de hora a hora): aviso 30 dias antes da validade, caducidade dos lotes,
+  // devolução do crédito de regenerações falhadas e libertação dos orçamentos parados. Corre mesmo com o worker ocupado.
   let housekeeping = false;
   const wallets = async () => {
     if (stopped || housekeeping) return;
     housekeeping = true;
-    try { await walletHousekeeping(db); } catch (e: any) { console.error('[worker] carteiras', e?.message ?? e); } finally { housekeeping = false; }
+    try { await walletHousekeeping(db); await quoteHousekeeping(db); } catch (e: any) { console.error('[worker] carteiras', e?.message ?? e); } finally { housekeeping = false; }
   };
   const hk = setInterval(wallets, Number(process.env.WALLET_HOUSEKEEPING_MS ?? 3600_000));
   void (process.env.RUN_WORKER === '0' ? Promise.resolve() : recoverOrphans(db).catch(e => console.error('[worker] recuperação', e?.message))).then(tick).then(wallets);

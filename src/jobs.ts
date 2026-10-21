@@ -16,6 +16,14 @@ export type Handler = (job: any, ctx: { db: Db; progress: (done: number, total?:
 
 /** Obtém e executa um trabalho. Erros permanentes (PermanentError) não são repetidos às cegas. */
 export class PermanentError extends Error {}
+/**
+ * Pausa: o trabalho volta à fila daqui a `delayMs` sem gastar uma tentativa (ex.: quota da Google esgotada, confirmação
+ * por email ainda por enviar). A mensagem fica como etapa visível.
+ */
+export class JobPaused extends Error {
+  delayMs: number;
+  constructor(message: string, delayMs: number) { super(message); this.delayMs = delayMs; }
+}
 
 export async function runOne(db: Db, handlers: Record<string, Handler>): Promise<boolean> {
   // Recupera trabalhos presos (worker morreu a meio): volta à fila apenas se ainda tiver tentativas.
@@ -32,6 +40,12 @@ export async function runOne(db: Db, handlers: Record<string, Handler>): Promise
     const result = await inEntity(ent, () => h(job, { db, progress: async (done, total, label) => { await db.query('UPDATE jobs SET progress_done=$2, progress_total=COALESCE($3, progress_total), progress_label=COALESCE($4, progress_label), locked_at=now() WHERE id=$1', [job.id, done, total ?? null, label ?? null]); } })); // o progresso renova o bloqueio (trabalhos longos não são dados como presos)
     await db.query(`UPDATE jobs SET state='done', result=$2, finished_at=now(), error=NULL WHERE id=$1`, [job.id, JSON.stringify(result ?? {})]);
   } catch (err: any) {
+    if (err instanceof JobPaused) {
+      console.error(`[job] ${job.kind} ${job.id} em pausa ${Math.round(err.delayMs / 1000)} s: ${err.message.slice(0, 300)}`);
+      await db.query(`UPDATE jobs SET state='queued', attempts=GREATEST(attempts-1, 0), locked_at=NULL, error=$2, progress_label=$2, run_after=now() + ($3 || ' milliseconds')::interval WHERE id=$1`,
+        [job.id, err.message.slice(0, 800), String(Math.max(1000, Math.round(err.delayMs)))]);
+      return true;
+    }
     const permanent = err instanceof PermanentError || job.attempts >= job.max_attempts;
     console.error(`[job] ${job.kind} ${job.id} tentativa ${job.attempts}${permanent ? ' (definitiva)' : ''}: ${String(err?.message ?? err).slice(0, 400)}`);
     const backoffSec = 30 * 2 ** (job.attempts - 1);

@@ -12,7 +12,7 @@ import { readQuestion, generateFictionalPortrait } from './ai/openai.ts';
 import { cuesFromWords, fixOverlaps, checkCues, type Cue } from './subtitles.ts';
 import { composeCover } from './cover.ts';
 import { PermanentError, type Handler } from './jobs.ts';
-import { renderVeoVideo } from './veo-episode.ts';
+import { renderVeoVideo, releaseQuoteOfJob } from './veo-episode.ts';
 import { reverseDebit } from './wallet.ts';
 
 const usage = (db: Db, interviewId: string, kind: string, quantity: number, cost: number) =>
@@ -220,7 +220,10 @@ export const handlers: Record<string, Handler> = {
   },
 
   async render_video(job, { db, progress }) {
+    // Segunda barreira (a primeira é a rota): o Veo exige orçamento aceite ou o administrador (veo-episode.ts);
+    // os retratos animados (Replicate) são só do administrador.
     if (job.input.engine === 'veo') return renderVeoVideo(job, { db, progress });
+    if (job.input.animate && !(await requestedByAdmin(db, job.input.requestedBy))) throw new PermanentError('Os retratos animados por IA só se geram a pedido do administrador: o vídeo não foi gerado.');
     const ep = await db.one('SELECT * FROM episodes WHERE id=$1 AND interview_id=$2', [job.input.episodeId, job.interview_id]);
     if (!ep || ep.stale || ep.status === 'superseded') throw new PermanentError('Episódio inexistente ou desatualizado');
     const iv = await db.one('SELECT * FROM interviews WHERE id=$1', [ep.interview_id]);
@@ -404,8 +407,13 @@ export const handlers: Record<string, Handler> = {
       await db.query(`UPDATE interviews SET production_status='failed' WHERE id=$1`, [job.interview_id]);
     // Regeneração paga que falhou: o crédito volta (uma regeneração falhada também não conta para as incluídas).
     if (job.input?.paidCents) await db.tx(t => reverseDebit(t, `regen:${job.id}`, 'a regeneração falhou: crédito devolvido'));
+    // Vídeo de um orçamento que falhou de vez: os créditos cativos voltam todos ao saldo.
+    if (job.kind === 'render_video' && job.input?.quoteId) await releaseQuoteOfJob(db, job);
   },
 };
+
+/** Quem pediu o trabalho é (ainda) administrador? */
+const requestedByAdmin = async (db: Db, userId: unknown) => typeof userId === 'string' && /^[0-9a-f-]{36}$/i.test(userId) && (await db.one('SELECT role FROM users WHERE id=$1', [userId]))?.role === 'admin';
 
 /** Fala que seria animada num episódio (segundos) e custo estimado da animação. */
 export function animationEstimate(ep: any, iv: any, guestConsent: boolean, hasHostPhoto: boolean, hasGuestPhoto: boolean) {
