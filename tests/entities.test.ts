@@ -101,3 +101,24 @@ test('administrador edita a entidade e valida o URL', async () => {
   await post(`/entidades/${otherId}`, { name: 'Outra Entidade', url: 'https://outra.example' }, admin);
   assert.equal((await get('/registar?entidade=outra-entidade')).statusCode, 200);
 });
+
+test('Veo por entidade: conta de serviço e nível da entidade com prioridade sobre os globais', async () => {
+  const { generateKeyPairSync } = await import('node:crypto');
+  const { veoBackend, veoTier, veoModel } = await import('../src/talking.ts');
+  const pk = generateKeyPairSync('rsa', { modulusLength: 2048, privateKeyEncoding: { type: 'pkcs8', format: 'pem' }, publicKeyEncoding: { type: 'spki', format: 'pem' } }).privateKey;
+  const sa = JSON.stringify({ type: 'service_account', project_id: 'telecert-veo', private_key: pk, client_email: 'veo@telecert-veo.iam.gserviceaccount.com' });
+  await saveSetting(db, 'VEO_TIER', 'fast');
+  let pg = await get(`/entidades/${tcId}/chaves`, gestor);
+  assert.match(pg.body, /<select id="f_VEO_TIER" name="VEO_TIER"><option value="" selected>Como na definição global \(Veo 3\.1 Fast/);
+  assert.match(decodeURIComponent((await post(`/entidades/${tcId}/chaves`, { VERTEX_SA_JSON: '{"type":"authorized_user"}' }, gestor)).headers.location as string), /Nada foi guardado/);
+  await post(`/entidades/${tcId}/chaves`, { VERTEX_SA_JSON: sa, VEO_TIER: 'lite' }, gestor);
+  assert.equal(inEntity(tcId, () => veoBackend()), 'vertex'); assert.equal(inEntity(tcId, () => veoTier()), 'lite');
+  assert.equal(inEntity(tcId, () => veoModel()), 'veo-3.1-lite-generate-001');
+  assert.equal(inEntity(otherId, () => veoBackend()), 'gemini', 'outra entidade não usa a conta de serviço desta');
+  assert.equal(inEntity(otherId, () => veoTier()), 'fast');
+  pg = await get(`/entidades/${tcId}/chaves`, gestor);
+  assert.ok(!pg.body.includes(pk.split('\n')[2]), 'a chave nunca volta ao browser');
+  assert.match(pg.body, /guardada: veo@telecert-veo\.iam\.gserviceaccount\.com · projeto telecert-veo/);
+  await post(`/entidades/${tcId}/chaves`, { VERTEX_SA_JSON: '-', VEO_TIER: '' }, gestor);
+  assert.equal(inEntity(tcId, () => veoBackend()), 'gemini'); assert.equal(inEntity(tcId, () => veoTier()), 'fast', 'volta ao nível global');
+});

@@ -422,7 +422,14 @@ test('vídeo com o Google Veo: autorização própria, som dos clipes, verifica�
   const c = await db.one(`SELECT granted, text_snapshot FROM consents WHERE interview_id=$1 AND purpose='ai_video' ORDER BY created_at DESC LIMIT 1`, [ivId]);
   assert.equal(c.granted, true); assert.match(c.text_snapshot, /not my own voice|não é a minha voz/);
   pg = await get(`/entrevistas/${ivId}/producao`, owner);
-  assert.doesNotMatch(pg.body, /value="veo" disabled/); assert.match(pg.body, /\d+ clipes, \d+ s faturados/);
+  assert.doesNotMatch(pg.body, /value="veo" disabled/); assert.match(pg.body, /\d+ clipes, \d+ s faturados a ~\$0\.10\/s/);
+  assert.match(pg.body, /value="veo" > Google Veo 3\.1 Fast:/);
+  // nível escolhido pelo administrador: o Lite muda o rótulo e o preço da estimativa
+  const { saveSetting } = await import('../src/settings.ts');
+  await saveSetting(db, 'VEO_TIER', 'lite');
+  const lite = await get(`/entrevistas/${ivId}/producao`, owner);
+  assert.match(lite.body, /Google Veo 3\.1 Lite:/); assert.match(lite.body, /\d+ clipes, \d+ s faturados a ~\$0\.05\/s/);
+  await saveSetting(db, 'VEO_TIER', '');
 
   await post(`/entrevistas/${ivId}/episodio/${ep.id}/video`, { lang: 'pt-PT', engine: 'veo' }, owner);
   await drain();
@@ -434,6 +441,10 @@ test('vídeo com o Google Veo: autorização própria, som dos clipes, verifica�
   assert.equal(meta.hostAiVideo, true); assert.equal(meta.guestAiVideo, true); assert.deepEqual(meta.fallbackSegments, []);
   assert.equal(meta.fidelity.length, meta.veoClips);
   assert.equal((await db.one(`SELECT count(*)::int n FROM assets WHERE interview_id=$1 AND kind='veo_clip'`, [ivId])).n, meta.veoClips);
+  // modelo e preço por segundo registados no vídeo e em cada clipe (sem conta de serviço: Gemini API)
+  assert.equal(meta.tier, 'fast'); assert.equal(meta.usdPerSec, 0.1); assert.equal(meta.model, 'veo-3.1-fast-generate-preview'); assert.equal(meta.backend, 'gemini');
+  const clipMetas = (await db.query(`SELECT meta FROM assets WHERE interview_id=$1 AND kind='veo_clip'`, [ivId])).map((r: any) => r.meta);
+  assert.ok(clipMetas.every((m: any) => m.model === 'veo-3.1-fast-generate-preview' && m.usdPerSec === 0.1));
   const v = await get(`/entrevistas/${ivId}/episodio/${ep.id}/video.mp4`, owner);
   assert.equal(v.rawPayload.subarray(4, 8).toString('latin1'), 'ftyp');
   assert.match((await get(`/entrevistas/${ivId}/producao`, owner)).body, /Fidelidade ao guião/);
@@ -460,6 +471,7 @@ test('vídeo com o Google Veo: autorização própria, som dos clipes, verifica�
   // um vídeo desligado deixa de ser servido ao convidado
   // operações pagas ficam registadas e concluídas (em modo simulado não há operações na Google)
   assert.equal((await db.one(`SELECT count(*)::int n FROM veo_ops WHERE interview_id=$1 AND state='pending'`, [ivId])).n, 0);
+  assert.deepEqual(await db.query(`SELECT model, usd_per_sec FROM veo_ops WHERE interview_id=$1`, [ivId]), [], 'cada operação guarda o modelo e o preço (migração 012)');
 
   // o entrevistador retira a autorização do Veo em Editar: o vídeo sai do ar
   const iv = await db.one('SELECT * FROM interviews WHERE id=$1', [ivId]);

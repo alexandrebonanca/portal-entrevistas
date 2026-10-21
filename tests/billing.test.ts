@@ -192,3 +192,50 @@ test('laboratório comparativo: só modelos com chave, resultados lado a lado, U
   const other = await db.one(`SELECT id FROM assets WHERE kind='lab_video' LIMIT 1`);
   assert.equal((await get(new URL(signedAssetUrl(other.id)).pathname)).statusCode, 404, 'só retrato e áudio do laboratório');
 });
+
+test('definições Google: conta de serviço do Vertex validada, cifrada e nunca mostrada; nível Fast/Lite', async () => {
+  const { generateKeyPairSync } = await import('node:crypto');
+  const pk = generateKeyPairSync('rsa', { modulusLength: 2048, privateKeyEncoding: { type: 'pkcs8', format: 'pem' }, publicKeyEncoding: { type: 'spki', format: 'pem' } }).privateKey;
+  const sa = JSON.stringify({ type: 'service_account', project_id: 'projeto-teste-123', private_key_id: 'kid1', private_key: pk, client_email: 'veo@projeto-teste-123.iam.gserviceaccount.com' }, null, 2);
+  const body = pk.split('\n')[3];
+  assert.equal((await post('/admin/definicoes', { VERTEX_SA_JSON: sa }, user)).statusCode, 403);
+  // JSON inválido: nada é guardado e a mensagem não cita o texto colado
+  const bad = await post('/admin/definicoes', { VERTEX_SA_JSON: sa.slice(0, -2), VEO_TIER: 'lite' }, admin);
+  const msg = decodeURIComponent(bad.headers.location as string);
+  assert.match(msg, /Nada foi guardado: A conta de serviço não é um JSON válido/); assert.ok(!msg.includes(body));
+  assert.equal(S('VERTEX_SA_JSON'), ''); assert.equal(S('VEO_TIER'), '', 'nem o resto do formulário');
+  assert.match(decodeURIComponent((await post('/admin/definicoes', { VEO_TIER: 'pro' }, admin)).headers.location as string), /Valor inválido em «Modelo do Google Veo»/);
+  assert.match(decodeURIComponent((await post('/admin/definicoes', { VERTEX_LOCATION: 'evil.com/x' }, admin)).headers.location as string), /Região do Vertex AI inválida/);
+  // válido
+  await post('/admin/definicoes', { VERTEX_SA_JSON: sa, VEO_TIER: 'lite', VERTEX_LOCATION: '' }, admin);
+  const row = await db.one(`SELECT value_enc FROM settings WHERE key='VERTEX_SA_JSON'`);
+  assert.ok(!row.value_enc.includes('PRIVATE') && !row.value_enc.includes('veo@'), 'cifrada em repouso');
+  assert.equal(JSON.parse(S('VERTEX_SA_JSON')).private_key, pk);
+  assert.equal(S('VEO_TIER'), 'lite');
+  const pg = await get('/admin/definicoes', admin);
+  assert.ok(!pg.body.includes(body) && !pg.body.includes('PRIVATE KEY'), 'a chave nunca volta ao browser');
+  assert.match(pg.body, /guardada: veo@projeto-teste-123\.iam\.gserviceaccount\.com · projeto projeto-teste-123/);
+  assert.match(pg.body, /<select id="f_VEO_TIER" name="VEO_TIER"><option value="fast" >Veo 3\.1 Fast[^<]*<\/option><option value="lite" selected>/);
+  assert.match(pg.body, /placeholder="us-central1"/);
+  // «Guardar e testar»: token e consulta sem gerar vídeo (fetch falso: nada sai para a Google)
+  const real = globalThis.fetch;
+  const urls: string[] = [];
+  globalThis.fetch = (async (u: any) => { urls.push(String(u)); return String(u).includes('oauth2') ? new Response(JSON.stringify({ access_token: 'ya29.t', expires_in: 3600 })) : new Response(JSON.stringify({ error: { code: 404, message: 'Operation not found.' } }), { status: 404 }); }) as any;
+  try {
+    const r = await post('/admin/definicoes/testar/Google', { VEO_TIER: 'lite' }, admin);
+    assert.match(decodeURIComponent(r.headers.location as string), /Vertex AI.*Google Veo 3\.1 Lite \(veo-3\.1-lite-generate-001\) confirmado, sem gerar vídeo/);
+  } finally { globalThis.fetch = real; }
+  assert.deepEqual(urls.map(u => u.replace(/\/projects\/.*:/, '/…:')), ['https://oauth2.googleapis.com/token', 'https://us-central1-aiplatform.googleapis.com/v1/…:fetchPredictOperation']);
+  // apagar: volta à Gemini API (ou a nada)
+  await post('/admin/definicoes', { VERTEX_SA_JSON: '-', VEO_TIER: 'fast' }, admin);
+  assert.equal(S('VERTEX_SA_JSON'), ''); assert.equal(S('VEO_TIER'), 'fast');
+});
+
+test('laboratório: só o Veo 3.1 Fast e o Lite vêm marcados; os outros ficam disponíveis, desmarcados', async () => {
+  const pg = await get('/admin/laboratorio', admin);
+  for (const id of ['veo', 'veo-lite']) assert.match(pg.body, new RegExp(`name="p_${id}" value="1" checked>`), id);
+  for (const id of ['omnihuman', 'fabric', 'infinitalk', 'heygen']) assert.match(pg.body, new RegExp(`name="p_${id}" value="1" >`), `${id} desmarcado mas disponível`);
+  assert.match(pg.body, /<strong>Google Veo 3\.1 Fast<\/strong> — Google \((Gemini API|Vertex AI): veo-3\.1-fast-generate-(preview|001)\) · ~\$0\.10\/s/);
+  assert.match(pg.body, /<strong>Google Veo 3\.1 Lite<\/strong>[^·]*· ~\$0\.05\/s/);
+  assert.doesNotMatch(pg.body, /Flow/);
+});
