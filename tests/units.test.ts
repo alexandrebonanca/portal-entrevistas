@@ -368,3 +368,21 @@ test('alcance da aprovação do convidado e autorizações conforme a política'
   assert.match(consentText('en', 'animate_portrait'), /Replicate/);
   assert.equal(CONSENT_VERSION, 'v2-2026-10');
 });
+
+test('prazo do convite: «hoje» é o dia de Lisboa, não o do UTC', async () => {
+  const { inviteLastDay } = await import('../src/invites.ts');
+  const { lisbonDay, addDays } = await import('../src/lib.ts');
+  // 2 de julho às 00:30 em Lisboa (hora de verão, UTC+1) = 1 de julho às 23:30 em UTC
+  const lateNight = Date.parse('2026-07-01T23:30:00Z');
+  assert.equal(lisbonDay(lateNight), '2026-07-02');
+  assert.equal(inviteLastDay('2026-07-01', false, 14, lateNight), '2026-07-16', 'o prazo de ontem (em Lisboa) já passou: 14 dias a contar de hoje');
+  assert.equal(inviteLastDay('2026-07-02', false, 14, lateNight), '2026-07-02', 'o prazo de hoje vale até ao fim do dia');
+  assert.equal(inviteLastDay(new Date('2026-07-20T00:00:00Z'), false, 14, lateNight), '2026-07-20', 'prazo lido da base de dados (date)');
+  assert.equal(inviteLastDay('2026-07-20', true, 14, lateNight), '2026-07-16', 'a validação do episódio não usa o prazo da recolha');
+  assert.equal(inviteLastDay(null, false, 14, lateNight), '2026-07-16');
+  // inverno (UTC+0) e mudança da hora: o dia de Lisboa só difere do UTC quando Lisboa está à frente
+  assert.equal(lisbonDay(Date.parse('2026-01-15T23:30:00Z')), '2026-01-15');
+  assert.equal(lisbonDay(Date.parse('2026-03-28T23:30:00Z')), '2026-03-28');
+  assert.equal(lisbonDay(Date.parse('2026-03-29T23:30:00Z')), '2026-03-30');
+  assert.equal(addDays('2026-12-25', 14), '2027-01-08');
+});

@@ -47,5 +47,10 @@ export const fmtDuration = (ms: number | null | undefined) => {
   const s = Math.round(ms / 1000);
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
 };
+/** Dia do calendário em Lisboa (AAAA-MM-DD): «hoje» para os prazos é o dia português, não o do UTC. */
+export const lisbonDay = (ms = Date.now()) =>
+  new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Lisbon', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(ms));
+/** Soma dias a uma data AAAA-MM-DD (aritmética de calendário, sem fusos). */
+export const addDays = (day: string, n: number) => new Date(Date.parse(`${day}T00:00:00Z`) + n * 86400_000).toISOString().slice(0, 10);
 export const fmtDate = (d: Date | string | null | undefined) =>
   d ? new Date(d).toLocaleString('pt-PT', { dateStyle: 'short', timeStyle: 'short' }) : '—';

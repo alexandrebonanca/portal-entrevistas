@@ -1,21 +1,30 @@
 import type { Db } from './db.ts';
 import { config } from './config.ts';
-import { esc, newToken, sha256 } from './lib.ts';
+import { esc, newToken, sha256, lisbonDay, addDays } from './lib.ts';
 import { queueEmail, emailShell } from './mail.ts';
 import { t, normLang } from './i18n.ts';
 import { guestReview, reviewCopy } from './approval.ts';
 
+/** Data (AAAA-MM-DD) de um prazo guardado como date (Date à meia-noite UTC ou texto). */
+const ymd = (v: any) => (typeof v === 'string' ? v : v instanceof Date
+  ? (v.getUTCHours() === 0 && v.getUTCMinutes() === 0 ? v.toISOString() : `${v.getFullYear()}-${String(v.getMonth() + 1).padStart(2, '0')}-${String(v.getDate()).padStart(2, '0')}`) : '').slice(0, 10);
+
+/**
+ * Último dia do link (o email mostra-o): o prazo da entrevista, se ainda não passou; senão INVITE_DAYS a contar de hoje.
+ * «Hoje» é o dia de Lisboa: entre a meia-noite portuguesa e a do UTC, um prazo de ontem já não conta como em vigor.
+ * O prazo da recolha não se aplica ao link de validação do episódio.
+ */
+export function inviteLastDay(deadline: unknown, preview: boolean, days = config.limits.inviteDays, now = Date.now()) {
+  const today = lisbonDay(now), dl = ymd(deadline);
+  return deadline && !preview && /^\d{4}-\d{2}-\d{2}$/.test(dl) && dl >= today ? dl : addDays(today, days);
+}
+
 /** Revoga convites anteriores e cria um novo; o email vai para a outbox (deduplicado por convite). */
 export async function createInvitation(db: Db, interview: any, host: { name: string }, opts: { followup?: boolean; preview?: boolean } = {}) {
   const token = newToken(32);
-  const days = config.limits.inviteDays;
   // O link vale até ao fim do último dia em qualquer fuso (UTC−12), e é esse dia que o email mostra.
-  // O prazo da recolha não se aplica ao link de validação do episódio.
-  const ymd = (v: any) => (typeof v === 'string' ? v : v instanceof Date
-    ? (v.getUTCHours() === 0 && v.getUTCMinutes() === 0 ? v.toISOString() : `${v.getFullYear()}-${String(v.getMonth() + 1).padStart(2, '0')}-${String(v.getDate()).padStart(2, '0')}`) : '').slice(0, 10);
   const endOfDay = (day: string) => new Date(`${day}T23:59:59Z`).getTime() + 12 * 3600_000;
-  let lastDay = new Date(Date.now() + days * 86400_000).toISOString().slice(0, 10);
-  if (interview.deadline && !opts.preview) { const dl = ymd(interview.deadline); if (/^\d{4}-\d{2}-\d{2}$/.test(dl) && dl >= new Date().toISOString().slice(0, 10)) lastDay = dl; }
+  const lastDay = inviteLastDay(interview.deadline, !!opts.preview);
   const exp = new Date(endOfDay(lastDay));
   const inv = await db.tx(async tx => {
     await tx.query(`UPDATE invitations SET revoked_at=now() WHERE interview_id=$1 AND revoked_at IS NULL`, [interview.id]);
