@@ -98,9 +98,26 @@ export interface ServiceAccount { type: 'service_account'; project_id: string; p
  * Valida o JSON da chave de uma conta de serviço. As mensagens nunca citam o texto colado: a do JSON.parse pode incluir
  * parte dele (a chave privada), por isso é descartada.
  */
+/**
+ * Forma do texto recebido, para explicar porque não é o ficheiro da chave sem nunca mostrar o conteúdo
+ * (só o tamanho, se começa e acaba em chaveta e se os nomes dos campos aparecem).
+ */
+function saShape(s: string) {
+  const yn = (b: boolean) => (b ? 'sim' : 'não');
+  const facts = `recebidos ${s.length} caracteres; começa por «{»: ${yn(s.startsWith('{'))}; termina em «}»: ${yn(s.endsWith('}'))}; tem "private_key": ${yn(s.includes('"private_key"'))}; tem "client_email": ${yn(s.includes('"client_email"'))}`;
+  const hint = (s.match(/"type"\s*:/g) ?? []).length > 1 ? 'Parece ter sido colado mais do que uma vez: apague o campo e cole uma só vez.'
+    : /^-----BEGIN/.test(s) ? 'Foi colada só a chave privada: é preciso o ficheiro .json inteiro.'
+    : s.length < 1000 ? 'O texto é curto demais para ser o ficheiro da chave (tem cerca de 2300 caracteres): o browser pode ter preenchido o campo com uma palavra-passe guardada.'
+    : !s.startsWith('{') || !s.endsWith('}') ? 'Falta o início ou o fim do ficheiro: copie-o todo (Ctrl+A e Ctrl+C no editor).'
+    : 'O texto foi alterado (por exemplo, aberto e guardado num processador de texto).';
+  return `${facts}. ${hint} Use «Escolher o ficheiro .json» para o ler diretamente do computador.`;
+}
+
 export function parseServiceAccount(raw: string): ServiceAccount {
+  // Marca BOM, caracteres invisíveis e aspas tipográficas (de editores de texto) não fazem parte de um ficheiro da Google.
+  const text = String(raw ?? '').replace(/[​-‍⁠﻿]/g, '').replace(/[“”„‟″]/g, '"').trim();
   let j: any;
-  try { j = JSON.parse(String(raw ?? '').trim()); } catch { throw new SettingError('A conta de serviço não é um JSON válido: cole o ficheiro .json completo, tal como foi descarregado da Google Cloud.'); }
+  try { j = JSON.parse(text); } catch { throw new SettingError(`A conta de serviço não é um JSON válido (${saShape(text)})`); }
   if (!j || typeof j !== 'object' || Array.isArray(j)) throw new SettingError('A conta de serviço não é um JSON válido: cole o ficheiro .json completo.');
   if (j.type !== undefined && j.type !== 'service_account') throw new SettingError(`O JSON colado não é a chave de uma conta de serviço${/^[a-z_]{1,30}$/.test(String(j.type)) ? ` (type «${j.type}»)` : ''}: crie uma chave JSON na conta de serviço.`);
   const missing = ['client_email', 'private_key', 'project_id'].filter(k => typeof j[k] !== 'string' || !j[k].trim());

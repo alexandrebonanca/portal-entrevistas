@@ -224,6 +224,34 @@ test('conta de serviço: validação do JSON sem nunca mostrar a chave', () => {
   assert.equal(settingsFormError({ VEO_TIER: 'lite', VERTEX_SA_JSON: '', VERTEX_LOCATION: '-' }), null, 'em branco mantém e «-» apaga');
 });
 
+test('conta de serviço: colagens estragadas explicadas sem mostrar a chave; BOM e aspas tipográficas aceites', () => {
+  const secret = privateKey.split('\n')[2];
+  const err = (raw: string) => { try { parseServiceAccount(raw); return ''; } catch (e: any) { return String(e.message); } };
+  const noLeak = (m: string) => { assert.ok(!m.includes(secret.slice(0, 12)) && !m.includes('PRIVATE') && !m.includes(SA.client_email) && !m.includes(SA.project_id), 'a mensagem não cita o texto'); return m; };
+  // colado duas vezes
+  assert.match(noLeak(err(SA_JSON + SA_JSON)), /recebidos \d+ caracteres; começa por «\{»: sim; termina em «\}»: sim.*colado mais do que uma vez/);
+  // só a chave privada
+  assert.match(noLeak(err(privateKey)), /só a chave privada/);
+  // preenchido pelo gestor de palavras-passe
+  assert.match(noLeak(err('Xk9#mQ2!vR7pL4')), /recebidos 14 caracteres.*curto demais.*palavra-passe guardada/);
+  // cortado no fim
+  assert.match(noLeak(err(SA_JSON.slice(0, 1500))), /termina em «\}»: não.*Falta o início ou o fim/);
+  // o ficheiro como o browser o envia a partir da caixa (com quebras de linha), com BOM e com aspas tipográficas
+  assert.equal(parseServiceAccount('﻿' + SA_JSON + '\r\n').client_email, SA.client_email);
+  const curly = SA_JSON.replace(/"(type|project_id|client_email)": "([^"]*)"/g, '“$1”: “$2”');
+  assert.notEqual(curly, SA_JSON);
+  assert.equal(parseServiceAccount(curly).project_id, SA.project_id);
+});
+
+test('Definições: a conta de serviço numa caixa mascarada com «Escolher o ficheiro .json»', async () => {
+  const { settingInput } = await import('../src/routes/admin.ts');
+  const { SETTING_DEFS } = await import('../src/settings.ts');
+  const html = settingInput(SETTING_DEFS.find(d => d.key === 'VERTEX_SA_JSON')!, JSON.stringify(SA), '');
+  assert.match(html, /<textarea id="f_VERTEX_SA_JSON" name="VERTEX_SA_JSON"[^>]*autocomplete="off"[^>]*-webkit-text-security:disc[^>]*placeholder="guardada: veo-teste@projeto-teste-123\.iam\.gserviceaccount\.com · projeto projeto-teste-123"><\/textarea>/);
+  assert.match(html, /<input type="file" accept="\.json,application\/json" data-json-into="f_VERTEX_SA_JSON" hidden>/);
+  assert.doesNotMatch(html, /type="password"|PRIVATE|private_key/, 'nada da chave na página');
+});
+
 test('«Guardar e testar» do Google: Vertex sem gerar vídeo; Gemini API sem conta de serviço', async () => {
   fake(c => {
     assert.match(c.url, /veo-3\.1-fast-generate-001:fetchPredictOperation$/, 'só consulta; nunca predictLongRunning');

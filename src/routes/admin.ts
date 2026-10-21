@@ -9,6 +9,11 @@ import { queueEmail, emailShell, flushOutbox, retryFailedEmails } from '../mail.
 
 /** Campo de uma definição: segredo (nunca devolvido), lista de opções ou texto. `blank` é a opção sem valor guardado. */
 export function settingInput(d: SettingDef, value: string, blank: string, blankLabel?: string) {
+  // Conta de serviço: caixa de várias linhas (o ficheiro tem várias; um campo de palavra-passe atrai o gestor de
+  // palavras-passe do browser) com o texto mascarado, e um botão que lê o ficheiro .json no browser, sem a área de transferência.
+  if (d.key === 'VERTEX_SA_JSON') return `<textarea id="f_${d.key}" name="${d.key}" rows="3" autocomplete="off" data-lpignore="true" spellcheck="false" style="font:.85rem ui-monospace,monospace;-webkit-text-security:disc" placeholder="${esc(maskSetting(d.key, value) || (d.hint ?? ''))}"></textarea>
+<p class="hint sans" style="margin:4px 0 12px"><label class="btn ghost" style="display:inline-block;cursor:pointer;margin:0">Escolher o ficheiro .json<input type="file" accept=".json,application/json" data-json-into="f_${d.key}" hidden></label> <span id="f_${d.key}_st" role="status"></span></p>
+<script>(()=>{const f=document.querySelector('[data-json-into="f_${d.key}"]'),t=document.getElementById('f_${d.key}'),s=document.getElementById('f_${d.key}_st');f.addEventListener('change',async()=>{const x=f.files&&f.files[0];if(!x)return;const txt=await x.text();t.value=txt;f.value='';s.textContent='Ficheiro «'+x.name+'» carregado ('+txt.length+' caracteres): carregue em «Guardar e testar».';});})();</script>`;
   if (d.options) return `<select id="f_${d.key}" name="${d.key}">${blankLabel !== undefined ? `<option value="" ${value ? '' : 'selected'}>${esc(blankLabel)}</option>` : ''}${d.options.map(([v, l]) => `<option value="${esc(v)}" ${(value || blank) === v ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select>`;
   return `<input id="f_${d.key}" name="${d.key}" type="${d.secret ? 'password' : 'text'}" autocomplete="${d.secret ? 'new-password' : 'off'}" data-lpignore="true" spellcheck="false" placeholder="${esc(d.secret ? maskSetting(d.key, value) || (d.hint ?? '') : (d.hint ?? ''))}" value="${d.secret ? '' : esc(value)}">`;
 }
