@@ -50,6 +50,8 @@ test('landing em inglês e primeira conta administradora', async () => {
   assert.match(r.body, /<track kind="captions" srclang="en" label="English" src="\/static\/video\/promo\.en\.vtt" default>/);
   assert.match(r.body, /AI-generated video and voices \(Google Veo\)[^<]*All people shown are fictional/);
   assert.match(r.body, /by default review before anything is published/, 'a política «só o entrevistador aprova» dispensa o convidado');
+  assert.match(r.body, /<h3>Interviewee approves<\/h3><p>By default, your interviewee sees and validates/, '«interviewee» (a tradução do browser de «guest» dava «hóspede»)');
+  assert.doesNotMatch(r.body, /Guest approves/);
   assert.match(r.body, /href="#tour">Watch the 1-minute video/);
   const reg = await post('/registar', { name: 'Ana', email: 'ana@example.com', password: 'uma-palavra-passe-longa', terms: '1' }, '');
   assert.equal(reg.statusCode, 302);
