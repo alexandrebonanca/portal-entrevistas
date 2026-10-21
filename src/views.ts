@@ -63,7 +63,9 @@ export function ownerLine(lang = 'pt-PT') {
 export function sellerLine(lang = 'pt-PT') {
   const s = config.seller, pt = /^pt/i.test(lang);
   if (!s.name) return '';
-  return [`${pt ? 'Comercializado pela' : 'Sold by'} ${esc(s.name)}`, s.vat ? `${pt ? 'NIF' : 'VAT'} ${esc(s.vat)}` : '', s.address ? esc(s.address) : '',
+  // Em português o NIF são só os 9 algarismos; o prefixo do país (PT) é do número de IVA europeu, mostrado em inglês.
+  const vat = pt ? s.vat.replace(/^[A-Z]{2}/, '') : s.vat;
+  return [`${pt ? 'Comercializado pela' : 'Sold by'} ${esc(s.name)}`, vat ? `${pt ? 'NIF' : 'VAT'} ${esc(vat)}` : '', s.address ? esc(s.address) : '',
     s.complaintsUrl ? `<a href="${esc(s.complaintsUrl)}" rel="noopener">${pt ? 'Livro de Reclamações' : 'Complaints book (Livro de Reclamações)'}</a>` : '']
     .filter(Boolean).join(' · ');
 }
