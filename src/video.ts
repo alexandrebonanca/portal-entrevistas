@@ -54,7 +54,10 @@ export function wrapLines(text: string, max = 52, maxLines = 3): string[] {
   return lines.length > maxLines ? [...lines.slice(0, maxLines - 1), lines.slice(maxLines - 1).join(' ')] : lines;
 }
 
-const FONT = "DejaVu Sans, Arial, Helvetica, sans-serif";
+export const FONT = "DejaVu Sans, Arial, Helvetica, sans-serif";
+/** Geometria das legendas gravadas: o grafismo (rodapés) fica sempre acima da caixa mais alta (3 linhas). */
+export const SUB = { lineH: 46, pad: 30, bottom: 36, maxLines: 3 };
+export const SUBS_TOP = H - (SUB.maxLines * SUB.lineH + SUB.pad) - SUB.bottom;
 
 async function blurredFill(sharp: any, img: Buffer) {
   return sharp(img).rotate().resize(W, H, { fit: 'cover' }).blur(28).modulate({ brightness: 0.55 }).toBuffer();
@@ -64,10 +67,13 @@ const initialsCard = (name: string, color: string) => {
   return Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="560" height="560"><rect width="560" height="560" rx="40" fill="${color}"/><text x="280" y="330" text-anchor="middle" font-family="${FONT}" font-weight="700" font-size="200" fill="#fff">${esc(ini)}</text></svg>`);
 };
 
-/** Fundos de cada plano (sem legendas). As fotografias usadas são apenas as autorizadas; nunca se gera a aparência de ninguém. */
+/**
+ * Fundos de cada plano (sem legendas). As fotografias usadas são apenas as autorizadas; nunca se gera a aparência de ninguém.
+ * Nos grandes planos o nome já não fica fixo: aparece no rodapé animado quando a pessoa fala pela primeira vez (graphics.ts).
+ */
 export async function renderBases(opts: {
   cover: Buffer; title: string; brand: string;
-  host: { name: string; photo: Buffer | null }; guest: { name: string; photo: Buffer | null };
+  host: { name: string; role?: string; photo: Buffer | null }; guest: { name: string; role?: string; photo: Buffer | null };
 }): Promise<Record<Scene | 'animHost' | 'animGuest', Buffer>> {
   const { default: sharp } = await import('sharp');
   const bg = await blurredFill(sharp, opts.cover);
@@ -86,8 +92,8 @@ export async function renderBases(opts: {
 <defs><linearGradient id="d" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#3a2a1e"/><stop offset="1" stop-color="#1c140e"/></linearGradient></defs>
 <rect x="0" y="492" width="${W}" height="228" fill="url(#d)"/><rect x="0" y="486" width="${W}" height="8" fill="#c8803c" opacity=".7"/>
 ${[left + P / 2, left + P + gap + P / 2].map(cx => `<g fill="#e8e0d4"><rect x="${cx - 14}" y="446" width="28" height="48" rx="14"/><rect x="${cx - 3}" y="492" width="6" height="16"/><rect x="${cx - 26}" y="506" width="52" height="7" rx="3"/></g>`).join('')}
-<text x="${left + P / 2}" y="${top + P + 40}" text-anchor="middle" font-family="${FONT}" font-weight="700" font-size="28" fill="#fff">${esc(opts.host.name)}</text>
-<text x="${left + P + gap + P / 2}" y="${top + P + 40}" text-anchor="middle" font-family="${FONT}" font-weight="700" font-size="28" fill="#fff">${esc(opts.guest.name)}</text>
+${([[opts.host, left + P / 2, 'Host'], [opts.guest, left + P + gap + P / 2, 'Guest']] as const).map(([p, cx, r]) => `<text x="${cx}" y="${top + P + 40}" text-anchor="middle" font-family="${FONT}" font-weight="700" font-size="28" fill="#fff">${esc(p.name)}</text>
+<text x="${cx}" y="${top + P + 66}" text-anchor="middle" font-family="${FONT}" font-size="18" fill="#fff" opacity=".8">${esc((p.role || r).slice(0, 40))}</text>`).join('')}
 <text x="${W / 2}" y="58" text-anchor="middle" font-family="${FONT}" font-size="26" letter-spacing="4" fill="#fff" opacity=".85">${esc(opts.title.toUpperCase().slice(0, 60))}</text>
 <text x="${W - 24}" y="${H - 18}" text-anchor="end" font-family="${FONT}" font-size="16" fill="#fff" opacity=".7">Composite image · asynchronous interview</text></svg>`);
   const studio = await sharp(bg).composite([
@@ -96,26 +102,24 @@ ${[left + P / 2, left + P + gap + P / 2].map(cx => `<g fill="#e8e0d4"><rect x="$
     { input: await portrait(opts.guest, P, '#2f5d6b'), left: Math.round(left + P + gap), top },
   ]).jpeg({ quality: 88 }).toBuffer();
 
-  // Grande plano: fotografia autorizada em altura total sobre o mesmo fundo, com o nome em rodapé.
-  const close = async (p: { name: string; photo: Buffer | null }, color: string, role: string) => {
+  // Grande plano: fotografia autorizada em altura total sobre o mesmo fundo (o nome entra no rodapé animado).
+  const close = async (p: { name: string; photo: Buffer | null }, color: string) => {
     const img = p.photo
       ? await sharp(p.photo).rotate().resize({ height: H, width: Math.round(H * 0.9), fit: 'cover', position: 'attention' }).toBuffer()
       : await sharp(initialsCard(p.name, color)).resize(H - 160, H - 160).toBuffer();
     const meta = await sharp(img).metadata();
-    const lower = Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}"><rect x="40" y="40" width="${Math.max(260, p.name.length * 22 + 60)}" height="86" rx="10" fill="#000" opacity=".55"/>
-<text x="68" y="80" font-family="${FONT}" font-weight="700" font-size="30" fill="#fff">${esc(p.name)}</text><text x="68" y="110" font-family="${FONT}" font-size="20" fill="#fff" opacity=".8">${esc(role)}</text></svg>`);
-    return sharp(bg).composite([{ input: img, left: Math.round((W - (meta.width ?? 0)) / 2), top: Math.round((H - (meta.height ?? 0)) / 2) }, { input: lower }]).jpeg({ quality: 88 }).toBuffer();
+    return sharp(bg).composite([{ input: img, left: Math.round((W - (meta.width ?? 0)) / 2), top: Math.round((H - (meta.height ?? 0)) / 2) }]).jpeg({ quality: 88 }).toBuffer();
   };
   // Fundo para os planos animados: o mesmo enquadramento, sem a fotografia (o clipe animado é sobreposto ao centro).
-  const animBase = async (_p: { name: string }, _role: string) => sharp(bg).jpeg({ quality: 88 }).toBuffer();
-  return { cover, studio, host: await close(opts.host, '#7a4a1f', 'Host'), guest: await close(opts.guest, '#2f5d6b', 'Guest'), animHost: await animBase(opts.host, 'Host'), animGuest: await animBase(opts.guest, 'Guest') };
+  const animBase = await sharp(bg).jpeg({ quality: 88 }).toBuffer();
+  return { cover, studio, host: await close(opts.host, '#7a4a1f'), guest: await close(opts.guest, '#2f5d6b'), animHost: animBase, animGuest: animBase };
 }
 
 export async function subtitleFrame(base: Buffer, text: string): Promise<Buffer> {
   if (!text) return base;
   const { default: sharp } = await import('sharp');
-  const lines = wrapLines(text);
-  const lh = 46, boxH = lines.length * lh + 30, y0 = H - boxH - 36;
+  const lines = wrapLines(text, 52, SUB.maxLines);
+  const lh = SUB.lineH, boxH = lines.length * lh + SUB.pad, y0 = H - boxH - SUB.bottom;
   const svg = Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}"><rect x="${W / 2 - 560}" y="${y0}" width="1120" height="${boxH}" rx="12" fill="#000" opacity=".68"/>
 ${lines.map((l, i) => `<text x="${W / 2}" y="${y0 + 46 + i * lh}" text-anchor="middle" font-family="${FONT}" font-weight="600" font-size="36" fill="#fff">${esc(l)}</text>`).join('')}</svg>`);
   return sharp(base).composite([{ input: svg }]).jpeg({ quality: 86 }).toBuffer();
@@ -157,40 +161,58 @@ export async function encodeVideo(ffmpeg: string, shots: Shot[], frameFor: (s: S
 }
 
 // ---------------------------------------------------------------------------------------------
-// Vídeo com retratos animados: partes fixas (fotogramas) e partes animadas (clipe por fala),
+// Vídeo por partes: fixas (fotogramas), animadas (clipe por fala) e cartões (fundo em movimento com texto),
 // codificadas separadamente com os mesmos parâmetros e depois juntas sem recodificar.
 
 /** Legenda num PNG transparente do tamanho do vídeo (para sobrepor a um clipe). */
 export async function subtitleOverlay(text: string): Promise<Buffer> {
   const { default: sharp } = await import('sharp');
-  const lines = wrapLines(text);
-  const lh = 46, boxH = lines.length * lh + 30, y0 = H - boxH - 36;
+  const lines = wrapLines(text, 52, SUB.maxLines);
+  const lh = SUB.lineH, boxH = lines.length * lh + SUB.pad, y0 = H - boxH - SUB.bottom;
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}"><rect x="${W / 2 - 560}" y="${y0}" width="1120" height="${boxH}" rx="12" fill="#000" opacity=".68"/>
 ${lines.map((l, i) => `<text x="${W / 2}" y="${y0 + 46 + i * lh}" text-anchor="middle" font-family="${FONT}" font-weight="600" font-size="36" fill="#fff">${esc(l)}</text>`).join('')}</svg>`;
   return sharp(Buffer.from(svg)).png().toBuffer();
 }
 
-/** Nome, aviso «AI-animated portrait» e legenda numa única imagem transparente. */
-export async function animatedOverlay(who: { name: string; role: string } | undefined, text: string, notice = 'AI-animated portrait'): Promise<Buffer> {
+/** Aviso «AI-animated portrait» (ou o do Veo) e legenda numa única imagem transparente. */
+export async function animatedOverlay(text: string, notice = 'AI-animated portrait'): Promise<Buffer> {
   const { default: sharp } = await import('sharp');
-  const layers: any[] = [{ input: await animatedNotice(who, notice) }];
+  const layers: any[] = [{ input: await animatedNotice(notice) }];
   if (text) layers.push({ input: await subtitleOverlay(text) });
   return sharp({ create: { width: W, height: H, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } } }).composite(layers).png().toBuffer();
 }
 
-/** Aviso visível obrigatório sobre os planos animados. */
-export async function animatedNotice(who?: { name: string; role: string }, label = 'AI-animated portrait'): Promise<Buffer> {
+/** Aviso visível obrigatório sobre os planos animados (canto superior direito; o nome entra no rodapé animado). */
+export async function animatedNotice(label = 'AI-animated portrait'): Promise<Buffer> {
   const { default: sharp } = await import('sharp');
   const bw = Math.max(336, Math.round(label.length * 11.5) + 48);
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}">${who ? `<rect x="40" y="40" width="${Math.max(260, who.name.length * 22 + 60)}" height="86" rx="10" fill="#000" opacity=".6"/>
-<text x="68" y="80" font-family="${FONT}" font-weight="700" font-size="30" fill="#fff">${esc(who.name)}</text><text x="68" y="110" font-family="${FONT}" font-size="20" fill="#fff" opacity=".8">${esc(who.role)}</text>` : ''}<rect x="${W - 36 - bw}" y="36" width="${bw}" height="44" rx="8" fill="#000" opacity=".6"/>
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}"><rect x="${W - 36 - bw}" y="36" width="${bw}" height="44" rx="8" fill="#000" opacity=".6"/>
 <text x="${W - 36 - bw / 2}" y="65" text-anchor="middle" font-family="${FONT}" font-weight="600" font-size="20" fill="#fff">${esc(label)}</text></svg>`;
   return sharp(Buffer.from(svg)).png().toBuffer();
 }
 
+/**
+ * Grafismo sobre a imagem (rodapé com nome e função, título de capítulo): PNG com transparência, colocado em (x, y),
+ * que entra com fade e deslize a partir da esquerda e sai com fade. Tempos absolutos na linha temporal do vídeo.
+ */
+export interface Overlay { startMs: number; endMs: number; x: number; y: number; png: Buffer }
+/**
+ * Cartão (título no início, agradecimento no fim): fundo em movimento lento (recorte que desliza sobre a capa desfocada,
+ * maior do que o vídeo, e um brilho que a atravessa) e camadas de texto, recortadas ao seu tamanho e colocadas em (x, y),
+ * que entram com fade e uma pequena subida.
+ */
+export interface Card { bg: Buffer; glow: Buffer; layers: { png: Buffer; x: number; y: number; inMs: number; rise?: number }[] }
+
 export type Part =
   | { kind: 'still'; startMs: number; endMs: number; shots: Shot[] }
-  | { kind: 'anim'; startMs: number; endMs: number; base: Buffer; clip: Buffer | (() => Promise<Buffer>); clipOffsetMs?: number; notice?: string; who?: { name: string; role: string }; cues: { startMs: number; endMs: number; text: string }[] };
+  | { kind: 'anim'; startMs: number; endMs: number; base: Buffer; clip: Buffer | (() => Promise<Buffer>); clipOffsetMs?: number; notice?: string; cues: { startMs: number; endMs: number; text: string }[] }
+  | { kind: 'card'; startMs: number; endMs: number; card: Card };
+
+/** Fundo dos cartões: imagem de CARD_BG, recortada a W×H numa posição que muda a cada fotograma (expressões do FFmpeg 4.1). */
+export const CARD_BG = { w: 1600, h: 900, glow: 640 };
+const PAN_X = '160+140*sin(2*PI*t/11)', PAN_Y = '90+76*sin(2*PI*t/13+1)';
+const GLOW_X = '-160+170*t', GLOW_Y = '-70+40*sin(t)';
+const GFX_SLIDE = 36; // píxeis do deslize do grafismo
 
 let encoderCache: string[] | null = null;
 async function videoEncoder(ffmpeg: string): Promise<string[]> {
@@ -222,7 +244,50 @@ export function shotsWithin(shots: Shot[], a: number, b: number): Shot[] {
   return shots.filter(s => s.endMs > a && s.startMs < b).map(s => ({ ...s, startMs: Math.max(s.startMs, a), endMs: Math.min(s.endMs, b) }));
 }
 
-export async function encodeComposite(ffmpeg: string, parts: Part[], frameFor: (s: Shot) => Promise<Buffer>, audio: Buffer, onProgress?: (i: number, n: number) => Promise<void>, audioExt = 'mp3'): Promise<Buffer> {
+/**
+ * Grafismo gravado à parte, uma só vez (PNG em MOV, com transparência e a animação já aplicada): cada pedaço do vídeo
+ * usa o troço que lhe cabe (-ss), mesmo quando o grafismo atravessa vários pedaços (legendas, partes animadas).
+ */
+async function bakeOverlay(ffmpeg: string, dir: string, i: number, o: Overlay): Promise<string> {
+  const png = join(dir, `gfx${i}.png`), out = join(dir, `gfx${i}.mov`);
+  await writeFile(png, o.png);
+  const n = Math.max(1, Math.round((o.endMs - o.startMs) / 40)), d = n * 0.04, f = Math.min(0.4, d / 4), S = GFX_SLIDE;
+  // Deslize: recorte a mover-se sobre o PNG alargado à direita com transparência (o crop aceita 't' a cada fotograma).
+  const g = `[0:v]format=rgba,pad=iw+${S}:ih:0:0:color=black@0,crop=iw-${S}:ih:x='${S}*pow(max(0,1-t/0.5),2)':y=0,fade=t=in:st=0:d=${f.toFixed(3)}:alpha=1,fade=t=out:st=${(d - f).toFixed(3)}:d=${f.toFixed(3)}:alpha=1[o]`;
+  const r = await run(ffmpeg, ['-y', '-v', 'error', '-loop', '1', '-framerate', '25', '-i', png, '-filter_complex', g, '-map', '[o]', '-frames:v', String(n), '-c:v', 'png', '-pix_fmt', 'rgba', '-f', 'mov', out], 120_000);
+  if (r.code !== 0) throw new Error('Falha a preparar o grafismo: ' + r.stderr.slice(-300));
+  return out;
+}
+
+/** Cartão com o fundo em movimento: uma só chamada ao FFmpeg, com o fundo, o brilho e as camadas de texto. */
+async function encodeCard(ffmpeg: string, enc: string[], dir: string, p: number, card: Card, n: number, out: string) {
+  const bg = join(dir, `card${p}.jpg`), glow = join(dir, `glow${p}.png`);
+  await writeFile(bg, card.bg); await writeFile(glow, card.glow);
+  const loop = (f: string) => ['-loop', '1', '-framerate', '25', '-i', f];
+  const ins = [...loop(bg), ...loop(glow)];
+  const g = [`[0:v]crop=${W}:${H}:x='${PAN_X}':y='${PAN_Y}',setsar=1,format=yuv420p[b0]`, '[1:v]format=rgba[gl]', `[b0][gl]overlay=x='${GLOW_X}':y='${GLOW_Y}'[b1]`];
+  let cur = 'b1';
+  for (const [k, l] of card.layers.entries()) {
+    const f = join(dir, `card${p}_${k}.png`);
+    await writeFile(f, l.png);
+    ins.push(...loop(f));
+    const st = (l.inMs / 1000).toFixed(3);
+    g.push(`[${k + 2}:v]format=rgba,fade=t=in:st=${st}:d=0.6:alpha=1[l${k}]`, `[${cur}][l${k}]overlay=x=${l.x}:y='${l.y}+${l.rise ?? 0}*pow(max(0,1-max(0,t-${st})/0.7),2)'[c${k}]`);
+    cur = `c${k}`;
+  }
+  // Entra e sai pelo preto (o FFmpeg 4.1 não tem xfade): transição suave com os planos vizinhos.
+  const d = (n * 40) / 1000;
+  g.push(`[${cur}]fade=t=in:st=0:d=0.4,fade=t=out:st=${Math.max(0, d - 0.5).toFixed(3)}:d=0.5,fps=25,format=yuv420p[out]`);
+  const r = await run(ffmpeg, ['-y', '-v', 'error', '-threads', '2', ...ins, '-filter_complex', g.join(';'), '-map', '[out]', ...enc, '-threads', '2', '-frames:v', String(n), '-an', out], 600_000);
+  if (r.code !== 0) throw new Error('Falha a codificar o cartão: ' + r.stderr.slice(-300));
+}
+
+/**
+ * Monta o vídeo por partes (fixas, animadas e cartões), codificadas separadamente com os mesmos parâmetros e juntas sem
+ * recodificar. O grafismo (`overlays`) corta as partes nos seus limites: só os pedaços com grafismo levam filtros por
+ * fotograma; o resto continua a ser codificado a partir de imagens fixas (barato em CPU e memória).
+ */
+export async function encodeComposite(ffmpeg: string, parts: Part[], frameFor: (s: Shot) => Promise<Buffer>, audio: Buffer, onProgress?: (i: number, n: number) => Promise<void>, audioExt = 'mp3', overlays: Overlay[] = []): Promise<Buffer> {
   const enc = await videoEncoder(ffmpeg);
   return withTemp(async dir => {
     const files: string[] = [];
@@ -230,6 +295,28 @@ export async function encodeComposite(ffmpeg: string, parts: Part[], frameFor: (
     // Número de fotogramas por arredondamento acumulado sobre o tempo absoluto: a soma bate sempre certo com a linha
     // temporal (o '-t' por pedaço perdia muitas vezes um fotograma no ffmpeg 4.1 e o desvio face ao som acumulava).
     const fr = (ms: number) => Math.round(ms / 40);
+    const baked = new Map<Overlay, string>();
+    const bakedOf = async (o: Overlay) => { let f = baked.get(o); if (!f) { f = await bakeOverlay(ffmpeg, dir, baked.size, o); baked.set(o, f); } return f; };
+    // Os limites do grafismo cortam as partes: dentro de cada pedaço, cada grafismo ou está todo ativo ou não está.
+    const cutsIn = (a: number, b: number) => overlays.flatMap(o => [o.startMs, o.endMs]).filter(x => x > a && x < b);
+    const activeIn = (a: number, b: number) => overlays.filter(o => o.startMs <= a && b <= o.endMs && fr(o.endMs) > fr(o.startMs));
+    /** Sobreposições do grafismo ativo num pedaço que começa em absA: entradas a partir do índice `first`. */
+    const gfx = async (from: string, absA: number, act: Overlay[], first: number) => {
+      const ins: string[] = [], g: string[] = [];
+      let cur = from;
+      for (const [k, o] of act.entries()) {
+        ins.push('-ss', ((absA - o.startMs) / 1000).toFixed(3), '-i', await bakedOf(o));
+        g.push(`[${cur}][${first + k}:v]overlay=${o.x}:${o.y}:eof_action=pass[g${k}]`);
+        cur = `g${k}`;
+      }
+      return { ins, g, cur };
+    };
+    const joinPieces = async (pieces: string[], out: string, p: number) => {
+      const plist = join(dir, `plist${p}.txt`);
+      await writeFile(plist, pieces.map(f => `file '${f.replace(/\\/g, '/')}'`).join('\n'));
+      const r = await run(ffmpeg, ['-y', '-v', 'error', '-f', 'concat', '-safe', '0', '-i', plist, '-c', 'copy', out], 300_000);
+      if (r.code !== 0) throw new Error('Falha a juntar os pedaços de uma parte: ' + r.stderr.slice(-300));
+    };
     let totalFrames = 0;
     for (let p = 0; p < parts.length; p++) {
       const part = parts[p];
@@ -237,28 +324,42 @@ export async function encodeComposite(ffmpeg: string, parts: Part[], frameFor: (
       const out = join(dir, `part${String(p).padStart(4, '0')}.mp4`);
       if (nFrames <= 0) continue;
       totalFrames += nFrames;
-      if (part.kind === 'still') {
-        const lines: string[] = []; let last = '';
-        for (const s of part.shots) {
-          const f = join(dir, `f${String(frameNo++).padStart(5, '0')}.jpg`);
-          await writeFile(f, await frameFor(s));
-          lines.push(`file '${f.replace(/\\/g, '/')}'`, `duration ${((s.endMs - s.startMs) / 1000).toFixed(3)}`);
-          last = f;
+      if (part.kind === 'card') await encodeCard(ffmpeg, enc, dir, p, part.card, nFrames, out);
+      else if (part.kind === 'still') {
+        const pts = [...new Set([part.startMs, part.endMs, ...cutsIn(part.startMs, part.endMs)])].sort((x, y) => x - y);
+        const pieces: string[] = [];
+        for (let k = 0; k + 1 < pts.length; k++) {
+          const a = pts[k], b = pts[k + 1], n = fr(b) - fr(a);
+          if (n <= 0) continue;
+          const lines: string[] = []; let last = '';
+          for (const s of shotsWithin(part.shots, a, b)) {
+            const f = join(dir, `f${String(frameNo++).padStart(5, '0')}.jpg`);
+            await writeFile(f, await frameFor(s));
+            lines.push(`file '${f.replace(/\\/g, '/')}'`, `duration ${((s.endMs - s.startMs) / 1000).toFixed(3)}`);
+            last = f;
+          }
+          if (!last) throw new Error('Parte fixa sem fotogramas');
+          lines.push(`file '${last.replace(/\\/g, '/')}'`);
+          const list = join(dir, `list${p}_${k}.txt`), piece = pts.length === 2 ? out : join(dir, `piece${p}_${k}.mp4`);
+          await writeFile(list, lines.join('\n'));
+          const act = activeIn(a, b);
+          const c = await gfx('b', a, act, 1);
+          const filter = act.length ? ['-filter_complex', ['[0:v]fps=25[b]', ...c.g, `[${c.cur}]format=yuv420p[out]`].join(';'), '-map', '[out]'] : ['-vf', 'fps=25,format=yuv420p'];
+          const r = await run(ffmpeg, ['-y', '-v', 'error', '-threads', '2', '-f', 'concat', '-safe', '0', '-i', list, ...c.ins, ...filter, ...enc, '-threads', '2', '-frames:v', String(n), '-an', piece], 900_000);
+          if (r.code !== 0) throw new Error('Falha a codificar parte fixa: ' + r.stderr.slice(-300));
+          pieces.push(piece);
         }
-        lines.push(`file '${last.replace(/\\/g, '/')}'`);
-        const list = join(dir, `list${p}.txt`);
-        await writeFile(list, lines.join('\n'));
-        const r = await run(ffmpeg, ['-y', '-v', 'error', '-threads', '2', '-f', 'concat', '-safe', '0', '-i', list, '-vf', 'fps=25,format=yuv420p', ...enc, '-threads', '2', '-frames:v', String(nFrames), '-an', out], 900_000);
-        if (r.code !== 0) throw new Error('Falha a codificar parte fixa: ' + r.stderr.slice(-300));
+        if (pieces.length !== 1 || pieces[0] !== out) await joinPieces(pieces, out, p);
       } else {
-        // Parte animada cortada legenda a legenda: cada pedaço tem só 3 entradas (fundo, clipe cortado, aviso+legenda),
-        // para caber nos 512 MB do servidor (antes: uma entrada por legenda, todas em simultâneo).
+        // Parte animada cortada legenda a legenda (e nos limites do grafismo): cada pedaço tem só as entradas que usa
+        // (fundo, clipe cortado, aviso+legenda e o grafismo ativo), para caber nos 512 MB do servidor.
         const base = join(dir, `base${p}.jpg`), clip = join(dir, `clip${p}.mp4`);
         await writeFile(base, part.base); await writeFile(clip, typeof part.clip === 'function' ? await part.clip() : part.clip);
         const off = part.clipOffsetMs ?? 0;
         const len = part.endMs - part.startMs;
         const cuts = new Set<number>([0, len]);
         for (const c of part.cues) { if (c.startMs > 0 && c.startMs < len) cuts.add(c.startMs); if (c.endMs > 0 && c.endMs < len) cuts.add(c.endMs); }
+        for (const x of cutsIn(part.startMs, part.endMs)) cuts.add(x - part.startMs);
         const pts = [...cuts].sort((x, y) => x - y);
         const pieces: string[] = [];
         for (let k = 0; k + 1 < pts.length; k++) {
@@ -268,18 +369,16 @@ export async function encodeComposite(ffmpeg: string, parts: Part[], frameFor: (
           const mid = (a0 + a1) / 2;
           const text = part.cues.find(c => mid >= c.startMs && mid < c.endMs)?.text ?? '';
           const over = join(dir, `ov${p}_${k}.png`), piece = join(dir, `piece${p}_${k}.mp4`);
-          await writeFile(over, await animatedOverlay(part.who, text, part.notice));
+          await writeFile(over, await animatedOverlay(text, part.notice));
           const d = ((n * 40) / 1000).toFixed(3);
-          const g = `[1:v]setpts=PTS-STARTPTS,scale=-2:${H},setsar=1[c];[0:v]scale=${W}:${H},setsar=1[bg];[bg][c]overlay=(W-w)/2:(H-h)/2:eof_action=repeat[v0];[v0][2:v]overlay=0:0,fps=25,format=yuv420p[out]`;
-          const r = await run(ffmpeg, ['-y', '-v', 'error', '-threads', '2', '-loop', '1', '-framerate', '25', '-i', base, '-ss', ((off + a0) / 1000).toFixed(3), '-t', d, '-i', clip, '-loop', '1', '-framerate', '25', '-i', over,
+          const c = await gfx('v1', part.startMs + a0, activeIn(part.startMs + a0, part.startMs + a1), 3);
+          const g = [`[1:v]setpts=PTS-STARTPTS,scale=-2:${H},setsar=1[c]`, `[0:v]scale=${W}:${H},setsar=1[bg]`, '[bg][c]overlay=(W-w)/2:(H-h)/2:eof_action=repeat[v0]', '[v0][2:v]overlay=0:0[v1]', ...c.g, `[${c.cur}]fps=25,format=yuv420p[out]`].join(';');
+          const r = await run(ffmpeg, ['-y', '-v', 'error', '-threads', '2', '-loop', '1', '-framerate', '25', '-i', base, '-ss', ((off + a0) / 1000).toFixed(3), '-t', d, '-i', clip, '-loop', '1', '-framerate', '25', '-i', over, ...c.ins,
             '-filter_complex', g, '-map', '[out]', ...enc, '-threads', '2', '-frames:v', String(n), '-an', piece], 600_000);
           if (r.code !== 0) throw new Error('Falha a codificar parte animada: ' + r.stderr.slice(-300));
           pieces.push(piece);
         }
-        const plist = join(dir, `plist${p}.txt`);
-        await writeFile(plist, pieces.map(f => `file '${f.replace(/\\/g, '/')}'`).join('\n'));
-        const r = await run(ffmpeg, ['-y', '-v', 'error', '-f', 'concat', '-safe', '0', '-i', plist, '-c', 'copy', out], 300_000);
-        if (r.code !== 0) throw new Error('Falha a juntar a parte animada: ' + r.stderr.slice(-300));
+        await joinPieces(pieces, out, p);
       }
       files.push(out);
       if (onProgress) await onProgress(p + 1, parts.length);

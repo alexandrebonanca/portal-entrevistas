@@ -225,7 +225,7 @@ test('vídeo Veo: som dos clipes (com corte no início) e imagem ficam com a mes
   const track = await buildAudioTrack(ffmpeg, [{ durMs: 1200, src: tts, ext: 'mp3' }, { durMs: 2400, src: load, ext: 'mp4', offsetMs: 400 }, { durMs: 1600 }]);
   const mp4 = await encodeComposite(ffmpeg, [
     { kind: 'still', startMs: 0, endMs: 1200, shots: [{ startMs: 0, endMs: 1200, scene: 'cover', text: 'Aviso' }] },
-    { kind: 'anim', startMs: 1200, endMs: 3600, base: img, clip: load, clipOffsetMs: 400, notice: 'AI-generated video · AI voice', who: { name: 'Ana', role: 'Guest' }, cues: [{ startMs: 0, endMs: 1200, text: 'Olá' }, { startMs: 1200, endMs: 2400, text: 'Mundo' }] },
+    { kind: 'anim', startMs: 1200, endMs: 3600, base: img, clip: load, clipOffsetMs: 400, notice: 'AI-generated video · AI voice', cues: [{ startMs: 0, endMs: 1200, text: 'Olá' }, { startMs: 1200, endMs: 2400, text: 'Mundo' }] },
     { kind: 'still', startMs: 3600, endMs: 5200, shots: [{ startMs: 3600, endMs: 5200, scene: 'cover', text: '' }] },
   ] as any, async () => img, track, undefined, 'm4a');
   const { writeFileSync, mkdtempSync } = await import('node:fs');
