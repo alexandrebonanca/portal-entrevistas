@@ -9,6 +9,7 @@ import { SETTING_DEFS, S, maskSetting, saveSetting, saveStripeScoped, fromDb, se
 import { seller, sellerWarnings, sameCompany, savedStripeAccount } from '../legal.ts';
 import { REGIME_LABEL, regionalRate, countryName, eurPt, fmtRate } from '../vat.ts';
 import { queueEmail, emailShell, flushOutbox, retryFailedEmails } from '../mail.ts';
+import { allRates, recommendedCentsPerMin, QUOTE_STATUS } from '../quotes.ts';
 
 /** Campo de uma definição: segredo (nunca devolvido), lista de opções ou texto. `blank` é a opção sem valor guardado. */
 export function settingInput(d: SettingDef, value: string, blank: string, blankLabel?: string) {
@@ -252,24 +253,26 @@ ${rows.map(({ u, qt }) => `<tr><td><a href="/admin/utilizadores/${u.id}">${esc(u
     const q = req.query as any;
     const groups = [...new Set(SETTING_DEFS.map(d => d.group))];
     const plans = await db.query('SELECT * FROM plans ORDER BY sort');
+    const rates = await allRates(db);
     const signups = S('SIGNUPS_OPEN') !== '0';
     const warn = await sellerWarnings(db);
-    const rates = savedTaxRates().rates, acct = savedStripeAccount(), who = seller().name || seller().tradeName;
+    const taxRates = savedTaxRates().rates, acct = savedStripeAccount(), who = seller().name || seller().tradeName;
     const status = (d: SettingDef) => (S(d.key) ? (fromDb(d.key) ? '· definido' : '· definido por variável de ambiente') : d.default ? '· valor por omissão' : '· por definir');
     return view(reply, 'Definições', `<h1>Definições</h1>${flash(q.ok)}${flash(q.e, 'bad')}${warn.map(w => flash(w, 'bad')).join('')}
 <p class="hint sans">As chaves são guardadas cifradas e nunca voltam a ser mostradas por inteiro. Deixe um campo em branco para manter o valor atual; escreva <code>-</code> para o apagar. Uma variável de ambiente com o mesmo nome serve de valor de reserva.</p>
 <form method="post" action="/admin/definicoes">
 ${groups.map(g => `<div class="card"><div class="row"><h2 style="margin:0" class="grow">${esc(g)}</h2>${['OpenAI', 'Stripe', 'MailerSend', 'Moloni ON', 'Replicate', 'fal.ai', 'WaveSpeed', 'Google'].includes(g) ? `<button type="submit" formaction="/admin/definicoes/testar/${encodeURIComponent(g)}" class="ghost" name="testar" value="1">Guardar e testar</button>` : ''}</div>
-${g === 'Stripe' ? `<p class="hint sans">As chaves têm de ser as da conta Stripe da empresa vendedora${who ? ` (${esc(who)})` : ''}${acct.name ? `; no último «Guardar e testar» a conta chamava-se «${esc(acct.name)}»` : ''}. Endpoint do webhook a registar no Stripe: <code>${esc(config.baseUrl)}/webhooks/stripe</code> — eventos: ${esc(STRIPE_EVENTS)}. Taxas de IVA (manuais, sem IVA incluído): ${Object.keys(rates).length ? Object.entries(rates).map(([k, id]) => `${esc(k.replace(':', ' '))}% (${esc(id)})`).join(', ') : 'criadas na Stripe na primeira venda'}.</p>` : ''}
+${g === 'Stripe' ? `<p class="hint sans">As chaves têm de ser as da conta Stripe da empresa vendedora${who ? ` (${esc(who)})` : ''}${acct.name ? `; no último «Guardar e testar» a conta chamava-se «${esc(acct.name)}»` : ''}. Endpoint do webhook a registar no Stripe: <code>${esc(config.baseUrl)}/webhooks/stripe</code> — eventos: ${esc(STRIPE_EVENTS)}. Taxas de IVA (manuais, sem IVA incluído): ${Object.keys(taxRates).length ? Object.entries(taxRates).map(([k, id]) => `${esc(k.replace(':', ' '))}% (${esc(id)})`).join(', ') : 'criadas na Stripe na primeira venda'}.</p>` : ''}
 ${g === SELLER_GROUP ? `<p class="hint sans">${esc(SELLER_HINT)}</p>` : ''}
 ${g === 'Google' ? `<p class="hint sans">${esc(VERTEX_HINT)}</p>` : ''}
 ${SETTING_DEFS.filter(d => d.group === g).map(d => `<label for="f_${d.key}">${esc(d.label)} <span class="hint">${status(d)}</span></label>
 ${settingInput(d, S(d.key) || (d.default ?? ''), d.default ?? d.options?.[0]?.[0] ?? '')}`).join('')}</div>`).join('')}
 <div class="card"><h2 style="margin-top:0">Registo de utilizadores</h2><label class="check"><input type="checkbox" name="signups_open" value="1" ${signups ? 'checked' : ''}> Permitir que novos utilizadores se registem (e subscrevam um plano)</label>
-<label class="check"><input type="checkbox" name="ai_video_open" value="1" ${S('AI_VIDEO_OPEN') === '1' ? 'checked' : ''}> Permitir vídeo IA (Google Veo e retratos animados) a todos os entrevistadores, sem orçamento — pago pelas chaves do portal ou da entidade. Desligado: só o administrador o pede.</label></div>
+<p class="hint sans">Vídeo IA: os entrevistadores pedem a animação com o Google Veo por orçamento, aceite por eles e pago com créditos; os retratos animados (Replicate) e o Veo sem orçamento ficam só para o administrador (custo interno).</p></div>
 <p><button class="accent">Guardar definições</button></p></form>
 <div class="card"><h2 style="margin-top:0">Planos</h2><p class="hint sans">Preços sem IVA (o IVA é acrescentado conforme a morada de faturação). Planos inativos deixam de ser vendidos, mas quem já os tem continua com eles até mudar de plano. Alterar o preço afeta apenas novas subscrições e mudanças de plano; as existentes mantêm o preço contratado no Stripe. Os limites por entrevista (perguntas, incluindo as adicionais, e minutos de respostas do entrevistado) ficam fixos em cada entrevista no convite.</p>
-${plans.map((p: any) => `<form method="post" action="/admin/planos/${esc(p.id)}" class="row" style="margin:8px 0"><strong style="min-width:90px">${esc(p.id)}</strong><input name="name" value="${esc(p.name)}" aria-label="Nome" style="width:140px"><input name="price" type="number" step="0.01" min="0" value="${(p.price_cents / 100).toFixed(2)}" aria-label="Preço mensal sem IVA (EUR)" style="width:110px">€/mês + IVA<input name="limit" type="number" min="0" value="${p.interviews_per_month}" aria-label="Entrevistas por mês" style="width:90px">entrevistas/mês<input name="max_questions" type="number" min="1" value="${p.max_questions}" aria-label="Perguntas por entrevista" style="width:80px">perguntas<input name="answer_min" type="number" min="1" step="1" value="${Math.round(p.max_answer_total_sec / 60)}" aria-label="Minutos de respostas por entrevista" style="width:80px">min de respostas<label class="check" style="margin:0"><input type="checkbox" name="active" value="1" ${p.active ? 'checked' : ''}> ativo</label><button class="ghost">Guardar</button></form>`).join('')}</div>`);
+${plans.map((p: any) => `<form method="post" action="/admin/planos/${esc(p.id)}" class="row" style="margin:8px 0"><strong style="min-width:90px">${esc(p.id)}</strong><input name="name" value="${esc(p.name)}" aria-label="Nome" style="width:140px"><input name="price" type="number" step="0.01" min="0" value="${(p.price_cents / 100).toFixed(2)}" aria-label="Preço mensal sem IVA (EUR)" style="width:110px">€/mês + IVA<input name="limit" type="number" min="0" value="${p.interviews_per_month}" aria-label="Entrevistas por mês" style="width:90px">entrevistas/mês<input name="max_questions" type="number" min="1" value="${p.max_questions}" aria-label="Perguntas por entrevista" style="width:80px">perguntas<input name="answer_min" type="number" min="1" step="1" value="${Math.round(p.max_answer_total_sec / 60)}" aria-label="Minutos de respostas por entrevista" style="width:80px">min de respostas<label class="check" style="margin:0"><input type="checkbox" name="active" value="1" ${p.active ? 'checked' : ''}> ativo</label><button class="ghost">Guardar</button></form>`).join('')}</div>
+${ratesCard(rates)}`);
   });
 
   app.post('/admin/definicoes', async (req, reply) => {
@@ -283,7 +286,6 @@ ${plans.map((p: any) => `<form method="post" action="/admin/planos/${esc(p.id)}"
       else if (b[d.key] !== undefined) await saveSetting(db, d.key, v === '-' ? '' : v);
     }
     await saveSetting(db, 'SIGNUPS_OPEN', b.signups_open ? '1' : '0');
-    await saveSetting(db, 'AI_VIDEO_OPEN', b.ai_video_open ? '1' : '');
     if (['MAILERSEND_API_KEY', 'MAIL_FROM', 'MAIL_FROM_NAME'].some(k => typeof b[k] === 'string' && b[k].trim())) await retryFailedEmails(db);
     await audit(db, req.user!.email, 'admin.settings_saved', null, { keys: SETTING_DEFS.filter(d => typeof b[d.key] === 'string' && b[d.key].trim()).map(d => d.key) });
     return back(reply, '/admin/definicoes', 'Definições guardadas.');
@@ -303,6 +305,31 @@ ${plans.map((p: any) => `<form method="post" action="/admin/planos/${esc(p.id)}"
       const msg = await serviceTest(db, g, req.user!.email);
       return back(reply, '/admin/definicoes', msg);
     } catch (e: any) { return back(reply, '/admin/definicoes', undefined, `Teste falhou: ${String(e.message).slice(0, 400)}`); }
+  });
+
+  // ---------- tarifas da animação (orçamentos): editáveis, só valem para orçamentos novos ----------
+  const ratesCard = (rates: any[]) => `<div class="card" id="tarifas"><h2 style="margin-top:0">Tarifas da animação (orçamentos)</h2><p class="hint sans">1 crédito = 1 € sem IVA. O cliente paga créditos por minuto de fala (cada fala conta pelo menos 4 s); o custo é o que a Google fatura por segundo de clipe. O câmbio deve ser conservador (€ por 1 $): o teto interno de cada orçamento é 81,5% do valor ÷ câmbio. O nível do Google Veo escolhido em Definições → Google decide a tarifa. Uma alteração muda a versão: os rascunhos deixam de poder ser aceites e os orçamentos já aceites mantêm o preço. Confirme o preço do SKU na faturação Cloud do projeto (0,10 ou 0,15 $/s no Fast).</p>
+${rates.map((r: any) => `<form method="post" action="/admin/tarifas/${esc(r.id)}" class="row sans" style="margin:8px 0"><strong style="min-width:170px">${esc(r.label)}</strong><input name="cr_min" type="number" step="0.5" min="0.5" value="${r.cents_per_min / 100}" aria-label="Créditos por minuto de fala" style="width:90px">cr/min<input name="cost" type="number" step="0.001" min="0.001" value="${Number(r.cost_usd_per_sec)}" aria-label="Custo faturado (USD por segundo)" style="width:90px">$/s<input name="usd_eur" type="number" step="0.0001" min="0.5" max="2" value="${Number(r.usd_eur)}" aria-label="Câmbio (€ por 1 $)" style="width:90px">€/$<input name="max_clip" type="number" min="1" max="60" value="${r.max_clip_sec}" aria-label="Duração máxima de um clipe (s)" style="width:70px">s/clipe<input name="valid_until" type="date" value="${r.valid_until ? new Date(r.valid_until).toISOString().slice(0, 10) : ''}" aria-label="Desativação do modelo" style="width:auto"><label class="check" style="margin:0"><input type="checkbox" name="active" value="1" ${r.active ? 'checked' : ''} ${r.available ? '' : 'disabled'}> ativo</label><button class="ghost">Guardar</button>
+<span class="hint" style="flex-basis:100%">versão ${r.version}${r.available ? ` · tarifa mínima recomendada para ~55% de margem típica: ${cr(recommendedCentsPerMin(r))} cr/min` : ' · por integrar e medir no Laboratório: não se pode ativar'}</span></form>`).join('')}</div>`;
+
+  app.post('/admin/tarifas/:id', async (req, reply) => {
+    if (!guard(req, reply)) return;
+    const id = String((req.params as any).id), b = (req.body ?? {}) as any;
+    const r = await db.one('SELECT * FROM animation_rates WHERE id=$1', [id]);
+    if (!r) return reply.code(404).send();
+    const num = (v: unknown) => Number(String(v ?? '').replace(',', '.'));
+    const cents = Math.round(num(b.cr_min) * 100), cost = num(b.cost), usdEur = num(b.usd_eur), maxClip = parseInt(String(b.max_clip ?? ''));
+    const until = b.valid_until ? new Date(`${b.valid_until}T23:59:59Z`) : null;
+    if (!(cents > 0) || !(cost > 0) || !(usdEur >= 0.5 && usdEur <= 2) || !(maxClip >= 1 && maxClip <= 60) || (until && Number.isNaN(until.getTime()))) return back(reply, '/admin/definicoes', undefined, 'Valores da tarifa inválidos.');
+    if (b.active && !r.available) return back(reply, '/admin/definicoes', undefined, `${r.label}: motor por integrar e medir no Laboratório; não se pode ativar.`);
+    const active = !!b.active;
+    const changed = cents !== r.cents_per_min || cost !== Number(r.cost_usd_per_sec) || usdEur !== Number(r.usd_eur) || maxClip !== r.max_clip_sec || active !== r.active
+      || (until?.getTime() ?? null) !== (r.valid_until ? new Date(r.valid_until).getTime() : null);
+    if (!changed) return back(reply, '/admin/definicoes', 'Tarifa sem alterações.');
+    await db.query(`UPDATE animation_rates SET cents_per_min=$2, cost_usd_per_sec=$3, usd_eur=$4, max_clip_sec=$5, valid_until=$6, active=$7, version=version+1, updated_by=$8, updated_at=now() WHERE id=$1`,
+      [id, cents, cost, usdEur, maxClip, until, active, req.user!.email]);
+    await audit(db, req.user!.email, 'admin.animation_rate_updated', null, { rate: id, centsPerMin: cents, costUsdPerSec: cost, usdEur, maxClip, active, validUntil: until });
+    return back(reply, '/admin/definicoes', `Tarifa ${r.label} guardada (versão ${r.version + 1}): vale para os orçamentos novos.`);
   });
 
   app.post('/admin/planos/:id', async (req, reply) => {
@@ -401,6 +428,7 @@ ${wd.map((w: any) => `<tr><td>${fmtDate(w.requested_at)}<br><span class="hint">r
       WHERE ($1::uuid IS NULL OR w.user_id=$1::uuid) AND (w.available_cents>0 OR w.reserved_cents>0 OR w.debt_cents>0 OR w.frozen OR $1::uuid IS NOT NULL) ORDER BY w.frozen DESC, w.debt_cents DESC, w.updated_at DESC LIMIT 200`, [only]);
     const lots = await db.query(`SELECT tp.*, u.email, u.name, (SELECT COALESCE(sum(gross_cents),0)::int FROM credit_refunds r WHERE r.topup_id=tp.id AND r.status<>'failed') AS refunded_gross
       FROM credit_topups tp JOIN users u ON u.id=tp.user_id WHERE ($1::uuid IS NULL OR tp.user_id=$1::uuid) AND (tp.status<>'failed' OR tp.alert IS NOT NULL) ORDER BY (tp.alert IS NOT NULL) DESC, tp.created_at DESC LIMIT 100`, [only]);
+    const quotes = await db.query(`SELECT q.*, u.email, i.title FROM animation_quotes q JOIN users u ON u.id=q.owner_id JOIN interviews i ON i.id=q.interview_id WHERE ($1::uuid IS NULL OR q.owner_id=$1::uuid) AND q.status<>'draft' ORDER BY q.created_at DESC LIMIT 50`, [only]);
     const refunds = await db.query(`SELECT cr.*, u.email FROM credit_refunds cr JOIN credit_topups tp ON tp.id=cr.topup_id JOIN users u ON u.id=tp.user_id WHERE ($1::uuid IS NULL OR tp.user_id=$1::uuid) ORDER BY cr.created_at DESC LIMIT 50`, [only]);
     const now = Date.now();
     const lotRow = (l: any) => {
@@ -422,6 +450,8 @@ ${problems.length ? `<div class="flash bad"><strong>O livro-razão não confere:
 <div class="card" style="overflow-x:auto"><h2 style="margin-top:0">Carteiras</h2>${wallets.length ? `<table><thead><tr><th>Cliente</th><th>Entidade</th><th>Disponível</th><th>Cativo</th><th>Dívida</th><th></th></tr></thead><tbody>
 ${wallets.map((w: any) => `<tr><td><a href="/admin/utilizadores/${w.user_id}">${esc(w.name)}</a><br><span class="hint">${esc(w.email)}</span></td><td>${esc(w.entity_name ?? '—')}</td><td>${cr(w.available_cents)}</td><td>${cr(w.reserved_cents)}</td><td>${w.debt_cents ? `<strong>${cr(w.debt_cents)}</strong>` : '0'}</td><td>${w.frozen ? pill('congelada (disputa)', 'bad') : ''}</td></tr>`).join('')}</tbody></table>` : '<p class="hint">Sem carteiras com saldo.</p>'}</div>
 <div class="card" style="overflow-x:auto"><h2 style="margin-top:0">Carregamentos</h2>${lots.length ? `<table><thead><tr><th>Data</th><th>Cliente</th><th>Valor</th><th>Saldo do lote</th><th>Estado</th><th>FR</th><th></th></tr></thead><tbody>${lots.map(lotRow).join('')}</tbody></table>` : '<p class="hint">Sem carregamentos.</p>'}</div>
+<div class="card" style="overflow-x:auto"><h2 style="margin-top:0">Orçamentos da animação</h2>${quotes.length ? `<table><thead><tr><th>Aceite</th><th>Cliente</th><th>Orçamento</th><th>Cobrado / libertado</th><th>Gasto na Google (estimado) / teto</th><th>Estado</th></tr></thead><tbody>
+${quotes.map((q: any) => { const [l, k] = QUOTE_STATUS[q.status] ?? [q.status, '']; return `<tr><td>${fmtDate(q.accepted_at ?? q.created_at)}</td><td>${esc(q.email)}<br><a class="hint" href="/entrevistas/${q.interview_id}/orcamentos/${q.id}">${esc(q.title)}</a></td><td>${cr(q.price_cents)} cr<br><span class="hint">${esc(q.rate?.label ?? '')} · ${cr(q.rate?.cents_per_min ?? 0)} cr/min · v${q.rate?.version ?? '?'}</span></td><td>${q.charged_cents != null ? `${cr(q.charged_cents)} / ${cr(q.released_cents ?? 0)}` : '—'}</td><td>${q.spent_usd != null ? `${Number(q.spent_usd).toFixed(2)}` : '—'} / ${Number(q.cap_usd).toFixed(2)}${q.settlement?.factor ? `<br><span class="hint">fator medido ${q.settlement.factor}</span>` : ''}</td><td>${pill(l, k)}${q.void_reason ? `<br><span class="hint">${esc(q.void_reason)}</span>` : ''}${q.status_note ? `<br><span class="hint">${esc(q.status_note)}</span>` : ''}</td></tr>`; }).join('')}</tbody></table>` : '<p class="hint">Sem orçamentos aceites.</p>'}<p class="hint sans">O gasto inclui as operações recusadas pelo filtro ou falhadas na Google, até à reconciliação com a fatura da Google.</p></div>
 <div class="card" style="overflow-x:auto"><h2 style="margin-top:0">Reembolsos</h2>${refunds.length ? `<table><thead><tr><th>Pedido</th><th>Cliente</th><th>Valor</th><th>Origem</th><th>Estado</th></tr></thead><tbody>
 ${refunds.map((r: any) => `<tr><td>${fmtDate(r.created_at)}<br><span class="hint">${esc(r.requested_by ?? '')}</span></td><td>${esc(r.email)}</td><td>${cr(r.net_cents)} cr = ${eurPt(r.gross_cents)}</td><td>${r.source === 'app' ? (r.reason === 'closure' ? 'aplicação (encerramento)' : 'aplicação (14 dias)') : 'painel da Stripe'}<br><span class="hint">${esc(r.stripe_refund_id ?? '')}</span></td>
 <td>${pill(r.status === 'succeeded' ? 'feito' : r.status === 'failed' ? 'falhou' : 'pendente', r.status === 'succeeded' ? 'ok' : r.status === 'failed' ? 'bad' : 'warn')}${r.error ? `<br><span class="hint">${esc(r.error)}</span>` : ''}${r.status === 'pending' && r.source === 'app' && !r.stripe_refund_id ? `<form method="post" action="/admin/creditos/reembolsos/${r.id}/repetir"><button class="ghost" style="padding:6px 12px;min-height:0">Repetir o pedido à Stripe</button></form>` : ''}</td></tr>`).join('')}</tbody></table>` : '<p class="hint">Sem reembolsos.</p>'}</div>`);

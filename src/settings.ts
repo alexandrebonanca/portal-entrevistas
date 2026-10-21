@@ -50,7 +50,7 @@ export const SETTING_DEFS: SettingDef[] = [
 export const SELLER_CORE_KEYS = ['SELLER_NAME', 'SELLER_NIF', 'SELLER_ADDRESS'] as const;
 export const SELLER_CONSUMER_KEYS = ['SELLER_EMAIL', 'SELLER_COMPLAINTS_URL'] as const;
 /** Definições internas (fora do formulário): interruptores, as taxas de IVA criadas na Stripe e o nome da conta Stripe. */
-const INTERNAL_KEYS = ['SIGNUPS_OPEN', 'AI_VIDEO_OPEN', 'STRIPE_TAX_RATES', 'STRIPE_ACCOUNT'];
+const INTERNAL_KEYS = ['SIGNUPS_OPEN', 'STRIPE_TAX_RATES', 'STRIPE_ACCOUNT'];
 
 const cache = new Map<string, string>();
 const entityCache = new Map<string, Map<string, string>>();
@@ -244,12 +244,6 @@ export const sellerS = (key: string): string => {
 export const stripeScopedValue = (key: string) => { const e = stripeScope(); return e ? entityValue(e, key) : (cache.get(key) ?? ''); };
 export const saveStripeScoped = async (db: Db, key: string, value: string) => { const e = stripeScope(); return e ? saveEntitySetting(db, e, key, value) : saveSetting(db, key, value); };
 
-/**
- * Vídeo IA (Google Veo e retratos animados): pago ao fornecedor por cada geração. Até haver orçamentos pagos com créditos,
- * só o administrador o pede, a não ser que ele o abra a todos em Definições (AI_VIDEO_OPEN, global).
- */
-export const aiVideoOpen = (u: { role?: string } | null | undefined) => u?.role === 'admin' || cache.get('AI_VIDEO_OPEN') === '1';
-export const AI_VIDEO_CLOSED = 'A animação por IA (Google Veo e retratos animados) vai passar a ser feita por orçamento, aceite antes de gerar e pago com créditos. Ainda não está disponível na sua conta: por agora, o vídeo sai com as fotografias e a voz do episódio.';
 
 /** Mostra só o fim de um segredo; o valor completo nunca volta ao browser. */
 export const mask = (v: string) => (v ? '••••••••' + v.slice(-4) : '');

@@ -469,9 +469,12 @@ test('vídeo com o Google Veo: autorização própria, som dos clipes, verifica�
   await post(`/entrevistas/${ivId}/episodio/${ep.id}/aprovar`, { video: ep2.video_asset_id }, owner);
   assert.equal((await db.one(`SELECT count(*)::int n FROM approvals WHERE episode_id=$1 AND valid AND decision='approved' AND video_asset_id=$2`, [ep.id, ep2.video_asset_id])).n, 2);
   // um vídeo desligado deixa de ser servido ao convidado
-  // operações pagas ficam registadas e concluídas (em modo simulado não há operações na Google)
-  assert.equal((await db.one(`SELECT count(*)::int n FROM veo_ops WHERE interview_id=$1 AND state='pending'`, [ivId])).n, 0);
-  assert.deepEqual(await db.query(`SELECT model, usd_per_sec FROM veo_ops WHERE interview_id=$1`, [ivId]), [], 'cada operação guarda o modelo e o preço (migração 012)');
+  // operações registadas e concluídas (em modo simulado também passam pela intenção gravada antes do envio), com o modelo
+  // e o preço de cada uma; o administrador gera sem orçamento (custo interno)
+  assert.equal((await db.one(`SELECT count(*)::int n FROM veo_ops WHERE interview_id=$1 AND state IN ('pending','reserved')`, [ivId])).n, 0);
+  const ops = await db.query(`SELECT model, usd_per_sec, state, quote_id, cost_usd, duration_sec FROM veo_ops WHERE interview_id=$1`, [ivId]);
+  assert.equal(ops.length, meta.veoClips, 'uma operação por clipe gerado');
+  assert.ok(ops.every((o: any) => o.model === 'veo-3.1-fast-generate-preview' && o.usd_per_sec === 0.1 && o.state === 'done' && o.quote_id === null && o.cost_usd === o.duration_sec * 0.1), 'cada operação guarda o modelo, o preço e o custo (migrações 012 e 016)');
 
   // o entrevistador retira a autorização do Veo em Editar: o vídeo sai do ar
   const iv = await db.one('SELECT * FROM interviews WHERE id=$1', [ivId]);
@@ -557,36 +560,40 @@ test('vídeo com o Google Veo: autorização própria, som dos clipes, verifica�
   await db.query(`UPDATE interviews SET review_policy='guest_preview' WHERE id=$1`, [ivId]);
 });
 
-test('vídeo IA só para o administrador, a não ser que ele o abra a todos em Definições', async () => {
+test('vídeo IA: o Veo de quem não é administrador só por orçamento; os retratos animados só do administrador', async () => {
   await drain();
-  const { saveSetting } = await import('../src/settings.ts');
   const ownerId = (await db.one('SELECT owner_id FROM interviews WHERE id=$1', [ivId])).owner_id;
   const ep = await db.one(`SELECT * FROM episodes WHERE interview_id=$1 AND NOT stale ORDER BY created_at DESC LIMIT 1`, [ivId]);
   const jobs = async () => Number((await db.one(`SELECT count(*)::int n FROM jobs WHERE interview_id=$1 AND kind='render_video'`, [ivId])).n);
   await db.query(`UPDATE users SET role='interviewer' WHERE id=$1`, [ownerId]);
   try {
     const pg = await get(`/entrevistas/${ivId}/producao`, owner);
-    assert.match(pg.body, /value="lipsync" disabled/); assert.match(pg.body, /value="veo" disabled/);
-    assert.match(pg.body, /vai passar a ser feita por orçamento/);
+    assert.doesNotMatch(pg.body, /value="lipsync"/); assert.doesNotMatch(pg.body, /value="veo"/);
+    assert.match(pg.body, /A animação por IA \(Google Veo\) faz-se por orçamento/);
+    assert.match(pg.body, /id="orcamento"/, 'secção do orçamento');
     const before = await jobs();
-    for (const body of [{ lang: 'en', engine: 'veo' }, { lang: 'en', engine: 'lipsync' }, { lang: 'en', animate: '1' }]) {
+    for (const [body, re] of [[{ lang: 'en', engine: 'veo' }, /faz-se por orçamento/], [{ lang: 'en', engine: 'lipsync' }, /reservados ao administrador/], [{ lang: 'en', animate: '1' }, /reservados ao administrador/]] as const) {
       const r = await post(`/entrevistas/${ivId}/episodio/${ep.id}/video`, body, owner);
-      assert.match(decodeURIComponent(r.headers.location as string), /vai passar a ser feita por orçamento/);
+      assert.match(decodeURIComponent(r.headers.location as string), re);
     }
     assert.equal(await jobs(), before, 'nenhum trabalho pago entra na fila');
     // fotografias fixas continuam disponíveis
     const still = await post(`/entrevistas/${ivId}/episodio/${ep.id}/video`, { lang: 'en', engine: 'still' }, owner);
     assert.match(decodeURIComponent(still.headers.location as string), /Geração do vídeo iniciada/);
     await drain();
-    // o administrador abre o vídeo IA a todos: o entrevistador volta a poder pedi-lo
-    await saveSetting(db, 'AI_VIDEO_OPEN', '1');
-    const pg2 = await get(`/entrevistas/${ivId}/producao`, owner);
-    assert.doesNotMatch(pg2.body, /vai passar a ser feita por orçamento/);
-    const r2 = await post(`/entrevistas/${ivId}/episodio/${ep.id}/video`, { lang: 'en', animate: '1' }, owner);
-    assert.match(decodeURIComponent(r2.headers.location as string), /Geração do vídeo iniciada/);
+    // segunda barreira: um trabalho pedido por quem já não é administrador não gera vídeo IA (nem clipes)
+    const clips = Number((await db.one(`SELECT count(*)::int n FROM veo_ops WHERE interview_id=$1`, [ivId])).n);
+    for (const input of [{ episodeId: ep.id, lang: 'en', engine: 'veo', requestedBy: ownerId }, { episodeId: ep.id, lang: 'en', animate: true, requestedBy: ownerId }]) {
+      const j = await db.one(`INSERT INTO jobs(interview_id, kind, input) VALUES ($1,'render_video',$2) RETURNING id`, [ivId, JSON.stringify(input)]);
+      await drain();
+      const r = await db.one('SELECT state, error FROM jobs WHERE id=$1', [j.id]);
+      assert.equal(r.state, 'failed'); assert.match(r.error, input.engine ? /faz-se por orçamento/ : /só se geram a pedido do administrador/);
+    }
+    assert.equal(Number((await db.one(`SELECT count(*)::int n FROM veo_ops WHERE interview_id=$1`, [ivId])).n), clips, 'nada foi enviado à Google');
+    // (o último trabalho volta a ser um vídeo concluído, para o teste do progresso)
+    await post(`/entrevistas/${ivId}/episodio/${ep.id}/video`, { lang: 'en', engine: 'still' }, owner);
     await drain();
   } finally {
-    await saveSetting(db, 'AI_VIDEO_OPEN', '');
     await db.query(`UPDATE users SET role='admin' WHERE id=$1`, [ownerId]);
   }
 });

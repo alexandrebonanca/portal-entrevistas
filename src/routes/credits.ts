@@ -10,8 +10,8 @@ import { findWallet, spendBlock, packFor, cr, crEn, ENTRY_LABEL, TOPUP_PACKS, TO
 
 /** Mensagem nas duas línguas (a área de faturação é em inglês; o português é obrigatório para os consumidores). */
 const both = (m: { pt: string; en: string }) => `${m.en} · ${m.pt}`;
-/** Regresso depois de pagar: só para páginas da própria entrevista (convite e produção). */
-export const safeReturn = (v: unknown) => (typeof v === 'string' && /^\/entrevistas\/[0-9a-f-]{36}(\/producao|\/convidar)?$/i.test(v) ? v : null);
+/** Regresso depois de pagar: só para páginas da própria entrevista (convite, produção e orçamento da animação). */
+export const safeReturn = (v: unknown) => (typeof v === 'string' && /^\/entrevistas\/[0-9a-f-]{36}(\/producao|\/convidar|\/orcamentos\/[0-9a-f-]{36})?$/i.test(v) ? v : null);
 /** Valor em euros inteiros (25 a 1000), como vem do formulário («25», «25,00»); null se não servir. */
 export function parseTopupEuros(v: unknown): number | null {
   const m = /^\s*(\d{1,4})(?:[.,]0{1,2})?\s*$/.exec(String(v ?? ''));
