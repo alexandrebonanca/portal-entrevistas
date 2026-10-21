@@ -5,7 +5,7 @@ import { audit, sendAsset } from '../app.ts';
 import { enqueue } from '../jobs.ts';
 import { lipsyncModel, replicatePricePerSec } from '../lipsync.ts';
 import { S } from '../settings.ts';
-import { PROVIDERS, providerReady, verifySignedAsset, presenterDirection } from '../talking.ts';
+import { PROVIDERS, providerReady, isVeoProvider, veoBackend, veoModel, verifySignedAsset, presenterDirection } from '../talking.ts';
 
 /** Laboratório (só administradores): experiências com retratos fictícios. */
 export async function labRoutes(app: FastifyInstance) {
@@ -32,8 +32,8 @@ export async function labRoutes(app: FastifyInstance) {
 <label for="ctx">Frase (inglês)</label><input id="ctx" name="text" type="text" maxlength="400" value="Hello, and welcome. Today we talk about the future of energy in Portugal. We will look at three things: the grid, storage, and what it all means for consumers.">
 <label for="dir">Direção de cena (regras de apresentação; usada pelo OmniHuman, InfiniteTalk e Veo)</label><textarea id="dir" name="direction" rows="6">${esc(presenterDirection('presenter'))}</textarea>
 <p class="hint">O retrato fictício é gerado a meio corpo, com as mãos visíveis, para que os gestos sejam possíveis.</p>
-${PROVIDERS.map(p => `<label class="check"><input type="checkbox" name="p_${p.id}" value="1" ${providerReady(p) ? 'checked' : 'disabled'}> <span><strong>${esc(p.label)}</strong> — ${esc(p.partner)} · ${p.pricePerSec != null ? `~$${p.pricePerSec}/s` : 'preço por confirmar'} · ${esc(p.note)}${providerReady(p) ? '' : ` <span class="hint">(falta a chave ${esc(p.partner)} em Definições)</span>`}</span></label>`).join('')}
-<p class="hint">Estimativa para ~6 s: OmniHuman ~$1, Fabric ~$0,85, HeyGen ~$0,60, Veo Fast ~$0,80 (8 s), Veo Lite ~$0,40 (8 s), InfiniteTalk por confirmar. O Veo não usa o nosso áudio: gera a sua própria voz a partir da frase. Para comparar Fast e Lite, marque só os dois: o retrato, a frase e o pedido são os mesmos.</p>
+${PROVIDERS.map(p => `<label class="check"><input type="checkbox" name="p_${p.id}" value="1" ${!providerReady(p) ? 'disabled' : p.preselected ? 'checked' : ''}> <span><strong>${esc(p.label)}</strong> — ${esc(isVeoProvider(p) ? `${p.partner} (${veoBackend() === 'vertex' ? 'Vertex AI' : 'Gemini API'}: ${veoModel(p.id === 'veo-lite' ? 'lite' : 'fast')})` : p.partner)} · ${p.pricePerSec != null ? `~$${p.pricePerSec.toFixed(2)}/s` : 'preço por confirmar'} · ${esc(p.note)}${providerReady(p) ? '' : ` <span class="hint">(${isVeoProvider(p) ? 'falta a conta de serviço do Vertex AI, ou a chave da Gemini API, em Definições → Google' : `falta a chave ${esc(p.partner)} em Definições`})</span>`}</span></label>`).join('')}
+<p class="hint">Vêm marcados só o Veo 3.1 Fast e o Lite; os outros modelos continuam disponíveis, desmarcados. Estimativa: Veo Fast ~$0,80 e Veo Lite ~$0,40 por clipe de 8 s; para ~6 s, OmniHuman ~$1, Fabric ~$0,85, HeyGen ~$0,60, InfiniteTalk por confirmar. O Veo não usa o nosso áudio: gera a sua própria voz a partir da frase. Para comparar Fast e Lite, o retrato, a frase e o pedido são os mesmos.</p>
 <p><button class="accent" ${cmpLive ? 'disabled' : ''}>Comparar</button></p></form>
 ${cmpLive ? `<div class="flash" aria-live="polite">${esc(cmpLive.state === 'queued' ? 'Em fila' : cmpLive.progress_label || 'A correr')} — a página atualiza sozinha.<meta http-equiv="refresh" content="8"></div>` : ''}
 ${cmp.filter((r: any) => r.result?.results).map((r: any) => `<h3>${fmtDate(r.created_at)} ${pill(r.state, r.state === 'done' ? 'ok' : r.state === 'failed' ? 'bad' : '')}</h3>
@@ -80,7 +80,7 @@ ${r.error ? `<p class="hint" style="color:var(--bad)">${esc(r.error)}</p>` : ''}
     if (await db.one(`SELECT 1 FROM jobs WHERE kind='talking_compare' AND state IN ('queued','running')`)) return reply.redirect('/admin/laboratorio?e=' + encodeURIComponent('Já há uma comparação a correr.'));
     const b = req.body as any;
     const chosen = PROVIDERS.filter(p => b['p_' + p.id] && providerReady(p)).map(p => p.id);
-    if (!chosen.length) return reply.redirect('/admin/laboratorio?e=' + encodeURIComponent('Escolha pelo menos um modelo com chave configurada.'));
+    if (!chosen.length) return reply.redirect('/admin/laboratorio?e=' + encodeURIComponent('Escolha pelo menos um modelo com credenciais configuradas.'));
     const text = String(b.text ?? '').trim().slice(0, 400) || 'Hello, and welcome.';
     const direction = String(b.direction ?? '').trim().slice(0, 3000) || presenterDirection('presenter');
     await enqueue(db, { kind: 'talking_compare', input: { text, providers: chosen, direction }, dedupe: `compare:${Date.now()}` });
