@@ -449,10 +449,10 @@ export const FAQ_SEED: SeedEntry[] = [
   // ======================= todos =======================
   { key: 'quem-gere', audience: 'all',
     pt: ['Quem gere e quem comercializa o {brand}?',
-      `O {brand} é propriedade da {ownerName}, que o gere. O serviço é comercializado (vendido ao cliente final) pela {sellerName}. A identificação de ambas, o NIF de quem comercializa e o Livro de Reclamações estão no rodapé de todas as páginas.`,
+      `O {brand} é propriedade da {ownerName}, que o gere (identificada no rodapé de todas as páginas). O serviço é comercializado (vendido ao cliente final) pela {sellerName}.`,
       'quem gere, gestora, proprietário, dono, dono do portal, quem vende, comercializa, empresa, NIF, livro de reclamações, Certif, Telecert, responsável, portal, site, plataforma'],
     en: ['Who operates and who sells {brand}?',
-      `{brand} is owned and operated by {ownerName}. The service is sold to end customers by {sellerName}. Both are identified in the footer of every page, together with the seller's VAT number and the Portuguese complaints book (Livro de Reclamações).`,
+      `{brand} is owned and operated by {ownerName} (identified in the footer of every page). The service is sold to end customers by {sellerName}.`,
       'who operates, operator, owner, owns, runs, run, behind, who sells, seller, company, VAT, complaints book, Certif, Telecert, responsible, portal, website, site, platform'] },
 ];
 
