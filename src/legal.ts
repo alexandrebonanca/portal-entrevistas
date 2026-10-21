@@ -8,11 +8,8 @@ import { sellerVatProblems, normVatNumber, isEuCountry, countryName, regionalRat
 export const TERMS_VERSION = '2026-10-21';
 /** Prazo da livre resolução dos consumidores (DL 24/2014, art. 10.º). */
 export const WITHDRAWAL_DAYS = 14;
-/**
- * Entidade gestora da plataforma (não vende ao cliente final). Os mesmos dados que o rodapé mostra a partir de config.owner
- * (ramo do rodapé); quando os ramos se juntarem, passa a ler-se daí.
- */
-export const PLATFORM_MANAGER = { name: 'Certif Int Association OÜ', country: 'Estónia', url: 'https://www.certifinternational.com', email: 'certifinternational@gmail.com' };
+/** Entidade proprietária e gestora da plataforma (não vende ao cliente final): a do rodapé (config.owner). */
+export const PLATFORM_MANAGER = { name: config.owner.name, country: countryName(config.owner.country), url: config.owner.site, email: config.owner.email };
 
 const LABELS: Record<string, string> = {
   SELLER_NAME: 'denominação social completa', SELLER_NIF: 'NIF', SELLER_ADDRESS: 'morada da sede',
@@ -104,6 +101,8 @@ export function sellerBlock(s: Seller) {
   return `<p>${val(s.name)}${s.tradeName ? ` (${esc(s.tradeName)})` : ''}<br>NIF ${val(s.nif)} · Sede: ${val(s.address)}${s.country ? `, ${esc(countryName(s.country))}` : ''}<br>
 Contacto: ${mail(s.email)} · ${complaintsLink(s)}</p>`;
 }
+/** Identificação curta da empresa vendedora nas páginas de compra: denominação, NIF (sem o prefixo PT) e morada. */
+export const sellerId = (s: Seller) => [esc(s.name || s.tradeName || '—'), s.nif ? `NIF ${esc(s.nif)}` : '', s.address ? esc(s.address) : ''].filter(Boolean).join(' · ');
 const managerBlock = () => `<p>A plataforma ${esc(config.brand)} é gerida pela ${esc(PLATFORM_MANAGER.name)} (${esc(PLATFORM_MANAGER.country)}; <a href="${esc(PLATFORM_MANAGER.url)}" rel="noopener">${esc(PLATFORM_MANAGER.url.replace(/^https?:\/\//, ''))}</a>; ${mail(PLATFORM_MANAGER.email)}), entidade gestora, que não vende ao cliente final: o contrato de venda é celebrado com a empresa vendedora identificada acima.</p>`;
 
 /** Como o IVA é tratado, em palavras. */

@@ -11,6 +11,9 @@ test('rodapé: entidade proprietária e gestora em português e em inglês', asy
   assert.match(ownerLine('en'), /^quietinterview is owned and operated by Certif Int Association OÜ \(Estonia\) · /);
   assert.match(ownerLine('es'), /owned and operated by/, 'outras línguas em inglês');
   assert.match(page({ title: 'T', body: '' }), /<footer>[\s\S]*é propriedade da Certif Int Association OÜ \(Estónia\)/, 'páginas em português (por omissão)');
+  // a vendedora não entra no rodapé (aparece nas páginas de compra, nos termos e nos orçamentos)
+  assert.doesNotMatch(page({ title: 'T', body: '' }), /<footer>[\s\S]*(Telecert|Comercializado|Livro de Reclamações)[\s\S]*<\/footer>/);
+  assert.doesNotMatch(page({ title: 'T', body: '', lang: 'en' }), /<footer>[\s\S]*(Telecert|Sold by)[\s\S]*<\/footer>/);
 });
 
 test('cues usam tempos medidos e não se sobrepõem', () => {

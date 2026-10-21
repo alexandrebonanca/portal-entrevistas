@@ -6,7 +6,7 @@ import { audit } from '../app.ts';
 import { quotaFor, createCheckout, changePlan, cancelNow, createPortal, stripeConfigured, verifyStripeSignature, applyStripeEvent, verifyVatNumber, vatForProfile, customerFor, ACTIVE_STATUSES, LIVE_STRIPE } from '../billing.ts';
 import { findWallet, crEn } from '../wallet.ts';
 import { S, inEntity } from '../settings.ts';
-import { seller, checkoutBlock, contactEmail, homeConsumerRate, termsBody, paymentsPrivacyBody, complaintsLink, TERMS_VERSION, WITHDRAWAL_DAYS, type Seller } from '../legal.ts';
+import { seller, sellerId, checkoutBlock, contactEmail, homeConsumerRate, termsBody, paymentsPrivacyBody, complaintsLink, TERMS_VERSION, WITHDRAWAL_DAYS, type Seller } from '../legal.ts';
 import { withVat, eurEn, eurPt, fmtRate, normNif, normPostal, normVatNumber, isEuCountry, outsideVatTerritory, countryName, EU_COUNTRIES, OUTSIDE_EU, type VatDecision } from '../vat.ts';
 import { queueEmail, emailShell } from '../mail.ts';
 
@@ -119,7 +119,7 @@ ${problem ? flash(problem, 'bad') : ''}
 ${stripeConfigured() ? '' : `<p class="hint">Online payments are not enabled yet. Please contact us at ${esc(contactEmail(s))} to activate your plan.</p>`}
 ${profileCard}
 ${customerId ? '<form method="post" action="/billing/portal"><button class="ghost">Manage card, Stripe receipts &amp; cancellation</button></form><p class="hint">Stripe receipts are proof of payment only. Your invoice (<span lang="pt-PT">fatura-recibo</span>) is issued separately by the seller and sent by email.</p>' : ''}
-<p class="hint">Seller: ${esc(s.name || s.tradeName || '—')} · <a href="/termos">Terms of sale · Termos e condições</a> · <a href="/privacidade-pagamentos">Payments privacy · Privacidade nos pagamentos</a> · ${complaintsLink(s)}</p>`}
+<p class="hint">Seller · <span lang="pt-PT">Vendedora</span>: ${sellerId(s)} · <a href="/termos">Terms of sale · Termos e condições</a> · <a href="/privacidade-pagamentos">Payments privacy · Privacidade nos pagamentos</a> · ${complaintsLink(s)}</p>`}
 </div>`;
     return send(reply, page({ lang: 'en', title: 'Account', body, nav, noindex: true }));
   };

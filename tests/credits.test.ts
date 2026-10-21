@@ -163,11 +163,20 @@ test('carregamento: vendedora em falta bloqueia; resumo com IVA; Checkout mode=p
   await saveSetting(db, 'STRIPE_WEBHOOK_SECRET', 'whsec_test');
   biz = await register('Cliente Créditos', 'cc@example.com');
   assert.match(msg(await post('/billing/profile', { kind: 'business', name: 'Cliente Créditos, Lda.', country: 'PT', tax_id: nifOf('51234567'), address: 'Rua C', postal_code: '1000-001', city: 'Lisboa' }, biz.cookie)), /Billing details saved/);
-  // sem denominação, NIF e morada da vendedora: nenhum carregamento, nenhum pedido à Stripe
+  // sem denominação, NIF e morada da vendedora (os valores por omissão tirados por variáveis vazias): nenhum carregamento,
+  // nenhum pedido à Stripe
+  const core = ['SELLER_NAME', 'SELLER_NIF', 'SELLER_ADDRESS'];
   const n0 = fake.calls.length;
-  assert.match(msg(await post('/conta/creditos/carregar', { valor: 25, terms: '1' }, biz.cookie)), /Online payments are paused until the seller’s details are complete/);
-  assert.equal(fake.calls.length, n0);
-  assert.match((await get('/conta/creditos/carregar?valor=25', biz.cookie)).body, /Online payments are paused[\s\S]*<button class="accent" disabled>/);
+  for (const k of core) process.env[k] = '';
+  try {
+    assert.match(msg(await post('/conta/creditos/carregar', { valor: 25, terms: '1' }, biz.cookie)), /Online payments are paused until the seller’s details are complete/);
+    assert.equal(fake.calls.length, n0);
+    assert.match((await get('/conta/creditos/carregar?valor=25', biz.cookie)).body, /Online payments are paused[\s\S]*<button class="accent" disabled>/);
+  } finally { for (const k of core) delete process.env[k]; }
+  // por omissão, a Telecert Consultoria Lda (NIF sem o prefixo PT), com a morada e o Livro de Reclamações no resumo
+  const sum0 = (await get('/conta/creditos/carregar?valor=25', biz.cookie)).body;
+  assert.match(sum0, /<tr><th>Seller · Vendedor<\/th><td>Telecert Consultoria Lda · NIF 514907274 · Avenida 5 de Outubro, 38A, 8000-077 Faro · <a href="https:\/\/www\.livroreclamacoes\.pt\/Inicio\/"/);
+  assert.doesNotMatch(sum0, /<footer>[\s\S]*Telecert[\s\S]*<\/footer>/, 'a vendedora não aparece no rodapé');
   await saveSetting(db, 'SELLER_NAME', 'Empresa Vendedora de Teste, Lda.');
   await saveSetting(db, 'SELLER_NIF', SELLER_NIF);
   await saveSetting(db, 'SELLER_ADDRESS', 'Rua de Teste, 1, 1000-001 Lisboa');

@@ -33,16 +33,18 @@ export const SETTING_DEFS: SettingDef[] = [
   { key: 'MOLONI_USERNAME', label: 'Utilizador', group: 'Moloni ON', secret: false },
   { key: 'MOLONI_PASSWORD', label: 'Palavra-passe', group: 'Moloni ON', secret: true },
   { key: 'MOLONI_COMPANY_ID', label: 'ID da empresa', group: 'Moloni ON', secret: false },
-  // Por omissão só a marca e o país (a Telecert, em Portugal, registada para IVA); a denominação, o NIF e a morada
-  // ficam por preencher: enquanto faltarem, os pagamentos em linha ficam suspensos.
+  // Por omissão os dados da Telecert Consultoria Lda dados pelo dono (config.seller: denominação, NIF, morada e Livro de
+  // Reclamações), em Portugal e registada para IVA; o email de contacto é o de apoio até haver outro. Apagar um campo
+  // volta ao valor por omissão.
   { key: 'SELLER_TRADE_NAME', label: 'Nome comercial', group: SELLER_GROUP, secret: false, default: 'Telecert' },
-  { key: 'SELLER_NAME', label: 'Denominação social completa', group: SELLER_GROUP, secret: false, hint: 'como no registo comercial' },
-  { key: 'SELLER_NIF', label: 'NIF', group: SELLER_GROUP, secret: false, hint: '9 algarismos' },
-  { key: 'SELLER_ADDRESS', label: 'Morada da sede', group: SELLER_GROUP, secret: false, hint: 'rua, n.º, código postal e localidade' },
+  { key: 'SELLER_NAME', label: 'Denominação social completa', group: SELLER_GROUP, secret: false, hint: 'como no registo comercial', default: config.seller.name },
+  { key: 'SELLER_NIF', label: 'NIF', group: SELLER_GROUP, secret: false, hint: '9 algarismos', default: config.seller.vat.replace(/^PT/i, '') },
+  { key: 'SELLER_ADDRESS', label: 'Morada da sede', group: SELLER_GROUP, secret: false, hint: 'rua, n.º, código postal e localidade', default: config.seller.address },
   { key: 'SELLER_COUNTRY', label: 'País da sede', group: SELLER_GROUP, secret: false, default: 'PT', options: EU_COUNTRIES.map(c => [c, `${countryName(c)} (${c})`] as [string, string]) },
   { key: 'SELLER_VAT_REGIME', label: 'Regime de IVA', group: SELLER_GROUP, secret: false, default: 'registered', options: [['registered', 'Registada para IVA (liquida IVA nas vendas)'], ['not_registered', 'Não registada para IVA']] },
-  { key: 'SELLER_EMAIL', label: 'Email de contacto (e reclamações)', group: SELLER_GROUP, secret: false },
-  { key: 'SELLER_COMPLAINTS_URL', label: 'Ligação do Livro de Reclamações Eletrónico', group: SELLER_GROUP, secret: false, hint: 'https://www.livroreclamacoes.pt/…' },
+  // (o endereço de exemplo de uma instalação de desenvolvimento nunca serve de contacto legal)
+  { key: 'SELLER_EMAIL', label: 'Email de contacto (e reclamações)', group: SELLER_GROUP, secret: false, default: /@example\.(com|org|net)$/i.test(config.supportEmail) ? undefined : config.supportEmail },
+  { key: 'SELLER_COMPLAINTS_URL', label: 'Ligação do Livro de Reclamações Eletrónico', group: SELLER_GROUP, secret: false, hint: 'https://www.livroreclamacoes.pt/…', default: config.seller.complaintsUrl },
   { key: 'SELLER_ADR', label: 'Entidade de resolução alternativa de litígios (opcional)', group: SELLER_GROUP, secret: false, hint: 'nome e sítio da entidade RAL' },
   { key: 'OSS_ACTIVE', label: 'Balcão único (OSS)', group: SELLER_GROUP, secret: false, options: [['', 'Desligado: consumidores de outros países da UE pagam o IVA português (abaixo de 10 000 €/ano)'], ['1', 'Ligado: consumidores de outros países da UE pagam o IVA do seu país']] },
 ];

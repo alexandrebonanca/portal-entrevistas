@@ -4,7 +4,7 @@ import { page, flash, pill } from '../views.ts';
 import { audit } from '../app.ts';
 import { stripeConfigured, verifyVatNumber, vatForProfile, startTopup, confirmTopupSession } from '../billing.ts';
 import { inEntity } from '../settings.ts';
-import { seller, checkoutBlock, contactEmail, complaintsLink, TERMS_VERSION, type Seller } from '../legal.ts';
+import { seller, sellerId, checkoutBlock, contactEmail, complaintsLink, TERMS_VERSION, type Seller } from '../legal.ts';
 import { withVat, vatOf, eurEn, eurPt, fmtRate, type VatDecision } from '../vat.ts';
 import { findWallet, spendBlock, packFor, cr, crEn, ENTRY_LABEL, TOPUP_PACKS, TOPUP_MIN_CENTS, TOPUP_MAX_CENTS, CREDIT_VALID_MONTHS, REFUND_WINDOW_DAYS, EXTRA_INTERVIEW_CENTS, EXTRA_REGEN_CENTS } from '../wallet.ts';
 
@@ -103,7 +103,7 @@ ${lots.length ? `<div class="card sans" style="overflow-x:auto"><h2 style="margi
 <p class="hint">Refunds of an unused balance within ${REFUND_WINDOW_DAYS} days: email ${esc(contactEmail(s))}. · Reembolsos nos ${REFUND_WINDOW_DAYS} dias: por email.</p></div>` : ''}
 <div class="card sans" style="overflow-x:auto"><h2 style="margin-top:0">Statement <span class="hint" lang="pt-PT">· Extrato de créditos</span></h2><p class="hint">This statement is not an invoice or a receipt: the invoice is issued for each top-up. · Este extrato não é fatura nem recibo.</p>
 ${entries.length ? `<table><thead><tr><th>Date</th><th>Movement</th><th>Credits</th></tr></thead><tbody>${entries.map(entryRow).join('')}</tbody></table>` : '<p class="hint">No movements yet. · Sem movimentos.</p>'}</div>
-<p class="hint">Seller: ${esc(s.name || s.tradeName || '—')} · <a href="/termos">Terms of sale · Termos e condições</a> · ${complaintsLink(s)}</p></div>`;
+<p class="hint">Seller · <span lang="pt-PT">Vendedora</span>: ${sellerId(s)} · <a href="/termos">Terms of sale · Termos e condições</a> · ${complaintsLink(s)}</p></div>`;
       return send(reply, page({ lang: 'en', title: 'Credits', body, nav, noindex: true }));
     });
   });
@@ -142,7 +142,7 @@ ${missing ? flash(`You need ${crEn(missing)} more credits; the next top-up optio
 <tr><th>Valid until · Validade</th><td>${CREDIT_VALID_MONTHS} months from payment (about ${until.toISOString().slice(0, 10)}) · ${CREDIT_VALID_MONTHS} meses a contar do pagamento</td></tr>
 <tr><th>Refund · Reembolso</th><td>Unused balance of this top-up refundable within ${REFUND_WINDOW_DAYS} days, to the same card · <span lang="pt-PT">saldo não usado reembolsável nos ${REFUND_WINDOW_DAYS} dias seguintes, para o mesmo cartão</span></td></tr>
 <tr><th>Invoice · Fatura</th><td>Invoice-receipt (<span lang="pt-PT">fatura-recibo</span>) issued by the seller for the top-up and sent by email; no invoice when you use the credits.</td></tr>
-<tr><th>Seller · Vendedor</th><td>${esc(s.name || s.tradeName || '—')}${s.nif ? `, NIF ${esc(s.nif)}` : ''}</td></tr></tbody></table>
+<tr><th>Seller · Vendedor</th><td>${sellerId(s)} · ${complaintsLink(s)}</td></tr></tbody></table>
 <form method="post" action="/conta/creditos/carregar"><input type="hidden" name="valor" value="${cents / 100}">${voltar ? `<input type="hidden" name="voltar" value="${esc(voltar)}">` : ''}
 <label class="check"><input type="checkbox" name="terms" value="1" required> <span>I accept the <a href="/termos">terms of sale</a> (<span lang="pt-PT">termos e condições, incluindo as regras dos créditos</span>) and the <a href="/privacidade-pagamentos">payments privacy notice</a>.</span></label>
 <button class="accent" ${block || !stripeConfigured() ? 'disabled' : ''}>${esc(button)}</button> <a href="/conta/creditos">Cancel · Cancelar</a></form></div>${RULES}</div>`;

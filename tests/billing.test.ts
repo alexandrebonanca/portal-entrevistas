@@ -363,7 +363,7 @@ test('planos Start e Pro (só imagens) à venda; os antigos inativos, mas as sub
   assert.equal(m.plan_id, 'studio'); assert.equal(m.status, 'past_due');
 });
 
-test('empresa vendedora: sem denominação, NIF e morada o checkout fica bloqueado, com aviso no administrador', async () => {
+test('empresa vendedora: por omissão a Telecert Consultoria Lda; sem denominação, NIF e morada o checkout fica bloqueado, com aviso no administrador', async () => {
   await saveSetting(db, 'SIGNUPS_OPEN', '1'); // o teste do Google gravou o formulário sem esta caixa
   biz = await register('Cliente Empresa', 'empresa@example.com');
   // dados de faturação: empresa portuguesa com NIF, sede na Madeira
@@ -372,31 +372,57 @@ test('empresa vendedora: sem denominação, NIF e morada o checkout fica bloquea
   assert.match(msg(await post('/billing/profile', { kind: 'business', name: 'Cliente Empresa, Lda.', country: 'PT', tax_id: `PT ${CLIENT_NIF}`, address: 'Rua A', postal_code: '9000100', city: 'Funchal' }, biz.cookie)), /Billing details saved/);
   const bp = await db.one('SELECT * FROM billing_profiles WHERE user_id=$1', [biz.id]);
   assert.deepEqual([bp.kind, bp.nif, bp.postal_code, bp.country], ['business', CLIENT_NIF, '9000-100', 'PT']);
-  // por omissão só a marca e o país: pagamentos suspensos, nenhum pedido à Stripe
-  const fs = fakeStripe();
+  // por omissão, os dados da Telecert Consultoria Lda (o NIF sem o prefixo PT); o email de apoio dos testes é o de exemplo,
+  // que nunca serve de contacto legal: falta só o email para vender a consumidores
+  const { seller } = await import('../src/legal.ts');
+  const s0 = seller();
+  assert.deepEqual([s0.name, s0.nif, s0.address, s0.complaintsUrl, s0.email], ['Telecert Consultoria Lda', '514907274', 'Avenida 5 de Outubro, 38A, 8000-077 Faro', 'https://www.livroreclamacoes.pt/Inicio/', '']);
+  assert.ok(s0.canSell); assert.deepEqual(s0.missingConsumer, ['email de contacto']);
+  const pg0 = await get('/admin/definicoes', admin);
+  assert.match(pg0.body, /<input id="f_SELLER_NAME" name="SELLER_NAME"[^>]+value="Telecert Consultoria Lda">/);
+  assert.match(pg0.body, /<input id="f_SELLER_NIF" name="SELLER_NIF"[^>]+value="514907274">/);
+  assert.match(pg0.body, /<input id="f_SELLER_ADDRESS" name="SELLER_ADDRESS"[^>]+value="Avenida 5 de Outubro, 38A, 8000-077 Faro">/);
+  assert.match(pg0.body, /<input id="f_SELLER_COMPLAINTS_URL" name="SELLER_COMPLAINTS_URL"[^>]+value="https:\/\/www\.livroreclamacoes\.pt\/Inicio\/">/);
+  assert.match(pg0.body, /Denominação social completa <span class="hint">· valor por omissão<\/span>/);
+  assert.match(pg0.body, /venda a consumidores bloqueada — falta email de contacto\./);
+  assert.doesNotMatch(pg0.body, /pagamentos em linha suspensos/);
+  // nas páginas de compra (não no rodapé, que fica só com a entidade gestora)
+  const acc0 = await get('/account', biz.cookie);
+  assert.match(acc0.body, /Seller · <span lang="pt-PT">Vendedora<\/span>: Telecert Consultoria Lda · NIF 514907274 · Avenida 5 de Outubro, 38A, 8000-077 Faro · <a href="\/termos">/);
+  assert.match(acc0.body, /<footer>[\s\S]*is owned and operated by Certif Int Association OÜ/);
+  assert.doesNotMatch(acc0.body, /<footer>[\s\S]*(Telecert|Sold by|Comercializado)[\s\S]*<\/footer>/);
+  assert.match((await get('/termos')).body, /Telecert Consultoria Lda \(Telecert\)<br>NIF 514907274 · Sede: Avenida 5 de Outubro, 38A, 8000-077 Faro, Portugal/);
+  // sem denominação, NIF e morada (aqui, os valores por omissão tirados por variáveis de ambiente vazias): pagamentos
+  // suspensos, nenhum pedido à Stripe
+  const core = ['SELLER_NAME', 'SELLER_NIF', 'SELLER_ADDRESS'];
+  for (const k of core) process.env[k] = '';
   try {
-    const r = await post('/subscribe/start', { terms: '1' }, biz.cookie);
-    assert.match(msg(r), /Online payments are paused until the seller’s details are complete[\s\S]*Os pagamentos em linha estão suspensos/);
-    assert.equal(fs.calls.length, 0);
-  } finally { fs.restore(); }
-  const acc = await get('/account', biz.cookie);
-  assert.match(acc.body, /<button class="accent" disabled>Subscribe and pay €19 \+ VAT \/ month<\/button>/);
-  assert.match(acc.body, /€23\.37 incl\. 23% VAT · <span lang="pt-PT">consumidores: 23,37 €\/mês com IVA incluído/, 'sem vendedora pronta, o preço genérico');
+    const fs = fakeStripe();
+    try {
+      const r = await post('/subscribe/start', { terms: '1' }, biz.cookie);
+      assert.match(msg(r), /Online payments are paused until the seller’s details are complete[\s\S]*Os pagamentos em linha estão suspensos/);
+      assert.equal(fs.calls.length, 0);
+    } finally { fs.restore(); }
+    const acc = await get('/account', biz.cookie);
+    assert.match(acc.body, /<button class="accent" disabled>Subscribe and pay €19 \+ VAT \/ month<\/button>/);
+    assert.match(acc.body, /€23\.37 incl\. 23% VAT · <span lang="pt-PT">consumidores: 23,37 €\/mês com IVA incluído/, 'sem vendedora pronta, o preço genérico');
+    const pg = await get('/admin/definicoes', admin);
+    assert.match(pg.body, /Empresa vendedora \(definições globais\): pagamentos em linha suspensos para quem não é administrador — falta denominação social completa, NIF, morada da sede\./);
+    assert.match((await get('/admin/faturacao', admin)).body, /pagamentos em linha suspensos/);
+  } finally { for (const k of core) delete process.env[k]; }
   const pg = await get('/admin/definicoes', admin);
-  assert.match(pg.body, /Empresa vendedora \(definições globais\): pagamentos em linha suspensos para quem não é administrador — falta denominação social completa, NIF, morada da sede\./);
   assert.match(pg.body, /<input id="f_SELLER_TRADE_NAME" name="SELLER_TRADE_NAME"[^>]+value="Telecert">/);
   assert.match(pg.body, /<option value="PT" selected>Portugal \(PT\)<\/option>/);
   assert.match(pg.body, /<option value="registered" selected>Registada para IVA/);
   assert.match(pg.body, /A Certif Int Association OÜ é a entidade gestora da plataforma e não vende/);
-  assert.match((await get('/admin/faturacao', admin)).body, /pagamentos em linha suspensos/);
   // validação: NIF com dígito de controlo e Livro de Reclamações por https
   assert.match(msg(await post('/admin/definicoes', { SELLER_NIF: '123456780' }, admin)), /Nada foi guardado: NIF da empresa vendedora inválido/);
   assert.match(msg(await post('/admin/definicoes', { SELLER_COMPLAINTS_URL: 'http://exemplo' }, admin)), /tem de começar por https/);
   await post('/admin/definicoes', { SELLER_NAME: 'Empresa Vendedora de Teste, Lda.', SELLER_NIF: `PT ${SELLER_NIF}`, SELLER_ADDRESS: 'Rua de Teste, 1, 1000-001 Lisboa', SELLER_COUNTRY: 'PT', SELLER_VAT_REGIME: 'registered', signups_open: '1' }, admin);
   assert.equal(S('SELLER_NIF'), SELLER_NIF);
-  // empresas já podem pagar; consumidores não (faltam o email e o Livro de Reclamações)
+  // empresas já podem pagar; consumidores não (falta o email)
   const pg2 = await get('/admin/definicoes', admin);
-  assert.match(pg2.body, /venda a consumidores bloqueada — falta email de contacto, ligação do Livro de Reclamações Eletrónico/);
+  assert.match(pg2.body, /venda a consumidores bloqueada — falta email de contacto\./);
   assert.doesNotMatch(pg2.body, /pagamentos em linha suspensos/);
   const acc2 = await get('/account', biz.cookie);
   assert.match(acc2.body, /<button class="accent" >Subscribe and pay €19 \+ VAT \/ month<\/button>/);
@@ -641,9 +667,11 @@ test('termos e privacidade dos pagamentos: vendedora identificada, Livro de Recl
   assert.equal(pp.statusCode, 200);
   assert.match(pp.body, /Responsável pelo tratamento<\/h2><p>Empresa Vendedora de Teste, Lda\./);
   assert.match(pp.body, /CNPD/);
-  // sem os dados, nunca se inventam: aparece «por preencher»
+  // apagar um campo volta ao valor por omissão; sem nenhum valor, nunca se inventa: aparece «por preencher»
   await post('/admin/definicoes', { SELLER_ADDRESS: '-', signups_open: '1' }, admin);
-  assert.match((await get('/termos')).body, /Sede: <em>\(por preencher pelo administrador\)<\/em>/);
+  assert.match((await get('/termos')).body, /Sede: Avenida 5 de Outubro, 38A, 8000-077 Faro, Portugal/);
+  process.env.SELLER_ADDRESS = '';
+  try { assert.match((await get('/termos')).body, /Sede: <em>\(por preencher pelo administrador\)<\/em>/); } finally { delete process.env.SELLER_ADDRESS; }
   await post('/admin/definicoes', { SELLER_ADDRESS: 'Rua de Teste, 1, 1000-001 Lisboa', signups_open: '1' }, admin);
 });
 
