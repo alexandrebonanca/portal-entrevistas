@@ -52,6 +52,9 @@ test('vias: a curta nunca pega num vídeo e a dos vídeos só pega em vídeos; n
   while (await J.runOne(db, h)) { /* */ }
   assert.deepEqual(ran, ['curto', 'video']);
   assert.deepEqual(['render_video', 'talking_compare', 'lipsync_experiment', 'process_submission', 'generate_episode'].map(J.laneOf), ['video', 'video', 'video', 'short', 'short']);
+  // Por omissão uma só via (um FFmpeg de cada vez nos 512 MB do Render starter); WORKER_LANES=2 separa as duas.
+  assert.equal(process.env.WORKER_LANES, undefined);
+  assert.equal(config.queue.lanes, 1);
 });
 
 test('uma entrevista de cada vez: o episódio novo espera pelo vídeo da mesma entrevista; os das outras entrevistas não', async () => {
@@ -82,10 +85,11 @@ test('uma entrevista de cada vez: o episódio novo espera pelo vídeo da mesma e
   assert.ok((await jobOf(v2)).ready_at);
 });
 
-test('worker: um vídeo de horas não atrasa os trabalhos curtos dos outros; o batimento renova o bloqueio enquanto corre', async () => {
+test('worker com WORKER_LANES=2: um vídeo de horas não atrasa os trabalhos curtos dos outros; o batimento renova o bloqueio enquanto corre', async () => {
   await clear();
-  const hb = config.queue.heartbeatMs;
+  const hb = config.queue.heartbeatMs, lanes = config.queue.lanes;
   config.queue.heartbeatMs = 30;
+  (config.queue as any).lanes = 2;
   let open!: () => void;
   const gate = new Promise<void>(r => { open = r; });
   let started = false;
@@ -105,7 +109,7 @@ test('worker: um vídeo de horas não atrasa os trabalhos curtos dos outros; o b
     open();
     await until(async () => (await jobOf(v)).state === 'done', 'o vídeo terminar');
     assert.ok(!J.runningHere.has(v));
-  } finally { open(); await w.stop(); config.queue.heartbeatMs = hb; }
+  } finally { open(); await w.stop(); config.queue.heartbeatMs = hb; (config.queue as any).lanes = lanes; }
 });
 
 test('vigilante e arranque: um reinício não gasta tentativa num trabalho de orçamento; os outros gastam e, sem tentativas, falham pelo __onFail', async () => {
