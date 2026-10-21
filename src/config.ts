@@ -15,6 +15,8 @@ export const config = {
     site: env.OWNER_SITE ?? 'https://www.certifinternational.com',
     email: env.OWNER_EMAIL ?? 'certifinternational@gmail.com',
   },
+  // Quem comercializa o serviço (vende ao cliente final); a entidade gestora é a de cima.
+  seller: { name: env.SELLER_NAME ?? 'Telecert' },
   databaseUrl: env.DATABASE_URL ?? '',
   pgliteDir: env.PGLITE_DIR ?? './data/pglite',
   secret: env.APP_SECRET ?? (env.NODE_ENV === 'production' ? '' : 'dev-only-secret-' + randomBytes(8).toString('hex')),

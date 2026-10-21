@@ -51,12 +51,13 @@ video.cam{width:100%;max-height:60vh;border-radius:12px;background:#000;transfor
 
 const COUNTRY: Record<string, [string, string]> = { EE: ['Estónia', 'Estonia'], PT: ['Portugal', 'Portugal'] };
 
-/** Entidade proprietária e gestora do portal (português nas páginas em português, inglês nas outras). */
+/** Entidade proprietária e gestora do portal e quem o comercializa (português nas páginas em português, inglês nas outras). */
 export function ownerLine(lang = 'pt-PT') {
-  const o = config.owner, pt = /^pt/i.test(lang);
+  const o = config.owner, pt = /^pt/i.test(lang), seller = config.seller.name;
   const country = COUNTRY[o.country]?.[pt ? 0 : 1] ?? o.country;
   const site = o.site.replace(/^https?:\/\/(www\.)?/i, '').replace(/\/$/, '');
-  return `${pt ? `O ${esc(config.brand)} é propriedade da` : `${esc(config.brand)} is owned and operated by`} ${esc(o.name)}${country ? ` (${esc(country)})` : ''}${pt ? ', que o gere' : ''} · <a href="${esc(o.site)}" rel="noopener">${esc(site)}</a> · <a href="mailto:${esc(o.email)}">${esc(o.email)}</a>`;
+  const tail = pt ? (seller ? `, que o gere, e é comercializado pela ${esc(seller)}` : ', que o gere') : (seller ? ` and sold by ${esc(seller)}` : '');
+  return `${pt ? `O ${esc(config.brand)} é propriedade da` : `${esc(config.brand)} is owned and operated by`} ${esc(o.name)}${country ? ` (${esc(country)})` : ''}${tail} · <a href="${esc(o.site)}" rel="noopener">${esc(site)}</a> · <a href="mailto:${esc(o.email)}">${esc(o.email)}</a>`;
 }
 
 export interface PageOpts { title: string; body: string; lang?: string; nav?: string; noindex?: boolean; desc?: string; script?: string; wide?: boolean; head?: string; styles?: string }

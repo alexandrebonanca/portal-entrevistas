@@ -5,10 +5,10 @@ import { validateScript } from '../src/ai/openai.ts';
 import { wrapTitle } from '../src/cover.ts';
 import { sniff } from '../src/media.ts';
 
-test('rodapé: entidade proprietária e gestora em português e em inglês', async () => {
+test('rodapé: entidade proprietária e gestora e quem comercializa, em português e em inglês', async () => {
   const { ownerLine, page } = await import('../src/views.ts');
-  assert.equal(ownerLine('pt-PT'), 'O quietinterview é propriedade da Certif Int Association OÜ (Estónia), que o gere · <a href="https://www.certifinternational.com" rel="noopener">certifinternational.com</a> · <a href="mailto:certifinternational@gmail.com">certifinternational@gmail.com</a>');
-  assert.match(ownerLine('en'), /^quietinterview is owned and operated by Certif Int Association OÜ \(Estonia\) · /);
+  assert.equal(ownerLine('pt-PT'), 'O quietinterview é propriedade da Certif Int Association OÜ (Estónia), que o gere, e é comercializado pela Telecert · <a href="https://www.certifinternational.com" rel="noopener">certifinternational.com</a> · <a href="mailto:certifinternational@gmail.com">certifinternational@gmail.com</a>');
+  assert.match(ownerLine('en'), /^quietinterview is owned and operated by Certif Int Association OÜ \(Estonia\) and sold by Telecert · /);
   assert.match(ownerLine('es'), /owned and operated by/, 'outras línguas em inglês');
   assert.match(page({ title: 'T', body: '' }), /<footer>[\s\S]*é propriedade da Certif Int Association OÜ \(Estónia\)/, 'páginas em português (por omissão)');
 });
