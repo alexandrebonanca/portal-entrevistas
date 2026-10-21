@@ -15,6 +15,7 @@ import { withVat, eurPt } from '../vat.ts';
 import { walletFor, findWallet, spend, spendBlock, cr, EXTRA_INTERVIEW_CENTS } from '../wallet.ts';
 import { paidConsentHtml, paidConsentOk } from './credits.ts';
 import { inviteLimits, draftQuestionMax, answeredMs, secondsLeft, mmss, FOLLOWUP_MIN_LEFT_SEC, LIMIT_SLACK_MS } from '../limits.ts';
+import { introCard } from './intro.ts';
 
 const H = { 'Content-Type': 'text/html; charset=utf-8' };
 const nav = (u: any) => `<a href="/painel">Painel</a><a href="/entrevistas/nova">Nova entrevista</a><a href="/account">Conta</a>${u.role === 'admin' ? '' : '<a href="/conta/creditos">Créditos</a>'}${u.role === 'admin' ? '<a href="/admin/entidades">Entidades</a><a href="/admin/utilizadores">Utilizadores</a><a href="/admin/definicoes">Definições</a>' : u.role === 'entity_admin' ? '<a href="/entidade">Entidade</a>' : ''}<form method="post" action="/sair" style="display:inline"><button class="ghost" style="padding:6px 12px;min-height:0;margin-left:16px">Sair (${esc(u.name)})</button></form>`;
@@ -132,6 +133,7 @@ ${objT && !iv.objective_text ? `<p class="hint">Transcrição do objetivo gravad
 <div class="card"><h2 style="margin-top:0">A minha fotografia</h2>
 ${iv.host_photo_asset_id ? `<p><img alt="Fotografia do entrevistador" src="/media/${iv.host_photo_asset_id}" style="width:120px;height:120px;object-fit:cover;border-radius:12px"></p>` : '<p class="hint">Sem fotografia.</p>'}
 <input type="file" id="photo" accept="image/jpeg,image/png"> <button type="button" id="photoBtn" class="ghost">Carregar</button> <span id="photoSt" class="hint"></span></div>
+${await introCard(db, iv, req.user)}
 
 <div class="card"><h2 style="margin-top:0">Objetivo por áudio (opcional)</h2>
 ${iv.objective_asset_id ? `<audio controls preload="none" src="/media/${iv.objective_asset_id}"></audio>` : ''}
