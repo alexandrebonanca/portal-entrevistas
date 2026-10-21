@@ -4,6 +4,10 @@ import { config } from './config.ts';
 import { rateLimit, rateLimitAll, sign } from './lib.ts';
 import { quotaFor } from './billing.ts';
 import { S } from './settings.ts';
+import { seller, WITHDRAWAL_DAYS } from './legal.ts';
+import { cr, EXTRA_INTERVIEW_CENTS, EXTRA_REGEN_CENTS, TOPUP_MIN_CENTS, TOPUP_MAX_CENTS, CREDIT_VALID_MONTHS, REFUND_WINDOW_DAYS } from './wallet.ts';
+import { QUOTE_VALID_DAYS, START_DEADLINE_HOURS } from './quotes.ts';
+import { FOLLOWUP_MIN_LEFT_SEC } from './limits.ts';
 
 /**
  * Assistente virtual da página de ajuda (perguntas e respostas). A resposta vem SEMPRE da base de conhecimento
@@ -68,7 +72,11 @@ const SYNONYMS: string[][] = [
   ['video', 'videos', 'mp4', 'filme'],
   ['animacao', 'animado', 'animada', 'animar', 'animated', 'animation', 'animate', 'veo', 'lipsync', 'avatar', 'gemini'],
   ['plano', 'planos', 'plan', 'plans', 'subscricao', 'subscricoes', 'assinatura', 'subscription', 'subscribe', 'preco', 'precos', 'price', 'prices', 'pricing', 'mensalidade', 'quota', 'starter', 'studio'],
-  ['pagamento', 'pagar', 'pago', 'payment', 'pay', 'paid', 'fatura', 'faturas', 'invoice', 'invoices', 'billing', 'stripe', 'cartao', 'card', 'cobranca', 'charge', 'reembolso', 'refund'],
+  ['pagamento', 'pagar', 'pago', 'payment', 'pay', 'paid', 'billing', 'stripe', 'cartao', 'card', 'cobranca', 'charge'],
+  ['fatura', 'faturas', 'faturacao', 'faturar', 'invoice', 'invoices', 'invoicing', 'recibo', 'recibos'],
+  ['iva', 'vat', 'imposto', 'impostos', 'tax', 'taxes', 'autoliquidacao', 'vies'],
+  // Devoluções e reembolsos (separados dos pagamentos: «reembolso» não é «como pago»).
+  ['devolucao', 'devolucoes', 'devolver', 'devolvido', 'devolvidos', 'reembolso', 'reembolsos', 'reembolsar', 'reembolsado', 'refund', 'refunds', 'refunded', 'estorno', 'livreresolucao'],
   ['aprovar', 'aprovacao', 'aprovado', 'aprovada', 'approve', 'approval', 'approved', 'validar', 'validacao', 'validate', 'validation', 'aprovacoes'],
   ['guiao', 'script', 'roteiro', 'scripts', 'guioes'],
   ['episodio', 'episodios', 'episode', 'episodes', 'podcast', 'podcasts'],
@@ -103,7 +111,16 @@ const SYNONYMS: string[][] = [
   ['capa', 'cover', 'covers', 'capas'],
   ['transcricao', 'transcricoes', 'transcrever', 'transcript', 'transcription', 'transcribe', 'transcripts'],
   ['traducao', 'traduzir', 'traduzido', 'translate', 'translation', 'translated'],
-  ['orcamento', 'credito', 'creditos', 'credit', 'credits', 'quote', 'budget'],
+  ['orcamento', 'orcamentos', 'quote', 'quotes', 'budget', 'cotacao'],
+  ['credito', 'creditos', 'credit', 'credits', 'saldo', 'balance', 'carteira', 'wallet', 'cativo', 'cativos', 'cativar'],
+  ['topup', 'carregamento', 'carregamentos', 'recarregar', 'recarga', 'recarregamento'],
+  ['regenerar', 'regenero', 'regenerei', 'regeneracao', 'regeneracoes', 'regenerate', 'regenerated', 'regeneration', 'regenerations', 'regen'],
+  ['introducao', 'introducoes', 'intro', 'introduction', 'boasvindas', 'welcome'],
+  ['grafismo', 'graphics', 'oraculo', 'oraculos', 'lowerthird'],
+  ['capitulo', 'capitulos', 'chapter', 'chapters'],
+  ['funcao', 'funcoes', 'cargo', 'role', 'roles'],
+  ['gratis', 'gratuito', 'gratuita', 'oferta', 'oferecida', 'oferecido', 'free'],
+  ['incluido', 'incluida', 'incluidos', 'incluidas', 'included', 'includes'],
   ['estado', 'estados', 'status', 'situacao', 'rascunho', 'draft'],
   ['password', 'senha', 'passwords', 'login', 'sessao', 'signin'],
   ['recomecar', 'recomeco', 'restart', 'reset', 'reiniciar'],
@@ -124,6 +141,11 @@ const PHRASES: [RegExp, string][] = [
   [/\bcomo funciona\b|\bhow (it|does it|does this|do(es)? (the|this) \w+) works?\b|\bwhat is this\b|\bo que e isto\b/g, ' comofunciona '],
   [/\bate quando\b|\buntil when\b/g, ' prazo '], [/\b(minha|my) (foto|fotografia|photo|picture)\b/g, ' minhafoto '],
   [/\bquem (pode|consegue) (ver|ouvir)\b|\bwho can (see|watch|listen to|listen|hear)\b/g, ' visibilidade '],
+  // Créditos e faturação; «cartão de título» é grafismo (não o cartão de pagamento).
+  [/\btop ?ups?\b/g, ' topup '], [/\bcarreg(ar|o|ou|uei|amos)( os| de| mais)? creditos\b/g, ' topup creditos '],
+  [/\blivre resolucao\b|\bright of withdrawal\b|\bcooling off\b|\bdesistir do contrato\b|\bwithdraw from (the|a|my) contract\b/g, ' livreresolucao '],
+  [/\bboas ?vindas\b/g, ' boasvindas '], [/\bdinheiro de volta\b|\bmoney back\b/g, ' reembolso '],
+  [/\bcart(ao|oes) (de titulo|final|finais)\b|\b(title|end) cards?\b|\blower thirds?\b/g, ' grafismo '],
 ];
 
 /** Raiz simples (plurais e terminações frequentes); palavras curtas e números ficam como estão. */
@@ -241,16 +263,41 @@ const num = (n: number) => String(Number(n.toFixed(1)));
 /** Marcadores que a base pode usar: são substituídos pelos valores em vigor, para as respostas não ficarem desatualizadas. */
 export const faqVars = (): Record<string, string> => ({
   brand: config.brand,
+  brandSite: config.brandSite,
   maxAnswerMin: num(config.limits.maxAnswerSeconds / 60),
+  maxAnswerTotalMin: num(config.limits.maxAnswerTotalSec / 60),
   maxQuestions: String(config.limits.maxQuestions),
+  questionAudioMin: num(config.limits.maxQuestionAudioSec / 60),
+  objectiveAudioMin: num(config.limits.maxObjectiveAudioSec / 60),
+  followupMinSec: String(FOLLOWUP_MIN_LEFT_SEC),
+  includedRegens: String(config.limits.includedRegenerations),
   inviteDays: String(config.limits.inviteDays),
+  introPerMonth: String(config.limits.introPerMonth),
+  extraInterviewCredits: cr(EXTRA_INTERVIEW_CENTS),
+  extraRegenCredits: cr(EXTRA_REGEN_CENTS),
+  topupMin: cr(TOPUP_MIN_CENTS),
+  topupMax: cr(TOPUP_MAX_CENTS),
+  creditValidMonths: String(CREDIT_VALID_MONTHS),
+  refundDays: String(REFUND_WINDOW_DAYS),
+  withdrawalDays: String(WITHDRAWAL_DAYS),
+  quoteValidDays: String(QUOTE_VALID_DAYS),
+  startDeadlineHours: String(START_DEADLINE_HOURS),
   ownerName: config.owner.name,
-  sellerName: config.seller.name || config.owner.name,
+  // A vendedora das Definições «Empresa vendedora» (por omissão, config.seller).
+  sellerName: seller().name || config.seller.name || config.owner.name,
   logDays: String(ASSISTANT_LOG_DAYS),
 });
 export const FAQ_VAR_HELP: Record<string, string> = {
-  brand: 'nome do portal', maxAnswerMin: 'minutos máximos por resposta', maxQuestions: 'número máximo de perguntas',
-  inviteDays: 'dias de validade do link do convite', ownerName: 'entidade gestora', sellerName: 'quem comercializa',
+  brand: 'nome do portal', brandSite: 'endereço no cartão final dos vídeos', maxAnswerMin: 'minutos máximos por resposta',
+  maxAnswerTotalMin: 'minutos de respostas por entrevista (por omissão do plano)', maxQuestions: 'número máximo de perguntas',
+  questionAudioMin: 'minutos de áudio por pergunta gravada', objectiveAudioMin: 'minutos de áudio do objetivo',
+  followupMinSec: 'segundos de resposta mínimos para uma pergunta adicional', includedRegens: 'regenerações incluídas por entrevista',
+  inviteDays: 'dias de validade do link do convite', introPerMonth: 'gerações da introdução animada por mês',
+  extraInterviewCredits: 'créditos de uma entrevista extra', extraRegenCredits: 'créditos de uma regeneração extra',
+  topupMin: 'carregamento mínimo (créditos)', topupMax: 'carregamento máximo (créditos)', creditValidMonths: 'meses de validade dos créditos',
+  refundDays: 'dias para o reembolso do saldo de um carregamento', withdrawalDays: 'dias da livre resolução',
+  quoteValidDays: 'dias de validade de um orçamento', startDeadlineHours: 'horas para a produção de um orçamento aceite arrancar',
+  ownerName: 'entidade gestora', sellerName: 'quem comercializa (Definições «Empresa vendedora»)',
   logDays: 'dias de conservação do registo das perguntas ao assistente',
 };
 export const fillVars = (s: string) => { const v = faqVars(); return String(s ?? '').replace(/\{(\w+)\}/g, (m, k) => (k in v ? v[k] : m)); };

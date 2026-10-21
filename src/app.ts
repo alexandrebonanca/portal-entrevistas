@@ -38,7 +38,9 @@ export async function buildApp(db: Db): Promise<FastifyInstance> {
   const app = Fastify({ logger: config.production ? { level: 'info', redact: ['req.headers.cookie', 'req.headers.authorization'] } : false, bodyLimit: config.limits.maxUploadMb * 1024 * 1024, trustProxy: config.trustProxy as any });
   app.decorate('db', db);
   await loadSettings(db);
-  await seedAssistant(db); // entradas novas da semente do assistente; as existentes (e as alterações do administrador) ficam
+  // Semente do assistente: entradas novas e o texto atual nas que o administrador não alterou (as alterações dele ficam).
+  const seeded = await seedAssistant(db);
+  if (seeded.inserted || seeded.updated) app.log.info(seeded, 'base do assistente: semente aplicada');
   await app.register(cookie);
   await app.register(formbody);
   app.addContentTypeParser('application/json', { parseAs: 'buffer' }, (_req, body, done) => done(null, body));

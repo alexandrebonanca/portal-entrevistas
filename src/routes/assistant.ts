@@ -10,6 +10,7 @@ import {
   activeFaq, loadAnswer, assistantSig, assistantSigOk, fillVars, faqVars, faqLang, purgeAssistantLog, defaultAiEnabled,
   FAQ_LANGS, FAQ_AUDIENCES, FAQ_LIMITS, FAQ_VAR_HELP, ASSISTANT_MAX_QUESTION, ASSISTANT_LOG_DAYS, type Audience, type FaqEntry,
 } from '../assistant.ts';
+import { seedState, seedIndex, resolveSeed, faqNorm } from '../assistant-faq.ts';
 
 type Dict = ReturnType<typeof t>;
 
@@ -82,7 +83,8 @@ ${faq.length ? `<details class="as-all"><summary>${esc(d.asAllFaq(faq.length))}<
 
 const LANG_LABEL: Record<string, string> = { pt: 'Português', en: 'Inglês' };
 const AUD_LABEL: Record<string, string> = { interviewer: 'Entrevistadores', guest: 'Convidados', all: 'Todos' };
-const OK: Record<string, string> = { created: 'Entrada criada.', saved: 'Entrada guardada.', on: 'Entrada ativada.', off: 'Entrada desativada: o assistente deixa de a usar.', reviewed: 'Pergunta marcada como tratada.' };
+const OK: Record<string, string> = { created: 'Entrada criada.', saved: 'Entrada guardada.', on: 'Entrada ativada.', off: 'Entrada desativada: o assistente deixa de a usar.', reviewed: 'Pergunta marcada como tratada.',
+  restored: 'Entrada reposta com o texto atual da semente.', kept: 'O seu texto fica; a versão atual da semente foi dada como vista.' };
 const fmt = (d: unknown) => (d ? new Date(d as string).toLocaleString('pt-PT', { dateStyle: 'short', timeStyle: 'short' }) : '—');
 
 export async function assistantAdminRoutes(app: FastifyInstance) {
@@ -112,6 +114,12 @@ export async function assistantAdminRoutes(app: FastifyInstance) {
     const ids = [...new Set(qs.flatMap((r: any) => r.faq_ids as string[]))];
     const used = new Map<string, any>((ids.length ? await db.query('SELECT id, question FROM assistant_faq WHERE id = ANY($1::uuid[])', [ids]) : []).map((r: any) => [r.id, r]));
     const faq = await db.query(`SELECT * FROM assistant_faq WHERE ($1='' OR lang=$1) AND ($2='' OR audience=$2) ORDER BY active DESC, lang, audience, sort, question`, [fl, fa]);
+    const index = seedIndex();
+    const seedMark = (e: any) => {
+      const st = seedState(e, index);
+      return !st?.edited ? '' : st.newer ? ` ${pill('versão nova da semente por decidir', 'warn')}` : ` ${pill('alterada pelo administrador')}`;
+    };
+    const pending = faq.filter((e: any) => seedState(e, index)?.newer).length;
     const outcome = (r: any) => [!r.answered ? pill('sem resposta', 'bad') : '', r.helped === false ? pill('não ajudou', 'warn') : r.helped ? pill('ajudou', 'ok') : '',
       r.escalated ? pill('enviada ao suporte') : '', r.mode === 'ai' ? pill('resposta redigida pela IA') : '', r.reviewed ? pill('tratada') : ''].filter(Boolean).join(' ');
     const filterLink = (k: string, v: string, label: string, cur: string) => {
@@ -134,8 +142,9 @@ ${qs.map((r: any) => `<tr><td><span class="msgbody">${esc(r.question)}</span>${r
 <section id="base" aria-labelledby="h-base"><div class="row"><h2 id="h-base" class="grow">Base de conhecimento</h2><a class="btn accent" href="/admin/assistente/nova">Nova entrada</a></div>
 <nav class="filters" aria-label="Filtrar por língua">${filterLink('lingua', '', 'Todas as línguas', fl)}${FAQ_LANGS.map(l => filterLink('lingua', l, LANG_LABEL[l], fl)).join('')}</nav>
 <nav class="filters" aria-label="Filtrar por público">${filterLink('publico', '', 'Todos os públicos', fa)}${FAQ_AUDIENCES.map(a => filterLink('publico', a, AUD_LABEL[a], fa)).join('')}</nav>
+<p class="hint sans">As entradas da semente que não alterou acompanham as atualizações do portal; as que alterou ficam como as deixou e, quando a semente muda, aparecem como «versão nova da semente por decidir»: abra-as para repor o texto novo ou manter o seu.${pending ? ` <strong>${pending} por decidir neste filtro.</strong>` : ''}</p>
 ${faq.length ? `<div class="card" style="overflow-x:auto"><table><thead><tr><th>Ordem</th><th>Pergunta</th><th>Língua</th><th>Público</th><th>Estado</th><th></th></tr></thead><tbody>
-${faq.map((e: any) => `<tr><td>${e.sort}</td><td><a href="/admin/assistente/${e.id}">${esc(fillVars(e.question))}</a>${e.seed_key ? '' : ' <span class="hint">(criada aqui)</span>'}</td><td>${esc(LANG_LABEL[e.lang])}</td><td>${esc(AUD_LABEL[e.audience])}</td><td>${e.active ? pill('ativa', 'ok') : pill('inativa', 'bad')}</td>
+${faq.map((e: any) => `<tr><td>${e.sort}</td><td><a href="/admin/assistente/${e.id}">${esc(fillVars(e.question))}</a>${e.seed_key ? seedMark(e) : ' <span class="hint">(criada aqui)</span>'}</td><td>${esc(LANG_LABEL[e.lang])}</td><td>${esc(AUD_LABEL[e.audience])}</td><td>${e.active ? pill('ativa', 'ok') : pill('inativa', 'bad')}</td>
 <td><form method="post" action="/admin/assistente/${e.id}/estado"><input type="hidden" name="active" value="${e.active ? '0' : '1'}"><button class="ghost" style="padding:6px 12px;min-height:0">${e.active ? 'Desativar' : 'Ativar'}</button></form></td></tr>`).join('')}
 </tbody></table></div>` : '<div class="card"><p class="hint" style="margin:0">Sem entradas neste filtro.</p></div>'}</section>`);
   });
@@ -165,8 +174,7 @@ ${e.answer ? `<div class="card"><h2 style="margin-top:0;font-size:1.2rem">Pré-v
   const read = (b: any): { ok: true; v: any } | { ok: false; e: string; v: any } => {
     const v = {
       lang: FAQ_LANGS.includes(b?.lang) ? b.lang : 'pt', audience: FAQ_AUDIENCES.includes(b?.audience) ? b.audience : 'interviewer',
-      question: String(b?.question ?? '').replace(/\s+/g, ' ').trim(), answer: String(b?.answer ?? '').replace(/\r\n?/g, '\n').trim(),
-      keywords: String(b?.keywords ?? '').replace(/\s+/g, ' ').trim(), sort: Math.max(0, Math.min(100000, parseInt(b?.sort) || 0)), active: !!b?.active,
+      question: faqNorm.line(b?.question), answer: faqNorm.answer(b?.answer), keywords: faqNorm.line(b?.keywords), sort: Math.max(0, Math.min(100000, parseInt(b?.sort) || 0)), active: !!b?.active,
     };
     if (!v.question || !v.answer) return { ok: false, e: 'Escreva a pergunta e a resposta.', v };
     if (v.question.length > FAQ_LIMITS.question) return { ok: false, e: `A pergunta tem mais de ${FAQ_LIMITS.question} caracteres.`, v };
@@ -201,8 +209,18 @@ ${e.answer ? `<div class="card"><h2 style="margin-top:0;font-size:1.2rem">Pré-v
     if (!guard(req, reply)) return;
     const e = await entryOf(req);
     if (!e) return view(req, reply, 'Assistente virtual', `${back('#base')}<h1>Entrada não encontrada</h1>`, 404);
-    return view(req, reply, 'Editar entrada', `${back('#base')}<h1 style="font-size:1.8rem">Editar entrada</h1>
-<p class="hint sans">${e.seed_key ? `Entrada da semente inicial (${esc(e.seed_key)}); as suas alterações mantêm-se em futuras atualizações do portal.` : 'Entrada criada pelo administrador.'} Atualizada em ${esc(fmt(e.updated_at))}.</p>${form(e, `/admin/assistente/${e.id}`)}`);
+    const st = seedState(e);
+    const about = !e.seed_key ? 'Entrada criada pelo administrador.'
+      : !st?.current ? `Entrada da semente (${esc(e.seed_key)}), que já não faz parte dela: fica como está.`
+      : st.edited ? `Entrada da semente (${esc(e.seed_key)}), alterada por si: o seu texto mantém-se nas atualizações do portal.`
+      : `Entrada da semente (${esc(e.seed_key)}), por alterar: acompanha as atualizações do portal até a alterar; depois, as suas alterações mantêm-se.`;
+    const c = st?.edited ? st.current : undefined;
+    const seedCard = c ? `<div class="card" id="semente"><h2 style="margin-top:0;font-size:1.2rem">${st!.newer ? 'Versão nova da semente por decidir' : 'Texto atual da semente'}</h2>
+<p class="hint">${st!.newer ? 'O portal foi atualizado com um texto novo para esta entrada, diferente daquele em que a sua alteração se baseou. Reponha o texto novo ou mantenha o seu (a versão nova fica dada como vista).' : 'A sua versão é diferente do texto atual da semente. Pode repô-lo a qualquer momento.'}</p>
+<p><strong>${esc(fillVars(c.question))}</strong></p><p class="msgbody">${esc(fillVars(c.answer))}</p><p class="hint">Palavras-chave: ${esc(c.keywords)} · Público: ${esc(AUD_LABEL[c.audience] ?? c.audience)}</p>
+<form method="post" action="/admin/assistente/${e.id}/semente" class="row"><button class="ghost" name="acao" value="repor" onclick="return confirm('Substituir o seu texto pelo texto atual da semente?')">Repor o texto da semente</button>${st!.newer ? '<button class="ghost" name="acao" value="manter">Manter o meu texto</button>' : ''}</form></div>` : '';
+    return view(req, reply, 'Editar entrada', `${back('#base')}<h1 style="font-size:1.8rem">Editar entrada</h1>${flash(OK[String((req.query as any).ok)])}
+<p class="hint sans">${about} Atualizada em ${esc(fmt(e.updated_at))}.</p>${seedCard}${form(e, `/admin/assistente/${e.id}`)}`);
   });
 
   app.post('/admin/assistente/:id', async (req, reply) => {
@@ -222,6 +240,16 @@ ${e.answer ? `<div class="card"><h2 style="margin-top:0;font-size:1.2rem">Pré-v
     }
     await audit(db, req.user!.email, 'assistant.faq_updated', null, { faqId: e.id });
     return reply.redirect('/admin/assistente?ok=saved#base');
+  });
+
+  app.post('/admin/assistente/:id/semente', async (req, reply) => {
+    if (!guard(req, reply)) return;
+    const e = await entryOf(req);
+    if (!e) return reply.code(404).send('Não encontrada');
+    const how = (req.body as any)?.acao === 'manter' ? 'keep' : 'restore';
+    if (!(await resolveSeed(db, e.id, how))) return view(req, reply, 'Editar entrada', `${back('#base')}<h1>Esta entrada já não faz parte da semente</h1>`, 404);
+    await audit(db, req.user!.email, how === 'keep' ? 'assistant.faq_seed_kept' : 'assistant.faq_seed_restored', null, { faqId: e.id, seedKey: e.seed_key });
+    return reply.redirect(`/admin/assistente/${e.id}?ok=${how === 'keep' ? 'kept' : 'restored'}`);
   });
 
   app.post('/admin/assistente/:id/estado', async (req, reply) => {

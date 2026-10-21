@@ -16,7 +16,10 @@ const { flushOutbox } = await import('../src/mail.ts');
 const { config } = await import('../src/config.ts');
 const A = await import('../src/assistant.ts');
 const { helpRequest, parseHelp, HELP_MAX_TOKENS } = await import('../src/ai/openai.ts');
-const { FAQ_SEED, seedAssistant } = await import('../src/assistant-faq.ts');
+const { FAQ_SEED, seedAssistant, seedRows } = await import('../src/assistant-faq.ts');
+const { LEGACY_SEED_HASHES } = await import('../src/assistant-faq-legacy.ts');
+const W = await import('../src/wallet.ts');
+const { QUOTE_VALID_DAYS } = await import('../src/quotes.ts');
 const { SUPPORT_RATE } = await import('../src/support.ts');
 
 let db: any, app: any;
@@ -141,6 +144,30 @@ test('pesquisa sobre a semente: perguntas reais encontram a entrada certa (pt e 
     ['Who runs this portal?', 'en', 'guest', 'quem-gere'],
     ['O que acontece às perguntas que faço ao assistente?', 'pt', 'interviewer', 'assistente-privacidade'],
     ['Who can listen to my episode?', 'en', 'guest', 'convidado-publicacao'],
+    // o que este ramo acrescenta: créditos, orçamentos, regenerações, limites, introdução, grafismo, faturação
+    ['Como carrego créditos?', 'pt', 'interviewer', 'creditos'],
+    ['How do I top up credits?', 'en', 'interviewer', 'creditos'],
+    ['Quanto custa animar o vídeo com IA?', 'pt', 'interviewer', 'video-ia'],
+    ['Como aceito o orçamento?', 'pt', 'interviewer', 'orcamento-aceitar'],
+    ['How do I accept the quote?', 'en', 'interviewer', 'orcamento-aceitar'],
+    ['Quantas regenerações tenho?', 'pt', 'interviewer', 'regeneracoes'],
+    ['How many times can I regenerate?', 'en', 'interviewer', 'regeneracoes'],
+    ['Acabaram as entrevistas do meu plano', 'pt', 'interviewer', 'entrevista-extra'],
+    ['Posso enviar mais convites este mês?', 'pt', 'interviewer', 'entrevista-extra'],
+    ['Quanto tempo pode durar a entrevista?', 'pt', 'interviewer', 'limites-entrevista'],
+    ['O que é a introdução animada?', 'pt', 'interviewer', 'introducao-animada'],
+    ['What is the animated introduction?', 'en', 'interviewer', 'introducao-animada'],
+    ['Como funcionam os reembolsos?', 'pt', 'interviewer', 'devolucoes'],
+    ['How do refunds work?', 'en', 'interviewer', 'devolucoes'],
+    ['Quem emite a fatura?', 'pt', 'interviewer', 'faturas-iva'],
+    ['Como é calculado o IVA?', 'pt', 'interviewer', 'faturas-iva'],
+    ['O que está incluído no plano?', 'pt', 'interviewer', 'custos'],
+    ['Que grafismo tem o vídeo?', 'pt', 'interviewer', 'grafismo-video'],
+    ['cartão de título', 'pt', 'interviewer', 'grafismo-video'],
+    ['O gestor de entidade precisa de subscrição?', 'pt', 'interviewer', 'entidade'],
+    ['Que planos existem?', 'pt', 'interviewer', 'planos-conta'],
+    ['O meu nome aparece no vídeo?', 'pt', 'guest', 'convidado-nome-video'],
+    ['Will my name be shown in the video?', 'en', 'guest', 'convidado-nome-video'],
   ];
   for (const [q, lang, aud, key] of cases) {
     const hits = A.searchFaq(seedEntries(lang, aud), q);
@@ -176,12 +203,30 @@ test('semente: pt e en em cada entrada, dentro dos limites, marcadores conhecido
   assert.match(A.fillVars(by('perguntas').pt[1]), new RegExp(`até ${config.limits.maxQuestions} perguntas`));
   assert.match(A.fillVars(by('validade-link').pt[1]), new RegExp(`${config.limits.inviteDays} dias`));
   assert.ok(A.fillVars(by('quem-gere').pt[1]).includes(config.owner.name) && A.fillVars(by('quem-gere').pt[1]).includes(config.seller.name));
-  // Vídeo IA: verdadeiro com e sem «Permitir vídeo IA a todos»; aprovação obrigatória só para o entrevistado animado.
-  assert.match(by('video-ia').pt[1], /só o administrador os pede/); assert.match(by('video-ia').pt[1], /chegar em breve/);
-  assert.match(by('video-ia').pt[1], /quando o administrador do portal os abre a todos os entrevistadores/);
-  assert.match(by('video-ia').pt[1], /se for o entrevistado, ele vê e aprova o vídeo/);
-  assert.match(by('video-ia').en[1], /only the administrator requests them/); assert.match(by('video-ia').en[1], /coming soon/);
-  assert.match(by('video-ia').en[1], /if it is the guest, they see and approve the video/);
+  // O que já existe não se promete para depois.
+  for (const e of FAQ_SEED) for (const l of ['pt', 'en'] as const) assert.doesNotMatch(e[l][1], /em breve|vai chegar|coming soon|will soon/i, `${e.key}/${l}: nada «em breve»`);
+  // Animação por orçamento pago com créditos; retratos animados só do administrador; o entrevistado animado aprova sempre.
+  assert.match(by('video-ia').pt[1], /^Sim, por orçamento: os planos não incluem animação/); assert.match(by('video-ia').pt[1], /«Calcular orçamento \(grátis, não cativa nada\)»/);
+  assert.match(by('video-ia').pt[1], /Os retratos animados \(Replicate\) estão reservados ao administrador/);
+  assert.match(by('video-ia').pt[1], /vê e aprova o vídeo antes de ser publicado/);
+  assert.match(by('video-ia').en[1], /^Yes, on a quote/); assert.match(by('video-ia').en[1], /reserved for the administrator/);
+  assert.match(A.fillVars(by('video-ia').pt[1]), new RegExp(`validade \\(${QUOTE_VALID_DAYS} dias\\)`));
+  assert.match(by('orcamento-aceitar').pt[1], /O orçamento aceite é o máximo: nunca se cobra mais/); assert.match(by('orcamento-aceitar').pt[1], /o resto volta ao saldo automaticamente/);
+  // Os números deste ramo vêm da configuração e das constantes em vigor.
+  assert.match(A.fillVars(by('limites-entrevista').pt[1]), new RegExp(`até ${config.limits.maxQuestions} perguntas \\(as adicionais incluídas\\) e até ${config.limits.maxAnswerTotalSec / 60} minutos de respostas no total`));
+  assert.match(A.fillVars(by('limites-entrevista').en[1]), new RegExp(`up to ${config.limits.maxAnswerTotalSec / 60} minutes of answers in total`));
+  assert.match(A.fillVars(by('regeneracoes').pt[1]), new RegExp(`inclui ${config.limits.includedRegenerations} regenerações`));
+  assert.match(A.fillVars(by('regeneracoes').pt[1]), new RegExp(`custa ${W.EXTRA_REGEN_CENTS / 100} crédito`));
+  assert.match(A.fillVars(by('entrevista-extra').pt[1]), new RegExp(`por ${W.EXTRA_INTERVIEW_CENTS / 100} créditos`));
+  assert.match(A.fillVars(by('introducao-animada').pt[1]), new RegExp(`até ${config.limits.introPerMonth} por mês`)); assert.match(by('introducao-animada').pt[1], /Não usa créditos nem entra no orçamento/);
+  assert.match(A.fillVars(by('creditos').pt[1]), new RegExp(`de ${W.TOPUP_MIN_CENTS / 100} a ${W.TOPUP_MAX_CENTS / 100} créditos`));
+  assert.match(A.fillVars(by('creditos').pt[1]), new RegExp(`vale ${W.CREDIT_VALID_MONTHS} meses`));
+  assert.match(A.fillVars(by('devolucoes').pt[1]), new RegExp(`nos ${W.REFUND_WINDOW_DAYS} dias seguintes a esse carregamento`));
+  assert.ok(A.fillVars(by('grafismo-video').pt[1]).includes(config.brandSite));
+  assert.match(by('planos-conta').pt[1], /Start e Pro/); assert.match(by('planos-conta').pt[1], /«Manage card, Stripe receipts & cancellation»/);
+  assert.match(by('entidade').pt[1], /convida sem subscrição e sem limite mensal de entrevistas/);
+  assert.ok(A.fillVars(by('faturas-iva').pt[1]).includes(`emitida pela ${config.seller.name}`), 'a vendedora (Telecert) nas faturas');
+  assert.match(by('convidado-nome-video').pt[1], /no cartão de título/);
   // Correções de conteúdo verificadas no código
   assert.match(by('galeria').pt[1], /se quiser, indique um tema \(sem tema, fica no grupo «Other»\)/); assert.doesNotMatch(by('galeria').pt[1], /e indicar um tema/);
   assert.match(by('galeria').en[1], /without one, it is listed under «Other»/);
@@ -200,6 +245,7 @@ test('semente: pt e en em cada entrada, dentro dos limites, marcadores conhecido
 test('preparação: semente na base (idempotente, alterações do administrador mantidas), utilizadores e convidados', async () => {
   const n = async () => Number((await db.one('SELECT count(*)::int n FROM assistant_faq')).n);
   assert.equal(await n(), FAQ_SEED.length * 2, 'cada entrada em pt e en');
+  assert.equal(Number((await db.one(`SELECT count(*)::int n FROM assistant_faq f WHERE seed_hash IS NULL`)).n), 0, 'cada entrada com a versão da semente');
   const id = await seedId('custos');
   await db.query(`UPDATE assistant_faq SET answer='Resposta alterada pelo administrador.' WHERE id=$1`, [id]);
   await seedAssistant(db);
@@ -520,6 +566,108 @@ test('administrador: a língua de uma entrada da semente não muda (sem «Erro i
   assert.equal((await post(`/admin/assistente/perguntas/${q}/tratada`, {}, admin)).headers.location, '/admin/assistente?ok=reviewed#h-melhorar');
   assert.ok(await db.one(`SELECT 1 FROM audit_events WHERE action='assistant.question_reviewed' AND actor='admin@example.com' AND meta->>'questionId'=$1`, [q]));
   assert.equal((await post('/admin/assistente/perguntas/00000000-0000-0000-0000-000000000000/tratada', {}, admin)).statusCode, 404);
+});
+
+// ======================= versões da semente =======================
+
+/** 'video-ia' (pt) como a main o semeou (1eb5f9a), antes das versões: prometia a animação «em breve». */
+const LEGACY_VIDEO_IA_PT: [string, string, string] = ["Posso ter um vídeo com animação por IA (Google Veo ou retratos animados)?","Na secção «Vídeo do podcast», os retratos com sincronização labial e o Google Veo só ficam disponíveis quando o administrador do portal os abre a todos os entrevistadores; por omissão, só o administrador os pede, porque cada geração é paga ao fornecedor. Quando não estão disponíveis, a secção avisa e o vídeo sai com as fotografias e a voz do episódio. A animação por IA vai chegar em breve por orçamento, aceite antes de gerar e pago com créditos. Quem aparece animado tem de dar uma autorização própria e o vídeo leva sempre um aviso visível; se for o entrevistado, ele vê e aprova o vídeo antes de ser publicado.","animação, IA, vídeo IA, Veo, Google Veo, retrato animado, avatar, lipsync, créditos, orçamento, animar fotografia"];
+/** 'objetivo' (pt) da primeira semente publicada (bb77841). */
+const LEGACY_OBJETIVO_PT: [string, string, string] = ["Para que serve o objetivo da entrevista e quem o vê?","O objetivo explica o tema e o propósito da entrevista. Pode escrevê-lo ou gravá-lo em áudio (o áudio é transcrito para poder copiar o texto, quando o serviço de IA está configurado). Só é mostrado ao entrevistado se marcar «Mostrar o objetivo ao entrevistado»; caso contrário fica interno. É preciso ter objetivo, em texto ou em áudio, para enviar o convite.","objetivo, propósito, tema, mostrar objetivo, interno, finalidade, assunto"];
+
+test('versões da semente: o texto novo chega às entradas que o administrador não alterou; as alteradas ficam e ele decide', async () => {
+  const row = (key: string, lang = 'pt') => db.one('SELECT * FROM assistant_faq WHERE seed_key=$1 AND lang=$2', [key, lang]);
+  const cur = (key: string, lang: 'pt' | 'en' = 'pt') => seedRows().find(r => r.key === key && r.lang === lang)!;
+  // Entradas semeadas pela main antes das versões (seed_hash NULL), com o texto de uma versão publicada: atualizadas.
+  const vid = await seedId('video-ia'), before = await row('video-ia');
+  await db.query(`UPDATE assistant_faq SET question=$2, answer=$3, keywords=$4, seed_hash=NULL, sort=777, active=false WHERE id=$1`, [vid, ...LEGACY_VIDEO_IA_PT]);
+  await db.query(`UPDATE assistant_faq SET question=$2, answer=$3, keywords=$4, seed_hash=NULL WHERE id=$1`, [await seedId('objetivo'), ...LEGACY_OBJETIVO_PT]);
+  // Entrada antiga alterada pelo administrador (texto que nenhuma versão teve): fica.
+  const cid = await seedId('custos', 'en');
+  await db.query(`UPDATE assistant_faq SET answer='Texto do administrador sobre custos.', seed_hash=NULL WHERE id=$1`, [cid]);
+  // Entrada antiga igual à semente atual: só ganha a versão.
+  await db.query(`UPDATE assistant_faq SET seed_hash=NULL WHERE id=$1`, [await seedId('cancelar')]);
+  const r = await seedAssistant(db);
+  assert.equal(r.inserted, 0); assert.equal(r.updated, 2, JSON.stringify(r));
+  const v = await row('video-ia');
+  assert.equal(v.answer, cur('video-ia').answer); assert.equal(v.question, cur('video-ia').question); assert.equal(v.seed_hash, cur('video-ia').hash);
+  assert.doesNotMatch(v.answer, /em breve/);
+  assert.equal(v.sort, 777); assert.equal(v.active, false, 'a ordem e o estado escolhidos pelo administrador ficam');
+  await db.query('UPDATE assistant_faq SET sort=$2, active=true WHERE id=$1', [vid, before.sort]);
+  assert.equal((await row('objetivo')).answer, cur('objetivo').answer, 'também a partir da primeira versão publicada');
+  const c = await row('custos', 'en');
+  assert.equal(c.answer, 'Texto do administrador sobre custos.');
+  assert.equal(c.seed_hash, LEGACY_SEED_HASHES['custos/en'].at(-1), 'base da alteração: a última versão publicada');
+  assert.equal((await row('cancelar')).seed_hash, cur('cancelar').hash);
+  assert.equal((await seedAssistant(db)).updated, 0, 'semear de novo não muda nada');
+
+  // O administrador vê a versão nova por decidir e mantém o texto dele ou repõe o da semente.
+  const list = await get('/admin/assistente?lingua=en&publico=interviewer', admin);
+  assert.match(list.body, new RegExp(`/admin/assistente/${cid}">[^<]*</a> <span class="pill warn">versão nova da semente por decidir</span>`));
+  assert.match(list.body, /<strong>1 por decidir neste filtro\.<\/strong>/);
+  const ed = await get(`/admin/assistente/${cid}`, admin);
+  assert.match(ed.body, /alterada por si: o seu texto mantém-se/);
+  assert.match(ed.body, /<h2[^>]*>Versão nova da semente por decidir<\/h2>/);
+  assert.ok(ed.body.includes('For each interview, the plan includes the transcription'), 'mostra o texto novo da semente');
+  assert.match(ed.body, /name="acao" value="manter">Manter o meu texto/);
+  assert.equal((await post(`/admin/assistente/${cid}/semente`, { acao: 'repor' }, ana)).statusCode, 403);
+  const keep = await post(`/admin/assistente/${cid}/semente`, { acao: 'manter' }, admin);
+  assert.equal(keep.headers.location, `/admin/assistente/${cid}?ok=kept`);
+  assert.equal((await row('custos', 'en')).answer, 'Texto do administrador sobre custos.');
+  const ed2 = await get(keep.headers.location as string, admin);
+  assert.match(ed2.body, /O seu texto fica/); assert.match(ed2.body, /Texto atual da semente/); assert.doesNotMatch(ed2.body, /value="manter"/);
+  assert.match((await get('/admin/assistente?lingua=en&publico=interviewer', admin)).body, new RegExp(`/admin/assistente/${cid}">[^<]*</a> <span class="pill ">alterada pelo administrador</span>`));
+  await seedAssistant(db);
+  assert.equal((await row('custos', 'en')).answer, 'Texto do administrador sobre custos.', 'mantido: a semente não o substitui');
+  const restore = await post(`/admin/assistente/${cid}/semente`, { acao: 'repor' }, admin);
+  assert.equal(restore.headers.location, `/admin/assistente/${cid}?ok=restored`);
+  assert.equal((await row('custos', 'en')).answer, cur('custos', 'en').answer);
+  assert.doesNotMatch((await get(`/admin/assistente/${cid}`, admin)).body, /id="semente"/, 'igual à semente: nada por decidir');
+  for (const a of ['assistant.faq_seed_kept', 'assistant.faq_seed_restored'])
+    assert.ok(await db.one(`SELECT 1 FROM audit_events WHERE action=$1 AND actor='admin@example.com' AND meta->>'faqId'=$2`, [a, cid]), a);
+
+  // Uma atualização futura da semente chega só às entradas que o administrador não alterou.
+  const rid = await seedId('convidado-recusar'), rec = await row('convidado-recusar');
+  await post(`/admin/assistente/${rid}`, { lang: 'pt', audience: 'guest', question: rec.question, keywords: rec.keywords, answer: 'Resposta do administrador.', sort: String(rec.sort), active: '1' }, admin);
+  const lingua = FAQ_SEED.find(e => e.key === 'convidado-lingua')!, recusar = FAQ_SEED.find(e => e.key === 'convidado-recusar')!;
+  const orig = [lingua.pt, recusar.pt] as const;
+  try {
+    lingua.pt = [lingua.pt[0], `${lingua.pt[1]} Texto da versão seguinte.`, lingua.pt[2]];
+    recusar.pt = [recusar.pt[0], `${recusar.pt[1]} Texto da versão seguinte.`, recusar.pt[2]];
+    const r2 = await seedAssistant(db);
+    assert.equal(r2.updated, 1, JSON.stringify(r2));
+    assert.match((await row('convidado-lingua')).answer, /Texto da versão seguinte\.$/);
+    assert.equal((await row('convidado-recusar')).answer, 'Resposta do administrador.');
+    assert.match((await get(`/admin/assistente/${rid}`, admin)).body, /Versão nova da semente por decidir<\/h2>[\s\S]*Texto da versão seguinte\./);
+    const hits = A.searchFaq(await A.activeFaq(db, 'pt', 'guest'), 'Em que língua respondo?');
+    assert.match(hits[0].entry.answer, /Texto da versão seguinte\.$/, 'o assistente responde com o texto novo');
+  } finally { [lingua.pt, recusar.pt] = orig; }
+  await seedAssistant(db);
+  assert.equal((await row('convidado-lingua')).answer, lingua.pt[1], 'ainda por alterar: acompanha também o regresso');
+  await db.query('UPDATE assistant_faq SET answer=$2 WHERE id=$1', [rid, recusar.pt[1]]);
+});
+
+test('atualização da produção: as migrações deste ramo correm depois das 030 e 031 da main e a semente atualiza o que não foi alterado', async () => {
+  const { readFileSync } = await import('node:fs');
+  const d2 = await openDb();
+  try {
+    await migrate(d2, { until: '012_veo_modelo_preco.sql' });
+    // Como na produção: o suporte e o assistente da main (030 e 031) aplicados antes das migrações 013 a 020 deste ramo.
+    for (const f of ['030_suporte.sql', '031_assistente.sql']) {
+      const sql = readFileSync(new URL(`../migrations/${f}`, import.meta.url), 'utf8');
+      await d2.tx(async (t: any) => { for (const st of sql.split(/;\s*\n/).map(x => x.trim()).filter(Boolean)) await t.query(st); await t.query('INSERT INTO schema_migrations(name) VALUES ($1)', [f]); });
+    }
+    // A semente da main, sem versões: uma entrada com o texto publicado e outra alterada pelo administrador.
+    await d2.query(`INSERT INTO assistant_faq(seed_key, lang, audience, question, answer, keywords, sort) VALUES ('video-ia', 'pt', 'interviewer', $1, $2, $3, 270),
+      ('custos', 'pt', 'interviewer', 'Quanto custa?', 'Resposta do administrador.', 'custo', 280)`, LEGACY_VIDEO_IA_PT);
+    await migrate(d2);
+    const names = (await d2.query('SELECT name FROM schema_migrations')).map((x: any) => x.name);
+    for (const f of ['013_limites.sql', '016_orcamentos.sql', '020_introducao.sql', '032_assistente_versoes.sql']) assert.ok(names.includes(f), f);
+    const r = await seedAssistant(d2);
+    assert.deepEqual(r, { inserted: FAQ_SEED.length * 2 - 2, updated: 1, kept: 1 });
+    assert.equal((await d2.one(`SELECT answer FROM assistant_faq WHERE seed_key='video-ia' AND lang='pt'`)).answer, seedRows().find(x => x.key === 'video-ia' && x.lang === 'pt')!.answer);
+    assert.equal((await d2.one(`SELECT answer FROM assistant_faq WHERE seed_key='custos' AND lang='pt'`)).answer, 'Resposta do administrador.');
+  } finally { await d2.close(); }
 });
 
 test('limites: um pedido já enviado a partir do assistente não gasta o limite de mensagens', async () => {
