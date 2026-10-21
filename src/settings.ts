@@ -2,9 +2,16 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { createCipheriv, createDecipheriv, createHash, createPrivateKey, randomBytes } from 'node:crypto';
 import { config } from './config.ts';
 import type { Db } from './db.ts';
+import { isEmail } from './lib.ts';
+import { EU_COUNTRIES, countryName, normNif } from './vat.ts';
 
-/** Definições introduzidas pelo administrador (chaves de serviços). Cifradas em repouso (AES-256-GCM, chave derivada de APP_SECRET). */
-export interface SettingDef { key: string; label: string; group: string; secret: boolean; hint?: string; env?: string; options?: [string, string][] }
+/**
+ * Definições introduzidas pelo administrador (chaves de serviços). Cifradas em repouso (AES-256-GCM, chave derivada de APP_SECRET).
+ * default: valor usado enquanto nada for guardado (só nas definições globais).
+ */
+export interface SettingDef { key: string; label: string; group: string; secret: boolean; hint?: string; env?: string; options?: [string, string][]; default?: string }
+/** Empresa que vende ao cliente final (a dona da conta Stripe e do Moloni): identificação, IVA e reclamações. Nunca se inventa. */
+export const SELLER_GROUP = 'Empresa vendedora';
 
 export const SETTING_DEFS: SettingDef[] = [
   { key: 'OPENAI_API_KEY', label: 'API key', group: 'OpenAI', secret: true, hint: 'sk-…' },
@@ -26,7 +33,24 @@ export const SETTING_DEFS: SettingDef[] = [
   { key: 'MOLONI_USERNAME', label: 'Utilizador', group: 'Moloni ON', secret: false },
   { key: 'MOLONI_PASSWORD', label: 'Palavra-passe', group: 'Moloni ON', secret: true },
   { key: 'MOLONI_COMPANY_ID', label: 'ID da empresa', group: 'Moloni ON', secret: false },
+  // Por omissão só a marca e o país (a Telecert, em Portugal, registada para IVA); a denominação, o NIF e a morada
+  // ficam por preencher: enquanto faltarem, os pagamentos em linha ficam suspensos.
+  { key: 'SELLER_TRADE_NAME', label: 'Nome comercial', group: SELLER_GROUP, secret: false, default: 'Telecert' },
+  { key: 'SELLER_NAME', label: 'Denominação social completa', group: SELLER_GROUP, secret: false, hint: 'como no registo comercial' },
+  { key: 'SELLER_NIF', label: 'NIF', group: SELLER_GROUP, secret: false, hint: '9 algarismos' },
+  { key: 'SELLER_ADDRESS', label: 'Morada da sede', group: SELLER_GROUP, secret: false, hint: 'rua, n.º, código postal e localidade' },
+  { key: 'SELLER_COUNTRY', label: 'País da sede', group: SELLER_GROUP, secret: false, default: 'PT', options: EU_COUNTRIES.map(c => [c, `${countryName(c)} (${c})`] as [string, string]) },
+  { key: 'SELLER_VAT_REGIME', label: 'Regime de IVA', group: SELLER_GROUP, secret: false, default: 'registered', options: [['registered', 'Registada para IVA (liquida IVA nas vendas)'], ['not_registered', 'Não registada para IVA']] },
+  { key: 'SELLER_EMAIL', label: 'Email de contacto (e reclamações)', group: SELLER_GROUP, secret: false },
+  { key: 'SELLER_COMPLAINTS_URL', label: 'Ligação do Livro de Reclamações Eletrónico', group: SELLER_GROUP, secret: false, hint: 'https://www.livroreclamacoes.pt/…' },
+  { key: 'SELLER_ADR', label: 'Entidade de resolução alternativa de litígios (opcional)', group: SELLER_GROUP, secret: false, hint: 'nome e sítio da entidade RAL' },
+  { key: 'OSS_ACTIVE', label: 'Balcão único (OSS)', group: SELLER_GROUP, secret: false, options: [['', 'Desligado: consumidores de outros países da UE pagam o IVA português (abaixo de 10 000 €/ano)'], ['1', 'Ligado: consumidores de outros países da UE pagam o IVA do seu país']] },
 ];
+/** Dados sem os quais não se vende a ninguém; os de SELLER_CONSUMER_KEYS fazem falta só para vender a consumidores. */
+export const SELLER_CORE_KEYS = ['SELLER_NAME', 'SELLER_NIF', 'SELLER_ADDRESS'] as const;
+export const SELLER_CONSUMER_KEYS = ['SELLER_EMAIL', 'SELLER_COMPLAINTS_URL'] as const;
+/** Definições internas (fora do formulário): interruptores, as taxas de IVA criadas na Stripe e o nome da conta Stripe. */
+const INTERNAL_KEYS = ['SIGNUPS_OPEN', 'AI_VIDEO_OPEN', 'STRIPE_TAX_RATES', 'STRIPE_ACCOUNT'];
 
 const cache = new Map<string, string>();
 const entityCache = new Map<string, Map<string, string>>();
@@ -126,8 +150,19 @@ export function prepareSetting(key: string, value: string): string {
     if (!isVertexLocation(v)) throw new SettingError('Região do Vertex AI inválida (ex.: us-central1).');
     return v;
   }
+  if (key === 'SELLER_NIF') {
+    const v = value.toUpperCase().replace(/[\s.\-/]/g, '');
+    const digits = v.replace(/^PT/, '');
+    // NIF português (com dígito de controlo); um vendedor de outro país usa o número de IVA sem o prefixo.
+    if (/^\d{9}$/.test(digits)) { if (!normNif(digits)) throw new SettingError('NIF da empresa vendedora inválido (o dígito de controlo não confere).'); return digits; }
+    if (!/^[A-Z0-9]{2,14}$/.test(v)) throw new SettingError('NIF da empresa vendedora inválido.');
+    return v;
+  }
+  if (key === 'SELLER_EMAIL' && !isEmail(value.trim())) throw new SettingError('Email da empresa vendedora inválido.');
+  if (key === 'SELLER_COMPLAINTS_URL' && !/^https:\/\/[^\s<>"]+$/i.test(value.trim())) throw new SettingError('A ligação do Livro de Reclamações Eletrónico tem de começar por https://.');
   const def = SETTING_DEFS.find(d => d.key === key);
   if (def?.options && !def.options.some(o => o[0] === value)) throw new SettingError(`Valor inválido em «${def.label}».`);
+  if (key.startsWith('SELLER_')) return value.replace(/\s+/g, ' ').trim().slice(0, 300);
   return isApiKey(key) ? cleanSecret(value) : value;
 }
 
@@ -151,7 +186,7 @@ export function secretFingerprint(v: string) {
 }
 
 export async function saveEntitySetting(db: Db, entityId: string, key: string, value: string) {
-  if (!SETTING_DEFS.some(d => d.key === key)) throw new Error('Definição desconhecida');
+  if (!SETTING_DEFS.some(d => d.key === key) && !INTERNAL_KEYS.includes(key)) throw new Error('Definição desconhecida');
   value = prepareSetting(key, value);
   if (!value) { await db.query('DELETE FROM entity_settings WHERE entity_id=$1 AND key=$2', [entityId, key]); entityCache.get(entityId)?.delete(key); return; }
   await db.query(`INSERT INTO entity_settings(entity_id, key, value_enc) VALUES ($1,$2,$3) ON CONFLICT (entity_id, key) DO UPDATE SET value_enc=$3, updated_at=now()`, [entityId, key, encrypt(value)]);
@@ -185,7 +220,7 @@ export const scopedS = (keys: readonly string[], key: string): string => {
 };
 
 export async function saveSetting(db: Db, key: string, value: string) {
-  if (!SETTING_DEFS.some(d => d.key === key) && key !== 'SIGNUPS_OPEN' && key !== 'AI_VIDEO_OPEN') throw new Error('Definição desconhecida');
+  if (!SETTING_DEFS.some(d => d.key === key) && !INTERNAL_KEYS.includes(key)) throw new Error('Definição desconhecida');
   value = prepareSetting(key, value);
   if (!value) {
     await db.query('DELETE FROM settings WHERE key=$1', [key]); cache.delete(key); return;
@@ -193,6 +228,21 @@ export async function saveSetting(db: Db, key: string, value: string) {
   await db.query(`INSERT INTO settings(key, value_enc) VALUES ($1,$2) ON CONFLICT (key) DO UPDATE SET value_enc=$2, updated_at=now()`, [key, encrypt(value)]);
   cache.set(key, value);
 }
+
+/**
+ * Conta Stripe em contexto: a da entidade, se tiver chave própria; senão a global (null).
+ * O que pertence à conta Stripe (empresa que vende, taxas de IVA criadas, nome da conta) segue esta escolha e nunca se mistura.
+ */
+export const stripeScope = (): string | null => { const e = als.getStore() ?? null; return ownsAny(e, ['STRIPE_SECRET_KEY']) ? e : null; };
+/** Dados da empresa vendedora: com Stripe própria só os da entidade; sem ela os globais, com os valores por omissão. */
+export const sellerS = (key: string): string => {
+  const e = stripeScope();
+  if (e) return entityValue(e, key);
+  return cache.get(key) ?? process.env[key] ?? SETTING_DEFS.find(d => d.key === key)?.default ?? '';
+};
+/** Valor e gravação de uma definição interna na conta Stripe em contexto. */
+export const stripeScopedValue = (key: string) => { const e = stripeScope(); return e ? entityValue(e, key) : (cache.get(key) ?? ''); };
+export const saveStripeScoped = async (db: Db, key: string, value: string) => { const e = stripeScope(); return e ? saveEntitySetting(db, e, key, value) : saveSetting(db, key, value); };
 
 /**
  * Vídeo IA (Google Veo e retratos animados): pago ao fornecedor por cada geração. Até haver orçamentos pagos com créditos,
