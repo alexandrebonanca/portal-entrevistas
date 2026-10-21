@@ -386,3 +386,14 @@ test('prazo do convite: «hoje» é o dia de Lisboa, não o do UTC', async () =>
   assert.equal(lisbonDay(Date.parse('2026-03-29T23:30:00Z')), '2026-03-30');
   assert.equal(addDays('2026-12-25', 14), '2027-01-08');
 });
+
+test('resumo do vídeo Veo: modelos dos clipes que entram no vídeo (os reaproveitados podem ser de outro nível)', async () => {
+  const { clipModelsNote } = await import('../src/veo-episode.ts');
+  const FAST = 'veo-3.1-fast-generate-001', LITE = 'veo-3.1-lite-generate-001';
+  assert.equal(clipModelsNote({ model: FAST, clipModels: { [FAST]: 6 } }), '', 'todos do modelo pedido: nada a acrescentar');
+  assert.equal(clipModelsNote({ model: FAST }), '', 'vídeo antigo, sem o registo');
+  assert.equal(clipModelsNote({ model: FAST, clipModels: { [FAST]: 2, [LITE]: 4 } }),
+    'clipes no vídeo: 4 do Google Veo 3.1 Lite (veo-3.1-lite-generate-001), de gerações anteriores; 2 do Google Veo 3.1 Fast (veo-3.1-fast-generate-001)');
+  assert.equal(clipModelsNote({ model: FAST, clipModels: { [LITE]: 3 } }), 'clipes no vídeo: 3 do Google Veo 3.1 Lite (veo-3.1-lite-generate-001), de gerações anteriores');
+  assert.match(clipModelsNote({ model: FAST, clipModels: { [FAST]: 1, desconhecido: 2 } }), /2 do modelo não registado, de gerações anteriores/);
+});

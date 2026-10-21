@@ -5,7 +5,7 @@ import { saveAsset, hasAudioStream } from './media.ts';
 import { transcribeClip, translateSubtitleCues, aiAvailable, type Word } from './ai/openai.ts';
 import { renderBases, subtitleFrame, encodeComposite, buildAudioTrack, mockTalkingClip, type Part, type Shot, type Scene, type AudioPiece } from './video.ts';
 import { cuesFromWords } from './subtitles.ts';
-import { veoSubmit, veoAwait, veoEpisodePrompt, VeoQuotaError, VeoCancelled, VeoBusy, VeoFiltered, VeoOpError, VeoUnsupported, isKeyRejected, veoTier, veoModel, veoBackend, veoConfigured, veoPricePerSec, veoPriceOfModel, veoKeyModel, type VeoTier } from './talking.ts';
+import { veoSubmit, veoAwait, veoEpisodePrompt, VeoQuotaError, VeoCancelled, VeoBusy, VeoFiltered, VeoOpError, VeoUnsupported, isKeyRejected, veoTier, veoModel, veoBackend, veoConfigured, veoPricePerSec, veoPriceOfModel, veoKeyModel, veoLabel, tierOfModel, type VeoTier } from './talking.ts';
 import { PermanentError, JobPaused, type Handler } from './jobs.ts';
 import type { Db } from './db.ts';
 import { flushOutbox, queueEmail, emailShell } from './mail.ts';
@@ -222,7 +222,7 @@ export function veoEstimate(timing: any[], segments: any[], hostOk: boolean, gue
 type Role = 'host' | 'guest';
 type Seg = { id: string; role: Role; kind: string; startMs: number; durationMs: number; endMs: number; text: string };
 type Chunk = { seg: Seg; k: number; text: string; dur: 4 | 6 | 8; key: string; prompt: string };
-type Attempt = { assetId: string; storageKey: string; words: Word[]; heard: string; checked: boolean; edits: number | null; hard: number | null; dur: number; usdPerSec: number };
+type Attempt = { assetId: string; storageKey: string; words: Word[]; heard: string; checked: boolean; edits: number | null; hard: number | null; dur: number; usdPerSec: number; model: string | null };
 /** Fala do plano: texto aprovado, chave de reaproveitamento (sem o modelo), take e pedaços com as chaves. */
 export type PlanSeg = Seg & { reuseKey: string | null; take: number; chunks: Chunk[] };
 type StartImage = { image: Buffer; vertical: boolean; hash: string };
@@ -520,7 +520,7 @@ export async function renderVeoVideo(job: any, { db, progress }: Parameters<Hand
       if (!a) return null;
       const m = a.meta ?? {};
       out.push({ c: { seg: s, k, text: String(m.text ?? x.text ?? ''), dur: veoDuration(String(m.text ?? x.text ?? '')), key: String(x.key), prompt: '' },
-        at: { assetId: a.id, storageKey: a.storage_key, words: m.words ?? [], heard: m.heard ?? '', checked: true, edits: m.edits ?? 0, hard: 0, dur: Number(m.dur ?? m.billedSec ?? 8), usdPerSec: Number(m.usdPerSec ?? veoPriceOfModel(m.model)) } });
+        at: { assetId: a.id, storageKey: a.storage_key, words: m.words ?? [], heard: m.heard ?? '', checked: true, edits: m.edits ?? 0, hard: 0, dur: Number(m.dur ?? m.billedSec ?? 8), usdPerSec: Number(m.usdPerSec ?? veoPriceOfModel(m.model)), model: m.model ?? null } });
     }
     return out;
   };
@@ -654,7 +654,7 @@ export async function renderVeoVideo(job: any, { db, progress }: Parameters<Hand
         await db.query('UPDATE assets SET meta=$2 WHERE id=$1', [a.id, JSON.stringify(m)]);
       }
       if (m.checked) { const j = judge(c, m.words ?? [], true, m.heard); m = { ...m, edits: j.edits, hard: j.hard, diffs: j.diffs }; } // regra atual
-      u.atts.push({ assetId: a.id, storageKey: a.storage_key, words: m.words ?? [], heard: m.heard ?? '', checked: !!m.checked, edits: m.edits ?? null, hard: m.hard ?? null, dur: Number(m.dur ?? m.billedSec ?? 8), usdPerSec: Number(m.usdPerSec ?? veoPriceOfModel(m.model)) });
+      u.atts.push({ assetId: a.id, storageKey: a.storage_key, words: m.words ?? [], heard: m.heard ?? '', checked: !!m.checked, edits: m.edits ?? null, hard: m.hard ?? null, dur: Number(m.dur ?? m.billedSec ?? 8), usdPerSec: Number(m.usdPerSec ?? veoPriceOfModel(m.model)), model: m.model ?? null });
     }
     // Operações que falharam (ou expiraram) em execuções anteriores contam para o limite (o teto vale entre execuções).
     if (!mock) await db.query(`UPDATE veo_ops SET state='expired' WHERE interview_id=$1 AND chunk_key=$2 AND state='pending' AND created_at < now() - interval '36 hours'`, [iv.id, u.key]);
@@ -749,7 +749,7 @@ export async function renderVeoVideo(job: any, { db, progress }: Parameters<Hand
         const assetId = await saveAsset(db, { interviewId: iv.id, kind: 'veo_clip', mime: 'video/mp4', ext: 'mp4', data: video, durationMs: dur * 1000, meta });
         if (opId) await db.query(`UPDATE veo_ops SET state='done' WHERE id=$1`, [opId]);
         const a = await db.one('SELECT storage_key FROM assets WHERE id=$1', [assetId]);
-        const at: Attempt = { assetId, storageKey: a.storage_key, words: tr.words, heard: j.heard, checked: tr.checked, edits: j.edits, hard: j.hard, dur, usdPerSec: opPrice };
+        const at: Attempt = { assetId, storageKey: a.storage_key, words: tr.words, heard: j.heard, checked: tr.checked, edits: j.edits, hard: j.hard, dur, usdPerSec: opPrice, model: opModel };
         u.atts.push(at);
         if (passes(at)) { u.chosen = at; return 'ok'; }
         return 'failed';
@@ -975,8 +975,12 @@ export async function renderVeoVideo(job: any, { db, progress }: Parameters<Hand
   const costUsd = mock ? 0 : [...units.values()].flatMap(u => u.atts).reduce((x, a) => x + a.dur * a.usdPerSec, 0);
   await progress(94, 100, 'A guardar o vídeo');
   const usedRoles = new Set(plan.segs.filter(s => veoSegs.has(s.id)).map(s => s.role));
+  // Modelo de cada clipe que entra no vídeo: os reaproveitados (falas já pagas ou tentativas de outras gerações) podem
+  // ser de outro nível ou serviço, por exemplo do Lite num vídeo pedido no Fast.
+  const clipModels: Record<string, number> = {};
+  for (const s of plan.segs) for (const { at } of falaOut.get(s.id)?.clips ?? []) { const k = at.model ?? UNKNOWN_MODEL; clipModels[k] = (clipModels[k] ?? 0) + 1; }
   const meta = { engine: 'veo', model: tierModel, tier, usdPerSec: tierPrice, backend: veoBackend(), lang, guestPhoto: !!plan.guestPhoto, hostPhoto: !!plan.hostPhoto, guestAiVideo: usedRoles.has('guest'), hostAiVideo: usedRoles.has('host'),
-    veoClips: want.reduce((n, s) => n + (reused.get(s.id)?.length ?? s.chunks.length), 0), veoSegments: veoSegs.size, fallbackSegments: fallbackSegs, generatedClips: generated, spentUsd: Math.max(0, spentUsd - failedUsd), failedUsd, veoUsd: costUsd,
+    veoClips: want.reduce((n, s) => n + (reused.get(s.id)?.length ?? s.chunks.length), 0), veoSegments: veoSegs.size, fallbackSegments: fallbackSegs, generatedClips: generated, spentUsd: Math.max(0, spentUsd - failedUsd), failedUsd, veoUsd: costUsd, clipModels,
     googleBusy: fidelity.some(f => f.problem === 'busy' || f.problem === 'busycap'), quoteId: quote?.id ?? null, rebuildOf,
     fidelityIssues: fidelity.filter(f => !f.ok).length, fidelity, mock };
   const id = await saveAsset(db, { interviewId: iv.id, kind: 'episode_video', mime: 'video/mp4', ext: 'mp4', data: mp4, durationMs: t, meta });
@@ -1048,6 +1052,18 @@ export function stillShots(scene: Scene, a: number, b: number, cues: { startMs: 
 /** Porque é que um pedaço ficou sem clipe (relatório): a Google em procura elevada prevalece sobre uma tentativa anterior com diferenças. */
 export const chunkProblem = (chosen: boolean, hasChecked: boolean, anyUnchecked: boolean, why?: string) =>
   chosen ? null : why === 'busy' || why === 'busycap' ? why : hasChecked ? 'mismatch' : anyUnchecked ? 'unchecked' : (why ?? 'error');
+
+const UNKNOWN_MODEL = 'desconhecido';
+/**
+ * Modelos dos clipes que entram no vídeo, para o resumo da produção: vazio quando são todos do modelo pedido (ou num
+ * vídeo antigo, que não os registava); senão a contagem por modelo, com os que vêm de gerações anteriores assinalados.
+ */
+export function clipModelsNote(meta: any): string {
+  const entries = Object.entries((meta?.clipModels ?? {}) as Record<string, number>).filter(([, n]) => n > 0).sort((a, b) => b[1] - a[1]);
+  if (!entries.length || (entries.length === 1 && entries[0][0] === meta.model)) return '';
+  const name = (m: string) => (m === UNKNOWN_MODEL ? 'modelo não registado' : `${veoLabel(tierOfModel(m))} (${m})`);
+  return `clipes no vídeo: ${entries.map(([m, n]) => `${n} do ${name(m)}${m === meta.model ? '' : ', de gerações anteriores'}`).join('; ')}`;
+}
 
 /** Qualquer vídeo (fotografias, retratos animados ou Veo) só entra num episódio por publicar: nunca vai para o ar sem ser visto e aprovado. */
 export const VIDEO_ONLY_PREVIEW = 'Um vídeo novo só se gera para um episódio em pré-visualização (antes de publicar), para ser visto e aprovado antes de ir para o ar. Num episódio publicado ou retirado, para uma nova versão regenere o guião ou recomece a produção.';

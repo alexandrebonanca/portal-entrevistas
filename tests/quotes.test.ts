@@ -228,6 +228,9 @@ test('reaproveitamento: falas pagas a 0 créditos; a que esgotou as tentativas p
   assert.equal(q.price_cents, centsOf(ep, ['q1']));
   assert.match((await get(`/entrevistas/${ivId}/orcamentos/${q.id}`, cli.cookie)).body, /reaproveitado: 0 cr/);
   const before = (await walletOf(cli.id)).available_cents;
+  // as falas já pagas foram geradas noutro nível (o Lite): o resumo do vídeo não as dá como do modelo pedido agora
+  const FAST = 'veo-3.1-fast-generate-preview', LITE = 'veo-3.1-lite-generate-preview';
+  await db.query(`UPDATE assets SET meta = meta || jsonb_build_object('model', $2::text) WHERE interview_id=$1 AND kind='veo_clip' AND meta->>'segmentId'<>'q1'`, [ivId, LITE]);
   await accept(q);
   await drain();
   const s = await quoteOf(q.id);
@@ -235,6 +238,12 @@ test('reaproveitamento: falas pagas a 0 créditos; a que esgotou as tentativas p
   const vm = (await db.one('SELECT a.meta FROM episodes e JOIN assets a ON a.id=e.video_asset_id WHERE e.id=$1', [epId])).meta;
   assert.deepEqual([vm.generatedClips, vm.fallbackSegments], [(by.get('q1') as any).chunks, []], 'só a fala nova foi gerada');
   assert.ok(vm.fidelity.filter((f: any) => f.reused).length > 0);
+  assert.equal(vm.model, FAST);
+  assert.deepEqual(vm.clipModels, { [FAST]: (by.get('q1') as any).chunks, [LITE]: vm.veoClips - (by.get('q1') as any).chunks }, 'modelo de cada clipe que entrou no vídeo');
+  const prod = (await get(`/entrevistas/${ivId}/producao`, cli.cookie)).body;
+  assert.match(prod, /pedido ao Google Veo 3\.1 Fast \(veo-3\.1-fast-generate-preview\): \d+ clipes/);
+  assert.match(prod, new RegExp(`clipes no vídeo: [^<]*${vm.clipModels[LITE]} do Google Veo 3\\.1 Lite \\(veo-3\\.1-lite-generate-preview\\), de gerações anteriores`));
+  assert.match(prod, new RegExp(`clipes no vídeo: [^<]*${vm.clipModels[FAST]} do Google Veo 3\\.1 Fast \\(veo-3\\.1-fast-generate-preview\\)(?!, de gerações)`));
   assert.equal((await walletOf(cli.id)).available_cents, before - q.price_cents);
   // clipes rejeitados (defeito objetivo ou gosto): saem do reaproveitamento; o take seguinte gera clipes novos e paga-se
   await db.query(`UPDATE assets SET meta = meta || '{"rejected": true}'::jsonb WHERE interview_id=$1 AND kind='veo_clip' AND meta->>'segmentId'='q0'`, [ivId]);
