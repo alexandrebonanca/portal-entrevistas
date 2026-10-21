@@ -5,7 +5,7 @@ import { esc, sha256, newToken, rateLimit, fmtDate } from '../lib.ts';
 import { page, flash, pill } from '../views.ts';
 import { setSessionCookie, audit, sendAsset } from '../app.ts';
 import { t, normLang, consentText, consentLongFor, CONSENT_VERSION, type Lang, type ConsentPurpose } from '../i18n.ts';
-import { guestReviewScope } from '../approval.ts';
+import { guestReview, guestDecides, reviewCopy } from '../approval.ts';
 import { sniff, stripJpegMetadata, saveAsset, probeAudio } from '../media.ts';
 import { queueEmail, emailShell } from '../mail.ts';
 import { createInvitation } from '../invites.ts';
@@ -34,13 +34,15 @@ export async function guestRoutes(app: FastifyInstance) {
     if (inv.declined_at) return gpage(reply, lang, d.inviteTitle, `<p>${esc(d.declined)}</p>`);
     if (inv.revoked_at || new Date(inv.expires_at) < new Date()) {
       const q = req.query as any;
-      return gpage(reply, lang, d.expired, `<h1>${esc(d.expired)}</h1><p>${esc(d.expiredHelp)}</p>${q.sent ? flash(d.resendDone) : ''}
+      return gpage(reply, lang, d.expired, `<h1>${esc(d.expired)}</h1><p>${esc(d.expiredHelp)}</p>${q.sent === 'nada' ? flash(d.nothingToView) : q.sent ? flash(d.resendDone) : ''}
 <form method="post" action="/i/${esc((req.params as any).token)}/novo-link" class="card"><label for="em">${esc(d.yourEmail)}</label><input id="em" name="email" type="email" required autocomplete="email"><p><button class="accent">${esc(d.resendBtn)}</button></p></form>`);
     }
     if (inv.purpose === 'preview') { // validação do episódio: sem número de perguntas e sem «Não pretendo participar»
-      const scope = await guestReviewScope(db, { id: inv.iid, review_policy: inv.review_policy });
-      return gpage(reply, lang, d.reviewTitle, `<h1>${esc(d.reviewTitle)}</h1><p>${esc(d.reviewIntro(inv.host_name))}</p><p><strong>${esc(inv.title)}</strong></p><p class="hint">${esc(scope === 'video' ? d.reviewStepsVideo : scope === 'none' ? d.reviewStepsView : d.reviewSteps)}</p>
-<form method="post" action="/i/${esc((req.params as any).token)}/abrir"><p><button class="accent" style="width:100%">${esc(d.reviewOpen)}</button></p></form>`);
+      // «Confirme e valide» só quando a aprovação do convidado conta; senão, só ver (ou nada para ver, sem episódio).
+      const review = await guestReview(db, { id: inv.iid, review_policy: inv.review_policy });
+      const c = reviewCopy(lang, review);
+      return gpage(reply, lang, c.title, `<h1>${esc(c.title)}</h1><p>${esc(d.reviewIntro(inv.host_name))}</p><p><strong>${esc(inv.title)}</strong></p><p class="hint">${esc(c.steps)}</p>
+<form method="post" action="/i/${esc((req.params as any).token)}/abrir"><p><button class="accent" style="width:100%">${esc(review ? c.open : d.open)}</button></p></form>`);
     }
     const nQ = Number((await db.one('SELECT count(*)::int AS n FROM questions WHERE interview_id=$1', [inv.iid]))?.n);
     return gpage(reply, lang, d.inviteTitle, `<h1>${esc(inv.title)}</h1><p>${esc(d.invitedBy(inv.host_name))}</p><p class="hint">${esc(d.qCount(nQ))}</p>
@@ -79,16 +81,21 @@ export async function guestRoutes(app: FastifyInstance) {
     const tk = (req.params as any).token;
     const inv = await loadInvitation(tk);
     const email = String((req.body as any)?.email ?? '').trim().toLowerCase();
+    let sent = '1';
     if (inv && !inv.declined_at && inv.collection_status !== 'cancelled' && email === String(inv.guest_email).toLowerCase()
         && rateLimit(`newlink:${inv.iid}`, 1, config.limits.resendCooldownSec * 1000) && rateLimit(`newlink-ip:${req.ip}`, 10, 3600_000)) {
       const iv = await db.one('SELECT * FROM interviews WHERE id=$1', [inv.iid]);
       const owner = await db.one('SELECT name FROM users WHERE id=$1', [iv.owner_id]);
       const latest = (await db.one('SELECT purpose FROM invitations WHERE interview_id=$1 ORDER BY created_at DESC LIMIT 1', [inv.iid]))?.purpose ?? inv.purpose;
-      const scope = latest === 'preview' ? await guestReviewScope(db, iv) : null;
-      if (latest !== 'preview' || scope === 'all' || scope === 'video') await createInvitation(db, iv, { name: owner?.name ?? '' }, latest === 'preview' ? { preview: true } : latest === 'followup' ? { followup: true } : {}); // mantém a finalidade do convite em vigor
-      await audit(db, 'guest', 'invitation.renewed', inv.iid);
+      // Validação: o link novo segue o episódio atual (validar, ou só ver quando a publicação é do entrevistador ou já
+      // saiu). Sem episódio para ver não se envia um link vazio: quem pediu (com o email certo) fica a saber porquê.
+      if (latest === 'preview' && !(await guestReview(db, iv))) sent = 'nada';
+      else {
+        await createInvitation(db, iv, { name: owner?.name ?? '' }, latest === 'preview' ? { preview: true } : latest === 'followup' ? { followup: true } : {}); // mantém a finalidade do convite em vigor
+        await audit(db, 'guest', 'invitation.renewed', inv.iid);
+      }
     }
-    return reply.redirect(`/i/${tk}?sent=1`);
+    return reply.redirect(`/i/${tk}?sent=${sent}`);
   });
 
   // ---- tudo abaixo exige sessão de convidado ----
@@ -353,11 +360,17 @@ ${pc && !done ? `<div class="card" id="cam" data-max="3" data-msg='${esc(msg)}'>
   });
 
   // ---- revisão e submissão ----
+  /**
+   * Texto de uma autorização tal como foi aceite (o retrato guardado com a versão de então), não o texto atual: quem
+   * autorizou na v1 vê o que autorizou. Na participação, só a frase da caixa (o retrato leva também a informação de base).
+   */
+  const consentShown = (x: any, lang: Lang, policy?: string) =>
+    String(x.text_snapshot ?? '').split('\n')[0].trim() || consentText(lang, x.purpose as ConsentPurpose, policy);
   const summary = async (iv: any) => {
     const qs = await db.query(`SELECT q.*, a.status, t.asset_id, ast.duration_ms FROM questions q LEFT JOIN answers a ON a.question_id=q.id
       LEFT JOIN answer_takes t ON t.id=a.selected_take_id LEFT JOIN assets ast ON ast.id=t.asset_id WHERE q.interview_id=$1 ORDER BY q.position`, [iv.id]);
     const photos = await db.query('SELECT * FROM photos WHERE interview_id=$1 ORDER BY created_at', [iv.id]);
-    const consents = await db.query(`SELECT DISTINCT ON (purpose) purpose, granted FROM consents WHERE interview_id=$1 ORDER BY purpose, created_at DESC`, [iv.id]);
+    const consents = await db.query(`SELECT DISTINCT ON (purpose) purpose, granted, text_snapshot FROM consents WHERE interview_id=$1 ORDER BY purpose, created_at DESC`, [iv.id]);
     return { qs, photos, consents, complete: qs.length > 0 && qs.every((q: any) => q.status === 'answered' || q.status === 'refused') };
   };
 
@@ -369,7 +382,7 @@ ${pc && !done ? `<div class="card" id="cam" data-max="3" data-msg='${esc(msg)}'>
     return gpage(reply, lang, d.review, `<h1>${esc(d.review)}</h1><h2>${esc(d.yourAnswers)}</h2>
 <ol class="sans" style="padding-left:20px">${s.qs.map((q: any) => `<li style="margin:10px 0">${esc(q.text)}<br>${q.status === 'answered' ? `<audio controls preload="none" src="/api/g/media/${q.asset_id}" style="width:100%"></audio>` : q.status === 'refused' ? pill(d.refused, 'warn') : pill('⚠', 'bad')}</li>`).join('')}</ol>
 <h2>${esc(d.photos)}</h2>${s.photos.length ? `<div class="thumbs">${s.photos.map((p: any) => `<img alt="" src="/api/g/media/${p.asset_id}">`).join('')}</div>` : `<p class="hint">${esc(d.noPhotos)}</p>`}
-<ul class="sans">${s.consents.map((x: any) => `<li>${x.granted ? '✔' : '✘'} ${esc(consentText(lang, x.purpose as ConsentPurpose, iv.review_policy))}</li>`).join('')}</ul>
+<ul class="sans">${s.consents.map((x: any) => `<li>${x.granted ? '✔' : '✘'} ${esc(consentShown(x, lang, iv.review_policy))}</li>`).join('')}</ul>
 ${s.complete ? `<form method="post" action="/entrevista/submeter" onsubmit="return confirm('${esc(d.submitConfirm)}')"><p><button class="accent" style="width:100%">${esc(d.submit)}</button></p></form>` : `<div class="flash bad">${esc(d.pendingUploads)}</div><p><a class="btn" href="/entrevista">${esc(d.continue)}</a></p>`}`);
   });
 
@@ -382,7 +395,7 @@ ${s.complete ? `<form method="post" action="/entrevista/submeter" onsubmit="retu
     const snapshot = {
       interviewId: iv.id, questionVersion: iv.version, submittedAt: new Date().toISOString(),
       answers: s.qs.map((q: any) => ({ questionId: q.id, status: q.status, assetId: q.asset_id ?? null })),
-      photos: s.photos.map((p: any) => p.asset_id), consents: s.consents,
+      photos: s.photos.map((p: any) => p.asset_id), consents: s.consents.map((x: any) => ({ purpose: x.purpose, granted: x.granted })),
     };
     const sub = await db.tx(async tx => {
       const locked = await tx.one(`UPDATE interviews SET collection_status='submitted', submitted_at=now() WHERE id=$1 AND collection_status<>'submitted' RETURNING id`, [iv.id]);
@@ -408,8 +421,7 @@ ${s.complete ? `<form method="post" action="/entrevista/submeter" onsubmit="retu
     const c = await need(req, reply); if (!c) return;
     const { iv, lang } = c, d = t(lang);
     const sub = await db.one('SELECT * FROM submissions WHERE interview_id=$1 ORDER BY created_at DESC LIMIT 1', [iv.id]);
-    const ep = await db.one(`SELECT id FROM episodes WHERE interview_id=$1 AND status='preview' AND stale=false LIMIT 1`, [iv.id])
-      && (await guestReviewScope(db, iv)) !== 'none';
+    const ep = guestDecides(await guestReview(db, iv)); // há um episódio por publicar que o convidado valida
     return gpage(reply, lang, d.thanks, `<h1>${esc(d.thanks)}</h1><p>${esc(d.thanksText)}</p>
 <div class="card sans"><strong>${esc(d.receipt)}</strong><br>${esc(iv.title)}<br>${esc(fmtDate(sub?.created_at))}<br><code>${esc(sub?.id ?? '')}</code></div>
 <p class="hint">${esc(d.contact)} ${esc(config.supportEmail)}</p><p><a href="/entrevista/fotos">${esc(d.photoAuth)}</a></p>${ep ? `<p><a class="btn accent" href="/entrevista/episodio">${esc(d.episodePreview)}</a></p>` : ''}`);

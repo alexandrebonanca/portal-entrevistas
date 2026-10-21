@@ -5,7 +5,7 @@ import { page, flash } from '../views.ts';
 import { sendAsset, audit } from '../app.ts';
 import { toVtt, toSrt, type Cue } from '../subtitles.ts';
 import { t, normLang } from '../i18n.ts';
-import { approvalScope, videoMeta } from '../approval.ts';
+import { approvalScope, videoMeta, guestDecides, reviewCopy } from '../approval.ts';
 
 export interface PlayerUrls { audio: string; cover: string; subs: (lang: string, ext: 'vtt' | 'srt') => string }
 
@@ -112,19 +112,23 @@ ${groups.size ? [...groups].map(([t, eps]) => `<section style="margin-top:28px">
   app.get('/entrevista/episodio', async (req, reply) => {
     const ep = await guestEpisode(req);
     if (!ep) return reply.redirect('/entrevista/obrigado');
-    const d = t(normLang(ep.interaction_lang));
+    const lang = normLang(ep.interaction_lang), d = t(lang);
     const dec = await db.one(`SELECT * FROM approvals WHERE episode_id=$1 AND actor='guest' AND valid ORDER BY created_at DESC LIMIT 1`, [ep.id]);
-    // Texto e formulário seguem o alcance da aprovação do convidado (a mesma regra da publicação).
-    const scope = approvalScope(ep, await videoMeta(db, ep.video_asset_id));
+    // Texto e formulário seguem o alcance da aprovação do convidado (a mesma regra da publicação). Num episódio já
+    // publicado não há nada a decidir: aprovar ou pedir alterações já não muda o que está no ar.
+    const review = { scope: approvalScope(ep, await videoMeta(db, ep.video_asset_id)), published: ep.status === 'published' };
+    const decides = guestDecides(review), c = reviewCopy(lang, review);
+    const pubDay = ep.published_at ? new Date(ep.published_at).toLocaleDateString(lang === 'en' ? 'en-GB' : 'pt-PT', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'Europe/Lisbon' }) : '';
     const q = req.query as any;
     return send(reply, page({
-      lang: normLang(ep.interaction_lang), title: d.episodePreview, noindex: true, nav: '', script: '/static/player.js',
+      lang, title: d.episodePreview, noindex: true, nav: '', script: '/static/player.js',
       body: `<div class="wrap" style="padding-top:28px">${flash(q.ok)}${q.changed ? `<div class="flash bad">${esc(d.versionChanged)}</div>` : ''}<h1>${esc(d.episodePreview)}</h1>
-<p class="sans"><strong>${esc(d.reviewTitle)}</strong></p><p>${esc(d.reviewIntro(ep.host_label ?? ''))} ${esc(scope === 'video' ? d.reviewStepsVideo : scope === 'none' ? d.reviewStepsView : d.reviewSteps)}</p>
+<p class="sans"><strong>${esc(c.title)}</strong></p><p>${esc(d.reviewIntro(ep.host_label ?? ''))} ${esc(c.steps)}</p>
+${review.published ? `<p class="hint">${pubDay ? `${esc(d.publishedOn(pubDay))} ` : ''}${esc(d.contact)} ${esc(config.supportEmail)}</p>` : ''}
 ${ep.video_asset_id ? `<video controls preload="metadata" poster="/api/g/media/${ep.cover_asset_id}" src="/api/g/media/${ep.video_asset_id}" style="width:100%;border-radius:12px;background:#000;margin-bottom:18px"></video>` : ''}
 ${playerHtml(ep, { audio: `/api/g/media/${ep.audio_asset_id}`, cover: `/api/g/media/${ep.cover_asset_id}`, subs: (l, x) => `/entrevista/subs/${l}.${x}` }, { host: ep.host_name, guest: ep.guest_name })}
-${scope !== 'none' && dec ? `<div class="flash">${esc(dec.decision === 'approved' ? d.approve : d.requestChanges)} — ${esc(fmtDate(dec.created_at))}${dec.decision === 'approved' && String(dec.video_asset_id ?? '') !== String(ep.video_asset_id ?? '') ? ` (${esc(d.versionChanged)})` : ''}</div>` : ''}
-${scope === 'none' ? '' : `<form method="post" action="/entrevista/episodio/decisao" class="card"><input type="hidden" name="video" value="${esc(ep.video_asset_id ?? '')}"><input type="hidden" name="episode" value="${esc(ep.id)}"><input type="hidden" name="audio" value="${esc(ep.audio_asset_id ?? '')}"><label for="nt">${esc(d.notePlaceholder)}</label><textarea id="nt" name="note"></textarea>
+${decides && dec ? `<div class="flash">${esc(dec.decision === 'approved' ? d.approve : d.requestChanges)} — ${esc(fmtDate(dec.created_at))}${dec.decision === 'approved' && String(dec.video_asset_id ?? '') !== String(ep.video_asset_id ?? '') ? ` (${esc(d.versionChanged)})` : ''}</div>` : ''}
+${!decides ? '' : `<form method="post" action="/entrevista/episodio/decisao" class="card"><input type="hidden" name="video" value="${esc(ep.video_asset_id ?? '')}"><input type="hidden" name="episode" value="${esc(ep.id)}"><input type="hidden" name="audio" value="${esc(ep.audio_asset_id ?? '')}"><label for="nt">${esc(d.notePlaceholder)}</label><textarea id="nt" name="note"></textarea>
 <div class="row"><button name="decision" value="approved" class="accent">${esc(d.approve)}</button><button name="decision" value="changes" class="ghost">${esc(d.requestChanges)}</button></div>
 <p class="hint">${esc(d.silence)}</p></form>`}
 <p class="sans"><a href="/entrevista/fotos">${esc(d.reviewAuth)}</a></p></div>`,
@@ -134,7 +138,8 @@ ${scope === 'none' ? '' : `<form method="post" action="/entrevista/episodio/deci
     const ep = await guestEpisode(req);
     if (!ep) return reply.redirect('/entrevista/obrigado');
     const b = req.body as any;
-    if (approvalScope(ep, await videoMeta(db, ep.video_asset_id)) === 'none') return reply.redirect('/entrevista/episodio'); // a publicação não depende do convidado
+    // A publicação não depende do convidado, ou o episódio já foi publicado: não há decisão a registar.
+    if (!guestDecides({ scope: approvalScope(ep, await videoMeta(db, ep.video_asset_id)), published: ep.status === 'published' })) return reply.redirect('/entrevista/episodio');
     const decision = b.decision === 'approved' ? 'approved' : 'changes';
     // Uma aprovação só vale para o vídeo que estava na página; um pedido de alterações vale sempre.
     if (decision === 'approved' && (String(b.video ?? '') !== String(ep.video_asset_id ?? '') || (b.episode && String(b.episode) !== String(ep.id)) || (b.audio && String(b.audio) !== String(ep.audio_asset_id ?? '')))) return reply.redirect('/entrevista/episodio?changed=1');

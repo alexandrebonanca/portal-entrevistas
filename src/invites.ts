@@ -3,7 +3,7 @@ import { config } from './config.ts';
 import { esc, newToken, sha256 } from './lib.ts';
 import { queueEmail, emailShell } from './mail.ts';
 import { t, normLang } from './i18n.ts';
-import { guestReviewScope } from './approval.ts';
+import { guestReview, reviewCopy } from './approval.ts';
 
 /** Revoga convites anteriores e cria um novo; o email vai para a outbox (deduplicado por convite). */
 export async function createInvitation(db: Db, interview: any, host: { name: string }, opts: { followup?: boolean; preview?: boolean } = {}) {
@@ -35,12 +35,12 @@ export async function createInvitation(db: Db, interview: any, host: { name: str
   const small = (s: string) => `<p style="font-size:14px;color:#6b655c">${esc(s)}</p>`;
   if (opts.preview) {
     // Validação do episódio: email próprio (sem número de perguntas, sem «responder no telemóvel», sem recusa).
-    // O texto segue o alcance da aprovação do convidado no episódio atual (a mesma regra da publicação).
-    const scope = await guestReviewScope(db, interview);
-    const steps = scope === 'video' ? d.reviewStepsVideo : scope === 'none' ? d.reviewStepsView : d.reviewSteps;
-    const body = `<p>${esc(d.reviewIntro(hostName))}</p><p><strong>${esc(interview.title)}</strong></p><p>${esc(steps)}</p>`;
-    const text = [d.reviewTitle, d.reviewIntro(hostName), interview.title, steps, `${d.reviewOpen}: ${url}`, help, footerText].join('\n\n');
-    await queueEmail(db, { key: `invite:${inv.id}`, interviewId: interview.id, to: interview.guest_email, subject: d.reviewSubject(interview.title), html: emailShell(d.reviewTitle, body, { label: d.reviewOpen, url }, { footer, after: small(help) }), text });
+    // O texto segue o alcance da aprovação do convidado no episódio atual (a mesma regra da publicação): «Confirme e
+    // valide» só quando ele decide; com a publicação a cargo do entrevistador (ou já publicado), só «ver o episódio».
+    const c = reviewCopy(lang, await guestReview(db, interview));
+    const body = `<p>${esc(d.reviewIntro(hostName))}</p><p><strong>${esc(interview.title)}</strong></p><p>${esc(c.steps)}</p>`;
+    const text = [c.title, d.reviewIntro(hostName), interview.title, c.steps, `${c.open}: ${url}`, help, footerText].join('\n\n');
+    await queueEmail(db, { key: `invite:${inv.id}`, interviewId: interview.id, to: interview.guest_email, subject: c.subject(interview.title), html: emailShell(c.title, body, { label: c.open, url }, { footer, after: small(help) }), text });
     return { invitationId: inv.id, url, expires: exp };
   }
   // Convite: quem convida e sobre quê, a mensagem pessoal, como funciona o portal (para quem não o conhece) e até quando vale o link.
