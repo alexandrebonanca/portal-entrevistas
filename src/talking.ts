@@ -460,8 +460,19 @@ async function veo(image: Buffer, text: string, onStatus: ((s: string) => Promis
  */
 export function veoEpisodePrompt(o: { role: 'host' | 'guest'; text: string; voice: 'male' | 'female' }) {
   const who = o.role === 'host' ? 'the interviewer of a podcast' : 'the guest of a podcast interview';
-  const voice = `a natural adult ${o.voice === 'male' ? 'male' : 'female'} voice, ${o.role === 'host' ? 'warm and mid-pitched' : 'calm and mid-pitched'}, clear neutral international English accent, steady unhurried pace`;
-  return `The person in the image is ${who}, in a calm studio. They look at the camera and say, in English, exactly these words and nothing else, with ${voice}: "${o.text.replace(/"/g, "'")}" They finish speaking before the end of the clip and then stay silent with a natural, friendly expression. ${presenterDirection(o.role)} Keep the framing, background, clothing and appearance of the image; if the hands are not visible in the image, do not add them and express through the face, head and shoulders. Do not add other people or objects. Only this person speaks. No captions, no text on screen, no music, no sound effects.`;
+  return `The person in the image is ${who}, in a calm studio. They look at the camera and say, in English, exactly these words and nothing else, with ${veoVoice(o.role, o.voice)}: "${o.text.replace(/"/g, "'")}" They finish speaking before the end of the clip and then stay silent with a natural, friendly expression. ${presenterDirection(o.role)} ${VEO_KEEP_IMAGE}`;
+}
+/** Voz pedida ao Veo: a mesma descrição por papel em todos os clipes (falas e introdução), para variar o menos possível. */
+const veoVoice = (role: 'host' | 'guest', voice: 'male' | 'female') =>
+  `a natural adult ${voice === 'male' ? 'male' : 'female'} voice, ${role === 'host' ? 'warm and mid-pitched' : 'calm and mid-pitched'}, clear neutral international English accent, steady unhurried pace`;
+const VEO_KEEP_IMAGE = 'Keep the framing, background, clothing and appearance of the image; if the hands are not visible in the image, do not add them and express through the face, head and shoulders. Do not add other people or objects. Only this person speaks. No captions, no text on screen, no music, no sound effects.';
+
+/**
+ * Pedido da introdução animada do entrevistador: abre o episódio com uma frase genérica (sem nomes), com a mesma voz das
+ * falas dele e a direção de quem dá as boas-vindas ao público.
+ */
+export function veoIntroPrompt(o: { text: string; voice: 'male' | 'female' }) {
+  return `The person in the image is the host of a podcast, in a calm studio, opening a new episode. They look at the camera and say, in English, exactly these words and nothing else, with ${veoVoice('host', o.voice)}: "${o.text.replace(/"/g, "'")}" They finish speaking before the end of the clip and then stay silent with a natural, friendly expression. ${presenterDirection('presenter')} ${VEO_KEEP_IMAGE}`;
 }
 
 /** Corre um fornecedor. `audioSec` serve para o InfiniteTalk calcular o número de fotogramas. */

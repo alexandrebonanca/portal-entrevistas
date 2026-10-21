@@ -57,6 +57,8 @@ export const config = {
     maxObjectiveAudioSec: Number(env.MAX_OBJECTIVE_AUDIO_SEC ?? 300),
     // Regenerações do guião e do episódio incluídas por entrevista; as seguintes custam 1 crédito.
     includedRegenerations: Number(env.INCLUDED_REGENERATIONS ?? 3),
+    // Introdução animada do entrevistador (oferecida): gerações por entrevistador e por mês (o administrador não conta).
+    introPerMonth: Number(env.INTRO_PER_MONTH ?? 3),
     inviteDays: Number(env.INVITE_DAYS ?? 14),
     resendCooldownSec: Number(env.RESEND_COOLDOWN_SEC ?? 120),
   },
