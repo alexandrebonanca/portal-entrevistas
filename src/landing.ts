@@ -4,6 +4,8 @@ import { config } from './config.ts';
 import { esc } from './lib.ts';
 import { page } from './views.ts';
 import { markSvg } from './brand.ts';
+import { seller, homeConsumerRate } from './legal.ts';
+import { withVat, eurPt, fmtRate } from './vat.ts';
 
 const eur = (c: number) => `€${(c / 100).toFixed(c % 100 ? 2 : 0)}`;
 
@@ -51,7 +53,9 @@ const STYLES = `
 
 export function landing(plans: any[]) {
   const b = esc(config.brand);
-  const cheapest = plans[0] ? eur(plans[0].price_cents) : '€10';
+  // Preços sem IVA («+ VAT»); para os consumidores, também o preço com IVA (no continente, em Portugal).
+  const cheapest = plans[0] ? `${eur(plans[0].price_cents)} + VAT` : '';
+  const s = seller(), rate = homeConsumerRate(s);
   const img = (name: string, alt: string, eager = false) => {
     const lazy = eager ? 'fetchpriority="high"' : 'loading="lazy"';
     if (hasPhoto(name)) return `<img src="/static/img/photos/${name}.jpg" alt="${esc(alt)}" width="1200" height="900" ${lazy} decoding="async">`;
@@ -67,7 +71,7 @@ export function landing(plans: any[]) {
   const video = hasVideo();
   return page({
     lang: 'en', title: 'Great interviews, recorded in your guest’s own time',
-    desc: `Invite people to share their professional culture and life experience, answering on their phone in their own time and language. ${config.brand} turns the answers into a reviewed English podcast and video with subtitles in five languages. From ${cheapest}/month.`,
+    desc: `Invite people to share their professional culture and life experience, answering on their phone in their own time and language. ${config.brand} turns the answers into a reviewed English podcast and video with subtitles in five languages.${cheapest ? ` From ${cheapest}/month.` : ''}`,
     head: `<meta property="og:type" content="website"><meta property="og:site_name" content="${b}"><meta property="og:title" content="Great interviews, recorded in your guest’s own time">
 <meta property="og:description" content="Asynchronous interviews that share professional cultures and life experience across countries and languages."><meta property="og:url" content="${esc(config.baseUrl)}/">${ogImage ? `<meta property="og:image" content="${esc(ogImage)}"><meta name="twitter:card" content="summary_large_image">` : ''}`,
     styles: STYLES,
@@ -78,7 +82,7 @@ export function landing(plans: any[]) {
     <p class="lp-eyebrow">Asynchronous interviews · podcast, video and subtitles</p>
     <h1>Great interviews, recorded in your guest’s own time.</h1>
     <p class="lp-lead">Invite people whose professional culture and life experience are worth sharing. They answer on their phone, in their own time and language. ${b} turns their answers into a reviewed English podcast and video, with subtitles in English, Portuguese, Spanish, French and German, so their stories travel across countries and generations.</p>
-    <p class="row"><a class="btn accent" href="/registar">Start from ${cheapest} / month</a>${video ? '<a class="btn ghost" href="#tour">Watch the 1-minute video</a>' : '<a class="btn ghost" href="#how">See how it works</a>'}</p>
+    <p class="row"><a class="btn accent" href="/registar">${cheapest ? `Start from ${cheapest} / month` : 'Get started'}</a>${video ? '<a class="btn ghost" href="#tour">Watch the 1-minute video</a>' : '<a class="btn ghost" href="#how">See how it works</a>'}</p>
     <ul class="lp-trust"><li>No app for your guest</li><li>Consent at every step</li><li>Nothing published without approval</li></ul>
   </div>
   <figure class="lp-photo">${img('hero', 'A guest recording an interview answer', true)}
@@ -108,7 +112,7 @@ ${video ? `
     <ul class="lp-formats">
       <li><strong>Audio podcast</strong><span>A clear English episode with chapters, transcript and an audible AI disclosure.</span></li>
       <li><strong>Video with photos and subtitles</strong><span>Authorized photos, close-ups of whoever is speaking and subtitles in English, Portuguese, Spanish, French or German.</span></li>
-      <li><strong>AI video</strong><span>Presenters animated from authorized photos, with a visible “AI-generated video” notice. Only with each person’s specific consent.</span></li>
+      <li><strong>AI video (optional, quoted separately)</strong><span>Presenters animated from authorized photos, with a visible “AI-generated video” notice, only with each person’s specific consent. Not included in any plan: each animated production is quoted before anything is generated and paid with prepaid credits.</span></li>
     </ul>
     ${covers.length ? `<div class="lp-covers">${covers.map(([f, c]) => `<img src="/static/img/${f}.svg" alt="Sample podcast cover: ${esc(c)}" width="400" height="400" loading="lazy">`).join('')}</div>` : ''}
   </div>
@@ -126,10 +130,12 @@ ${video ? `
 </section>
 
 <section class="wrap lp-section" id="pricing" aria-labelledby="prh"><h2 id="prh">Simple monthly pricing</h2>
-  <div class="grid3" style="max-width:760px">${plans.map(p => `<div class="card"><h3 style="margin-top:0">${esc(p.name)}</h3><p style="font-size:2.2rem;margin:.1em 0">${eur(p.price_cents)}<span class="hint"> / month</span></p>
-    <p>Up to <strong>${p.interviews_per_month} interviews</strong> per month.</p><ul class="sans" style="padding-left:18px"><li>Invitations, recording and photos</li><li>Transcription, English script, narration</li><li>Subtitles, cover, player and video</li><li>Cancel any time</li></ul>
+  <div class="grid3" style="max-width:760px">${plans.map(p => `<div class="card"><h3 style="margin-top:0">${esc(p.name)}</h3><p style="font-size:2.2rem;margin:.1em 0">${eur(p.price_cents)}<span class="hint"> + VAT / month</span></p>
+    ${rate ? `<p class="hint">Consumers: ${eur(withVat(p.price_cents, rate))} / month incl. ${fmtRate(rate)}% VAT${s.country === 'PT' ? ' (mainland Portugal)' : ''} · <span lang="pt-PT">consumidores: ${eurPt(withVat(p.price_cents, rate))}/mês com IVA incluído</span></p>` : ''}
+    <p>Up to <strong>${p.interviews_per_month} interviews</strong> per month.</p><ul class="sans" style="padding-left:18px"><li>Invitations, recording and photos</li><li>Transcription, English script, narration</li><li>Subtitles, cover, player and video with photos</li><li>Cancel any time</li></ul>
     <a class="btn accent" href="/registar?plan=${esc(p.id)}">Choose ${esc(p.name)}</a></div>`).join('')}</div>
-  <p class="hint">Billing is monthly through Stripe. Plans and limits may change for new subscribers.</p>
+  <p class="hint">Plans include photos only. AI animation is never part of a plan: each animated production is quoted before anything is generated and paid with prepaid credits. · <span lang="pt-PT">A animação por IA é orçamentada à parte e paga com créditos.</span></p>
+  <p class="hint">Billing is monthly through Stripe, card only. Prices exclude VAT; the price with VAT is always shown before you pay.${s.tradeName || s.name ? ` Sold by ${esc(s.name || s.tradeName)}.` : ''} <a href="/termos">Terms of sale · Termos e condições</a>. Plans and limits may change for new subscribers.</p>
 </section>
 
 <section class="wrap lp-section"><div class="card lp-cta"><h2 style="margin-top:0">Your next great guest is one polite invitation away.</h2>

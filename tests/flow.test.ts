@@ -37,8 +37,8 @@ test('landing em inglês e primeira conta administradora', async () => {
   assert.match(r.body, /lang="en"/);
   assert.match(r.body, /Great interviews, recorded in your guest’s own time/);
   assert.match(r.body, /<span class="wq">quiet<\/span><span class="wi">interview<\/span>/, 'logótipo e nome no cabeçalho');
-  assert.match(r.body, /€10/);
-  assert.match(r.body, /Up to <strong>5 interviews/);
+  assert.match(r.body, /€19<span class="hint"> \+ VAT \/ month/);
+  assert.match(r.body, /Up to <strong>3 interviews/);
   // fotografias licenciadas nos cinco lugares, com créditos; sem ilustrações, não há o aviso das ilustrações
   for (const n of ['hero', 'interviewer', 'guest', 'studio', 'listen']) assert.match(r.body, new RegExp(`src="/static/img/photos/${n}\\.jpg"`));
   assert.match(r.body, /Photos: Freepik/);
