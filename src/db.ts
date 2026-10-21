@@ -38,10 +38,11 @@ export async function openDb(): Promise<Db> {
   return mk(lite);
 }
 
-export async function migrate(db: Db) {
+/** Aplica as migrações em falta; `until` (inclusive) pára antes das seguintes, para os testes de uma migração com dados antigos. */
+export async function migrate(db: Db, opts: { until?: string } = {}) {
   await db.query('CREATE TABLE IF NOT EXISTS schema_migrations (name text PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())');
   const dir = new URL('../migrations/', import.meta.url);
-  const files = readdirSync(dir).filter(f => f.endsWith('.sql')).sort();
+  const files = readdirSync(dir).filter(f => f.endsWith('.sql') && (!opts.until || f <= opts.until)).sort();
   for (const f of files) {
     if (await db.one('SELECT 1 FROM schema_migrations WHERE name=$1', [f])) continue;
     const sql = readFileSync(new URL(f, dir), 'utf8');

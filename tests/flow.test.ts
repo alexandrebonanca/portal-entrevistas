@@ -494,8 +494,8 @@ test('vídeo com o Google Veo: autorização própria, som dos clipes, verifica�
   // e o preço de cada uma; o administrador gera sem orçamento (custo interno)
   assert.equal((await db.one(`SELECT count(*)::int n FROM veo_ops WHERE interview_id=$1 AND state IN ('pending','reserved')`, [ivId])).n, 0);
   const ops = await db.query(`SELECT model, usd_per_sec, state, quote_id, cost_usd, duration_sec FROM veo_ops WHERE interview_id=$1`, [ivId]);
-  assert.equal(ops.length, meta.veoClips, 'uma operação por clipe gerado');
-  assert.ok(ops.every((o: any) => o.model === 'veo-3.1-fast-generate-preview' && o.usd_per_sec === 0.1 && o.state === 'done' && o.quote_id === null && o.cost_usd === o.duration_sec * 0.1), 'cada operação guarda o modelo, o preço e o custo (migrações 012 e 016)');
+  assert.ok(meta.veoClips > 0); assert.equal(ops.length, meta.veoClips, 'uma operação por clipe gerado (também em modo simulado)');
+  assert.ok(ops.every((o: any) => o.model === 'veo-3.1-fast-generate-preview' && o.usd_per_sec === 0.1 && o.state === 'done' && o.quote_id === null && o.cost_usd === o.duration_sec * 0.1), 'cada operação nova guarda o modelo, o preço e o custo com que foi submetida (as antigas: teste da migração 012)');
 
   // o entrevistador retira a autorização do Veo em Editar: o vídeo sai do ar
   const iv = await db.one('SELECT * FROM interviews WHERE id=$1', [ivId]);
@@ -675,4 +675,25 @@ test('recomeçar produção arquiva (não apaga) e permite processar de novo', a
   await post(`/entrevistas/${ivId}/processar`, {}, owner);
   await drain();
   assert.equal((await db.one('SELECT production_status s FROM interviews WHERE id=$1', [ivId])).s, 'editorial_review');
+});
+
+test('migração 012: as operações do Veo de antes dela ficam com o modelo e o preço do Fast na Gemini API (e o custo, na 016)', async () => {
+  // Base nova só até à 011, com operações como as havia antes do registo do modelo e do preço (em modo simulado o fluxo
+  // acima só cria operações novas, que já trazem o modelo: não exercitam a migração).
+  const old = await openDb();
+  try {
+    await migrate(old, { until: '011_convite_finalidade.sql' });
+    assert.equal((await old.one(`SELECT count(*)::int n FROM information_schema.columns WHERE table_name='veo_ops' AND column_name IN ('model','usd_per_sec')`)).n, 0, 'antes da 012 não há modelo nem preço');
+    const u = await old.one(`INSERT INTO users(email, name, password_hash) VALUES ('antes-012@example.com','Antes','x') RETURNING id`);
+    const iv = await old.one(`INSERT INTO interviews(owner_id, title) VALUES ($1,'Antes da 012') RETURNING id`, [u.id]);
+    await old.query(`INSERT INTO veo_ops(interview_id, chunk_key, op_name, duration_sec, state) VALUES ($1,'k1','models/veo-3.1-fast-generate-preview/operations/1',8,'done'), ($1,'k2','models/veo-3.1-fast-generate-preview/operations/2',6,'busy')`, [iv.id]);
+    await migrate(old);
+    const ops = await old.query(`SELECT chunk_key, model, usd_per_sec, cost_usd, state FROM veo_ops ORDER BY chunk_key`);
+    assert.deepEqual(ops.map((o: any) => [o.chunk_key, o.model, o.usd_per_sec, o.state]), [['k1', 'veo-3.1-fast-generate-preview', 0.1, 'done'], ['k2', 'veo-3.1-fast-generate-preview', 0.1, 'busy']]);
+    assert.ok(Math.abs(ops[0].cost_usd - 0.8) < 1e-9 && Math.abs(ops[1].cost_usd - 0.6) < 1e-9, 'custo = segundos × preço da operação');
+    // uma operação nova (depois da migração) guarda o modelo dela, sem ser reescrita por uma migração repetida
+    await old.query(`INSERT INTO veo_ops(interview_id, chunk_key, op_name, duration_sec, state, model, usd_per_sec, cost_usd) VALUES ($1,'k3','x',8,'done','veo-3.1-lite-generate-001',0.05,0.4)`, [iv.id]);
+    await old.query(`UPDATE veo_ops SET model='veo-3.1-fast-generate-preview', usd_per_sec=0.10 WHERE model IS NULL`); // (o UPDATE da 012)
+    assert.equal((await old.one(`SELECT model FROM veo_ops WHERE chunk_key='k3'`)).model, 'veo-3.1-lite-generate-001');
+  } finally { await old.close(); }
 });
