@@ -27,5 +27,12 @@ A Google desliga na Gemini API, a partir de 22/10/2026, os modelos do Veo que o 
 
 Notas: a chave é validada ao guardar, fica cifrada e nunca volta ao ecrã (aparecem só o email da conta e o projeto). Nas entidades, as credenciais do Veo valem em conjunto: se a entidade tiver conta de serviço ou chave Gemini próprias, o Veo dela usa só essas (e paga no projeto Google dela); as globais servem só às entidades sem credenciais Google. Com conta de serviço, o Veo usa sempre o Vertex AI; a chave da Gemini API fica como reserva enquanto a Google a mantiver, e as operações já pagas na Gemini API continuam a ser concluídas com ela. A ficha do Lite contradiz-se sobre a imagem inicial: se o Vertex a recusar, a geração pára com uma mensagem clara (nada é cobrado) e basta escolher o Fast. Se a organização bloquear a criação de chaves (política `iam.disableServiceAccountKeyCreation`), o administrador da organização tem de a levantar para este projeto.
 
+## Pagamentos e faturação
+Quem vende ao cliente final é a **Telecert** (Stripe, IVA português, faturas no Moloni e Livro de Reclamações dela); a **Certif Int Association OÜ** é a entidade gestora da plataforma e não vende. Passos do dono:
+
+1. **Definições → Empresa vendedora**: denominação social completa, NIF, morada da sede, email de contacto e ligação do Livro de Reclamações Eletrónico (e a entidade RAL, se houver). Enquanto faltarem a denominação, o NIF e a morada, os pagamentos em linha ficam suspensos; sem o email e o Livro de Reclamações, só as empresas podem pagar. O OSS só se liga quando as vendas a consumidores de outros países da UE, somando todas as atividades da Telecert, passarem 10 000 €/ano.
+2. **Definições → Stripe**: as chaves da conta Stripe da **Telecert** e o segredo do webhook; **Guardar e testar** lê o nome da conta e avisa se não for o da empresa vendedora. Registar o webhook em `/webhooks/stripe` com os eventos indicados na página. As taxas de IVA (23%, 22%, 16%) criam-se sozinhas na primeira venda.
+3. **Admin → Faturação**: cada pagamento aparece «por faturar» com o cliente, o IVA, a menção e o prazo (5.º dia útil). Emitir a fatura-recibo no Moloni da Telecert e escrever o n.º. Os pedidos de livre resolução dos consumidores aparecem na mesma página (reembolso no painel da Stripe e nota de crédito no Moloni).
+
 ## Estado e limites conhecidos
 Ver `docs/estado.md` (o que foi testado com mocks, o que exige dispositivos reais e o que ainda falta).
