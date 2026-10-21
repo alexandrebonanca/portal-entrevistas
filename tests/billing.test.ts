@@ -658,7 +658,7 @@ test('Stripe «Guardar e testar»: aviso se o nome da conta Stripe não for o da
     assert.match(msg(await post('/admin/definicoes/testar/Stripe', {}, admin)), /Conta «Empresa Vendedora de Teste», a da empresa vendedora\./);
     const pg = await get('/admin/definicoes', admin);
     assert.doesNotMatch(pg.body, /não coincide com a empresa vendedora/);
-    assert.match(pg.body, /eventos: checkout\.session\.completed, customer\.subscription\.created\/updated\/deleted, invoice\.paid, invoice\.payment_failed, customer\.tax_id\.created\/updated/);
+    assert.match(pg.body, /eventos: checkout\.session\.completed, checkout\.session\.async_payment_succeeded\/failed, checkout\.session\.expired, customer\.subscription\.created\/updated\/deleted, invoice\.paid, invoice\.payment_failed, customer\.tax_id\.created\/updated, refund\.created\/updated\/failed, charge\.refunded, charge\.dispute\.created\/closed/);
     assert.match(pg.body, /PT 22% \(txr_PT22_/);
   } finally { fs.restore(); }
 });

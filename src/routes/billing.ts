@@ -3,7 +3,8 @@ import { config } from '../config.ts';
 import { esc, fmtDate } from '../lib.ts';
 import { page, flash, pill } from '../views.ts';
 import { audit } from '../app.ts';
-import { quotaFor, createCheckout, changePlan, cancelNow, createPortal, stripeConfigured, verifyStripeSignature, applyStripeEvent, verifyVatNumber, vatForProfile, ACTIVE_STATUSES, LIVE_STRIPE } from '../billing.ts';
+import { quotaFor, createCheckout, changePlan, cancelNow, createPortal, stripeConfigured, verifyStripeSignature, applyStripeEvent, verifyVatNumber, vatForProfile, customerFor, ACTIVE_STATUSES, LIVE_STRIPE } from '../billing.ts';
+import { findWallet, crEn } from '../wallet.ts';
 import { S, inEntity } from '../settings.ts';
 import { seller, checkoutBlock, contactEmail, homeConsumerRate, termsBody, paymentsPrivacyBody, complaintsLink, TERMS_VERSION, WITHDRAWAL_DAYS, type Seller } from '../legal.ts';
 import { withVat, eurEn, eurPt, fmtRate, normNif, normPostal, normVatNumber, isEuCountry, outsideVatTerritory, countryName, EU_COUNTRIES, OUTSIDE_EU, type VatDecision } from '../vat.ts';
@@ -24,7 +25,7 @@ const VAT_STATUS: Record<string, string> = { pending: 'checking in VIES', verifi
 export async function billingRoutes(app: FastifyInstance) {
   const db = app.db;
   const send = (reply: any, html: string) => reply.type('text/html; charset=utf-8').send(html);
-  const nav = `<a href="/painel">Dashboard</a><a href="/account">Account</a><form method="post" action="/sair" style="display:inline"><button class="ghost" style="padding:6px 12px;min-height:0;margin-left:16px">Sign out</button></form>`;
+  const nav = `<a href="/painel">Dashboard</a><a href="/account">Account</a><a href="/conta/creditos">Credits</a><form method="post" action="/sair" style="display:inline"><button class="ghost" style="padding:6px 12px;min-height:0;margin-left:16px">Sign out</button></form>`;
   const profileOf = (userId: string) => db.one('SELECT * FROM billing_profiles WHERE user_id=$1', [userId]);
   const back = (reply: any, e: string, anchor = '') => reply.redirect('/account?e=' + encodeURIComponent(e.slice(0, 500)) + anchor);
   const okBack = (reply: any, m: string) => reply.redirect('/account?ok=' + encodeURIComponent(m));
@@ -49,7 +50,8 @@ export async function billingRoutes(app: FastifyInstance) {
     const pendingVat = vatUnconfirmed(profile, s);
     const legacy = active && sub.plan_id && !plans.some((p: any) => p.id === sub.plan_id);
     const withdrawal = await db.one(`SELECT * FROM withdrawals WHERE user_id=$1 ORDER BY requested_at DESC LIMIT 1`, [req.user.id]);
-    const customerId = (await db.one('SELECT stripe_customer_id FROM users WHERE id=$1', [req.user.id]))?.stripe_customer_id;
+    const customerId = await customerFor(db, req.user.id);
+    const wallet = isAdmin ? null : await findWallet(db, req.user.id, req.user.entity_id);
     const home = homeConsumerRate(s);
 
     // Preço: empresas «+ VAT»; consumidores o valor com IVA primeiro, também em português.
@@ -107,7 +109,8 @@ ${esc(profile.address)}, ${esc(profile.postal_code)} ${esc(profile.city)}, ${esc
 ${q.checkout === 'success' ? flash('Thank you! Your subscription will be active in a few seconds. Refresh this page if it still shows as inactive.') : ''}${q.checkout === 'cancelled' ? flash('Checkout cancelled — nothing was charged.', 'bad') : ''}${flash(q.ok)}${flash(q.e, 'bad')}
 <div class="card sans"><strong>${esc(req.user.name)}</strong> · ${esc(req.user.email)}<br>
 ${isAdmin ? 'Administrator — no interview limit.' : active ? `Plan: <strong>${esc(sub.plan_name ?? '—')}</strong> ${pill(sub.status, 'ok')}<br>Interviews this period: <strong>${quota.used} / ${quota.limit}</strong>${sub.current_period_end ? `<br>Renews / ends: ${fmtDate(sub.current_period_end)}${sub.cancel_at_period_end ? ' (cancels at period end)' : ''}` : ''}` : `No active subscription ${sub ? pill(sub.status, 'bad') : ''}`}
-${legacy ? '<br><span class="hint">This plan is no longer offered to new customers; it continues as it is until you change it.</span>' : ''}</div>
+${legacy ? '<br><span class="hint">This plan is no longer offered to new customers; it continues as it is until you change it.</span>' : ''}
+${isAdmin ? '' : `<br>Credits: <strong>${crEn(wallet?.available_cents ?? 0)}</strong> available${wallet?.reserved_cents ? ` · ${crEn(wallet.reserved_cents)} on hold` : ''} · <a href="/conta/creditos">Top up and statement · Créditos</a>`}</div>
 ${isAdmin ? '' : `${withdrawCard}
 <h2>${active ? 'Change plan' : 'Choose a plan'}</h2>
 <p class="hint">Plans include photos, narration, subtitles and the video with photos. AI animation is never included in a plan: each animated production is quoted before anything is generated and paid with prepaid credits. Card payments only, through Stripe. · <span lang="pt-PT">A animação por IA não está incluída em nenhum plano: é orçamentada antes de gerar e paga com créditos.</span></p>
@@ -212,9 +215,9 @@ ${customerId ? '<form method="post" action="/billing/portal"><button class="ghos
 
   app.post('/billing/portal', async (req, reply) => {
     if (!req.user) return reply.redirect('/entrar');
-    const u = await db.one('SELECT stripe_customer_id FROM users WHERE id=$1', [req.user.id]);
-    if (!u?.stripe_customer_id) return reply.redirect('/account');
-    try { return reply.redirect(await inEntity(req.user.entity_id, () => createPortal(u.stripe_customer_id)), 303); }
+    const customer = await inEntity(req.user.entity_id, () => customerFor(db, req.user!.id));
+    if (!customer) return reply.redirect('/account');
+    try { return reply.redirect(await inEntity(req.user.entity_id, () => createPortal(customer)), 303); }
     catch (e: any) { return back(reply, String(e.message).slice(0, 160)); }
   });
 

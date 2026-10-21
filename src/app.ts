@@ -11,6 +11,7 @@ import { productionRoutes } from './routes/production.ts';
 import { guestRoutes } from './routes/guest.ts';
 import { episodeRoutes } from './routes/episode.ts';
 import { billingRoutes } from './routes/billing.ts';
+import { creditRoutes } from './routes/credits.ts';
 import { adminRoutes } from './routes/admin.ts';
 import { entityRoutes } from './routes/entities.ts';
 import { labRoutes } from './routes/lab.ts';
@@ -85,6 +86,7 @@ export async function buildApp(db: Db): Promise<FastifyInstance> {
   await guestRoutes(app);
   await episodeRoutes(app);
   await billingRoutes(app);
+  await creditRoutes(app);
   await adminRoutes(app);
   await entityRoutes(app);
   await labRoutes(app);

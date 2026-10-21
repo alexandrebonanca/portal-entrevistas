@@ -2,10 +2,11 @@ import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import type { Db } from './db.ts';
 import { config } from './config.ts';
 import { esc } from './lib.ts';
-import { S, stripeScopedValue, saveStripeScoped } from './settings.ts';
-import { vatFor, countryName, ptRegion, regionalRate, withVat, eurPt, fmtRate, type VatDecision, type VatOk } from './vat.ts';
-import { seller, sellerBlock, TERMS_VERSION, WITHDRAWAL_DAYS, type Seller } from './legal.ts';
+import { S, stripeScopedValue, saveStripeScoped, stripeScope, inEntity } from './settings.ts';
+import { vatFor, countryName, ptRegion, regionalRate, withVat, vatOf, eurPt, eurEn, fmtRate, type VatDecision, type VatOk } from './vat.ts';
+import { seller, sellerBlock, contactEmail, TERMS_VERSION, WITHDRAWAL_DAYS, type Seller } from './legal.ts';
 import { queueEmail, emailShell } from './mail.ts';
+import { walletFor, creditTopup, refundAccepted, refundFailed, externalRefund, externalRefundFailed, externalRefundSucceeded, disputeOpened, disputeClosed, startRefund, cr, crEn, REFUND_WINDOW_DAYS } from './wallet.ts';
 
 export const ACTIVE_STATUSES = ['active', 'trialing', 'comped'];
 /** Estados em que uma subscrição Stripe continua viva (a cobrar). */
@@ -13,7 +14,7 @@ export const LIVE_STRIPE = ['active', 'trialing', 'past_due'];
 /** Marca dos objetos deste portal na Stripe (a conta pode ser partilhada com outros portais). */
 export const STRIPE_APP = 'quietinterview';
 /** Eventos a ativar no webhook da Stripe (global e de cada entidade). */
-export const STRIPE_EVENTS = 'checkout.session.completed, customer.subscription.created/updated/deleted, invoice.paid, invoice.payment_failed, customer.tax_id.created/updated';
+export const STRIPE_EVENTS = 'checkout.session.completed, checkout.session.async_payment_succeeded/failed, checkout.session.expired, customer.subscription.created/updated/deleted, invoice.paid, invoice.payment_failed, customer.tax_id.created/updated, refund.created/updated/failed, charge.refunded, charge.dispute.created/closed';
 
 /** Estado da subscrição e quota de entrevistas do período corrente. Administradores não têm limite. */
 export async function quotaFor(db: Db, user: { id: string; role: string }) {
@@ -24,7 +25,8 @@ export async function quotaFor(db: Db, user: { id: string; role: string }) {
   const now = new Date();
   const start = sub.current_period_start ? new Date(sub.current_period_start) : new Date(now.getFullYear(), now.getMonth(), 1);
   const limit = sub.interviews_override ?? sub.interviews_per_month ?? 0;
-  const used = Number((await db.one(`SELECT count(*)::int AS n FROM interviews WHERE owner_id=$1 AND invited_at >= $2`, [user.id, start])).n);
+  // As entrevistas extra (pagas com créditos) não contam para a quota do plano.
+  const used = Number((await db.one(`SELECT count(*)::int AS n FROM interviews WHERE owner_id=$1 AND invited_at >= $2 AND extra_cents IS NULL`, [user.id, start])).n);
   return { allowed: used < limit, unlimited: false, used, limit, plan: sub, sub, reason: used < limit ? '' : 'quota' };
 }
 
@@ -63,7 +65,7 @@ export async function stripe(path: string, params?: object, method = 'POST', opt
 const missing = (e: unknown) => e instanceof StripeError && e.status === 404;
 const enc = encodeURIComponent;
 /** Identificador curto da chave em uso (sem a revelar): objetos criados com outra chave (ex.: a de teste) não servem. */
-const keyFingerprint = () => createHash('sha256').update(S('STRIPE_SECRET_KEY')).digest('hex').slice(0, 16);
+export const keyFingerprint = () => createHash('sha256').update(S('STRIPE_SECRET_KEY')).digest('hex').slice(0, 16);
 
 /** Taxas de IVA guardadas da conta Stripe em contexto: { acct, rates: { 'PT:23': 'txr_…' } }. */
 export function savedTaxRates(): { acct?: string; rates: Record<string, string> } {
@@ -101,16 +103,29 @@ async function ensureProduct(plan: any) {
   return id;
 }
 
-/** Cliente Stripe com os dados de faturação (o Checkout mostra-os preenchidos). Se for de outra conta Stripe, cria outro. */
+/** Conta Stripe em contexto, como chave dos clientes: a entidade com Stripe própria, ou 'global'. */
+const scopeKey = () => stripeScope() ?? 'global';
+/** Cliente Stripe do utilizador na conta Stripe em contexto (os anteriores a esta versão estão em users.stripe_customer_id). */
+export async function customerFor(db: Db, userId: string): Promise<string | null> {
+  const r = await db.one('SELECT customer_id FROM stripe_customers WHERE user_id=$1 AND scope=$2', [userId, scopeKey()]);
+  if (r) return r.customer_id;
+  return (await db.one('SELECT stripe_customer_id FROM users WHERE id=$1', [userId]))?.stripe_customer_id ?? null;
+}
+export async function saveCustomer(db: Db, userId: string, customerId: string) {
+  await db.query(`INSERT INTO stripe_customers(user_id, scope, customer_id) VALUES ($1,$2,$3) ON CONFLICT (user_id, scope) DO UPDATE SET customer_id=$3, updated_at=now()`, [userId, scopeKey(), customerId]);
+  await db.query('UPDATE users SET stripe_customer_id=$2 WHERE id=$1', [userId, customerId]); // o último usado (página do administrador)
+}
+
+/** Cliente Stripe com os dados de faturação (o Checkout mostra-os preenchidos), por (utilizador, conta Stripe). Se for de outra conta, cria outro. */
 export async function ensureCustomer(db: Db, user: { id: string; email: string }, profile: any) {
   const fields = { name: profile.name, email: user.email, address: { line1: profile.address, postal_code: profile.postal_code, city: profile.city, country: profile.country }, metadata: { app: STRIPE_APP, user_id: user.id } };
-  const cur = (await db.one('SELECT stripe_customer_id FROM users WHERE id=$1', [user.id]))?.stripe_customer_id;
+  const cur = await customerFor(db, user.id);
   if (cur) {
-    try { await stripe(`customers/${enc(cur)}`, fields); return cur as string; }
+    try { await stripe(`customers/${enc(cur)}`, fields); await saveCustomer(db, user.id, cur); return cur; }
     catch (e) { if (!missing(e)) throw e; }
   }
   const c = await stripe('customers', fields);
-  await db.query('UPDATE users SET stripe_customer_id=$2 WHERE id=$1', [user.id, c.id]);
+  await saveCustomer(db, user.id, c.id);
   return c.id as string;
 }
 
@@ -258,7 +273,10 @@ async function cardCountry(subId: string | null, customerId: string | null): Pro
 export async function applyStripeEvent(db: Db, ev: any, entityId: string | null = null): Promise<'applied' | 'duplicate' | 'ignored'> {
   if (await db.one('SELECT 1 FROM payment_events WHERE id=$1', [ev.id])) return 'duplicate';
   const o = ev.data?.object ?? {};
-  const extra = ev.type === 'invoice.paid' && typeof o.id === 'string' ? { cardCountry: await cardCountry(invoiceSubId(o), ref(o.customer)) } : {};
+  // Consultas à Stripe antes da transação: país do cartão (prova do IVA), cobrança do carregamento, reembolsos de uma cobrança.
+  const extra: EventExtra = ev.type === 'invoice.paid' && typeof o.id === 'string' ? { cardCountry: await cardCountry(invoiceSubId(o), ref(o.customer)) }
+    : /^checkout\.session\.(completed|async_payment_succeeded)$/.test(ev.type) && o.mode === 'payment' && o.metadata?.kind === 'topup' ? await topupPaymentInfo(ref(o.payment_intent))
+    : ev.type === 'charge.refunded' && !Array.isArray(o.refunds?.data) && typeof o.id === 'string' ? { refunds: await chargeRefunds(o.id) } : {};
   return db.tx(async (t) => {
     const fresh = await t.one('INSERT INTO payment_events(id, type, payload) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING RETURNING id', [ev.id, ev.type, JSON.stringify({ id: ev.id, type: ev.type, object: o.id })]);
     if (!fresh) return 'duplicate';
@@ -266,15 +284,27 @@ export async function applyStripeEvent(db: Db, ev: any, entityId: string | null 
   });
 }
 
-async function applyEffect(t: Db, ev: any, entityId: string | null, extra: { cardCountry?: string | null }): Promise<'applied' | 'ignored'> {
+interface EventExtra { cardCountry?: string | null; charge?: string | null; refunds?: any[] }
+
+async function applyEffect(t: Db, ev: any, entityId: string | null, extra: EventExtra): Promise<'applied' | 'ignored'> {
   const o = ev.data?.object ?? {}, type = String(ev.type ?? '');
   if (type.startsWith('checkout.session.')) {
     if (!(await ownSession(t, o))) return 'ignored';
+    if (o.mode === 'payment') return o.metadata?.kind === 'topup' ? topupSessionEvent(t, type, o, extra) : 'ignored';
     return type === 'checkout.session.completed' && o.mode === 'subscription' ? sessionCompleted(t, o) : 'ignored';
   }
   if (['customer.subscription.created', 'customer.subscription.updated', 'customer.subscription.deleted'].includes(type)) return subscriptionChanged(t, type, o);
   if (type === 'invoice.paid' || type === 'invoice.payment_failed') return invoiceEvent(t, type, o, entityId, extra);
   if (type === 'customer.tax_id.updated' || type === 'customer.tax_id.created') return taxIdChanged(t, o);
+  // Reembolsos e disputas: o carregamento identifica-se pelo pagamento (payment_intent ou charge), nunca pela metadata.
+  if (['refund.created', 'refund.updated', 'refund.failed', 'charge.refund.updated'].includes(type)) return refundEvent(t, o);
+  if (type === 'charge.refunded') {
+    let any = false;
+    for (const r of (Array.isArray(o.refunds?.data) ? o.refunds.data : extra.refunds ?? []))
+      if ((await refundEvent(t, { ...r, payment_intent: r.payment_intent ?? o.payment_intent, charge: r.charge ?? o.id })) === 'applied') any = true;
+    return any ? 'applied' : 'ignored';
+  }
+  if (type === 'charge.dispute.created' || type === 'charge.dispute.closed') return disputeEvent(t, type, o);
   return 'ignored';
 }
 
@@ -305,7 +335,7 @@ async function sessionCompleted(t: Db, o: any): Promise<'applied' | 'ignored'> {
   if (addr?.country && m.customer_country && addr.country !== m.customer_country) await alert(t, 'billing.address_country_mismatch', { userId, session: o.id, expected: m.customer_country, country: addr.country });
   else if (addr?.country === 'PT' && m.vat_country === 'PT' && m.vat_rate && regionalRate('PT', addr.postal_code) !== Number(m.vat_rate))
     await alert(t, 'billing.address_region_mismatch', { userId, session: o.id, rate: Number(m.vat_rate), postal: addr.postal_code ?? null });
-  if (customer) await t.query('UPDATE users SET stripe_customer_id=$2 WHERE id=$1', [userId, customer]);
+  if (customer) await saveCustomer(t, userId, customer);
   await t.query(
     `INSERT INTO subscriptions(user_id, plan_id, status, source, stripe_subscription_id, contract_started_at, vat) VALUES ($1,$2,'active','stripe',$3,now(),$4)
      ON CONFLICT (user_id) DO UPDATE SET plan_id=COALESCE($2, subscriptions.plan_id), status='active', source='stripe', stripe_subscription_id=$3, vat=COALESCE($4, subscriptions.vat),
@@ -379,7 +409,7 @@ export const invoiceNote = (regime: string | null | undefined) => (regime === 'r
  * empresa vendedora), com o IVA decidido, os valores, a vendedora e as provas do país do cliente; invoice.payment_failed
  * passa a subscrição a «pagamento em atraso». Faturas de outros portais são ignoradas.
  */
-async function invoiceEvent(t: Db, type: string, o: any, entityId: string | null, extra: { cardCountry?: string | null }): Promise<'applied' | 'ignored'> {
+async function invoiceEvent(t: Db, type: string, o: any, entityId: string | null, extra: EventExtra): Promise<'applied' | 'ignored'> {
   const subId = invoiceSubId(o);
   if (!subId || typeof o.id !== 'string') return 'ignored';
   const meta = invoiceSubMeta(o);
@@ -424,4 +454,273 @@ async function invoiceEvent(t: Db, type: string, o: any, entityId: string | null
       JSON.stringify(customer), JSON.stringify(evidence), JSON.stringify(sellerSnap), snap?.termsVersion ?? null,
       iso(o.status_transitions?.paid_at) ?? new Date(), starts.length ? iso(Math.min(...starts)) : null, ends.length ? iso(Math.max(...ends)) : null]);
   return 'applied';
+}
+
+// ---------- créditos: carregamentos (Checkout mode=payment), reembolsos e disputas ----------
+/** Retrato do cliente e das provas do país no momento do pedido de carregamento. */
+const profileEvidence = (profile: any, ip: string) => ({
+  nif: profile.nif ?? null, vatNumber: profile.vat_number ?? null, vatStatus: profile.vat_status ?? null, vatVerifiedName: profile.vat_verified_name ?? null, vatCheckedAt: profile.vat_checked_at ?? null,
+  ip, ipAt: new Date().toISOString(),
+  profile: { kind: profile.kind, name: profile.name, country: profile.country, address: profile.address, postal_code: profile.postal_code, city: profile.city, nif: profile.nif ?? null, vat_number: profile.vat_number ?? null },
+});
+const sellerSnapshot = (s: Seller) => ({ name: s.name, tradeName: s.tradeName, nif: s.nif, address: s.address, country: s.country });
+
+/**
+ * Pede um carregamento: lote 'pending' com o IVA decidido e as provas, e a sessão de Checkout (pagamento único, só cartão,
+ * morada obrigatória, NIF; Idempotency-Key do lote). Os créditos só entram quando a Stripe confirma o pagamento.
+ */
+export async function startTopup(db: Db, user: { id: string; email: string; entity_id: string | null }, netCents: number, profile: any, d: VatOk, s: Seller, ip: string, returnPath: string | null = null) {
+  const w = await walletFor(db, user.id, user.entity_id);
+  const vat = vatOf(netCents, d.rate);
+  const tp = await db.one(`INSERT INTO credit_topups(wallet_id, user_id, entity_id, stripe_scope, stripe_account, net_cents, vat_cents, gross_cents, vat_rate, vat_regime, vat_country, vat_note,
+      customer_kind, customer_country, customer, evidence, seller, terms_version, return_path)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19) RETURNING *`,
+  [w.id, user.id, user.entity_id ?? null, stripeScope(), keyFingerprint(), netCents, vat, netCents + vat, d.rate, d.regime, d.country || null, invoiceNote(d.regime),
+    profile.kind, profile.country, JSON.stringify({ name: profile.name, email: user.email }), JSON.stringify(profileEvidence(profile, ip)), JSON.stringify(sellerSnapshot(s)), TERMS_VERSION, returnPath]);
+  try {
+    const rates = await taxRates(db, d);
+    const customer = await ensureCustomer(db, user, profile);
+    const credits = netCents / 100;
+    const meta = { app: STRIPE_APP, kind: 'topup', topup_id: tp.id, user_id: user.id, customer_kind: profile.kind, customer_country: profile.country,
+      vat_regime: d.regime, vat_rate: String(d.rate), vat_country: d.country, seller_nif: s.nif, terms_version: TERMS_VERSION };
+    const session = await stripe('checkout/sessions', {
+      mode: 'payment', customer, client_reference_id: user.id,
+      payment_method_types: ['card'],
+      billing_address_collection: 'required',
+      customer_update: { address: 'auto', name: 'auto' },
+      tax_id_collection: { enabled: true },
+      ...(profile.kind === 'consumer' && profile.country === 'PT' ? { locale: 'pt' } : {}),
+      line_items: [{ quantity: 1, tax_rates: rates, price_data: { currency: 'eur', unit_amount: netCents, tax_behavior: 'exclusive',
+        product_data: { name: `${config.brand} — ${credits} créditos pré-pagos · ${credits} prepaid credits`, description: '1 crédito = 1 € sem IVA, válido 24 meses · 1 credit = €1 excl. VAT, valid 24 months', metadata: { app: STRIPE_APP } } } }],
+      metadata: meta,
+      payment_intent_data: { metadata: meta, description: `${config.brand}: ${credits} créditos` },
+      success_url: `${config.baseUrl}/conta/creditos?sessao={CHECKOUT_SESSION_ID}`,
+      cancel_url: `${config.baseUrl}/conta/creditos?carregamento=cancelado`,
+      expires_at: Math.floor(Date.now() / 1000) + 45 * 60,
+    }, 'POST', { idempotencyKey: `${STRIPE_APP}:topup:${tp.id}` });
+    await db.query('UPDATE credit_topups SET stripe_session_id=$2, stripe_customer_id=$3, updated_at=now() WHERE id=$1', [tp.id, session.id, customer]);
+    return { topup: tp, url: session.url as string };
+  } catch (e) {
+    await db.query(`UPDATE credit_topups SET status='failed', alert=$2, updated_at=now() WHERE id=$1 AND status='pending'`, [tp.id, `Checkout não criado: ${String((e as any)?.message ?? e).slice(0, 200)}`]);
+    throw e;
+  }
+}
+
+/** Pagamento do carregamento na Stripe: país do cartão (prova) e a cobrança (identifica reembolsos e disputas). Melhor esforço. */
+async function topupPaymentInfo(pi: string | null): Promise<EventExtra> {
+  if (!pi || !stripeConfigured()) return {};
+  try {
+    const p = await stripe(`payment_intents/${enc(pi)}`, { expand: ['payment_method', 'latest_charge'] }, 'GET');
+    return { cardCountry: p?.payment_method?.card?.country ?? p?.latest_charge?.payment_method_details?.card?.country ?? null, charge: ref(p?.latest_charge) };
+  } catch { return {}; }
+}
+/** Reembolsos de uma cobrança (a API recente já não os traz no evento charge.refunded). */
+async function chargeRefunds(charge: string): Promise<any[]> {
+  if (!stripeConfigured()) return [];
+  try { return (await stripe('refunds', { charge, limit: 100 }, 'GET'))?.data ?? []; } catch { return []; }
+}
+const topupByPayment = (t: Db, pi: string | null, charge: string | null) =>
+  pi || charge ? t.one(`SELECT * FROM credit_topups WHERE ($1::text IS NOT NULL AND stripe_payment_intent=$1) OR ($2::text IS NOT NULL AND stripe_charge=$2) ORDER BY created_at LIMIT 1`, [pi, charge]) : Promise.resolve(undefined);
+const PAID = ['paid', 'partially_refunded', 'refunded', 'disputed'];
+const topupAlert = (t: Db, id: string, text: string) => t.query('UPDATE credit_topups SET alert=$2, updated_at=now() WHERE id=$1', [id, text.slice(0, 600)]);
+const dayPt = (d: any) => new Date(d).toLocaleDateString('pt-PT');
+
+async function topupSessionEvent(t: Db, type: string, o: any, extra: EventExtra): Promise<'applied' | 'ignored'> {
+  const id = o.metadata?.topup_id;
+  if (!(typeof id === 'string' && UUID.test(id))) return 'ignored';
+  const tp = await t.one('SELECT * FROM credit_topups WHERE id=$1', [id]);
+  if (!tp) return 'ignored';
+  if (tp.stripe_session_id && o.id && tp.stripe_session_id !== o.id) {
+    await alert(t, 'billing.topup_other_session', { topup: tp.id, session: o.id, expected: tp.stripe_session_id });
+    return 'ignored';
+  }
+  if (type === 'checkout.session.completed' || type === 'checkout.session.async_payment_succeeded') {
+    // Pagamento assíncrono (ex.: Multibanco): completed chega «unpaid»; os créditos entram em async_payment_succeeded.
+    if (o.payment_status !== 'paid') return 'applied';
+    await fulfilTopup(t, tp.id, o, extra);
+    return 'applied';
+  }
+  // Só a Stripe expira um carregamento (nunca o relógio): sessão expirada ou pagamento assíncrono recusado.
+  if (type === 'checkout.session.expired' || type === 'checkout.session.async_payment_failed') {
+    await t.query(`UPDATE credit_topups SET status=$2, stripe_session_id=COALESCE(stripe_session_id, $3), updated_at=now() WHERE id=$1 AND status='pending'`, [tp.id, type.endsWith('expired') ? 'expired' : 'failed', o.id ?? null]);
+    return 'applied';
+  }
+  return 'ignored';
+}
+
+/**
+ * Carregamento pago (webhook ou regresso do Checkout): confere o valor e a moeda, credita a carteira uma só vez, guarda as provas,
+ * põe-no na lista «por faturar» e envia a confirmação. Um pagamento que chegue a um lote já expirado é aceite, com alerta.
+ */
+export async function fulfilTopup(t: Db, topupId: string, o: any, extra: EventExtra = {}): Promise<'credited' | 'already' | 'mismatch'> {
+  const tp = await t.one('SELECT * FROM credit_topups WHERE id=$1', [topupId]);
+  if (!tp || !['pending', 'expired', 'failed'].includes(tp.status)) return 'already';
+  const total = Math.round(Number(o.amount_total)), currency = String(o.currency ?? '').toLowerCase();
+  if (!Number.isFinite(total) || currency !== tp.currency || Math.abs(total - tp.gross_cents) > 1) {
+    await topupAlert(t, tp.id, `Pagamento de ${Number.isFinite(total) ? eurPt(total) : '?'} (${currency || '?'}) não confere com o carregamento (${eurPt(tp.gross_cents)}): créditos NÃO aplicados. Verificar na Stripe e reembolsar ou corrigir à mão.`);
+    await alert(t, 'billing.topup_amount_mismatch', { topup: tp.id, session: o.id ?? null, amount: total, currency, expected: tp.gross_cents });
+    return 'mismatch';
+  }
+  const late = tp.status !== 'pending';
+  const pi = ref(o.payment_intent);
+  if (!(await creditTopup(t, tp.id, { paymentIntent: pi, charge: extra.charge ?? null, customerId: ref(o.customer), vatCents: total - tp.net_cents }))) return 'already';
+  const addr = o.customer_details?.address ?? null;
+  const evidence = { ...(tp.evidence ?? {}), billingCountry: addr?.country ?? null, billingPostal: addr?.postal_code ?? null, cardCountry: extra.cardCountry ?? null };
+  const customer = { name: o.customer_details?.name ?? tp.customer?.name ?? null, email: o.customer_details?.email ?? tp.customer?.email ?? null, address: addr,
+    taxIds: (o.customer_details?.tax_ids ?? []).map((x: any) => ({ type: x.type, value: x.value })) };
+  await t.query('UPDATE credit_topups SET evidence=$2, customer=$3, stripe_session_id=COALESCE(stripe_session_id, $4), updated_at=now() WHERE id=$1', [tp.id, JSON.stringify(evidence), JSON.stringify(customer), o.id ?? null]);
+  if (late) {
+    await topupAlert(t, tp.id, `Pagamento recebido depois de o carregamento ter ficado «${tp.status === 'expired' ? 'expirado' : 'falhado'}»: valor conferido e créditos aplicados.`);
+    await alert(t, 'billing.topup_paid_after_expiry', { topup: tp.id, status: tp.status });
+  }
+  // A morada recolhida no Checkout tem de ser do país (e da região) em que o IVA foi decidido; se não for, o administrador corrige.
+  if (addr?.country && addr.country !== tp.customer_country) await alert(t, 'billing.address_country_mismatch', { topup: tp.id, expected: tp.customer_country, country: addr.country });
+  else if (addr?.country === 'PT' && tp.vat_country === 'PT' && tp.vat_regime === 'domestic' && regionalRate('PT', addr.postal_code) !== Number(tp.vat_rate))
+    await alert(t, 'billing.address_region_mismatch', { topup: tp.id, rate: Number(tp.vat_rate), postal: addr.postal_code ?? null });
+  const paid = await t.one('SELECT * FROM credit_topups WHERE id=$1', [tp.id]);
+  await t.query(
+    `INSERT INTO invoice_queue(kind, user_id, entity_id, topup_id, stripe_ref, stripe_customer_id, reason, description, net_cents, vat_cents, total_cents, currency,
+       vat_rate, vat_regime, vat_country, vat_note, customer_kind, customer_country, customer, evidence, seller, terms_version, paid_at)
+     VALUES ('topup',$1,$2,$3,$4,$5,'topup',$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21) ON CONFLICT (stripe_ref) DO NOTHING`,
+    [paid.user_id, paid.stripe_scope, paid.id, pi ?? `topup:${paid.id}`, paid.stripe_customer_id,
+      `Créditos pré-pagos para serviços de produção de vídeo com IA — ${config.brand} (vale de finalidade única): ${cr(paid.net_cents)} créditos, válidos até ${dayPt(paid.expires_at)}`,
+      paid.net_cents, paid.vat_cents, paid.gross_cents, paid.currency, Number(paid.vat_rate), paid.vat_regime, paid.vat_country, paid.vat_note, paid.customer_kind, paid.customer_country,
+      JSON.stringify(customer), JSON.stringify(evidence), JSON.stringify(paid.seller ?? {}), paid.terms_version, paid.paid_at]);
+  await topupEmail(t, paid);
+  return 'credited';
+}
+
+/** Confirmação do carregamento em suporte duradouro: valor, validade, reembolso nos 14 dias e vendedora. */
+async function topupEmail(t: Db, tp: any) {
+  const u = await t.one('SELECT email FROM users WHERE id=$1', [tp.user_id]);
+  const to = tp.customer?.email || u?.email;
+  if (!to) return;
+  const s = tp.seller ?? {};
+  const consumer = tp.customer_kind === 'consumer';
+  const until = new Date(new Date(tp.paid_at).getTime() + REFUND_WINDOW_DAYS * 86400_000);
+  const price = consumer ? `${eurPt(tp.gross_cents)} com IVA (${eurPt(tp.net_cents)} + IVA ${fmtRate(Number(tp.vat_rate))}%)` : `${eurPt(tp.net_cents)} + IVA ${eurPt(tp.vat_cents)} = ${eurPt(tp.gross_cents)}`;
+  const pt = `Carregámos ${cr(tp.net_cents)} créditos na sua conta ${config.brand}, por ${price}. 1 crédito = 1 € sem IVA. Os créditos valem até ${dayPt(tp.expires_at)} e gastam-se pela ordem de validade. Pode pedir o reembolso do saldo ainda disponível deste carregamento até ${dayPt(until)} (14 dias), por email para ${s.email || contactEmail()}; é devolvido pelo mesmo meio de pagamento. A fatura-recibo é emitida pela empresa vendedora e enviada por email (o recibo da Stripe é só um comprovativo). Termos: ${config.baseUrl}/termos (versão ${tp.terms_version ?? TERMS_VERSION}). Vendedor: ${s.name || s.tradeName || '—'}${s.nif ? `, NIF ${s.nif}` : ''}.`;
+  const en = `We added ${crEn(tp.net_cents)} credits to your ${config.brand} account (${eurEn(tp.gross_cents)} paid). Credits are valid until ${new Date(tp.expires_at).toISOString().slice(0, 10)}; the unused balance of this top-up can be refunded until ${until.toISOString().slice(0, 10)}.`;
+  await queueEmail(t, { key: `topup:${tp.id}`, to, subject: `Créditos carregados · Credits added (${cr(tp.net_cents)})`, text: `${pt}\n\n${en}`,
+    html: emailShell('Créditos carregados · Credits added', `<p>${esc(pt)}</p><p lang="en">${esc(en)}</p>`) });
+}
+
+/** Regresso do Checkout (success_url): aplica já o pagamento, sem esperar pelo webhook. Idempotente (o mesmo efeito do webhook). */
+export async function confirmTopupSession(db: Db, userId: string, sessionId: string): Promise<'credited' | 'already' | 'pending' | 'unknown' | 'mismatch'> {
+  const tp = await db.one('SELECT * FROM credit_topups WHERE user_id=$1 AND stripe_session_id=$2', [userId, sessionId]);
+  if (!tp) return 'unknown';
+  if (PAID.includes(tp.status)) return 'already';
+  if (!stripeConfigured()) return 'pending';
+  const o = await stripe(`checkout/sessions/${enc(sessionId)}`, undefined, 'GET');
+  if (o?.metadata?.topup_id !== tp.id || o.payment_status !== 'paid') return 'pending';
+  const extra = await topupPaymentInfo(ref(o.payment_intent));
+  return db.tx(t => fulfilTopup(t, tp.id, o, extra));
+}
+
+/** Nota de crédito na lista «por faturar» para um reembolso concluído (valores negativos, com referência ao carregamento). */
+async function refundInvoice(t: Db, refundId: string) {
+  const r = await t.one(`SELECT cr.*, tp.user_id, tp.stripe_scope, tp.stripe_customer_id, tp.vat_rate, tp.vat_regime, tp.vat_country, tp.vat_note, tp.customer_kind, tp.customer_country,
+      tp.customer, tp.evidence, tp.seller, tp.terms_version, tp.paid_at AS topup_paid_at, tp.moloni_doc
+    FROM credit_refunds cr JOIN credit_topups tp ON tp.id=cr.topup_id WHERE cr.id=$1`, [refundId]);
+  if (!r?.stripe_refund_id || r.status !== 'succeeded') return;
+  await t.query(
+    `INSERT INTO invoice_queue(kind, user_id, entity_id, topup_id, stripe_ref, stripe_customer_id, reason, description, net_cents, vat_cents, total_cents, currency,
+       vat_rate, vat_regime, vat_country, vat_note, customer_kind, customer_country, customer, evidence, seller, terms_version, paid_at)
+     VALUES ('topup_refund',$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'eur',$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,now()) ON CONFLICT (stripe_ref) DO NOTHING`,
+    [r.user_id, r.stripe_scope, r.topup_id, r.stripe_refund_id, r.stripe_customer_id, r.reason,
+      `Nota de crédito: reembolso de ${cr(r.net_cents)} créditos do carregamento de ${dayPt(r.topup_paid_at)} (fatura-recibo ${r.moloni_doc ? `n.º ${r.moloni_doc}` : 'por emitir'})${r.source === 'stripe' ? ' — reembolso feito no painel da Stripe' : ''}`,
+      -r.net_cents, -(r.gross_cents - r.net_cents), -r.gross_cents, Number(r.vat_rate), r.vat_regime, r.vat_country, r.vat_note, r.customer_kind, r.customer_country,
+      JSON.stringify(r.customer ?? {}), JSON.stringify(r.evidence ?? {}), JSON.stringify(r.seller ?? {}), r.terms_version]);
+}
+
+/**
+ * Reembolso do saldo disponível de um carregamento (ação do administrador): debita a carteira numa transação e só depois
+ * pede o reembolso à Stripe (Idempotency-Key do pedido), com as chaves da conta que recebeu o pagamento.
+ */
+export async function refundTopup(db: Db, topupId: string, o: { reason: 'withdrawal' | 'closure'; actor: string }) {
+  const { refund } = await db.tx(t => startRefund(t, topupId, o));
+  return sendRefund(db, refund.id);
+}
+
+/** Envia (ou repete) o pedido de reembolso à Stripe. Num erro de rede fica pendente para repetir com a mesma chave. */
+export async function sendRefund(db: Db, refundId: string): Promise<{ status: 'succeeded' | 'pending' | 'failed' | 'unknown'; message: string }> {
+  const r = await db.one(`SELECT cr.*, tp.stripe_payment_intent, tp.entity_id, tp.stripe_account FROM credit_refunds cr JOIN credit_topups tp ON tp.id=cr.topup_id WHERE cr.id=$1`, [refundId]);
+  if (!r || r.source !== 'app' || r.status !== 'pending') return { status: 'unknown', message: 'Pedido de reembolso inexistente ou já tratado.' };
+  return inEntity(r.entity_id, async () => {
+    if (!stripeConfigured()) return { status: 'unknown' as const, message: 'Stripe não configurado: o reembolso fica pendente.' };
+    if (r.stripe_account && keyFingerprint() !== r.stripe_account) {
+      await db.query('UPDATE credit_refunds SET error=$2, updated_at=now() WHERE id=$1', [r.id, 'A chave Stripe em uso não é a da conta que recebeu este pagamento.']);
+      return { status: 'unknown' as const, message: 'A chave Stripe em uso não é a da conta que recebeu este pagamento: o reembolso fica pendente (repita com as chaves certas, ou faça-o no painel da Stripe).' };
+    }
+    try {
+      let re: any = null;
+      // Repetição de um pedido sem resposta: se a Stripe já o tiver, adota-o em vez de pedir outro.
+      if (r.stripe_refund_id) re = await stripe(`refunds/${enc(r.stripe_refund_id)}`, undefined, 'GET');
+      else if (r.error) re = ((await stripe('refunds', { payment_intent: r.stripe_payment_intent, limit: 100 }, 'GET'))?.data ?? []).find((x: any) => x?.metadata?.refund_id === r.id) ?? null;
+      if (!re) re = await stripe('refunds', { payment_intent: r.stripe_payment_intent, amount: r.gross_cents, reason: 'requested_by_customer', metadata: { app: STRIPE_APP, kind: 'topup_refund', topup_id: r.topup_id, refund_id: r.id } }, 'POST', { idempotencyKey: `${STRIPE_APP}:refund:${r.id}` });
+      if (re.status === 'failed' || re.status === 'canceled') {
+        await db.tx(t => refundFailed(t, r.id, String(re.failure_reason ?? re.status)));
+        return { status: 'failed' as const, message: `A Stripe recusou o reembolso (${re.failure_reason ?? re.status}); os créditos voltaram à carteira.` };
+      }
+      const ok = re.status === 'succeeded';
+      await db.tx(async t => { await refundAccepted(t, r.id, re.id, ok); if (ok) await refundInvoice(t, r.id); });
+      return { status: ok ? 'succeeded' as const : 'pending' as const, message: ok ? `Reembolso de ${eurPt(r.gross_cents)} feito (${cr(r.net_cents)} créditos).` : `Reembolso de ${eurPt(r.gross_cents)} pedido; a Stripe ainda o está a processar.` };
+    } catch (e: any) {
+      if (e instanceof StripeError && e.status >= 400 && e.status < 500 && ![409, 429].includes(e.status)) {
+        await db.tx(t => refundFailed(t, r.id, e.message));
+        return { status: 'failed' as const, message: `A Stripe recusou o reembolso: ${e.message}. Os créditos voltaram à carteira.` };
+      }
+      await db.query('UPDATE credit_refunds SET error=$2, updated_at=now() WHERE id=$1', [r.id, String(e?.message ?? e).slice(0, 500)]);
+      return { status: 'unknown' as const, message: `Sem resposta da Stripe (${String(e?.message ?? e).slice(0, 120)}): o reembolso fica pendente; repita o pedido.` };
+    }
+  });
+}
+
+/** Reembolso (refund.*) de um pagamento de carregamento: pedido pela aplicação ou feito no painel da Stripe. */
+async function refundEvent(t: Db, o: any): Promise<'applied' | 'ignored'> {
+  if (typeof o?.id !== 'string') return 'ignored';
+  const tp = await topupByPayment(t, ref(o.payment_intent), ref(o.charge));
+  if (!tp) return 'ignored';
+  const status = String(o.status ?? '');
+  const gone = status === 'failed' || status === 'canceled';
+  // O nosso pedido: pela metadata que lhe pusemos (o webhook pode chegar antes da resposta da API) ou pelo id já guardado.
+  const mine = (typeof o.metadata?.refund_id === 'string' && UUID.test(o.metadata.refund_id) ? await t.one(`SELECT * FROM credit_refunds WHERE id=$1 AND topup_id=$2 AND source='app'`, [o.metadata.refund_id, tp.id]) : null)
+    ?? await t.one('SELECT * FROM credit_refunds WHERE stripe_refund_id=$1', [o.id]);
+  if (mine?.source === 'app') {
+    if (gone) await refundFailed(t, mine.id, String(o.failure_reason ?? status));
+    else if ((await refundAccepted(t, mine.id, o.id, status === 'succeeded')) && status === 'succeeded') await refundInvoice(t, mine.id);
+    return 'applied';
+  }
+  if (mine?.source === 'stripe') {
+    if (gone) await externalRefundFailed(t, o.id);
+    else if (status === 'succeeded' && (await externalRefundSucceeded(t, o.id))) await refundInvoice(t, mine.id);
+    return 'applied';
+  }
+  if (gone) return 'ignored';
+  if (!PAID.includes(tp.status)) {
+    await topupAlert(t, tp.id, `Reembolso ${o.id} de ${eurPt(Number(o.amount ?? 0))} sobre um carregamento que não foi creditado (${tp.status}): verificar.`);
+    return 'applied';
+  }
+  const done = await externalRefund(t, tp, { stripeRefundId: o.id, grossCents: Math.round(Number(o.amount ?? 0)), succeeded: status === 'succeeded' });
+  if (done) {
+    await alert(t, 'billing.topup_refunded_outside_app', { topup: tp.id, refund: o.id, net: done.refund.net_cents, debt: done.entry.debt_delta });
+    if (status === 'succeeded') await refundInvoice(t, done.refund.id);
+  }
+  return 'applied';
+}
+
+/** Disputa (chargeback) do pagamento de um carregamento: aberta congela a carteira e debita; encerrada repõe se for ganha. */
+async function disputeEvent(t: Db, type: string, o: any): Promise<'applied' | 'ignored'> {
+  if (typeof o?.id !== 'string') return 'ignored';
+  const tp = await topupByPayment(t, ref(o.payment_intent), ref(o.charge));
+  if (!tp) return 'ignored';
+  if (type === 'charge.dispute.created') {
+    if (!PAID.includes(tp.status)) { await topupAlert(t, tp.id, `Disputa ${o.id} sobre um carregamento que não foi creditado (${tp.status}): verificar.`); return 'applied'; }
+    const e = await disputeOpened(t, tp, { disputeId: o.id, grossCents: Math.round(Number(o.amount ?? tp.gross_cents)) });
+    if (e) await alert(t, 'billing.topup_disputed', { topup: tp.id, dispute: o.id, taken: -e.available_delta, debt: e.debt_delta });
+    return 'applied';
+  }
+  const r = await disputeClosed(t, { disputeId: o.id, won: o.status === 'won' });
+  if (r) await alert(t, 'billing.topup_dispute_closed', { topup: tp.id, dispute: o.id, status: o.status ?? null });
+  return r ? 'applied' : 'ignored';
 }
