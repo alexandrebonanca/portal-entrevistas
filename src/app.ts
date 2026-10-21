@@ -30,7 +30,7 @@ declare module 'fastify' {
 
 export async function buildApp(db: Db): Promise<FastifyInstance> {
   assertProductionConfig();
-  const app = Fastify({ logger: config.production ? { level: 'info', redact: ['req.headers.cookie', 'req.headers.authorization'] } : false, bodyLimit: config.limits.maxUploadMb * 1024 * 1024, trustProxy: true });
+  const app = Fastify({ logger: config.production ? { level: 'info', redact: ['req.headers.cookie', 'req.headers.authorization'] } : false, bodyLimit: config.limits.maxUploadMb * 1024 * 1024, trustProxy: config.trustProxy as any });
   app.decorate('db', db);
   await loadSettings(db);
   await seedAssistant(db); // entradas novas da semente do assistente; as existentes (e as alterações do administrador) ficam
@@ -44,6 +44,15 @@ export async function buildApp(db: Db): Promise<FastifyInstance> {
   app.addHook('onRequest', async (req) => {
     const ct = req.headers['content-type'];
     if (ct && /^(audio|video|image)\//.test(ct)) req.headers['content-type'] = ct.split(';')[0].trim();
+  });
+
+  // Em produção, sem TRUST_PROXY definido: regista uma vez quantos endereços traz o X-Forwarded-For (sem os mostrar),
+  // para acertar o número de saltos dos proxies.
+  let xffLogged = false;
+  app.addHook('onRequest', async (req) => {
+    if (xffLogged || !config.production || config.trustProxy !== true || !req.headers['x-forwarded-for']) return;
+    xffLogged = true;
+    req.log.info({ xffEntries: String(req.headers['x-forwarded-for']).split(',').length }, 'X-Forwarded-For: número de endereços (defina TRUST_PROXY)');
   });
 
   app.addHook('onSend', async (_req, reply, payload) => {
