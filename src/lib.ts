@@ -49,6 +49,11 @@ export function rateLimitAll(limits: [key: string, max: number, windowMs: number
   for (const l of lists) l.hits.push(now);
   return true;
 }
+/** Se ainda há lugar num limite, sem o gastar (para recusar antes de outros limites que gastam). */
+export function rateRoom(key: string, max: number, windowMs: number) {
+  const now = Date.now();
+  return (buckets.get(key) ?? []).filter(t => now - t < windowMs).length < max;
+}
 
 export const fmtDuration = (ms: number | null | undefined) => {
   if (!ms) return '—';

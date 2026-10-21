@@ -126,7 +126,7 @@ test('painel do assistente: só no rascunho; sugestões por IA só para o admini
   const a = (await get(`/entrevistas/${aid}/editar`, admin)).body;
   assert.match(a, /<aside id="compor" class="compose" hidden aria-labelledby="compor-t" data-max-questions="\d+" data-answer-limit="">/, 'administrador: sem limite de tempo de resposta');
   assert.match(a, /data-act="sugerir">Sugerir perguntas<\/button><button type="button" class="ghost" data-act="rever">Rever as perguntas<\/button><button type="button" class="ghost" data-act="objetivo">Melhorar título e objetivo/);
-  assert.match(a, /tal como estão guardados \(os emails, os endereços de sites e os números de telefone são tapados\)\. Os campos de nome e de email e a mensagem pessoal não são enviados\./);
+  assert.match(a, /tal como estão guardados, e do pedido que escrever acima\. Os emails, os endereços de sites e os números de telefone nos formatos habituais são tapados antes do envio; os campos de nome e de email e a mensagem pessoal não são enviados\./);
   assert.match(a, /<button type="button" id="comporBtn" class="accent compose-fab" aria-controls="compor" aria-expanded="false" hidden>/);
   assert.match(a, new RegExp(`<div class="card" id="q-${aq.id}" data-audio="1"`), 'as perguntas com áudio estão marcadas (as dicas não as dão como vazias)');
 
@@ -214,12 +214,16 @@ test('pedido enorme: recusado logo pelo tamanho, sem expressões regulares sobre
 });
 
 test('tapar: emails, sites e telefones em vários formatos; datas, valores e números curtos ficam', () => {
-  const phones = ['912 345 678', '912-345-678', '(+351) 912 345 678', '00351912345678', '21 123 4567', '+351 21 123 45 67', '912.345.678', '+44 20 7946 0958'];
+  const phones = ['912 345 678', '912-345-678', '(+351) 912 345 678', '00351912345678', '21 123 4567', '+351 21 123 45 67', '912.345.678', '+44 20 7946 0958', '912–345–678', '912/345/678', '21/123 45 67'];
   for (const p of phones) assert.equal(C.scrub(`Ligue ${p} hoje`, 1000), 'Ligue [número] hoje', p);
-  for (const l of ['empresa.pt/contactos', 'exemplo.com', 'https://x.y/z', 'www.a.b', 'Sub.Dominio.org']) assert.equal(C.scrub(`Veja ${l}, depois`, 1000), 'Veja [link], depois', l);
-  assert.equal(C.scrub('Escreva a rui.costa@empresa.pt', 1000), 'Escreva a [email]');
-  const keep = 'Entre 1990-2020 e 2010 e 2020, 3.5 vezes, Node.js, e.g. 25%, 12 000 euros, 2.500.000 de pessoas, ano 2024.';
+  const sites = ['empresa.pt/contactos', 'exemplo.com', 'https://x.y/z', 'www.a.b', 'Sub.Dominio.org', 'linktr.ee/joao', 'bit.ly/abc', 'anchor.fm/maria', 'anchor.fm', 'empresa.ao/contactos',
+    'empresa.ao', 'escola.mz', 'loja.cv', 'univ.edu', 'site.xyz', 'firma.us', 'empresa.co.ao', 't.co/abc', 'café.pt', 'meu_site.com'];
+  for (const l of sites) assert.equal(C.scrub(`Veja ${l}, depois`, 1000), 'Veja [link], depois', l);
+  assert.equal(C.scrub('Escreva a rui.costa@empresa.pt ou joão@empresa.pt', 1000), 'Escreva a [email] ou [email]');
+  const keep = 'Entre 1990-2020 e 2010 e 2020, 3.5 vezes, Node.js, Vue.js, ASP.NET, p.ex. isto, e.g. 25%, i.e. isto, V.Ex.ª, trabalho.De, 12 000 euros, 2.500.000 de pessoas, ano 2024, 12/10/2026, n.º 5, aprox.um.';
   assert.equal(C.scrub(keep, 1000), keep);
+  // o corte antes das expressões regulares não separa um contacto (os campos de origem têm no máximo 4000 caracteres)
+  assert.equal(C.scrub('x'.repeat(1490) + ' rui.costa@empresa.pt e 912 345 678', 1500), 'x'.repeat(1490) + ' [email] e');
 });
 
 test('rascunho com mais perguntas do que o máximo: o pedido leva só as que cabem', () => {
@@ -240,6 +244,16 @@ test('recusas não gastam quota; o portal pode desligar o assistente com 0', asy
   assert.match(((await C.composeAssist(db, 'q2', 'sugerir', d, '', ok)) as any).error, /muito solicitado/);
   assert.equal(Number((await db.one(`SELECT COALESCE(sum(n),0)::int n FROM compose_usage WHERE who='q2'`)).n), 0);
   await db.query(`UPDATE compose_usage SET n=$1 WHERE who='global' AND day=current_date`, [g?.n ?? 0]);
+  // recusas por limite da pessoa não gastam o teto do portal por hora: depois de muitas, outra conta continua a poder pedir
+  for (let i = 0; i < config.openai.composeAiPerHour + 10; i++) assert.equal(((await C.composeAssist(db, 'q1', 'sugerir', d, '')) as any).status, 429);
+  assert.equal((await C.composeAssist(db, 'q4', 'sugerir', d, '')).ok, true, 'o portal não ficou bloqueado por causa de uma conta');
+  // mensal: pedidos em simultâneo não passam o teto
+  if (!(await db.one(`SELECT date_trunc('month', current_date)::date = current_date AS first`)).first) {
+    await db.query(`INSERT INTO compose_usage(who, day, n) VALUES ('q5', date_trunc('month', current_date)::date, $1)`, [C.COMPOSE_RATE.perMonth - 1]);
+    const rs = await Promise.all(Array.from({ length: 6 }, () => C.composeAssist(db, 'q5', 'sugerir', d, '', { ...ok, budget: () => true })));
+    assert.ok(rs.filter(r => r.ok).length <= 1);
+    assert.ok(Number((await db.one(`SELECT sum(n)::int n FROM compose_usage WHERE who='q5'`)).n) <= C.COMPOSE_RATE.perMonth);
+  }
   // com o teto global a 0, o assistente fica indisponível (sem chamar o modelo)
   const was = config.openai.composeAiPerHour;
   config.openai.composeAiPerHour = 0;
@@ -285,6 +299,10 @@ test('resposta do modelo validada: limites, duplicados, perguntas só em áudio 
   const o = C.parseCompose('objetivo', { title: 't'.repeat(300), objective: 'o' }, d);
   assert.equal((o as any).title.length, 120);
   assert.deepEqual(C.parseCompose('sugerir', null, d), { acao: 'sugerir', questions: [], note: '' });
+  // propostas com os marcadores do scrub não servem (Substituir gravava «[link]» por cima do contacto escrito)
+  assert.deepEqual((C.parseCompose('sugerir', { questions: [{ text: 'Pode partilhar o [link] do seu trabalho?', why: 'x' }, { text: 'Onde trabalha hoje?', why: 'y' }] }, d) as any).questions.map((q: any) => q.text), ['Onde trabalha hoje?']);
+  assert.deepEqual((C.parseCompose('rever', { items: [{ n: 1, issue: 'x', rewrite: 'Ligue para [número]?' }] }, d) as any).items, []);
+  assert.deepEqual(C.parseCompose('objetivo', { title: 'Visite [link]', objective: 'Bom objetivo.' }, d), { acao: 'objetivo', title: '', objective: 'Bom objetivo.', note: '' });
 });
 
 test('falhas e limites: modelo indisponível, por hora, por dia, por mês e do portal', async () => {
@@ -319,7 +337,7 @@ test('falhas e limites: modelo indisponível, por hora, por dia, por mês e do p
   assert.deepEqual(req.response_format, { type: 'json_object' });
   assert.equal(req.model, config.openai.assistantModel);
   // tetos configuráveis: um valor inválido ou vazio nunca tira o teto
-  assert.deepEqual(['abc', '', ' ', '0', '-5', undefined, '75'].map(v => positive(v, 200)), [200, 200, 200, 0, 200, 200, 75], '0 desliga; inválido fica o valor por omissão');
+  assert.deepEqual(['abc', '', ' ', '0', '-5', undefined, '75', '1500.5', '2000000'].map(v => positive(v, 200)), [200, 200, 200, 0, 200, 200, 75, 200, 200], '0 desliga; inválido, decimal ou enorme fica o valor por omissão');
 });
 
 test('ajuda: a entrada do assistente de composição diz os limites em vigor e aparece na pesquisa', async () => {
@@ -335,10 +353,15 @@ test('ajuda: a entrada do assistente de composição diz os limites em vigor e a
   assert.equal(searchFaq(entries, 'O que acontece às perguntas que faço ao assistente?')[0]?.entry.id, 'assistente-privacidade', 'a entrada da privacidade do assistente da ajuda continua à frente');
   assert.match(e.en[2], /suggest questions, suggestions,/);
   assert.match(FAQ_SEED.find(x => x.key === 'perguntas')!.pt[1], /«Adicionar e gravar áudio»/);
-  assert.match(e.pt[1], /os emails, os endereços de sites e os números de telefone são tapados/);
+  assert.match(e.pt[1], /e o pedido opcional escrito no painel \(os emails, os endereços de sites e os números de telefone nos formatos habituais são tapados\)/);
+  assert.match(e.en[1], /together with the optional request typed in the panel \(emails, website addresses and phone numbers in the usual formats are masked\)/);
+  for (const [lang, q, want] of [['pt', 'O assistente guarda as minhas perguntas?', 'assistente-privacidade'], ['en', 'Does the assistant store my questions?', 'assistente-privacidade']] as const) {
+    const list = FAQ_SEED.filter(x => x.audience !== 'guest').map((x, i) => ({ id: x.key, lang, audience: x.audience, question: x[lang][0], answer: x[lang][1], keywords: x[lang][2], sort: i }));
+    assert.equal(searchFaq(list, q)[0]?.entry.id, want, q);
+  }
   for (const [lang, q, want] of [['pt', 'Como escrevo o objetivo?', 'objetivo'], ['pt', 'Como gravo uma pergunta em áudio?', 'perguntas']] as const) {
     const list = FAQ_SEED.filter(x => x.audience !== 'guest').map((x, i) => ({ id: x.key, lang, audience: x.audience, question: x[lang][0], answer: x[lang][1], keywords: x[lang][2], sort: i }));
     assert.equal(searchFaq(list, q)[0]?.entry.id, want, q);
   }
-  assert.match((await get('/privacy')).body, /<h2>Composition assistant<\/h2><p>[^<]*sent to OpenAI[^<]*the name and email fields and the personal message are not sent/);
+  assert.match((await get('/privacy')).body, /<h2>Composition assistant<\/h2><p>[^<]*and the optional request typed in the panel, are sent to OpenAI[^<]*in the usual formats are masked first\); the name and email fields and the personal message are not sent/);
 });

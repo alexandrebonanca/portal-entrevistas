@@ -111,7 +111,8 @@
       else if (closedQ.test(t)) perQ.push(`A pergunta ${k} pode ter resposta «sim» ou «não»: experimente começar por «Como», «Porquê» ou «O que».`);
     });
     list.push(...perQ.slice(0, 4));
-    if (perQ.length > 4) list.push(`Há mais ${perQ.length - 4} perguntas a rever.`);
+    if (perQ.length === 5) list.push('Há mais 1 pergunta a rever.');
+    else if (perQ.length > 5) list.push(`Há mais ${perQ.length - 4} perguntas a rever.`);
     tips.replaceChildren(...list.map((t) => el('li', '', t)));
   };
   let tipTimer = 0;
@@ -125,6 +126,7 @@
   // ficam desativados (um duplo clique não acrescenta a pergunta duas vezes).
   const postForm = (action, fields) => {
     if (dirty.size && !confirm('Há alterações por guardar nesta página que se perdem ao continuar. Continuar?')) return;
+    appliedForm = null; // já se confirmou: o browser não volta a perguntar ao sair
     panel.querySelectorAll('button').forEach((x) => (x.disabled = true));
     if (!panel.hidden) store.set('sessionStorage', REOPEN, 1);
     const f = el('form'); f.method = 'post'; f.action = action; f.hidden = true;
@@ -133,14 +135,17 @@
   };
 
   // O estado de cada sugestão vem da própria página (a pergunta existe? o texto já é o proposto?), não de marcas
-  // guardadas: se o servidor recusar (limite, sessão), a sugestão continua por usar.
-  const save = (st) => store.set('sessionStorage', KEY, st);
+  // guardadas: se o servidor recusar (limite, sessão), a sugestão continua por usar. O último resultado fica também
+  // em memória, para quando o browser não guarda nada.
+  let last = store.get('sessionStorage', KEY);
+  const save = (st) => { last = st; store.set('sessionStorage', KEY, st); };
+  out.setAttribute('tabindex', '-1');
   const render = (st) => {
     if (!st || !st.result) { out.replaceChildren(); return; }
     const r = st.result, items = [];
     const head = el('div', 'row'); head.style.justifyContent = 'space-between'; head.style.marginTop = '12px';
     head.append(el('strong', '', r.acao === 'sugerir' ? 'Perguntas sugeridas' : r.acao === 'rever' ? 'Revisão das perguntas' : 'Título e objetivo'),
-      button('Limpar', 'ghost', () => { save(null); render(null); }));
+      button('Limpar', 'ghost', () => { save(null); render(null); title.focus(); }));
     items.push(head);
     if (r.note) items.push(el('p', 'hint', r.note));
     const now = cards();
@@ -156,7 +161,11 @@
         else {
           const add = button('Adicionar', 'accent', () => postForm('/entrevistas/' + ivId + '/perguntas', { text: q.text, origem: 'assistente' }));
           if (room <= 0) add.disabled = true;
-          acts.append(add, button('Editar antes', 'ghost', () => { if (nq) { toPage(); nq.value = q.text; nq.focus(); nq.scrollIntoView({ block: 'center' }); } }));
+          acts.append(add, button('Editar antes', 'ghost', () => {
+            if (!nq) return;
+            if (nq.value.trim() && norm(nq.value) !== norm(q.text) && !confirm('Substituir o que escreveu em «Nova pergunta» por esta sugestão?')) return;
+            toPage(); nq.value = q.text; nq.focus(); nq.scrollIntoView({ block: 'center' });
+          }));
         }
         box.append(acts); items.push(box);
       });
@@ -172,7 +181,7 @@
         if (!card) acts.append(el('span', 'hint', 'Esta pergunta já não existe.'));
         else if (done) {
           acts.append(el('span', 'hint', 'Substituída.'));
-          if (audio) box.append(el('p', 'hint', 'O áudio gravado ainda tem o texto antigo: grave a pergunta de novo.'));
+          if (audio) box.append(el('p', 'hint', 'Se o áudio gravado ainda tiver o texto antigo, grave a pergunta de novo.'));
         } else {
           if (norm(cur) !== norm(x.original)) box.append(el('p', 'hint', 'Esta pergunta mudou desde a revisão. Agora: ' + (cur.trim() || '(sem texto)')));
           if (audio) box.append(el('p', 'hint', 'Tem áudio gravado: o áudio não muda com o texto novo; grave-a de novo depois de substituir.'));
@@ -184,25 +193,38 @@
       });
     } else {
       const t = document.getElementById('title'), obj = document.getElementById('obj');
-      const applied = !!t && !!obj && t.value === r.title && obj.value === r.objective;
-      const box = el('div', 'compose-item' + (applied ? ' used' : ''));
-      box.append(el('p', '', r.title), el('p', 'hint', r.objective));
-      if (applied) box.append(el('p', 'hint', t.form && dirty.has(t.form) ? 'Aplicado ao formulário: falta clicar em «Guardar dados».' : 'É o título e o objetivo atuais.'));
-      else box.append(button('Aplicar ao formulário', 'accent', () => {
-        if (t && t.form && dirty.has(t.form) && !confirm('Substituir o título e o objetivo que escreveu e ainda não guardou?')) return;
-        if (t && r.title) t.value = r.title;
-        if (obj && r.objective) obj.value = r.objective;
-        if (t) { dirty.add(t.form); toPage(); t.scrollIntoView({ block: 'center' }); t.focus({ preventScroll: true }); }
-        render(st); updateTips();
-      }));
+      const box = el('div', 'compose-item');
+      if (!r.title && !r.objective) box.append(el('p', 'hint', 'Sem proposta de título nem de objetivo.'));
+      else {
+        // aplicado = os campos já têm o que foi proposto (uma parte vazia da proposta não conta)
+        const applied = !!t && !!obj && (!r.title || t.value === r.title) && (!r.objective || obj.value === r.objective);
+        if (applied) box.classList.add('used');
+        if (r.title) box.append(el('p', '', r.title));
+        if (r.objective) box.append(el('p', 'hint', r.objective));
+        if (applied) box.append(el('p', 'hint', t.form && dirty.has(t.form) ? 'Aplicado ao formulário: falta clicar em «Guardar dados».' : 'São o título e o objetivo atuais.'));
+        else box.append(button('Aplicar ao formulário', 'accent', () => {
+          if (t && t.form && dirty.has(t.form) && !confirm('Substituir o título e o objetivo que escreveu e ainda não guardou?')) return;
+          if (t && r.title) t.value = r.title;
+          if (obj && r.objective) obj.value = r.objective;
+          if (t) { dirty.add(t.form); appliedForm = t.form; toPage(); t.scrollIntoView({ block: 'center' }); t.focus({ preventScroll: true }); }
+          render(st); updateTips();
+        }));
+      }
       items.push(box);
     }
     out.replaceChildren(...items);
   };
 
+  // Título e objetivo aplicados pelo assistente e ainda por guardar: o browser avisa antes de sair ou recarregar.
+  let appliedForm = null;
+  addEventListener('beforeunload', (ev) => { if (appliedForm && dirty.has(appliedForm)) { ev.preventDefault(); ev.returnValue = ''; } });
+
   const acts = [...panel.querySelectorAll('[data-act]')], req = document.getElementById('cp');
+  // O pedido escrito em «O que pretende?» mantém-se entre as recargas da página.
+  const REQ = 'compor:pedido:' + ivId;
+  if (req) { const v = store.get('sessionStorage', REQ); if (typeof v === 'string') req.value = v; req.addEventListener('input', () => store.set('sessionStorage', REQ, req.value || null)); }
   // Um pedido falhado mostra o erro por cima das sugestões anteriores, que continuam válidas.
-  const fail = (msg) => { render(store.get('sessionStorage', KEY)); out.prepend(el('div', 'flash bad', msg)); };
+  const fail = (msg) => { render(last); out.prepend(el('div', 'flash bad', msg)); out.focus(); };
   acts.forEach((b) => (b.onclick = async () => {
     // o assistente lê o rascunho guardado, não o que está por guardar no ecrã
     if (dirty.size && !confirm('O assistente usa o que está guardado e há alterações por guardar nesta página. Pedir na mesma?')) return;
@@ -214,10 +236,14 @@
       const j = await r.json().catch(() => null);
       if (!j || !j.ok) { fail((j && j.error) || (r.status === 413 ? 'O pedido é demasiado longo.' : 'O assistente não respondeu. Tente de novo.')); return; }
       const st = { result: j.result };
-      save(st); render(st);
+      save(st); render(st); out.focus(); // o foco fica no painel (o Escape continua a fechá-lo)
     } catch (e) {
       fail('Sem ligação ao servidor. Tente de novo.');
     } finally { acts.forEach((x) => (x.disabled = false)); }
   }));
-  render(store.get('sessionStorage', KEY));
+  render(last);
+  // Reaberto no telemóvel depois de uma ação dele: mostra logo as sugestões, não o topo do painel.
+  if (reopen && !wide() && last) panel.scrollTop = out.offsetTop - 12;
+  // Voltar à página pela cache do browser (botão Retroceder): os botões desativados ao enviar voltam a funcionar.
+  addEventListener('pageshow', (ev) => { if (ev.persisted) { panel.querySelectorAll('button').forEach((x) => (x.disabled = false)); render(last); } });
 })();

@@ -36,7 +36,7 @@ const composePanel = (iv: any, quota: any, ai: boolean) => `<aside id="compor" c
 ${ai ? `<label for="cp">O que pretende? (opcional)</label><textarea id="cp" rows="2" maxlength="${COMPOSE_MAX_REQUEST}" placeholder="Ex.: foco no percurso profissional e em conselhos práticos"></textarea>
 <div class="row" style="margin-top:8px"><button type="button" class="accent" data-act="sugerir">Sugerir perguntas</button><button type="button" class="ghost" data-act="rever">Rever as perguntas</button><button type="button" class="ghost" data-act="objetivo">Melhorar título e objetivo</button></div>
 <div data-c="out" aria-live="polite"></div>
-<p class="hint">Sugestões geradas por IA (OpenAI) a partir do título, do objetivo, das funções e das perguntas deste rascunho, tal como estão guardados (os emails, os endereços de sites e os números de telefone são tapados). Os campos de nome e de email e a mensagem pessoal não são enviados. Nada muda na entrevista sem clicar em «Adicionar», «Substituir» ou «Guardar dados».</p>`
+<p class="hint">Sugestões geradas por IA (OpenAI) a partir do título, do objetivo, das funções e das perguntas deste rascunho, tal como estão guardados, e do pedido que escrever acima. Os emails, os endereços de sites e os números de telefone nos formatos habituais são tapados antes do envio; os campos de nome e de email e a mensagem pessoal não são enviados. Nada muda na entrevista sem clicar em «Adicionar», «Substituir» ou «Guardar dados».</p>`
   : '<p class="hint">As sugestões por IA (novas perguntas, revisão das perguntas, título e objetivo) estão disponíveis para contas com subscrição ativa. <a href="/account">Ver os planos</a></p>'}
 </aside>
 <button type="button" id="comporBtn" class="accent compose-fab" aria-controls="compor" aria-expanded="false" hidden>✦ Assistente</button>`;
@@ -220,17 +220,20 @@ ${locked ? '' : composePanel(iv, quota!, await assistantAiFor(db, req.user))}`;
   };
 
   // Máximo de perguntas no rascunho: o do plano de quem edita (o convite fixa-o depois na entrevista). A contagem e a
-  // inserção correm com a entrevista bloqueada, para dois pedidos em simultâneo não passarem o máximo.
+  // inserção correm com a entrevista bloqueada (e ainda em rascunho), para dois pedidos em simultâneo não passarem o
+  // máximo nem acrescentarem perguntas a uma entrevista que entretanto foi enviada.
   const withSlot = async <T>(req: any, iv: any, fn: (tx: any, n: number) => Promise<T>) => {
     const max = draftQuestionMax(await quotaFor(db, req.user));
     const r = await db.tx(async (tx: any) => {
-      await tx.one('SELECT id FROM interviews WHERE id=$1 FOR UPDATE', [iv.id]);
+      const cur = await tx.one('SELECT collection_status FROM interviews WHERE id=$1 FOR UPDATE', [iv.id]);
+      if (cur?.collection_status !== 'draft') return { sent: true, full: false, value: null };
       const n = Number((await tx.one('SELECT count(*)::int AS n FROM questions WHERE interview_id=$1', [iv.id]))?.n);
-      return n >= max ? { full: true, value: null } : { full: false, value: await fn(tx, n) };
+      return n >= max ? { sent: false, full: true, value: null } : { sent: false, full: false, value: await fn(tx, n) };
     });
     return { max, ...r };
   };
   const fullMsg = (max: number) => `Limite de ${max} perguntas por entrevista atingido.`;
+  const SENT = 'Perguntas bloqueadas depois do convite.';
 
   // Depois de cada ação, a página volta ao sítio onde se estava (a pergunta, a caixa da nova pergunta ou a lista).
   // A âncora da caixa é o próprio campo (#nq, #fq): o browser põe lá o cursor. Os avisos (qe) aparecem junto dela.
@@ -244,7 +247,8 @@ ${locked ? '' : composePanel(iv, quota!, await assistantAiFor(db, req.user))}`;
     // (sem texto, o texto vem da transcrição). Vinda do assistente, a página mostra a pergunta acrescentada; senão,
     // volta à caixa para a seguinte.
     const text = String(b?.text ?? '').trim().slice(0, 1000);
-    const { max, full, value: r } = await withSlot(req, iv, (tx, n) => tx.one('INSERT INTO questions(interview_id, position, text) VALUES ($1,$2,$3) RETURNING id', [iv.id, n + 1, text]));
+    const { max, sent, full, value: r } = await withSlot(req, iv, (tx, n) => tx.one('INSERT INTO questions(interview_id, position, text) VALUES ($1,$2,$3) RETURNING id', [iv.id, n + 1, text]));
+    if (sent) return reply.redirect(`/entrevistas/${iv.id}/editar?e=` + encodeURIComponent(SENT));
     if (full) return reply.redirect(back(iv, 'nq', fullMsg(max)));
     return reply.redirect(back(iv, !text || b?.audio === '1' || b?.origem === 'assistente' ? qAnchor((r as any).id) : 'nq'));
   });
@@ -262,12 +266,13 @@ ${locked ? '' : composePanel(iv, quota!, await assistantAiFor(db, req.user))}`;
   });
   app.post('/entrevistas/:id/perguntas/:qid/duplicar', async (req, reply) => {
     const iv = await qGuard(req, reply); if (!iv) return;
-    const { max, full, value: copy } = await withSlot(req, iv, async (tx) => {
+    const { max, sent, full, value: copy } = await withSlot(req, iv, async (tx) => {
       const q = await tx.one('SELECT * FROM questions WHERE id=$2 AND interview_id=$1', [iv.id, (req.params as any).qid]);
       if (!q) return null;
       await tx.query('UPDATE questions SET position=position+1 WHERE interview_id=$1 AND position>$2', [iv.id, q.position]);
       return tx.one('INSERT INTO questions(interview_id, position, text, audio_asset_id) VALUES ($1,$2,$3,$4) RETURNING id', [iv.id, q.position + 1, q.text, q.audio_asset_id]);
     });
+    if (sent) return reply.redirect(`/entrevistas/${iv.id}/editar?e=` + encodeURIComponent(SENT));
     if (full) return reply.redirect(back(iv, 'nq', fullMsg(max)));
     return reply.redirect(back(iv, qAnchor((copy as any)?.id)));
   });

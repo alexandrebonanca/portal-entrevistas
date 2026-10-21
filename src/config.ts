@@ -3,10 +3,11 @@ import { randomBytes } from 'node:crypto';
 const env = process.env;
 const bool = (v: string | undefined, d = false) => (v === undefined ? d : /^(1|true|yes)$/i.test(v));
 /**
- * Teto numérico de uma variável: 0 desliga; vazia, negativa ou inválida fica o valor por omissão (um teto nunca
- * pode desaparecer por engano, como acontecia com Number('abc') = NaN).
+ * Teto numérico de uma variável: número inteiro de 0 (desliga) a 1 000 000; vazia, negativa, decimal ou inválida fica
+ * o valor por omissão (um teto nunca pode desaparecer por engano, como acontecia com Number('abc') = NaN, nem partir
+ * as consultas que o comparam com colunas inteiras).
  */
-export const positive = (v: string | undefined, d: number) => { const n = Number(v); return v !== undefined && v.trim() !== '' && Number.isFinite(n) && n >= 0 ? n : d; };
+export const positive = (v: string | undefined, d: number) => { const n = Number(v); return v !== undefined && v.trim() !== '' && Number.isInteger(n) && n >= 0 && n <= 1_000_000 ? n : d; };
 /**
  * Proxies à frente da aplicação (para o IP de quem pede, usado nos limites por IP). TRUST_PROXY: número de saltos
  * (por exemplo 1 com só o balanceador do Render), lista de endereços/redes, ou true/false. Sem valor fica `true`
