@@ -261,7 +261,8 @@ ${customerId ? '<form method="post" action="/billing/portal"><button class="ghos
   // ---- Termos e privacidade dos pagamentos (em português); o vendedor é o dono da conta Stripe de quem está a ver ----
   app.get('/termos', async (req, reply) => {
     const plans = await db.query('SELECT * FROM plans WHERE active ORDER BY sort');
-    return send(reply, page({ title: 'Termos e condições de venda', body: termsBody(plans, inEntity(req.user?.entity_id, seller)) }));
+    const rates = await db.query(`SELECT label, cents_per_min, resolution FROM animation_rates WHERE active AND available ORDER BY cents_per_min DESC`);
+    return send(reply, page({ title: 'Termos e condições de venda', body: termsBody(plans, inEntity(req.user?.entity_id, seller), rates) }));
   });
   app.get('/privacidade-pagamentos', async (req, reply) => send(reply, page({ title: 'Privacidade nos pagamentos', body: paymentsPrivacyBody(inEntity(req.user?.entity_id, seller)) })));
 

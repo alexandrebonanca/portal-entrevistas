@@ -115,8 +115,11 @@ export function vatExplanation(s: Seller) {
 Empresas de outros países da UE com número de IVA válido, verificado no VIES: sem IVA, por autoliquidação. Consumidores (e empresas sem número de IVA válido) de outros países da UE: ${s.ossActive ? 'a taxa normal de IVA do país do consumidor, declarada pelo balcão único (OSS)' : `IVA ${pt ? 'português' : `de ${esc(countryName(s.country))}`}${home === null ? '' : ` de ${fmtRate(home)}%`}`}. O preço com IVA aparece sempre antes de pagar.`;
 }
 
+/** Tarifas ativas da animação (para os termos): rótulo, cêntimos de crédito por minuto de fala e resolução. */
+export type TermsRate = { label: string; cents_per_min: number; resolution: string };
+
 /** Termos e condições de venda (em português: informação obrigatória aos consumidores). */
-export function termsBody(plans: any[], s: Seller) {
+export function termsBody(plans: any[], s: Seller, rates: TermsRate[] = []) {
   const p0 = plans[0];
   const pt = s.country === 'PT' && s.regime === 'registered';
   const regions: [string, string][] = [['1000-001', 'continente'], ['9000-001', 'Madeira'], ['9500-001', 'Açores']];
@@ -135,6 +138,12 @@ ${pt ? `<li>Preço com IVA: ${[2500, 10000].map(c => `${c / 100} créditos custa
 <li>Reembolso: o saldo ainda disponível de cada carregamento é reembolsado por inteiro, a pedido, nos 14 dias seguintes a esse carregamento, pelo mesmo meio de pagamento e sem descontar comissões; os créditos cativos de um orçamento aceite não se reembolsam enquanto o orçamento estiver em curso. Se o serviço encerrar, devolvemos todo o saldo disponível. Pedidos por email para ${mail(contactEmail(s))}.</li>
 <li>Se um pagamento for anulado junto do banco (disputa) ou reembolsado fora do portal, os créditos correspondentes são retirados da carteira; se já tiverem sido usados, ficam em dívida e o carregamento seguinte paga-os primeiro.</li>
 <li>Se é consumidor e usa créditos num serviço que começa logo (entrevista extra, regeneração, animação), pede expressamente esse início e reconhece que perde o direito de livre resolução quando o serviço estiver integralmente prestado e o resultado lhe for disponibilizado.</li></ul>
+<h2>2-B. Animação por orçamento</h2><ul>
+<li>A animação por IA (vídeo e voz gerados por um modelo a partir da fotografia autorizada e do texto aprovado) tem sempre um orçamento próprio, calculado por fala, em segundos de fala medidos no áudio do episódio (cada fala conta pelo menos 4 segundos) e arredondado ao cêntimo de crédito.${rates.length ? ` Tarifas em vigor: ${rates.map(r => `${esc(r.label)} (${esc(r.resolution)}), ${String(r.cents_per_min / 100).replace('.', ',')} créditos por minuto de fala${pt ? ` (${eurPt(withVat(r.cents_per_min, regionalRate('PT', '1000-001')))} com IVA de 23%)` : ''}`).join('; ')}.` : ''} Uma mudança de tarifa só vale para orçamentos novos.</li>
+<li>O orçamento é grátis e não cativa nada; só o titular da conta o aceita, com as duas caixas assinaladas e o botão com o valor. Na aceitação o valor fica cativo na carteira e recebe por email o orçamento, os consentimentos e estas condições antes de a produção começar. O orçamento vale 7 dias (menos, se o modelo for desativado antes) e fica sem efeito se mudarem o guião, as fotografias, as vozes, o motor ou as autorizações.</li>
+<li>O orçamento aceite é o máximo que paga. No fim cobram-se só as falas animadas e verificadas palavra a palavra; as que ficarem em fotografia (texto que não coincidiu, filtro da Google, Google indisponível, teto ou disjuntor, autorização retirada) voltam ao saldo, com o motivo no relatório. Uma produção falhada, anulada, que não arranque em 24 horas ou cujo vídeo não fique ligado ao episódio custa 0 créditos. As falas já pagas reaproveitam-se a 0 créditos.</li>
+<li>Se uma autorização for retirada depois da entrega, o que foi entregue continua cobrado; o vídeo pode ser reconstruído só com o entrevistador, a 0 créditos, e os clipes com a imagem do convidado são apagados.</li>
+<li>O vídeo leva o aviso visível «AI-generated video · AI voice».</li></ul>
 <h2>3. Planos e preços</h2><div style="overflow-x:auto"><table><thead><tr><th>Plano</th><th>Entrevistas por mês</th><th>Preço</th>${head}</tr></thead><tbody>${plans.map(row).join('')}</tbody></table></div>
 <p>${vatExplanation(s)}</p>
 <h2>4. Quem pode comprar</h2><p>Empresas e consumidores com morada de faturação num país da União Europeia (exceto os territórios fora do território de IVA da UE, como as Canárias). Para outros países, contacte-nos: ${mail(contactEmail(s))}.</p>

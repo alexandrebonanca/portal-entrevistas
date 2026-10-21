@@ -1,4 +1,5 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
+import { eraseGuestAiVideo } from '../veo-episode.ts';
 import { config } from '../config.ts';
 import { esc, sha256, newToken, rateLimit, fmtDate } from '../lib.ts';
 import { page, flash, pill } from '../views.ts';
@@ -314,6 +315,12 @@ ${pc && !done ? `<div class="card" id="cam" data-max="3" data-msg='${esc(msg)}'>
     const noPhoto = !(b.photo_capture && b.publish_photo), noAnim = noPhoto || !b.animate_portrait, noVeo = noPhoto || !b.ai_video;
     for (const e of await db.query(`SELECT e.id, a.meta FROM episodes e JOIN assets a ON a.id=e.video_asset_id WHERE e.interview_id=$1`, [c.iv.id])) {
       if ((noPhoto && e.meta?.guestPhoto) || (noAnim && e.meta?.guestAnimated) || (noVeo && e.meta?.guestAiVideo)) await db.query('UPDATE episodes SET video_asset_id=NULL WHERE id=$1', [e.id]);
+    }
+    // RGPD (art. 7.º, n.º 3, e art. 17.º): sem a autorização, os clipes e os vídeos com a imagem animada do convidado são
+    // apagados; o que foi entregue continua cobrado e o vídeo pode ser reconstruído só com o entrevistador, a 0 créditos.
+    if (noVeo || noAnim) {
+      const erased = await eraseGuestAiVideo(db, c.iv.id, { veo: noVeo, animated: noAnim });
+      if (erased) await audit(db, 'guest', 'consent.guest_ai_video_erased', c.iv.id, { files: erased });
     }
     if (!b.photo_capture && c.iv.collection_status !== 'submitted') await removeAllPhotos(c.iv.id);
     await audit(db, 'guest', 'consent.photos_updated', c.iv.id);
