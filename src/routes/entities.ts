@@ -3,11 +3,13 @@ import { config } from '../config.ts';
 import { esc, slugify } from '../lib.ts';
 import { page, flash, pill } from '../views.ts';
 import { audit } from '../app.ts';
-import { SETTING_DEFS, S, saveEntitySetting, entityHas, entityValue, inEntity, settingsFormError, ownsAny, VEO_CRED_KEYS } from '../settings.ts';
+import { SETTING_DEFS, S, saveEntitySetting, entityHas, entityValue, inEntity, settingsFormError, ownsAny, VEO_CRED_KEYS, SELLER_GROUP } from '../settings.ts';
 import { serviceTest, settingInput, VERTEX_HINT } from './admin.ts';
+import { STRIPE_EVENTS } from '../billing.ts';
 import { retryFailedEmails } from '../mail.ts';
 
-const GROUPS = ['OpenAI', 'Stripe', 'MailerSend', 'Moloni ON', 'Replicate', 'fal.ai', 'WaveSpeed', 'Google'];
+const GROUPS = ['OpenAI', 'Stripe', 'MailerSend', 'Moloni ON', 'Replicate', 'fal.ai', 'WaveSpeed', 'Google', SELLER_GROUP];
+const SELLER_ENTITY_HINT = 'Só conta se a entidade tiver Stripe própria: é então ela que vende, e estes dados (sem os valores globais) aparecem nos termos e na lista «por faturar». Nunca se inventam: sem a denominação, o NIF e a morada, os pagamentos com a Stripe da entidade ficam suspensos.';
 const VEO_ENTITY_HINT = 'Se a entidade tiver conta de serviço ou chave Gemini próprias, o Veo dela usa só essas (e paga no projeto Google dela); as globais servem só às entidades sem credenciais Google.';
 
 export async function entityRoutes(app: FastifyInstance) {
@@ -64,18 +66,20 @@ ${rows.map((e: any) => `<tr><td><a href="/entidades/${e.id}/chaves">${esc(e.name
     const q = req.query as any;
     // As credenciais do Veo valem em conjunto: se a entidade tiver alguma, as globais não se aplicam a ela.
     const veoOwn = ownsAny(id, VEO_CRED_KEYS);
-    const src = (k: string) => (entityHas(id, k) ? 'da entidade' : inEntity(null, () => (!S(k) ? 'por definir'
+    const sellerKey = (k: string) => SETTING_DEFS.some(d => d.key === k && d.group === SELLER_GROUP);
+    const src = (k: string) => (entityHas(id, k) ? 'da entidade' : sellerKey(k) ? 'por preencher (sem reserva global)' : inEntity(null, () => (!S(k) ? 'por definir'
       : veoOwn && (VEO_CRED_KEYS as readonly string[]).includes(k) ? 'global, não usada: o Veo usa as credenciais Google desta entidade' : 'global (reserva)')));
     return view(req, reply, e.name, `<h1>${esc(e.name)} ${e.active ? pill('ativa', 'ok') : pill('inativa', 'bad')}</h1>${flash(q.ok)}${flash(q.e, 'bad')}
 ${req.user.role === 'admin' ? `<form method="post" action="/entidades/${e.id}" class="card"><h2 style="margin-top:0">Dados</h2><div class="row"><div class="grow"><label for="n">Nome</label><input id="n" name="name" type="text" value="${esc(e.name)}" required></div><div class="grow"><label for="u">URL do site</label><input id="u" name="url" type="url" value="${esc(e.url)}"></div></div>
 <label class="check"><input type="checkbox" name="active" value="1" ${e.active ? 'checked' : ''}> Entidade ativa</label><button class="ghost">Guardar dados</button></form>` : `<p class="sans">${e.url ? `<a href="${esc(e.url)}" rel="noopener">${esc(e.url)}</a>` : ''}</p>`}
 <p class="hint sans">As chaves são guardadas cifradas e nunca voltam por inteiro ao ecrã. Em branco = manter; <code>-</code> = apagar (passa a usar a chave global, se existir).</p>
 <form method="post" action="/entidades/${e.id}/chaves">
-${GROUPS.map(g => `<div class="card"><div class="row"><h2 style="margin:0" class="grow">${esc(g)}</h2><button type="submit" formaction="/entidades/${e.id}/testar/${encodeURIComponent(g)}" class="ghost">Guardar e testar</button></div>
-${g === 'Stripe' ? `<p class="hint sans">Endpoint do webhook desta entidade, a registar no Stripe: <code>${esc(config.baseUrl)}/webhooks/stripe/${esc(e.slug)}</code> — eventos: checkout.session.completed, customer.subscription.created/updated/deleted.</p>` : ''}
+${GROUPS.map(g => `<div class="card"><div class="row"><h2 style="margin:0" class="grow">${esc(g)}</h2>${g === SELLER_GROUP ? '' : `<button type="submit" formaction="/entidades/${e.id}/testar/${encodeURIComponent(g)}" class="ghost">Guardar e testar</button>`}</div>
+${g === 'Stripe' ? `<p class="hint sans">Endpoint do webhook desta entidade, a registar no Stripe: <code>${esc(config.baseUrl)}/webhooks/stripe/${esc(e.slug)}</code> — eventos: ${esc(STRIPE_EVENTS)}.</p>` : ''}
+${g === SELLER_GROUP ? `<p class="hint sans">${esc(SELLER_ENTITY_HINT)}</p>` : ''}
 ${g === 'Google' ? `<p class="hint sans">${esc(VERTEX_HINT)} ${esc(VEO_ENTITY_HINT)}</p>` : ''}
 ${SETTING_DEFS.filter(d => d.group === g).map(d => `<label for="f_${d.key}">${esc(d.label)} <span class="hint">· ${src(d.key)}</span></label>
-${settingInput(d, entityValue(id, d.key), '', d.options ? `Como na definição global (${d.options.find(o => o[0] === inEntity(null, () => S(d.key)))?.[1] ?? d.options[0][1]})` : undefined)}`).join('')}</div>`).join('')}
+${settingInput(d, entityValue(id, d.key), '', !d.options ? undefined : g === SELLER_GROUP ? (d.options.some(o => o[0] === '') ? undefined : '— por preencher —') : `Como na definição global (${d.options.find(o => o[0] === inEntity(null, () => S(d.key)))?.[1] ?? d.options[0][1]})`)}`).join('')}</div>`).join('')}
 <p><button class="accent">Guardar chaves</button></p></form>`);
   });
 

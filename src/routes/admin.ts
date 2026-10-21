@@ -3,8 +3,10 @@ import { config } from '../config.ts';
 import { esc, fmtDate, hashPassword, isEmail } from '../lib.ts';
 import { page, flash, pill } from '../views.ts';
 import { audit } from '../app.ts';
-import { quotaFor, ACTIVE_STATUSES, stripe } from '../billing.ts';
-import { SETTING_DEFS, S, maskSetting, saveSetting, fromDb, secretFingerprint, settingsFormError, type SettingDef } from '../settings.ts';
+import { quotaFor, ACTIVE_STATUSES, stripe, savedTaxRates, STRIPE_EVENTS } from '../billing.ts';
+import { SETTING_DEFS, S, maskSetting, saveSetting, saveStripeScoped, fromDb, secretFingerprint, settingsFormError, SELLER_GROUP, type SettingDef } from '../settings.ts';
+import { seller, sellerWarnings, sameCompany, savedStripeAccount } from '../legal.ts';
+import { REGIME_LABEL, regionalRate, countryName, eurPt, fmtRate } from '../vat.ts';
 import { queueEmail, emailShell, flushOutbox, retryFailedEmails } from '../mail.ts';
 
 /** Campo de uma definição: segredo (nunca devolvido), lista de opções ou texto. `blank` é a opção sem valor guardado. */
@@ -12,10 +14,34 @@ export function settingInput(d: SettingDef, value: string, blank: string, blankL
   if (d.options) return `<select id="f_${d.key}" name="${d.key}">${blankLabel !== undefined ? `<option value="" ${value ? '' : 'selected'}>${esc(blankLabel)}</option>` : ''}${d.options.map(([v, l]) => `<option value="${esc(v)}" ${(value || blank) === v ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select>`;
   return `<input id="f_${d.key}" name="${d.key}" type="${d.secret ? 'password' : 'text'}" autocomplete="${d.secret ? 'new-password' : 'off'}" data-lpignore="true" spellcheck="false" placeholder="${esc(d.secret ? maskSetting(d.key, value) || (d.hint ?? '') : (d.hint ?? ''))}" value="${d.secret ? '' : esc(value)}">`;
 }
+export const SELLER_HINT = 'Quem vende ao cliente final (a Telecert): a dona da conta Stripe configurada acima e do Moloni em que se emitem as faturas. A Certif Int Association OÜ é a entidade gestora da plataforma e não vende. Os dados legais nunca se inventam: enquanto faltarem a denominação, o NIF e a morada, os pagamentos em linha ficam suspensos para quem não é administrador; sem o email e a ligação do Livro de Reclamações Eletrónico, fica bloqueada a venda a consumidores. O OSS só se liga quando as vendas a consumidores de outros países da UE (de todas as atividades da empresa) passarem 10 000 €/ano (art. 6.º-A do CIVA).';
 export const VERTEX_HINT = 'O Google Veo usa o Vertex AI quando há conta de serviço (Veo 3.1 Fast: veo-3.1-fast-generate-001; Lite: veo-3.1-lite-generate-001, em pré-visualização). Sem conta de serviço usa a Gemini API, que a Google desliga para estes modelos a partir de 22/10/2026. A chave JSON nunca volta a ser mostrada: aparece só o email da conta e o projeto.';
 
 const STATUSES: [string, string][] = [['active', 'Ativa'], ['comped', 'Oferta (sem cobrança)'], ['trialing', 'Em teste'], ['past_due', 'Pagamento em atraso'], ['canceled', 'Cancelada'], ['inactive', 'Inativa']];
 const eur = (c: number) => `€${(c / 100).toFixed(2)}`;
+
+/** Prazo da fatura: 5.º dia útil depois do pagamento (CIVA, art. 36.º, n.º 1, al. a); só fins de semana, sem feriados). */
+export function invoiceDeadline(paid: Date | string) {
+  const d = new Date(paid);
+  let n = 0;
+  while (n < 5) { d.setDate(d.getDate() + 1); if (d.getDay() !== 0 && d.getDay() !== 6) n++; }
+  return d;
+}
+
+/** Avisos de uma linha «por faturar»: provas do país contraditórias, taxa diferente da do código postal, pagamento sem IVA decidido. */
+export function invoiceFlags(r: any): string[] {
+  const out: string[] = [];
+  const ev = r.evidence ?? {}, cc = r.customer_country;
+  if (r.total_cents < 0) out.push('valor negativo: emitir nota de crédito');
+  if (!r.vat_regime) out.push('subscrição anterior a esta versão (IVA não decidido no portal): confirmar o IVA com o contabilista');
+  if (ev.billingCountry && cc && ev.billingCountry !== cc) out.push(`morada de faturação na Stripe (${ev.billingCountry}) ≠ país declarado (${cc})`);
+  else if (ev.billingCountry === 'PT' && r.vat_regime === 'domestic' && r.vat_country === 'PT' && ev.billingPostal && regionalRate('PT', ev.billingPostal) !== Number(r.vat_rate))
+    out.push(`o código postal da Stripe (${ev.billingPostal}) dá IVA de ${regionalRate('PT', ev.billingPostal)}%, foi cobrado ${fmtRate(Number(r.vat_rate))}%`);
+  if (ev.cardCountry && cc && ev.cardCountry !== cc) out.push(`cartão emitido em ${ev.cardCountry} (país declarado ${cc}): confirmar o país do cliente`);
+  if (r.vat_regime === 'reverse_charge' && ev.vatStatus !== 'verified') out.push('número de IVA sem verificação no VIES');
+  if (!r.seller?.nif) out.push('empresa vendedora sem NIF no momento do pagamento');
+  return out;
+}
 
 export async function serviceTest(db: any, g: string, userEmail: string): Promise<string> {
   let msg = '';
@@ -25,7 +51,15 @@ export async function serviceTest(db: any, g: string, userEmail: string): Promis
     msg = 'OpenAI: chave válida.';
   } else if (g === 'Stripe') {
     const bal = await stripe('balance', undefined, 'GET');
-    msg = `Stripe: ligação OK (${bal.livemode ? 'modo real' : 'modo de teste'}).${S('STRIPE_WEBHOOK_SECRET') ? '' : ' Falta o webhook signing secret.'}`;
+    // Nome da conta (pedido sem custo): as chaves têm de ser as da empresa vendedora. Uma chave restrita pode não o dar.
+    let acct: any = null;
+    try { acct = await stripe('account', undefined, 'GET'); } catch { /* sem o nome da conta */ }
+    const name = String(acct?.settings?.dashboard?.display_name || acct?.business_profile?.name || acct?.company?.name || '').slice(0, 200);
+    if (acct) await saveStripeScoped(db, 'STRIPE_ACCOUNT', JSON.stringify({ id: acct.id ?? null, name, checkedAt: new Date().toISOString() }));
+    const s = seller(), who = s.name || s.tradeName;
+    const same = !name || !who ? '' : sameCompany(name, [s.name, s.tradeName]) ? ` Conta «${name}», a da empresa vendedora.`
+      : ` Atenção: a conta Stripe chama-se «${name}» e a empresa vendedora é «${who}»: confirme que as chaves são as da conta Stripe da empresa vendedora.`;
+    msg = `Stripe: ligação OK (${bal.livemode ? 'modo real' : 'modo de teste'}).${same}${S('STRIPE_WEBHOOK_SECRET') ? '' : ' Falta o webhook signing secret.'}`;
   } else if (g === 'MailerSend') {
     const key = `test:${Date.now()}`;
     await queueEmail(db, { key, to: userEmail, subject: 'Teste de email', html: emailShell('Teste de email', '<p>Se recebeu esta mensagem, o MailerSend está configurado.</p>'), text: 'Teste de email: MailerSend configurado.' });
@@ -62,14 +96,14 @@ export async function serviceTest(db: any, g: string, userEmail: string): Promis
       body: new URLSearchParams({ grant_type: 'password', client_id: S('MOLONI_CLIENT_ID'), client_secret: S('MOLONI_CLIENT_SECRET'), username: S('MOLONI_USERNAME'), password: S('MOLONI_PASSWORD') }).toString() });
     const j: any = await r.json().catch(() => ({}));
     if (!r.ok || !j.access_token) throw new Error(`Moloni: ${j.error_description ?? j.error ?? r.status}`);
-    msg = 'Moloni ON: autenticação OK. (A emissão automática de faturas ainda não está ligada.)';
+    msg = 'Moloni ON: autenticação OK. (A emissão automática de faturas ainda não está ligada: as faturas emitem-se à mão a partir da lista «por faturar», em Faturação.)';
   }
   return msg;
 }
 
 export async function adminRoutes(app: FastifyInstance) {
   const db = app.db;
-  const adminNav = `<a href="/painel">Painel</a><a href="/admin/utilizadores">Utilizadores</a><a href="/admin/definicoes">Definições</a><a href="/admin/laboratorio">Laboratório</a><form method="post" action="/sair" style="display:inline"><button class="ghost" style="padding:6px 12px;min-height:0;margin-left:16px">Sair</button></form>`;
+  const adminNav = `<a href="/painel">Painel</a><a href="/admin/utilizadores">Utilizadores</a><a href="/admin/definicoes">Definições</a><a href="/admin/faturacao">Faturação</a><a href="/admin/laboratorio">Laboratório</a><form method="post" action="/sair" style="display:inline"><button class="ghost" style="padding:6px 12px;min-height:0;margin-left:16px">Sair</button></form>`;
   const view = (reply: any, title: string, body: string) => reply.type('text/html; charset=utf-8').send(page({ title, body: `<div class="wrap" style="padding-top:32px">${body}</div>`, nav: adminNav, noindex: true }));
   const guard = (req: any, reply: any) => {
     if (!req.user) { reply.redirect('/entrar'); return false; }
@@ -145,6 +179,7 @@ ${rows.map(({ u, qt }) => `<tr><td><a href="/admin/utilizadores/${u.id}">${esc(u
     const plans = await db.query('SELECT * FROM plans ORDER BY sort');
     const entities = await db.query('SELECT id, name FROM entities ORDER BY name');
     const qt = await quotaFor(db, u);
+    const bp = await db.one('SELECT * FROM billing_profiles WHERE user_id=$1', [u.id]);
     const iv = await db.query('SELECT id, title, collection_status, invited_at FROM interviews WHERE owner_id=$1 ORDER BY created_at DESC LIMIT 10', [u.id]);
     const date = (d: any) => (d ? new Date(d).toISOString().slice(0, 10) : '');
     return view(reply, u.name, `<p><a href="/admin/utilizadores">← Utilizadores</a></p><h1>${esc(u.name)} ${u.active ? pill('ativa', 'ok') : pill('desativada', 'bad')}</h1>${flash(q.ok)}${flash(q.e, 'bad')}
@@ -153,6 +188,7 @@ ${rows.map(({ u, qt }) => `<tr><td><a href="/admin/utilizadores/${u.id}">${esc(u
 <select name="entity_id" aria-label="Entidade" style="width:auto"><option value="">Sem entidade</option>${entities.map((e: any) => `<option value="${e.id}" ${u.entity_id === e.id ? 'selected' : ''}>${esc(e.name)}</option>`).join('')}</select><button class="ghost">Guardar perfil</button></form>
 <form method="post" action="/admin/utilizadores/${u.id}/palavra-passe"><label for="np">Redefinir palavra-passe (mín. 12; termina as sessões)</label><div class="row"><input id="np" name="password" type="password" minlength="12" autocomplete="new-password" style="max-width:320px"><button class="ghost">Redefinir</button></div></form></div>
 <div class="card"><h2 style="margin-top:0">Subscrição</h2>
+<p class="sans">Dados de faturação: ${bp ? `${bp.kind === 'consumer' ? 'consumidor' : 'empresa'} · ${esc(bp.name)}${bp.nif ? ` · NIF ${esc(bp.nif)}` : ''}${bp.vat_number ? ` · IVA ${esc(bp.vat_number)} (${esc(bp.vat_status ?? 'por verificar')})` : ''} · ${esc(bp.address)}, ${esc(bp.postal_code)} ${esc(bp.city)}, ${esc(countryName(bp.country))}` : '<span class="hint">por preencher</span>'}${sub?.vat?.regime ? ` · IVA da compra: ${esc(REGIME_LABEL[sub.vat.regime as 'domestic'] ?? sub.vat.regime)} ${fmtRate(Number(sub.vat.rate))}%` : ''}</p>
 <p class="sans">Uso neste período: <strong>${u.role === 'admin' ? '∞' : `${qt.used}/${qt.limit}`}</strong>${sub?.stripe_subscription_id ? ` · Stripe: ${esc(sub.stripe_subscription_id)}` : ''}${sub?.current_period_end ? ` · período até ${fmtDate(sub.current_period_end)}` : ''}</p>
 <form method="post" action="/admin/utilizadores/${u.id}/subscricao">
 <div class="row"><div class="grow"><label for="pl">Plano</label><select id="pl" name="plan_id"><option value="">Nenhum</option>${plans.map((p: any) => `<option value="${esc(p.id)}" ${sub?.plan_id === p.id ? 'selected' : ''}>${esc(p.name)} — ${eur(p.price_cents)} · ${p.interviews_per_month}/mês</option>`).join('')}</select></div>
@@ -205,19 +241,23 @@ ${rows.map(({ u, qt }) => `<tr><td><a href="/admin/utilizadores/${u.id}">${esc(u
     const groups = [...new Set(SETTING_DEFS.map(d => d.group))];
     const plans = await db.query('SELECT * FROM plans ORDER BY sort');
     const signups = S('SIGNUPS_OPEN') !== '0';
-    return view(reply, 'Definições', `<h1>Definições</h1>${flash(q.ok)}${flash(q.e, 'bad')}
+    const warn = await sellerWarnings(db);
+    const rates = savedTaxRates().rates, acct = savedStripeAccount(), who = seller().name || seller().tradeName;
+    const status = (d: SettingDef) => (S(d.key) ? (fromDb(d.key) ? '· definido' : '· definido por variável de ambiente') : d.default ? '· valor por omissão' : '· por definir');
+    return view(reply, 'Definições', `<h1>Definições</h1>${flash(q.ok)}${flash(q.e, 'bad')}${warn.map(w => flash(w, 'bad')).join('')}
 <p class="hint sans">As chaves são guardadas cifradas e nunca voltam a ser mostradas por inteiro. Deixe um campo em branco para manter o valor atual; escreva <code>-</code> para o apagar. Uma variável de ambiente com o mesmo nome serve de valor de reserva.</p>
 <form method="post" action="/admin/definicoes">
 ${groups.map(g => `<div class="card"><div class="row"><h2 style="margin:0" class="grow">${esc(g)}</h2>${['OpenAI', 'Stripe', 'MailerSend', 'Moloni ON', 'Replicate', 'fal.ai', 'WaveSpeed', 'Google'].includes(g) ? `<button type="submit" formaction="/admin/definicoes/testar/${encodeURIComponent(g)}" class="ghost" name="testar" value="1">Guardar e testar</button>` : ''}</div>
-${g === 'Stripe' ? `<p class="hint sans">Endpoint do webhook a registar no Stripe: <code>${esc(config.baseUrl)}/webhooks/stripe</code> — eventos: checkout.session.completed, customer.subscription.created/updated/deleted.</p>` : ''}
+${g === 'Stripe' ? `<p class="hint sans">As chaves têm de ser as da conta Stripe da empresa vendedora${who ? ` (${esc(who)})` : ''}${acct.name ? `; no último «Guardar e testar» a conta chamava-se «${esc(acct.name)}»` : ''}. Endpoint do webhook a registar no Stripe: <code>${esc(config.baseUrl)}/webhooks/stripe</code> — eventos: ${esc(STRIPE_EVENTS)}. Taxas de IVA (manuais, sem IVA incluído): ${Object.keys(rates).length ? Object.entries(rates).map(([k, id]) => `${esc(k.replace(':', ' '))}% (${esc(id)})`).join(', ') : 'criadas na Stripe na primeira venda'}.</p>` : ''}
+${g === SELLER_GROUP ? `<p class="hint sans">${esc(SELLER_HINT)}</p>` : ''}
 ${g === 'Google' ? `<p class="hint sans">${esc(VERTEX_HINT)}</p>` : ''}
-${SETTING_DEFS.filter(d => d.group === g).map(d => `<label for="f_${d.key}">${esc(d.label)} <span class="hint">${S(d.key) ? (fromDb(d.key) ? '· definido' : '· definido por variável de ambiente') : '· por definir'}</span></label>
-${settingInput(d, S(d.key), d.options?.[0]?.[0] ?? '')}`).join('')}</div>`).join('')}
+${SETTING_DEFS.filter(d => d.group === g).map(d => `<label for="f_${d.key}">${esc(d.label)} <span class="hint">${status(d)}</span></label>
+${settingInput(d, S(d.key) || (d.default ?? ''), d.default ?? d.options?.[0]?.[0] ?? '')}`).join('')}</div>`).join('')}
 <div class="card"><h2 style="margin-top:0">Registo de utilizadores</h2><label class="check"><input type="checkbox" name="signups_open" value="1" ${signups ? 'checked' : ''}> Permitir que novos utilizadores se registem (e subscrevam um plano)</label>
 <label class="check"><input type="checkbox" name="ai_video_open" value="1" ${S('AI_VIDEO_OPEN') === '1' ? 'checked' : ''}> Permitir vídeo IA (Google Veo e retratos animados) a todos os entrevistadores, sem orçamento — pago pelas chaves do portal ou da entidade. Desligado: só o administrador o pede.</label></div>
 <p><button class="accent">Guardar definições</button></p></form>
-<div class="card"><h2 style="margin-top:0">Planos</h2><p class="hint sans">Alterar o preço afeta apenas novas subscrições; as existentes mantêm o preço contratado no Stripe. Os limites por entrevista (perguntas, incluindo as adicionais, e minutos de respostas do entrevistado) ficam fixos em cada entrevista no convite.</p>
-${plans.map((p: any) => `<form method="post" action="/admin/planos/${esc(p.id)}" class="row" style="margin:8px 0"><strong style="min-width:90px">${esc(p.id)}</strong><input name="name" value="${esc(p.name)}" aria-label="Nome" style="width:140px"><input name="price" type="number" step="0.01" min="0" value="${(p.price_cents / 100).toFixed(2)}" aria-label="Preço mensal (EUR)" style="width:110px">€/mês<input name="limit" type="number" min="0" value="${p.interviews_per_month}" aria-label="Entrevistas por mês" style="width:90px">entrevistas/mês<input name="max_questions" type="number" min="1" value="${p.max_questions}" aria-label="Perguntas por entrevista" style="width:80px">perguntas<input name="answer_min" type="number" min="1" step="1" value="${Math.round(p.max_answer_total_sec / 60)}" aria-label="Minutos de respostas por entrevista" style="width:80px">min de respostas<label class="check" style="margin:0"><input type="checkbox" name="active" value="1" ${p.active ? 'checked' : ''}> ativo</label><button class="ghost">Guardar</button></form>`).join('')}</div>`);
+<div class="card"><h2 style="margin-top:0">Planos</h2><p class="hint sans">Preços sem IVA (o IVA é acrescentado conforme a morada de faturação). Planos inativos deixam de ser vendidos, mas quem já os tem continua com eles até mudar de plano. Alterar o preço afeta apenas novas subscrições e mudanças de plano; as existentes mantêm o preço contratado no Stripe. Os limites por entrevista (perguntas, incluindo as adicionais, e minutos de respostas do entrevistado) ficam fixos em cada entrevista no convite.</p>
+${plans.map((p: any) => `<form method="post" action="/admin/planos/${esc(p.id)}" class="row" style="margin:8px 0"><strong style="min-width:90px">${esc(p.id)}</strong><input name="name" value="${esc(p.name)}" aria-label="Nome" style="width:140px"><input name="price" type="number" step="0.01" min="0" value="${(p.price_cents / 100).toFixed(2)}" aria-label="Preço mensal sem IVA (EUR)" style="width:110px">€/mês + IVA<input name="limit" type="number" min="0" value="${p.interviews_per_month}" aria-label="Entrevistas por mês" style="width:90px">entrevistas/mês<input name="max_questions" type="number" min="1" value="${p.max_questions}" aria-label="Perguntas por entrevista" style="width:80px">perguntas<input name="answer_min" type="number" min="1" step="1" value="${Math.round(p.max_answer_total_sec / 60)}" aria-label="Minutos de respostas por entrevista" style="width:80px">min de respostas<label class="check" style="margin:0"><input type="checkbox" name="active" value="1" ${p.active ? 'checked' : ''}> ativo</label><button class="ghost">Guardar</button></form>`).join('')}</div>`);
   });
 
   app.post('/admin/definicoes', async (req, reply) => {
@@ -265,5 +305,73 @@ ${plans.map((p: any) => `<form method="post" action="/admin/planos/${esc(p.id)}"
       [(req.params as any).id, String(b.name ?? '').slice(0, 60) || 'Plano', cents, lim, !!b.active, maxQ, ansMin === null ? null : ansMin * 60]);
     await audit(db, req.user!.email, 'admin.plan_updated', null, { plan: (req.params as any).id });
     return back(reply, '/admin/definicoes', 'Plano guardado.');
+  });
+
+  // ---------- faturação: lista «por faturar» (fatura-recibo emitida à mão no Moloni) e livre resolução ----------
+  const isUuid = (v: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v);
+  const day = (d: any) => new Date(d).toLocaleDateString('pt-PT');
+  const customerCell = (r: any) => {
+    const p = r.evidence?.profile ?? {}, c = r.customer ?? {};
+    const tax = r.evidence?.nif ? `NIF ${r.evidence.nif}` : r.evidence?.vatNumber ? `IVA ${r.evidence.vatNumber}${r.evidence.vatStatus ? ` (${r.evidence.vatStatus})` : ''}` : 'sem NIF';
+    return `${esc(c.name ?? p.name ?? '—')} <span class="hint">${r.customer_kind === 'consumer' ? 'consumidor' : r.customer_kind === 'business' ? 'empresa' : ''}</span><br>${esc(tax)}<br><span class="hint">${esc([p.address, [p.postal_code, p.city].filter(Boolean).join(' '), p.country ? countryName(p.country) : ''].filter(Boolean).join(', '))}${r.email ? ` · ${esc(r.email)}` : ''}</span>`;
+  };
+  const vatCell = (r: any) => `${r.vat_regime ? esc(REGIME_LABEL[r.vat_regime as 'domestic'] ?? r.vat_regime) : '—'}${r.vat_rate !== null && r.vat_rate !== undefined ? ` · ${fmtRate(Number(r.vat_rate))}%` : ''}${r.vat_country ? ` (${esc(r.vat_country)})` : ''}${r.vat_note ? `<br><strong>Menção: ${esc(r.vat_note)}</strong>` : ''}`;
+  const amounts = (r: any) => `${eurPt(r.net_cents)} + IVA ${eurPt(r.vat_cents)}<br><strong>${eurPt(r.total_cents)}</strong>`;
+
+  app.get('/admin/faturacao', async (req, reply) => {
+    if (!guard(req, reply)) return;
+    const q = req.query as any;
+    const warn = await sellerWarnings(db);
+    const pending = await db.query(`SELECT iq.*, u.email FROM invoice_queue iq LEFT JOIN users u ON u.id=iq.user_id WHERE iq.status='pending' ORDER BY iq.paid_at`);
+    const issued = await db.query(`SELECT iq.*, u.email FROM invoice_queue iq LEFT JOIN users u ON u.id=iq.user_id WHERE iq.status='issued' ORDER BY iq.issued_at DESC LIMIT 50`);
+    const wd = await db.query(`SELECT w.*, u.email, u.name FROM withdrawals w JOIN users u ON u.id=w.user_id ORDER BY (w.status='requested') DESC, w.requested_at DESC LIMIT 50`);
+    const now = Date.now();
+    return view(reply, 'Faturação', `<h1>Faturação</h1>${flash(q.ok)}${flash(q.e, 'bad')}${warn.map(w => flash(w, 'bad')).join('')}
+<p class="hint sans">Cada pagamento recebido pela Stripe (subscrições; os carregamentos de créditos entram na fase seguinte) espera uma fatura-recibo emitida à mão no Moloni da empresa vendedora indicada, com os dados do cliente, a taxa de IVA e a menção mostradas. Depois de a emitir, escreva aqui o número. Prazo: 5.º dia útil depois do pagamento (CIVA, art. 36.º, n.º 1, al. a); a contagem não desconta feriados). O recibo da Stripe não é fatura.</p>
+<div class="card" style="overflow-x:auto"><h2 style="margin-top:0">Por faturar (${pending.length})</h2>${pending.length ? `<table><thead><tr><th>Pago</th><th>Cliente</th><th>Descrição</th><th>Valores</th><th>IVA</th><th>Vendedora</th><th>Fatura Moloni</th></tr></thead><tbody>
+${pending.map((r: any) => { const dl = invoiceDeadline(r.paid_at); const flags = invoiceFlags(r); return `<tr id="f-${r.id}"><td>${day(r.paid_at)}<br><span class="hint">até ${day(dl)}</span>${dl.getTime() < now ? ` ${pill('fora de prazo', 'bad')}` : ''}<br><span class="hint">${esc(r.stripe_number ?? r.stripe_ref)}</span></td>
+<td>${customerCell(r)}</td><td>${esc(r.description)}${r.period_start ? `<br><span class="hint">${day(r.period_start)} a ${r.period_end ? day(r.period_end) : '—'}</span>` : ''}</td><td>${amounts(r)}</td><td>${vatCell(r)}</td>
+<td>${esc(r.seller?.name || r.seller?.tradeName || '—')}${r.seller?.nif ? `<br><span class="hint">NIF ${esc(r.seller.nif)}</span>` : ''}</td>
+<td><form method="post" action="/admin/faturacao/${r.id}/faturada"><label for="m-${r.id}" style="margin-top:0">Fatura Moloni n.º</label><input id="m-${r.id}" name="moloni_doc" type="text" maxlength="60" required placeholder="FR …" style="min-width:120px"><button class="accent" style="margin-top:6px">Marcar faturada</button></form></td></tr>
+${flags.length ? `<tr><td colspan="7" class="hint" style="color:var(--bad)">${flags.map(esc).join(' · ')}</td></tr>` : ''}`; }).join('')}</tbody></table>` : '<p class="hint">Nada por faturar.</p>'}</div>
+<div class="card" style="overflow-x:auto"><h2 style="margin-top:0">Faturadas (últimas 50)</h2>${issued.length ? `<table><thead><tr><th>Pago</th><th>Cliente</th><th>Valores</th><th>IVA</th><th>Fatura Moloni</th><th></th></tr></thead><tbody>
+${issued.map((r: any) => `<tr><td>${day(r.paid_at)}</td><td>${customerCell(r)}</td><td>${amounts(r)}</td><td>${vatCell(r)}</td><td>faturado no Moloni n.º <strong>${esc(r.moloni_doc)}</strong><br><span class="hint">${fmtDate(r.issued_at)} · ${esc(r.issued_by ?? '')}</span></td>
+<td><form method="post" action="/admin/faturacao/${r.id}/pendente"><button class="ghost" style="padding:6px 12px;min-height:0">Corrigir</button></form></td></tr>`).join('')}</tbody></table>` : '<p class="hint">Ainda nenhuma.</p>'}</div>
+<div class="card" style="overflow-x:auto"><h2 style="margin-top:0">Livre resolução (consumidores)</h2><p class="hint sans">Pedidos feitos pelo botão «Desistir do contrato aqui». Devolver o valor pago, descontada a parte do serviço já prestada, no prazo de 14 dias e pelo mesmo meio (reembolso no painel da Stripe), e emitir a nota de crédito no Moloni.</p>
+${wd.length ? `<table><thead><tr><th>Pedido</th><th>Cliente</th><th>Contrato</th><th>Estado</th></tr></thead><tbody>
+${wd.map((w: any) => `<tr><td>${fmtDate(w.requested_at)}<br><span class="hint">reembolso até ${day(new Date(new Date(w.requested_at).getTime() + 14 * 86400_000))}</span></td><td>${esc(w.name)}<br><span class="hint">${esc(w.email)}</span></td>
+<td>${esc(w.plan_id ?? '')} desde ${w.contract_started_at ? day(w.contract_started_at) : '—'}<br><span class="hint">${esc(w.stripe_ref ?? '')} · ${w.stripe_cancelled ? 'cancelada na Stripe' : 'CANCELAR no painel da Stripe'}</span></td>
+<td>${w.status === 'processed' ? `${pill('tratado', 'ok')} <span class="hint">${fmtDate(w.processed_at)} · ${esc(w.note ?? '')}</span>` : `<form method="post" action="/admin/faturacao/livre-resolucao/${w.id}"><input name="note" type="text" maxlength="200" placeholder="reembolso feito, nota de crédito n.º …" aria-label="Nota"><button class="accent" style="margin-top:6px">Marcar tratado</button></form>`}</td></tr>`).join('')}</tbody></table>` : '<p class="hint">Sem pedidos.</p>'}</div>`);
+  });
+
+  app.post('/admin/faturacao/:id/faturada', async (req, reply) => {
+    if (!guard(req, reply)) return;
+    const id = (req.params as any).id;
+    if (!isUuid(id)) return reply.code(404).send();
+    const doc = String((req.body as any)?.moloni_doc ?? '').replace(/\s+/g, ' ').trim().slice(0, 60);
+    if (!doc) return back(reply, '/admin/faturacao', undefined, 'Indique o número da fatura emitida no Moloni.');
+    const r = await db.one(`UPDATE invoice_queue SET status='issued', moloni_doc=$2, issued_at=now(), issued_by=$3 WHERE id=$1 AND status='pending' RETURNING id`, [id, doc, req.user!.email]);
+    if (!r) return back(reply, '/admin/faturacao', undefined, 'Este pagamento já estava marcado como faturado (ou não existe).');
+    await audit(db, req.user!.email, 'admin.invoice_issued', null, { queue: id, moloni: doc });
+    return back(reply, '/admin/faturacao', `Marcado como faturado no Moloni n.º ${doc}.`);
+  });
+
+  app.post('/admin/faturacao/:id/pendente', async (req, reply) => {
+    if (!guard(req, reply)) return;
+    const id = (req.params as any).id;
+    if (!isUuid(id)) return reply.code(404).send();
+    const r = await db.one(`UPDATE invoice_queue SET status='pending', moloni_doc=NULL, issued_at=NULL, issued_by=NULL WHERE id=$1 AND status='issued' RETURNING id`, [id]);
+    if (r) await audit(db, req.user!.email, 'admin.invoice_reopened', null, { queue: id });
+    return back(reply, '/admin/faturacao', r ? 'Voltou à lista «por faturar».' : undefined);
+  });
+
+  app.post('/admin/faturacao/livre-resolucao/:id', async (req, reply) => {
+    if (!guard(req, reply)) return;
+    const id = (req.params as any).id;
+    if (!isUuid(id)) return reply.code(404).send();
+    const note = String((req.body as any)?.note ?? '').replace(/\s+/g, ' ').trim().slice(0, 200);
+    const r = await db.one(`UPDATE withdrawals SET status='processed', processed_at=now(), processed_by=$2, note=$3 WHERE id=$1 AND status='requested' RETURNING id`, [id, req.user!.email, note || null]);
+    if (r) await audit(db, req.user!.email, 'admin.withdrawal_processed', null, { withdrawal: id });
+    return back(reply, '/admin/faturacao', r ? 'Pedido de livre resolução marcado como tratado.' : undefined);
   });
 }
