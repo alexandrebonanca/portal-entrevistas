@@ -8,6 +8,7 @@ process.env.AI_MOCK = '1';
 process.env.PGLITE_MEMORY = '1';
 process.env.STORAGE_DIR = mkdtempSync(join(tmpdir(), 'pe-test-'));
 process.env.BASE_URL = 'http://test.local';
+process.env.VEO_BUSY_WAIT_MS = '400'; // espera depois de uma «procura elevada» simulada (45 s na produção)
 
 const { openDb, migrate } = await import('../src/db.ts');
 const { buildApp } = await import('../src/app.ts');
@@ -426,6 +427,53 @@ test('canário: dos primeiros 8 pedaços, menos de 4 aprovados param a produçã
   assert.equal((await walletOf(cli.id)).available_cents, a0);
   const n = Number((await db.one('SELECT count(*)::int n FROM veo_ops WHERE quote_id=$1', [q.id])).n);
   assert.ok(n >= 5 && n <= 8, `pára cedo: ${n} clipes`);
+  await check();
+});
+
+test('canário: uma tentativa contada que acaba sem nada enviado devolve o lugar e acorda quem espera', async () => {
+  let failed: Error | null = null;
+  const g = V.canaryGate(true, () => !!failed, e => { failed ??= e; });
+  for (let i = 0; i < V.CANARY_CHUNKS; i++) assert.equal(await g.enter(), true);
+  for (let i = 0; i < V.CANARY_CHUNKS - 1; i++) g.leave('ok');
+  let entered: boolean | null = null;
+  const p = g.enter().then(v => { entered = v; });
+  await new Promise(r => setImmediate(r));
+  assert.equal(entered, null, 'o 9.º espera pelo resultado do 8.º');
+  g.leave('stop'); // o 8.º acabou sem nada enviado (procura elevada, teto): o lugar passa ao seguinte
+  await p;
+  assert.equal(entered, true, 'o que esperava passa a contar como 8.º');
+  g.leave('ok');
+  assert.equal(await g.enter(), false, 'com os 8 resultados, os seguintes já não contam nem esperam');
+  assert.equal(failed, null);
+  // trabalho parado: quem espera sai logo
+  let stopped: Error | null = null;
+  const g2 = V.canaryGate(true, () => !!stopped, () => {});
+  for (let i = 0; i < V.CANARY_CHUNKS; i++) await g2.enter();
+  const w = g2.enter();
+  stopped = new Error('parado'); g2.notify();
+  assert.equal(await w, false);
+});
+
+test('canário: «procura elevada» no 8.º pedaço (o último da passagem A a seguir é o 9.º) não deixa o trabalho preso', async () => {
+  await rejectAll();
+  const q = await accept(await newQuote(['q0', 'q1', 'sx']));
+  assert.equal(q.selection.reduce((n: number, x: any) => n + x.chunks, 0), 9, 'exatamente 9 pedaços novos: o canário está ligado e o 9.º é o último');
+  // O 8.º pedaço a arrancar recebe 3 vezes «procura elevada» (sem nada enviado nem cobrado); depois passa.
+  const seen: string[] = [], calls = new Map<string, number>();
+  V.veoMock.outcome = c => {
+    if (!seen.includes(c.text)) seen.push(c.text);
+    const n = (calls.get(c.text) ?? 0) + 1; calls.set(c.text, n);
+    return seen.indexOf(c.text) === V.CANARY_CHUNKS - 1 && n <= 3 ? 'busy' : 'ok';
+  };
+  try {
+    await Promise.race([drain(), new Promise((_, rej) => setTimeout(() => rej(new Error('o trabalho ficou preso à espera do canário')), 120_000).unref())]);
+  } finally { V.veoMock.outcome = null; }
+  const job = await db.one('SELECT state, error FROM jobs WHERE id=$1', [q.job_id]);
+  assert.equal(job.state, 'done', job.error ?? '');
+  const s = await quoteOf(q.id);
+  assert.deepEqual([s.status, s.charged_cents, s.released_cents], ['settled', q.price_cents, 0], 'a repetição na 2.ª passagem completou a fala');
+  const busy = await db.query(`SELECT state, cost_usd FROM veo_ops WHERE quote_id=$1 AND state='void'`, [q.id]);
+  assert.ok(busy.length >= 3 && busy.every((o: any) => o.cost_usd === 0), 'recusados antes de a Google aceitar: custo 0');
   await check();
 });
 

@@ -350,6 +350,43 @@ export const VEO_MAX_ATTEMPTS = 2;
 /** Canário: dos primeiros 8 pedaços gerados, menos de 4 aprovados param a produção (falha sistémica). */
 export const CANARY_CHUNKS = 8;
 export const CANARY_MIN_OK = 4;
+/**
+ * Canário (só com orçamento e pelo menos CANARY_CHUNKS pedaços novos): as 1.as tentativas a seguir às 8 primeiras esperam
+ * pelo resultado delas. `started - done` é o número de tentativas contadas em curso: cada uma acaba com um resultado
+ * (done++) ou sem nada enviado (procura elevada, teto, quota: started--, o lugar passa a outro pedaço), e as duas avisam
+ * quem espera, que volta a ver se pode seguir. Assim ninguém fica à espera de uma tentativa que já não vai dar resultado.
+ */
+export function canaryGate(on: boolean, aborted: () => boolean, fail: (e: Error) => void) {
+  const st = { on, started: 0, done: 0, ok: 0, bad: 0 };
+  let wake: () => void = () => {};
+  let changed = new Promise<void>(r => { wake = r; });
+  /** Acorda quem espera (resultado, lugar devolvido ou trabalho parado); a espera seguinte usa uma promessa nova. */
+  const notify = () => { const w = wake; changed = new Promise<void>(r => { wake = r; }); w(); };
+  return {
+    state: st,
+    notify,
+    /** Antes de uma 1.ª tentativa: espera enquanto as 8 primeiras estão todas em curso; devolve se esta tentativa conta. */
+    async enter(): Promise<boolean> {
+      if (!st.on) return false;
+      while (!aborted() && st.started >= CANARY_CHUNKS && st.done < CANARY_CHUNKS) await changed;
+      if (aborted() || st.started >= CANARY_CHUNKS) return false;
+      st.started++;
+      return true;
+    },
+    /** Fim de uma tentativa contada: 'stop' (nada enviado) devolve o lugar; senão conta o resultado e decide. */
+    leave(r: 'ok' | 'failed' | 'stop') {
+      if (r === 'stop') st.started--;
+      else {
+        st.done++; if (r === 'ok') st.ok++; else st.bad++;
+        if (st.bad > CANARY_CHUNKS - CANARY_MIN_OK || (st.done >= CANARY_CHUNKS && st.ok < CANARY_MIN_OK))
+          fail(new PermanentError(`${VEO_CANARY} (${st.ok} de ${st.done} aprovados)`));
+      }
+      notify();
+    },
+  };
+}
+/** Espera depois de uma resposta «procura elevada» da Google, multiplicada pelo número da tentativa. */
+export const BUSY_WAIT_MS = Number(process.env.VEO_BUSY_WAIT_MS ?? 45_000);
 /** Disjuntor da 2.ª passagem: depois de 10 repetições, menos de 30% aprovadas param as repetições. */
 export const BREAKER_RETRIES = 10;
 export const BREAKER_MIN_RATE = 0.3;
@@ -368,8 +405,8 @@ const falaReasonOf = (problem: string | null) =>
 const unitProblem = (chosen: boolean, hasChecked: boolean, anyUnchecked: boolean, why: string | null) =>
   !chosen && (why === 'capped_budget' || why === 'breaker') ? why : chunkProblem(chosen, hasChecked, anyUnchecked, why ?? undefined);
 
-/** Só para os testes (AI_MOCK): resultado simulado de cada clipe — aprovado, texto diferente, filtrado ou quota esgotada. */
-export const veoMock: { outcome: null | ((c: { segmentId: string; role: string; text: string; attempt: number }) => 'ok' | 'mismatch' | 'filtered' | 'quota');
+/** Só para os testes (AI_MOCK): resultado simulado de cada clipe — aprovado, texto diferente, filtrado, quota esgotada ou procura elevada. */
+export const veoMock: { outcome: null | ((c: { segmentId: string; role: string; text: string; attempt: number }) => 'ok' | 'mismatch' | 'filtered' | 'quota' | 'busy');
   /** Consulta simulada de uma operação (pode lançar os erros da consulta real, ex.: credenciais recusadas ou retiradas). */
   poll?: null | ((o: { opName: string; scope: string | null; project: string | null }) => Promise<void> | void) } = { outcome: null, poll: null };
 
@@ -597,9 +634,8 @@ export async function renderVeoVideo(job: any, { db, progress }: Parameters<Hand
   const submittedThisRun = new Set<string>(); // operações pagas nesta geração (as retomadas foram pagas antes)
   let abort: Error | null = null; // chave recusada, quota esgotada, autorização retirada, canário ou erro inesperado: os trabalhadores param
   let timeouts = 0; // Google degradada: duas esperas esgotadas seguidas param o trabalho (as operações ficam pendentes e retomam-se)
-  let canaryOpen: () => void = () => {};
-  const canaryGate = new Promise<void>(r => { canaryOpen = r; });
-  const stop = (e: Error) => { abort ??= e; canaryOpen(); };
+  let canary: ReturnType<typeof canaryGate> | null = null; // criado depois da lista da passagem A
+  const stop = (e: Error) => { abort ??= e; canary?.notify(); };
   const pct = () => 5 + Math.round((doneN / Math.max(1, units.size)) * 70);
   const budgetOf = (s: PlanSeg) => (sel ? Number(sel.get(s.id)?.budgetUsd ?? 0) : Infinity);
 
@@ -719,7 +755,7 @@ export async function renderVeoVideo(job: any, { db, progress }: Parameters<Hand
       let opModel = tierModel, opPrice = tierPrice; // modelo e preço da operação (os de uma pendente são os dela)
       let opScope: string | null = null, opProject: string | null = null; // credenciais que a criaram (null: operação antiga)
       let foreign = false; // consulta recusada às credenciais de outra operação (não às em vigor)
-      let outcome: 'ok' | 'mismatch' | 'filtered' | 'quota' = 'ok';
+      let outcome: 'ok' | 'mismatch' | 'filtered' | 'quota' | 'busy' = 'ok';
       // Antes de CADA envio (também nas repetições após 429): trabalho não parado e autorizações em vigor.
       const canSend = async () => {
         if (abort) return false;
@@ -744,6 +780,7 @@ export async function renderVeoVideo(job: any, { db, progress }: Parameters<Hand
           if (mock) {
             outcome = veoMock.outcome?.({ segmentId: c.seg.id, role: c.seg.role, text: c.text, attempt: u.atts.length + u.failures + 1 }) ?? 'ok';
             if (outcome === 'quota') throw new VeoQuotaError('Limite de pedidos (quota) da Google esgotado (simulado).');
+            if (outcome === 'busy') throw new VeoBusy('Veo 503: high demand, try again later (simulado)');
             opName = `mock/${reservedId}`; opScope = veoScopeId();
           } else {
             const s = await veoSubmit({ image: st.image, prompt: c.prompt, aspectRatio: st.vertical ? '9:16' : '16:9', durationSeconds: dur, onStatus, canSend, tier });
@@ -803,7 +840,7 @@ export async function renderVeoVideo(job: any, { db, progress }: Parameters<Hand
           u.problem = 'busy';
           if (++busyStreak >= 5) { stop(new PermanentError(VEO_BUSY)); return 'stop'; }
           if (++busy > 2 || ++u.busyRecent >= 4) return 'stop'; // fica em fotografia fixa nesta geração; numa próxima volta a tentar-se
-          const wait = 45_000 * busy;
+          const wait = BUSY_WAIT_MS * busy;
           await progress(pct(), 100, `${label} — Google Veo com procura elevada: nova tentativa dentro de ${Math.round(wait / 1000)} s`);
           await sleep(wait);
           continue;
@@ -852,13 +889,8 @@ export async function renderVeoVideo(job: any, { db, progress }: Parameters<Hand
     return ok;
   };
   // Canário (só com orçamento e pelo menos 8 pedaços novos): os 9.º e seguintes esperam pelo resultado dos 8 primeiros.
-  const canary = { on: !!quote && tasksA.length >= CANARY_CHUNKS, started: 0, done: 0, ok: 0, bad: 0 };
-  const canaryResult = (ok: boolean) => {
-    canary.done++; if (ok) canary.ok++; else canary.bad++;
-    if (canary.bad > CANARY_CHUNKS - CANARY_MIN_OK || (canary.done >= CANARY_CHUNKS && canary.ok < CANARY_MIN_OK))
-      stop(new PermanentError(`${VEO_CANARY} (${canary.ok} de ${canary.done} aprovados)`));
-    if (canary.done >= CANARY_CHUNKS) canaryOpen();
-  };
+  const gateC = canaryGate(!!quote && tasksA.length >= CANARY_CHUNKS, () => !!abort, stop);
+  canary = gateC;
   let nextA = 0;
   const workerA = async () => {
     while (!abort && nextA < tasksA.length) {
@@ -868,14 +900,10 @@ export async function renderVeoVideo(job: any, { db, progress }: Parameters<Hand
           if (earmark.has(fala.id)) earmark.set(fala.id, Math.max(0, earmark.get(fala.id)! - maxClip * tierPrice));
           doneN++; continue;
         }
-        let counted = false;
-        if (canary.on) {
-          if (canary.started >= CANARY_CHUNKS && canary.done < CANARY_CHUNKS) await canaryGate;
-          if (abort) break;
-          if (canary.started < CANARY_CHUNKS) { canary.started++; counted = true; }
-        }
+        const counted = await gateC.enter();
+        if (abort) break;
         const r = await attemptOnce(u, fala, false);
-        if (counted) { if (r === 'stop') canary.started--; else canaryResult(r === 'ok'); }
+        if (counted) gateC.leave(r);
         doneN++;
         await progress(pct(), 100, `Google Veo: ${doneN} de ${units.size} clipes`);
       } catch (e: any) { stop(e instanceof PermanentError || e instanceof JobPaused ? e : new Error(`Falha a gerar os clipes: ${String(e?.message ?? e).slice(0, 300)}`)); }
