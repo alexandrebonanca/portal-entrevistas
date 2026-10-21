@@ -290,6 +290,22 @@ test('«Guardar e testar» do Google: Vertex sem gerar vídeo; Gemini API sem co
   await assert.rejects(t.veoCheck(), /falta a conta de serviço/);
 });
 
+test('«Guardar e testar» do Google: 404 e 400 da operação inexistente provam o acesso; outra resposta mostra-se tal como veio', async () => {
+  const ok = /conta de serviço aceite \(veo-teste@projeto-teste-123\.iam\.gserviceaccount\.com, projeto projeto-teste-123, us-central1\) e acesso ao Google Veo 3\.1 Fast \(veo-3\.1-fast-generate-001\) confirmado/;
+  fake(() => json({ error: { code: 400, message: 'Invalid operation name.', status: 'INVALID_ARGUMENT' } }, 400));
+  assert.match(await t.veoCheck(), ok);
+  fake(() => json({ name: 'x', done: true }));
+  assert.match(await t.veoCheck(), ok, 'uma resposta 2xx também prova o acesso');
+  // 500 (por exemplo, se o Vertex real responder assim a uma operação que não existe): o token foi aceite; diz-se o que veio
+  fake(() => json({ error: { code: 500, message: 'Internal error encountered.', status: 'INTERNAL' } }, 500));
+  await assert.rejects(t.veoCheck(), (e: any) => /foi aceite \(token obtido\), mas o teste do acesso ao Google Veo 3\.1 Fast \(veo-3\.1-fast-generate-001, us-central1\) teve uma resposta inesperada da Google: HTTP 500 INTERNAL — Internal error encountered\.\. Nada foi gerado nem cobrado; pode ser passageira/.test(e.message));
+  fake(() => json({ error: { code: 409, message: 'Aborted.', status: 'ABORTED' } }, 409));
+  await assert.rejects(t.veoCheck(), /HTTP 409 ABORTED — Aborted\.\. Nada foi gerado nem cobrado; confirme o acesso ao modelo na consola da Google Cloud/);
+  fake(() => new Response('<html>Bad gateway</html>', { status: 502 }));
+  await assert.rejects(t.veoCheck(), /HTTP 502 — <html>Bad gateway<\/html>/);
+  assert.ok(!calls.some(c => c.url.includes(':predictLongRunning')), 'nunca gera vídeo');
+});
+
 test('Laboratório: só o Veo vem marcado; os outros motores continuam disponíveis', () => {
   const veo = t.PROVIDERS.filter(p => p.preselected).map(p => p.id);
   assert.deepEqual(veo, ['veo', 'veo-lite']);

@@ -389,49 +389,63 @@ export async function veoGenerate(o: { image: Buffer; prompt: string; aspectRati
   return { ...(await veoAwait(s.opName, s.dur, o.onStatus)), model: s.model };
 }
 
+/** Falha passageira da Google no teste (429, 5xx): diz-se para tentar de novo. */
+class CheckTransient extends Error {}
+
 /**
- * «Guardar e testar» do grupo Google, sem gerar vídeo (sem custo). Com conta de serviço: obtém o token e consulta uma
- * operação que não existe no modelo escolhido (com acesso, a Google responde 404; sem acesso, 401/403). Sem conta de
- * serviço: confirma a chave da Gemini API e o modelo, como antes. Numa entidade diz se as credenciais são dela ou as globais.
+ * «Guardar e testar» do grupo Google, sem gerar vídeo (sem custo). Numa entidade com credenciais próprias diz que são dela.
+ * Numa entidade sem elas, o teste usa as credenciais globais do portal e diz só se funcionam: o gestor da entidade não vê a
+ * conta de serviço, o projeto, a região nem as mensagens da Google (que os repetem), nem no erro do token.
  */
 export async function veoCheck(): Promise<string> {
   const tier = veoTier(), label = veoLabel(tier);
-  const whose = !currentEntity() ? '' : veoCredsScope() === 'entity'
-    ? ' Usa as credenciais Google desta entidade (as globais não se aplicam a ela).'
-    : ' A entidade não tem credenciais Google próprias: o Veo usa as globais do portal.';
-  // Numa entidade sem credenciais próprias, o teste usa a conta de serviço global: o gestor da entidade fica a saber se
-  // funciona, mas não vê o email da conta nem o projeto do portal (nem nas mensagens da Google, que os podem repetir).
-  const shared = !!currentEntity() && veoCredsScope() === 'global';
+  if (currentEntity() && veoCredsScope() === 'global') {
+    if (!veoConfigured()) throw new Error('a entidade não tem credenciais Google próprias e o portal ainda não tem as globais: cole aqui a conta de serviço da entidade ou avise o administrador do portal.');
+    try { await checkCreds(tier, label); }
+    catch (e) { throw new Error(e instanceof CheckTransient ? 'credenciais globais do portal: a Google não respondeu agora; tente de novo daqui a pouco.' : 'credenciais globais do portal: não estão a funcionar. Avise o administrador do portal.'); }
+    return 'Google: a entidade não tem credenciais Google próprias e usa as globais do portal. Credenciais globais do portal: OK.';
+  }
+  return (await checkCreds(tier, label)) + (currentEntity() ? ' Usa as credenciais Google desta entidade (as globais não se aplicam a ela).' : '');
+}
+
+/**
+ * Teste das credenciais em vigor. Com conta de serviço: obtém o token e consulta uma operação que não existe no modelo
+ * escolhido (com acesso, a Google responde 404 NOT_FOUND ou 400 INVALID_ARGUMENT; sem acesso, 401/403); qualquer outra
+ * resposta mostra-se tal como veio, a dizer que o token foi aceite. Sem conta de serviço: confirma a chave da Gemini API e
+ * o modelo, como antes.
+ */
+async function checkCreds(tier: VeoTier, label: string): Promise<string> {
   if (veoS('VERTEX_SA_JSON')) {
-    let cfg: ServiceAccount | null = null;
-    try { cfg = parseServiceAccount(veoS('VERTEX_SA_JSON')); } catch { /* o erro sai no pedido do token */ }
-    const scrub = (s: string) => (!shared ? s : [cfg?.client_email, cfg?.project_id].filter(Boolean).reduce((x, v) => x.split(v!).join('(portal)'), s).replace(/\b\d{6,}\b/g, '(portal)'));
     let tk: { token: string; sa: ServiceAccount };
-    try { tk = await vertexToken(); } catch (e: any) { throw new Error(scrub(String(e?.message ?? e).replace(/^Veo \d+:\s*/, ''))); }
+    try { tk = await vertexToken(); }
+    catch (e: any) { const m = String(e?.message ?? e), clean = m.replace(/^Veo \d+:\s*/, ''); throw /^Veo (429|5\d\d)/.test(m) ? new CheckTransient(clean) : new Error(clean); }
     const { token, sa } = tk, loc = vertexLocation(), model = veoModel(tier, 'vertex');
-    const who = shared ? 'global do portal' : sa.client_email, proj = shared ? 'Google do portal' : sa.project_id;
     const opName = `projects/${sa.project_id}/locations/${loc}/publishers/google/models/${model}/operations/00000000-0000-0000-0000-000000000000`;
     const r = await fetch(`${vertexModelUrl(sa.project_id, loc, model)}:fetchPredictOperation`, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ operationName: opName }) });
     const text = await r.text();
     let j: any = {};
     try { j = text ? JSON.parse(text) : {}; } catch { /* corpo não-JSON */ }
-    const gm = scrub(String(j?.error?.message ?? text).replace(/\s+/g, ' ').slice(0, 140));
-    if (r.status === 401) throw new Error(`a Google recusou o token da conta de serviço ${who}: ${gm}`);
+    const gm = String(j?.error?.message ?? text).replace(/\s+/g, ' ').slice(0, 140);
+    const st = typeof j?.error?.status === 'string' ? ` ${j.error.status.slice(0, 40)}` : '';
+    if (r.status === 401) throw new Error(`a Google recusou o token da conta de serviço ${sa.client_email}: ${gm}`);
     if (r.status === 403) throw new Error(/SERVICE_DISABLED|has not been used|is disabled/i.test(text)
-      ? `a Vertex AI API não está ativa no projeto ${proj}: ${shared ? 'avise o administrador do portal.' : 'ative-a na consola da Google Cloud e teste de novo.'}`
-      : `a conta de serviço ${who} não tem acesso ao ${label} no projeto ${proj} (precisa da função «Vertex AI User»): ${gm}`);
-    if (r.status === 404 && /publisher model/i.test(gm) && !/operations\//.test(gm)) throw new Error(`o modelo ${model} não está disponível em ${loc} para o projeto ${proj}: ${gm}`);
-    if (r.status === 429 || r.status >= 500) throw new Error(`a Google respondeu ${r.status}; tente de novo daqui a pouco: ${gm}`);
-    if (!r.ok && r.status !== 404 && r.status !== 400) throw new Error(`resposta inesperada da Google (${r.status}): ${gm}`);
-    return `Google (Vertex AI): conta de serviço ${shared ? `global do portal aceite (${loc})` : `aceite (${sa.client_email}, projeto ${sa.project_id}, ${loc})`} e acesso ao ${label} (${model}) confirmado, sem gerar vídeo.`
+      ? `a Vertex AI API não está ativa no projeto ${sa.project_id}: ative-a na consola da Google Cloud e teste de novo.`
+      : `a conta de serviço ${sa.client_email} não tem acesso ao ${label} no projeto ${sa.project_id} (precisa da função «Vertex AI User»): ${gm}`);
+    if (r.status === 404 && /publisher model/i.test(gm) && !/operations\//.test(gm)) throw new Error(`o modelo ${model} não está disponível em ${loc} para o projeto ${sa.project_id}: ${gm}`);
+    if (!r.ok && r.status !== 404 && r.status !== 400) {
+      const busy = r.status === 429 || r.status >= 500;
+      const msg = `a conta de serviço ${sa.client_email} foi aceite (token obtido), mas o teste do acesso ao ${label} (${model}, ${loc}) teve uma resposta inesperada da Google: HTTP ${r.status}${st}${gm ? ` — ${gm}` : ''}. Nada foi gerado nem cobrado; ${busy ? 'pode ser passageira: tente de novo daqui a pouco' : 'confirme o acesso ao modelo na consola da Google Cloud'}.`;
+      throw busy ? new CheckTransient(msg) : new Error(msg);
+    }
+    return `Google (Vertex AI): conta de serviço aceite (${sa.client_email}, projeto ${sa.project_id}, ${loc}) e acesso ao ${label} (${model}) confirmado, sem gerar vídeo.`
       + (tier === 'lite' ? ' O Lite está em pré-visualização e a ficha da Google contradiz-se sobre a imagem inicial: se o Vertex a recusar, a geração pára com uma mensagem clara e pode escolher o Fast.' : '')
-      + (veoS('GEMINI_API_KEY') ? ' A chave Gemini fica guardada, mas o Veo usa o Vertex AI.' : '') + whose;
+      + (veoS('GEMINI_API_KEY') ? ' A chave Gemini fica guardada, mas o Veo usa o Vertex AI.' : '');
   }
   if (!veoS('GEMINI_API_KEY')) throw new Error('falta a conta de serviço do Vertex AI (ou a chave da Gemini API).');
   const model = veoModel(tier, 'gemini');
   const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}`, { headers: { 'x-goog-api-key': veoS('GEMINI_API_KEY') } });
-  if (!r.ok) throw new Error(`Google respondeu ${r.status} (chave inválida ou sem acesso ao ${label})`);
-  return `Google (Gemini API): chave válida e modelo ${label} (${model}) disponível. A Google desliga estes modelos na Gemini API a partir de 22/10/2026: configure a conta de serviço do Vertex AI.${whose}`;
+  if (!r.ok) { const msg = `Google respondeu ${r.status} (chave inválida ou sem acesso ao ${label})`; throw r.status === 429 || r.status >= 500 ? new CheckTransient(msg) : new Error(msg); }
+  return `Google (Gemini API): chave válida e modelo ${label} (${model}) disponível. A Google desliga estes modelos na Gemini API a partir de 22/10/2026: configure a conta de serviço do Vertex AI.`;
 }
 
 async function veo(image: Buffer, text: string, onStatus: ((s: string) => Promise<void>) | undefined, tier: VeoTier) {

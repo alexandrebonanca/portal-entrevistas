@@ -177,10 +177,9 @@ test('Veo por entidade: credenciais em conjunto — a conta de serviço global n
     assert.match(calls[1].url, /\/projects\/portal-dono-veo\/locations\/us-central1\//);
     r = await post(`/entidades/${otherId}/testar/Google`, { VEO_TIER: '' }, other);
     msg = decodeURIComponent(r.headers.location as string);
-    assert.match(msg, /Vertex AI/); assert.match(msg, /não tem credenciais Google próprias/);
-    // o gestor da entidade não vê a identidade da conta de serviço global (email e projeto do portal)
-    assert.match(msg, /conta de serviço global do portal aceite \(us-central1\)/);
-    assert.doesNotMatch(msg, /portal-dono-veo/);
+    // o gestor da entidade fica a saber só se as credenciais globais funcionam: nem a conta de serviço, nem o projeto, nem a região
+    assert.match(msg, /Google: a entidade não tem credenciais Google próprias e usa as globais do portal\. Credenciais globais do portal: OK\./);
+    assert.doesNotMatch(msg, /portal-dono-veo|us-central1|Vertex AI/);
     // nem quando a Google recusa (as mensagens dela repetem o projeto e o número dele)
     const okFetch = globalThis.fetch;
     globalThis.fetch = (async (u: any, init: any) => String(u).includes(':fetchPredictOperation')
@@ -188,9 +187,24 @@ test('Veo por entidade: credenciais em conjunto — a conta de serviço global n
       : okFetch(u, init)) as any;
     try {
       msg = decodeURIComponent((await post(`/entidades/${otherId}/testar/Google`, { VEO_TIER: '' }, other)).headers.location as string);
-      assert.match(msg, /Teste falhou: a conta de serviço global do portal não tem acesso .* no projeto Google do portal/);
-      assert.doesNotMatch(msg, /portal-dono-veo|123456789012/);
+      assert.match(msg, /Teste falhou: credenciais globais do portal: não estão a funcionar\. Avise o administrador do portal\./);
+      assert.doesNotMatch(msg, /portal-dono-veo|123456789012|us-central1/);
     } finally { globalThis.fetch = okFetch; }
+    // nem no erro do token da conta de serviço global (que traz o email dela)
+    t.clearVertexTokens();
+    globalThis.fetch = (async (u: any, init: any) => String(u) === 'https://oauth2.googleapis.com/token'
+      ? new Response(JSON.stringify({ error: 'invalid_grant', error_description: 'Invalid JWT Signature.' }), { status: 400 })
+      : okFetch(u, init)) as any;
+    try {
+      msg = decodeURIComponent((await post(`/entidades/${otherId}/testar/Google`, { VEO_TIER: '' }, other)).headers.location as string);
+      assert.match(msg, /Teste falhou: credenciais globais do portal: não estão a funcionar\./);
+      assert.doesNotMatch(msg, /portal-dono-veo|invalid_grant/);
+      // uma falha passageira da Google diz para tentar de novo
+      t.clearVertexTokens();
+      globalThis.fetch = (async (u: any, init: any) => String(u).includes(':fetchPredictOperation') ? new Response('{}', { status: 503 }) : okFetch(u, init)) as any;
+      msg = decodeURIComponent((await post(`/entidades/${otherId}/testar/Google`, { VEO_TIER: '' }, other)).headers.location as string);
+      assert.match(msg, /credenciais globais do portal: a Google não respondeu agora; tente de novo daqui a pouco\./);
+    } finally { globalThis.fetch = okFetch; t.clearVertexTokens(); }
     // fora de uma entidade (Definições do administrador), o teste continua a mostrar a conta e o projeto globais
     assert.match(await t.veoCheck(), /aceite \(veo@portal-dono-veo\.iam\.gserviceaccount\.com, projeto portal-dono-veo, us-central1\)/);
     pg = await get(`/entidades/${otherId}/chaves`, other);
