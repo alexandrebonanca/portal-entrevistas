@@ -232,8 +232,14 @@ test('conta de serviço: colagens estragadas explicadas sem mostrar a chave; BOM
   assert.match(noLeak(err(SA_JSON + SA_JSON)), /recebidos \d+ caracteres; começa por «\{»: sim; termina em «\}»: sim.*colado mais do que uma vez/);
   // só a chave privada
   assert.match(noLeak(err(privateKey)), /só a chave privada/);
-  // preenchido pelo gestor de palavras-passe
-  assert.match(noLeak(err('Xk9#mQ2!vR7pL4')), /recebidos 14 caracteres.*curto demais.*palavra-passe guardada/);
+  // preenchido pelo gestor de palavras-passe, ou uma chave de API em vez do ficheiro
+  assert.match(noLeak(err('Xk9#mQ2!vR7pL4')), /recebidos 14 caracteres.*curto demais.*chave de API, uma palavra-passe preenchida pelo browser ou só uma parte.*Adicionar chave → Criar nova chave → JSON/);
+  const aiza = 'AIzaSyD' + 'x'.repeat(32), aq = 'AQ.Ab8RN6' + 'y'.repeat(33);
+  const mAiza = err(aiza), mAq = err(aq);
+  assert.match(mAiza, /chave de API da Google \(começa por «AIza»\).*campo «Gemini API key».*JSON/); assert.ok(!mAiza.includes(aiza.slice(4, 14)));
+  assert.match(mAq, /modo express \(começa por «AQ\.»\), que não serve aqui/); assert.ok(!mAq.includes(aq.slice(3, 15)));
+  assert.match(noLeak(err('a ' + SA_JSON)), /não é um JSON válido/);
+  assert.equal(parseServiceAccount(SA_JSON.replace(/\n {2}/g, '\n  ')).client_email, SA.client_email, 'espaços não separáveis na indentação');
   // cortado no fim
   assert.match(noLeak(err(SA_JSON.slice(0, 1500))), /termina em «\}»: não.*Falta o início ou o fim/);
   // o ficheiro como o browser o envia a partir da caixa (com quebras de linha), com BOM e com aspas tipográficas
@@ -248,7 +254,8 @@ test('Definições: a conta de serviço numa caixa mascarada com «Escolher o fi
   const { SETTING_DEFS } = await import('../src/settings.ts');
   const html = settingInput(SETTING_DEFS.find(d => d.key === 'VERTEX_SA_JSON')!, JSON.stringify(SA), '');
   assert.match(html, /<textarea id="f_VERTEX_SA_JSON" name="VERTEX_SA_JSON"[^>]*autocomplete="off"[^>]*-webkit-text-security:disc[^>]*placeholder="guardada: veo-teste@projeto-teste-123\.iam\.gserviceaccount\.com · projeto projeto-teste-123"><\/textarea>/);
-  assert.match(html, /<input type="file" accept="\.json,application\/json" data-json-into="f_VERTEX_SA_JSON" hidden>/);
+  assert.match(html, /<button type="button" class="ghost" data-json-pick="f_VERTEX_SA_JSON">Escolher o ficheiro \.json<\/button><input type="file" accept="\.json,application\/json" data-json-into="f_VERTEX_SA_JSON" hidden>/, 'botão alcançável pelo teclado');
+  assert.match(html, /try\{t\.value=await x\.text\(\);say\(\);\}catch/, 'erro de leitura tratado');
   assert.doesNotMatch(html, /type="password"|PRIVATE|private_key/, 'nada da chave na página');
 });
 

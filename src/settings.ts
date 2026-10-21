@@ -95,27 +95,30 @@ export class SettingError extends Error {}
 export interface ServiceAccount { type: 'service_account'; project_id: string; private_key_id?: string; private_key: string; client_email: string }
 
 /**
- * Valida o JSON da chave de uma conta de serviço. As mensagens nunca citam o texto colado: a do JSON.parse pode incluir
- * parte dele (a chave privada), por isso é descartada.
- */
-/**
  * Forma do texto recebido, para explicar porque não é o ficheiro da chave sem nunca mostrar o conteúdo
- * (só o tamanho, se começa e acaba em chaveta e se os nomes dos campos aparecem).
+ * (só o tamanho, se começa e acaba em chaveta, se os nomes dos campos aparecem e o tipo de chave reconhecido).
  */
 function saShape(s: string) {
   const yn = (b: boolean) => (b ? 'sim' : 'não');
   const facts = `recebidos ${s.length} caracteres; começa por «{»: ${yn(s.startsWith('{'))}; termina em «}»: ${yn(s.endsWith('}'))}; tem "private_key": ${yn(s.includes('"private_key"'))}; tem "client_email": ${yn(s.includes('"client_email"'))}`;
+  const howTo = 'Para o Vertex é preciso o ficheiro JSON da conta de serviço: na Google Cloud, IAM → Contas de serviço → a conta → Chaves → Adicionar chave → Criar nova chave → JSON.';
   const hint = (s.match(/"type"\s*:/g) ?? []).length > 1 ? 'Parece ter sido colado mais do que uma vez: apague o campo e cole uma só vez.'
+    : /^AIza[0-9A-Za-z_-]{20,}$/.test(s) ? `Isto é uma chave de API da Google (começa por «AIza»), não o ficheiro da conta de serviço; se for da Gemini API, vai no campo «Gemini API key». ${howTo}`
+    : /^AQ\.[0-9A-Za-z_.-]{10,}$/.test(s) ? `Isto é uma chave de API do Vertex AI em modo express (começa por «AQ.»), que não serve aqui. ${howTo}`
     : /^-----BEGIN/.test(s) ? 'Foi colada só a chave privada: é preciso o ficheiro .json inteiro.'
-    : s.length < 1000 ? 'O texto é curto demais para ser o ficheiro da chave (tem cerca de 2300 caracteres): o browser pode ter preenchido o campo com uma palavra-passe guardada.'
+    : s.length < 1000 ? `O texto é curto demais para ser o ficheiro da chave (tem cerca de 2300 caracteres): pode ser uma chave de API, uma palavra-passe preenchida pelo browser ou só uma parte do ficheiro. ${howTo}`
     : !s.startsWith('{') || !s.endsWith('}') ? 'Falta o início ou o fim do ficheiro: copie-o todo (Ctrl+A e Ctrl+C no editor).'
     : 'O texto foi alterado (por exemplo, aberto e guardado num processador de texto).';
   return `${facts}. ${hint} Use «Escolher o ficheiro .json» para o ler diretamente do computador.`;
 }
 
+/**
+ * Valida o JSON da chave de uma conta de serviço. As mensagens nunca citam o texto colado: a do JSON.parse pode incluir
+ * parte dele (a chave privada), por isso é descartada.
+ */
 export function parseServiceAccount(raw: string): ServiceAccount {
-  // Marca BOM, caracteres invisíveis e aspas tipográficas (de editores de texto) não fazem parte de um ficheiro da Google.
-  const text = String(raw ?? '').replace(/[​-‍⁠﻿]/g, '').replace(/[“”„‟″]/g, '"').trim();
+  // Marca BOM, caracteres invisíveis, espaços não separáveis e aspas tipográficas (de editores de texto) não fazem parte de um ficheiro da Google.
+  const text = String(raw ?? '').replace(/[\u200B-\u200D\u2060\uFEFF]/g, '').replace(/\u00A0/g, ' ').replace(/[\u201C\u201D\u201E\u201F\u2033]/g, '"').trim();
   let j: any;
   try { j = JSON.parse(text); } catch { throw new SettingError(`A conta de serviço não é um JSON válido (${saShape(text)})`); }
   if (!j || typeof j !== 'object' || Array.isArray(j)) throw new SettingError('A conta de serviço não é um JSON válido: cole o ficheiro .json completo.');
