@@ -6,9 +6,12 @@ export const LIMIT_SLACK_MS = 2000;
 /** Uma pergunta adicional só se envia se o convidado ainda tiver, pelo menos, este tempo de resposta. */
 export const FOLLOWUP_MIN_LEFT_SEC = 30;
 
-/** Limites a fixar na entrevista no convite: os do plano da subscrição que o autoriza; o administrador não tem limite. */
-export function inviteLimits(quota: { unlimited: boolean; plan: any }): { answerLimitSec: number | null; questionLimit: number | null } {
-  if (quota.unlimited) return { answerLimitSec: null, questionLimit: null };
+/**
+ * Limites a fixar na entrevista no convite: os do plano da subscrição que o autoriza, ou os gerais sem plano (gestor de
+ * entidade, que convida sem subscrição); o administrador não tem limite.
+ */
+export function inviteLimits(quota: { exempt: boolean; plan: any }): { answerLimitSec: number | null; questionLimit: number | null } {
+  if (quota.exempt) return { answerLimitSec: null, questionLimit: null };
   return {
     answerLimitSec: Number(quota.plan?.max_answer_total_sec ?? config.limits.maxAnswerTotalSec),
     questionLimit: Number(quota.plan?.max_questions ?? config.limits.maxQuestions),
@@ -16,8 +19,8 @@ export function inviteLimits(quota: { unlimited: boolean; plan: any }): { answer
 }
 
 /** Máximo de perguntas no rascunho: o do plano (ou o geral, sem plano ou para o administrador). */
-export const draftQuestionMax = (quota: { unlimited: boolean; plan: any }) =>
-  quota.unlimited ? config.limits.maxQuestions : Number(quota.plan?.max_questions ?? config.limits.maxQuestions);
+export const draftQuestionMax = (quota: { exempt: boolean; plan: any }) =>
+  quota.exempt ? config.limits.maxQuestions : Number(quota.plan?.max_questions ?? config.limits.maxQuestions);
 
 /** Duração (ms) das respostas escolhidas de todas as perguntas da entrevista, adicionais incluídas; opcionalmente sem a de uma pergunta. */
 export async function answeredMs(db: Db, interviewId: string, exceptQuestionId: string | null = null): Promise<number> {

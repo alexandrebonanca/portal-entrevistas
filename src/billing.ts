@@ -16,18 +16,30 @@ export const STRIPE_APP = 'quietinterview';
 /** Eventos a ativar no webhook da Stripe (global e de cada entidade). */
 export const STRIPE_EVENTS = 'checkout.session.completed, checkout.session.async_payment_succeeded/failed, checkout.session.expired, customer.subscription.created/updated/deleted, invoice.paid, invoice.payment_failed, customer.tax_id.created/updated, refund.created/updated/failed, charge.refunded, charge.dispute.created/closed';
 
-/** Estado da subscrição e quota de entrevistas do período corrente. Administradores não têm limite. */
+/** O perfil convida sem subscrição: o administrador e o gestor de entidade. */
+export const noSubscriptionNeeded = (role: string) => role === 'admin' || role === 'entity_admin';
+
+/**
+ * Estado da subscrição e quota de entrevistas do período corrente. O administrador e o gestor de entidade convidam sem
+ * subscrição e sem limite mensal (`unlimited`); só o administrador fica também sem os limites técnicos de cada entrevista
+ * (`exempt`): o gestor tem os por omissão (perguntas, minutos de respostas, áudio do entrevistador e regenerações).
+ */
 export async function quotaFor(db: Db, user: { id: string; role: string }) {
-  if (user.role === 'admin') return { allowed: true, unlimited: true, used: 0, limit: Infinity, plan: null as any, sub: null as any, reason: '' };
+  if (user.role === 'admin') return { allowed: true, unlimited: true, exempt: true, used: 0, limit: Infinity, plan: null as any, sub: null as any, reason: '' };
   const sub = await db.one(`SELECT s.*, p.name AS plan_name, p.interviews_per_month, p.price_cents, p.max_answer_total_sec, p.max_questions FROM subscriptions s LEFT JOIN plans p ON p.id=s.plan_id WHERE s.user_id=$1`, [user.id]);
-  if (!sub || !ACTIVE_STATUSES.includes(sub.status)) return { allowed: false, unlimited: false, used: 0, limit: 0, plan: null, sub, reason: 'no_subscription' };
-  if (sub.current_period_end && new Date(sub.current_period_end) < new Date(Date.now() - 3 * 86400_000)) return { allowed: false, unlimited: false, used: 0, limit: 0, plan: sub, sub, reason: 'expired' };
+  if (user.role === 'entity_admin') {
+    // (contagem do mês de calendário, só para mostrar; uma subscrição que ainda tenha fica visível, para a poder cancelar)
+    const used = Number((await db.one(`SELECT count(*)::int AS n FROM interviews WHERE owner_id=$1 AND invited_at >= date_trunc('month', now())`, [user.id])).n);
+    return { allowed: true, unlimited: true, exempt: false, used, limit: Infinity, plan: null as any, sub, reason: '' };
+  }
+  if (!sub || !ACTIVE_STATUSES.includes(sub.status)) return { allowed: false, unlimited: false, exempt: false, used: 0, limit: 0, plan: null, sub, reason: 'no_subscription' };
+  if (sub.current_period_end && new Date(sub.current_period_end) < new Date(Date.now() - 3 * 86400_000)) return { allowed: false, unlimited: false, exempt: false, used: 0, limit: 0, plan: sub, sub, reason: 'expired' };
   const now = new Date();
   const start = sub.current_period_start ? new Date(sub.current_period_start) : new Date(now.getFullYear(), now.getMonth(), 1);
   const limit = sub.interviews_override ?? sub.interviews_per_month ?? 0;
   // As entrevistas extra (pagas com créditos) não contam para a quota do plano.
   const used = Number((await db.one(`SELECT count(*)::int AS n FROM interviews WHERE owner_id=$1 AND invited_at >= $2 AND extra_cents IS NULL`, [user.id, start])).n);
-  return { allowed: used < limit, unlimited: false, used, limit, plan: sub, sub, reason: used < limit ? '' : 'quota' };
+  return { allowed: used < limit, unlimited: false, exempt: false, used, limit, plan: sub, sub, reason: used < limit ? '' : 'quota' };
 }
 
 // ---------- Stripe (API REST, sem SDK) ----------

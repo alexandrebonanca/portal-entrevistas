@@ -3,7 +3,7 @@ import { config } from '../config.ts';
 import { esc, fmtDate, hashPassword, isEmail } from '../lib.ts';
 import { page, flash, pill } from '../views.ts';
 import { audit } from '../app.ts';
-import { quotaFor, ACTIVE_STATUSES, stripe, savedTaxRates, STRIPE_EVENTS, refundTopup, sendRefund } from '../billing.ts';
+import { quotaFor, noSubscriptionNeeded, ACTIVE_STATUSES, stripe, savedTaxRates, STRIPE_EVENTS, refundTopup, sendRefund } from '../billing.ts';
 import { findWallet, ledgerCheck, RefundError, cr, REFUND_WINDOW_DAYS } from '../wallet.ts';
 import { SETTING_DEFS, S, maskSetting, saveSetting, saveStripeScoped, fromDb, secretFingerprint, settingsFormError, SELLER_GROUP, type SettingDef } from '../settings.ts';
 import { seller, sellerWarnings, sameCompany, savedStripeAccount } from '../legal.ts';
@@ -18,6 +18,9 @@ export function settingInput(d: SettingDef, value: string, blank: string, blankL
 }
 export const SELLER_HINT = 'Quem vende ao cliente final (a Telecert Consultoria Lda): a dona da conta Stripe configurada acima e do Moloni em que se emitem as faturas. A Certif Int Association OÜ é a entidade gestora da plataforma e não vende (é ela que aparece no rodapé). Por omissão, os dados da Telecert Consultoria Lda (denominação, NIF, morada e Livro de Reclamações) e, enquanto não for indicado outro, o email de apoio; apagar um campo volta ao valor por omissão. Aparecem nas páginas de compra, nos termos e nos orçamentos. Os dados legais nunca se inventam: enquanto faltarem a denominação, o NIF e a morada, os pagamentos em linha ficam suspensos para quem não é administrador; sem o email e a ligação do Livro de Reclamações Eletrónico, fica bloqueada a venda a consumidores. O OSS só se liga quando as vendas a consumidores de outros países da UE (de todas as atividades da empresa) passarem 10 000 €/ano (art. 6.º-A do CIVA).';
 export const VERTEX_HINT = 'O Google Veo usa o Vertex AI quando há conta de serviço (Veo 3.1 Fast: veo-3.1-fast-generate-001; Lite: veo-3.1-lite-generate-001, em pré-visualização). Sem conta de serviço usa a Gemini API, que a Google desliga para estes modelos a partir de 22/10/2026. A chave JSON nunca volta a ser mostrada: aparece só o email da conta e o projeto.';
+
+/** Uso do período na lista de utilizadores: sem limite mensal para o administrador e o gestor de entidade. */
+const usage = (u: any, qt: { used: number; limit: number }) => (u.role === 'admin' ? '∞' : u.role === 'entity_admin' ? `${qt.used} este mês (sem limite)` : `${qt.used}/${qt.limit}`);
 
 const STATUSES: [string, string][] = [['active', 'Ativa'], ['comped', 'Oferta (sem cobrança)'], ['trialing', 'Em teste'], ['past_due', 'Pagamento em atraso'], ['canceled', 'Cancelada'], ['inactive', 'Inativa']];
 const eur = (c: number) => `€${(c / 100).toFixed(2)}`;
@@ -129,13 +132,13 @@ export async function adminRoutes(app: FastifyInstance) {
 <div class="card" style="overflow-x:auto"><table><thead><tr><th>Nome</th><th>Email</th><th>Perfil</th><th>Entidade</th><th>Conta</th><th>Subscrição</th><th>Uso</th><th></th></tr></thead><tbody>
 ${rows.map(({ u, qt }) => `<tr><td><a href="/admin/utilizadores/${u.id}">${esc(u.name)}</a></td><td>${esc(u.email)}</td><td>${esc(u.role)}</td><td>${esc(u.entity_name ?? '—')}</td>
 <td>${u.active ? pill('ativa', 'ok') : pill('desativada', 'bad')}</td>
-<td>${u.role === 'admin' ? '—' : u.sub_status ? `${esc(u.plan_name ?? '—')} ${pill(u.sub_status, ACTIVE_STATUSES.includes(u.sub_status) ? 'ok' : 'warn')} <span class="hint">${esc(u.source)}</span>` : pill('nenhuma')}</td>
-<td>${u.role === 'admin' ? '∞' : `${qt.used}/${qt.limit}`}</td>
+<td>${u.role === 'admin' ? '—' : `${noSubscriptionNeeded(u.role) ? `${pill('sem subscrição necessária', 'ok')} ` : ''}${u.sub_status ? `${esc(u.plan_name ?? '—')} ${pill(u.sub_status, ACTIVE_STATUSES.includes(u.sub_status) ? 'ok' : 'warn')} <span class="hint">${esc(u.source)}</span>` : noSubscriptionNeeded(u.role) ? '' : pill('nenhuma')}`}</td>
+<td>${usage(u, qt)}</td>
 <td><form method="post" action="/admin/utilizadores/${u.id}/estado"><input type="hidden" name="active" value="${u.active ? '0' : '1'}"><button class="${u.active ? 'danger' : 'accent'}" style="padding:6px 12px;min-height:0">${u.active ? 'Desativar' : 'Ativar'}</button></form></td></tr>`).join('')}</tbody></table></div>
 <div class="card"><h2 style="margin-top:0">Criar utilizador</h2><form method="post" action="/admin/utilizadores">
 <div class="row"><div class="grow"><label for="n">Nome</label><input id="n" name="name" type="text" required></div><div class="grow"><label for="e">Email</label><input id="e" name="email" type="email" required></div></div>
 <div class="row"><div class="grow"><label for="p">Palavra-passe inicial (mín. 12)</label><input id="p" name="password" type="password" minlength="12" required autocomplete="new-password"></div>
-<div class="grow"><label for="r">Perfil</label><select id="r" name="role"><option value="interviewer">Entrevistador</option><option value="entity_admin">Gestor de entidade (chaves)</option><option value="admin">Administrador</option></select></div>
+<div class="grow"><label for="r">Perfil</label><select id="r" name="role"><option value="interviewer">Entrevistador</option><option value="entity_admin">Gestor de entidade (chaves; sem subscrição)</option><option value="admin">Administrador</option></select></div>
 <div class="grow"><label for="en">Entidade</label><select id="en" name="entity_id"><option value="">Nenhuma</option>${entities.map((e: any) => `<option value="${e.id}">${esc(e.name)}</option>`).join('')}</select></div>
 <div class="grow"><label for="pl">Plano (sem cobrança, atribuído manualmente)</label><select id="pl" name="plan_id"><option value="">Nenhum</option>${plans.map((p: any) => `<option value="${esc(p.id)}">${esc(p.name)} — ${p.interviews_per_month}/mês</option>`).join('')}</select></div></div>
 <p class="hint">Comunique a palavra-passe ao utilizador por um canal seguro; ele pode alterá-la pedindo uma redefinição ao administrador.</p><button class="accent">Criar utilizador</button></form></div>`);
@@ -187,12 +190,13 @@ ${rows.map(({ u, qt }) => `<tr><td><a href="/admin/utilizadores/${u.id}">${esc(u
     const date = (d: any) => (d ? new Date(d).toISOString().slice(0, 10) : '');
     return view(reply, u.name, `<p><a href="/admin/utilizadores">← Utilizadores</a></p><h1>${esc(u.name)} ${u.active ? pill('ativa', 'ok') : pill('desativada', 'bad')}</h1>${flash(q.ok)}${flash(q.e, 'bad')}
 <div class="card"><h2 style="margin-top:0">Conta</h2><p class="sans">${esc(u.email)} · criada em ${fmtDate(u.created_at)}${u.stripe_customer_id ? ' · Stripe: ' + esc(u.stripe_customer_id) : ''}</p>
-<form method="post" action="/admin/utilizadores/${u.id}/perfil" class="row"><select name="role" aria-label="Perfil" style="width:auto"><option value="interviewer" ${u.role === 'interviewer' ? 'selected' : ''}>Entrevistador</option><option value="entity_admin" ${u.role === 'entity_admin' ? 'selected' : ''}>Gestor de entidade (chaves)</option><option value="admin" ${u.role === 'admin' ? 'selected' : ''}>Administrador</option></select>
+<form method="post" action="/admin/utilizadores/${u.id}/perfil" class="row"><select name="role" aria-label="Perfil" style="width:auto"><option value="interviewer" ${u.role === 'interviewer' ? 'selected' : ''}>Entrevistador</option><option value="entity_admin" ${u.role === 'entity_admin' ? 'selected' : ''}>Gestor de entidade (chaves; sem subscrição)</option><option value="admin" ${u.role === 'admin' ? 'selected' : ''}>Administrador</option></select>
 <select name="entity_id" aria-label="Entidade" style="width:auto"><option value="">Sem entidade</option>${entities.map((e: any) => `<option value="${e.id}" ${u.entity_id === e.id ? 'selected' : ''}>${esc(e.name)}</option>`).join('')}</select><button class="ghost">Guardar perfil</button></form>
 <form method="post" action="/admin/utilizadores/${u.id}/palavra-passe"><label for="np">Redefinir palavra-passe (mín. 12; termina as sessões)</label><div class="row"><input id="np" name="password" type="password" minlength="12" autocomplete="new-password" style="max-width:320px"><button class="ghost">Redefinir</button></div></form></div>
 <div class="card"><h2 style="margin-top:0">Subscrição</h2>
 <p class="sans">Dados de faturação: ${bp ? `${bp.kind === 'consumer' ? 'consumidor' : 'empresa'} · ${esc(bp.name)}${bp.nif ? ` · NIF ${esc(bp.nif)}` : ''}${bp.vat_number ? ` · IVA ${esc(bp.vat_number)} (${esc(bp.vat_status ?? 'por verificar')})` : ''} · ${esc(bp.address)}, ${esc(bp.postal_code)} ${esc(bp.city)}, ${esc(countryName(bp.country))}` : '<span class="hint">por preencher</span>'}${sub?.vat?.regime ? ` · IVA da compra: ${esc(REGIME_LABEL[sub.vat.regime as 'domestic'] ?? sub.vat.regime)} ${fmtRate(Number(sub.vat.rate))}%` : ''}</p>
-<p class="sans">Uso neste período: <strong>${u.role === 'admin' ? '∞' : `${qt.used}/${qt.limit}`}</strong>${sub?.stripe_subscription_id ? ` · Stripe: ${esc(sub.stripe_subscription_id)}` : ''}${sub?.current_period_end ? ` · período até ${fmtDate(sub.current_period_end)}` : ''}</p>
+${u.role === 'entity_admin' ? '<p class="sans">Gestor de entidade: sem subscrição necessária e sem limite mensal de entrevistas; mantém os limites de cada entrevista e paga com créditos a animação (sem créditos só com credenciais Google próprias da entidade) e as regenerações para além das incluídas.</p>' : ''}
+<p class="sans">Uso neste período: <strong>${usage(u, qt)}</strong>${sub?.stripe_subscription_id ? ` · Stripe: ${esc(sub.stripe_subscription_id)}` : ''}${sub?.current_period_end ? ` · período até ${fmtDate(sub.current_period_end)}` : ''}</p>
 <form method="post" action="/admin/utilizadores/${u.id}/subscricao">
 <div class="row"><div class="grow"><label for="pl">Plano</label><select id="pl" name="plan_id"><option value="">Nenhum</option>${plans.map((p: any) => `<option value="${esc(p.id)}" ${sub?.plan_id === p.id ? 'selected' : ''}>${esc(p.name)} — ${eur(p.price_cents)} · ${p.interviews_per_month}/mês</option>`).join('')}</select></div>
 <div class="grow"><label for="st">Estado</label><select id="st" name="status">${STATUSES.map(([v, l]) => `<option value="${v}" ${sub?.status === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div></div>

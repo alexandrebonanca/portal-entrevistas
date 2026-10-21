@@ -3,7 +3,7 @@ import { config } from '../config.ts';
 import { esc, fmtDate } from '../lib.ts';
 import { page, flash, pill } from '../views.ts';
 import { audit } from '../app.ts';
-import { quotaFor, createCheckout, changePlan, cancelNow, createPortal, stripeConfigured, verifyStripeSignature, applyStripeEvent, verifyVatNumber, vatForProfile, customerFor, ACTIVE_STATUSES, LIVE_STRIPE } from '../billing.ts';
+import { quotaFor, noSubscriptionNeeded, createCheckout, changePlan, cancelNow, createPortal, stripeConfigured, verifyStripeSignature, applyStripeEvent, verifyVatNumber, vatForProfile, customerFor, ACTIVE_STATUSES, LIVE_STRIPE } from '../billing.ts';
 import { findWallet, crEn } from '../wallet.ts';
 import { S, inEntity } from '../settings.ts';
 import { seller, sellerId, checkoutBlock, contactEmail, homeConsumerRate, termsBody, paymentsPrivacyBody, complaintsLink, TERMS_VERSION, WITHDRAWAL_DAYS, type Seller } from '../legal.ts';
@@ -37,6 +37,7 @@ export async function billingRoutes(app: FastifyInstance) {
   const accountPage = async (req: any, reply: any) => {
     const q = req.query as any;
     const isAdmin = req.user.role === 'admin';
+    const manager = req.user.role === 'entity_admin'; // convida sem subscrição (os créditos continuam a servir-lhe)
     const plans = await db.query('SELECT * FROM plans WHERE active ORDER BY sort');
     const quota = await quotaFor(db, req.user);
     const sub = quota.sub;
@@ -108,14 +109,14 @@ ${esc(profile.address)}, ${esc(profile.postal_code)} ${esc(profile.city)}, ${esc
     const body = `<div class="narrow" style="padding-top:36px"><h1>Your account</h1>
 ${q.checkout === 'success' ? flash('Thank you! Your subscription will be active in a few seconds. Refresh this page if it still shows as inactive.') : ''}${q.checkout === 'cancelled' ? flash('Checkout cancelled — nothing was charged.', 'bad') : ''}${flash(q.ok)}${flash(q.e, 'bad')}
 <div class="card sans"><strong>${esc(req.user.name)}</strong> · ${esc(req.user.email)}<br>
-${isAdmin ? 'Administrator — no interview limit.' : active ? `Plan: <strong>${esc(sub.plan_name ?? '—')}</strong> ${pill(sub.status, 'ok')}<br>Interviews this period: <strong>${quota.used} / ${quota.limit}</strong>${sub.current_period_end ? `<br>Renews / ends: ${fmtDate(sub.current_period_end)}${sub.cancel_at_period_end ? ' (cancels at period end)' : ''}` : ''}` : `No active subscription ${sub ? pill(sub.status, 'bad') : ''}`}
+${isAdmin ? 'Administrator — no interview limit.' : manager ? `Entity manager — no subscription needed and no monthly interview limit (${quota.used} invited this month). · <span lang="pt-PT">Gestor de entidade: sem subscrição necessária.</span>${active ? `<br>You still have the ${esc(sub.plan_name ?? '—')} plan ${pill(sub.status, 'ok')}: you do not need it${customerId ? ' and can cancel it below (Manage card, Stripe receipts &amp; cancellation)' : ''}.` : ''}` : active ? `Plan: <strong>${esc(sub.plan_name ?? '—')}</strong> ${pill(sub.status, 'ok')}<br>Interviews this period: <strong>${quota.used} / ${quota.limit}</strong>${sub.current_period_end ? `<br>Renews / ends: ${fmtDate(sub.current_period_end)}${sub.cancel_at_period_end ? ' (cancels at period end)' : ''}` : ''}` : `No active subscription ${sub ? pill(sub.status, 'bad') : ''}`}
 ${legacy ? '<br><span class="hint">This plan is no longer offered to new customers; it continues as it is until you change it.</span>' : ''}
 ${isAdmin ? '' : `<br>Credits: <strong>${crEn(wallet?.available_cents ?? 0)}</strong> available${wallet?.reserved_cents ? ` · ${crEn(wallet.reserved_cents)} on hold` : ''} · <a href="/conta/creditos">Top up and statement · Créditos</a>`}</div>
 ${isAdmin ? '' : `${withdrawCard}
-<h2>${active ? 'Change plan' : 'Choose a plan'}</h2>
+${manager ? '' : `<h2>${active ? 'Change plan' : 'Choose a plan'}</h2>
 <p class="hint">Plans include photos, narration, subtitles and the video with photos. AI animation is never included in a plan: each animated production is quoted before anything is generated and paid with prepaid credits. Card payments only, through Stripe. · <span lang="pt-PT">A animação por IA não está incluída em nenhum plano: é orçamentada antes de gerar e paga com créditos.</span></p>
 ${problem ? flash(problem, 'bad') : ''}
-<div class="grid3">${plans.map(planCard).join('')}</div>
+<div class="grid3">${plans.map(planCard).join('')}</div>`}
 ${stripeConfigured() ? '' : `<p class="hint">Online payments are not enabled yet. Please contact us at ${esc(contactEmail(s))} to activate your plan.</p>`}
 ${profileCard}
 ${customerId ? '<form method="post" action="/billing/portal"><button class="ghost">Manage card, Stripe receipts &amp; cancellation</button></form><p class="hint">Stripe receipts are proof of payment only. Your invoice (<span lang="pt-PT">fatura-recibo</span>) is issued separately by the seller and sent by email.</p>' : ''}
@@ -173,7 +174,7 @@ ${customerId ? '<form method="post" action="/billing/portal"><button class="ghos
       const user = req.user!, b = (req.body ?? {}) as any;
       const plan = await db.one('SELECT * FROM plans WHERE id=$1 AND active', [(req.params as any).plan]);
       if (!plan) return reply.code(404).send('Plan not found');
-      if (user.role === 'admin') return back(reply, 'Administrators have no interview limit and do not subscribe.');
+      if (noSubscriptionNeeded(user.role)) return back(reply, user.role === 'admin' ? 'Administrators have no interview limit and do not subscribe.' : 'Entity managers invite without a subscription and have no monthly interview limit. · O gestor de entidade não precisa de subscrição.');
       let profile = await profileOf(user.id);
       if (!profile) return back(reply, 'Fill in your billing details first. · Preencha primeiro os dados de faturação.', '#billing');
       const s = seller(), consumer = profile.kind === 'consumer';

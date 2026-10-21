@@ -250,3 +250,50 @@ test('regenerações do guião e do episódio: 3 incluídas, a 4.ª bloqueada (c
   assert.match((await post(`/entrevistas/${id}/guiao/regenerar`, {}, user)).headers.location as string, /ok=/);
   assert.equal(await used(), 3);
 });
+
+test('gestor de entidade: convida sem subscrição nem limite mensal, com os limites de cada entrevista; o entrevistador sem subscrição continua bloqueado', async () => {
+  const ent = (await db.one(`SELECT id FROM entities WHERE slug='telecert-formacao'`)).id;
+  await post('/admin/utilizadores', { name: 'Gestora', email: 'gestora@example.com', password: PW, role: 'entity_admin', entity_id: ent }, admin);
+  const gestor = `sid=${cookies(await post('/entrar', { email: 'gestora@example.com', password: PW })).sid}`;
+  const gid = (await db.one(`SELECT id FROM users WHERE email='gestora@example.com'`)).id;
+  assert.equal(await db.one('SELECT 1 FROM subscriptions WHERE user_id=$1', [gid]), undefined, 'sem subscrição');
+
+  // vários convites seguidos, sem subscrição e sem limite mensal; cada entrevista fica com os limites gerais (15 perguntas, 15 min)
+  for (let i = 0; i < 4; i++) {
+    const id = await draft(gestor, `Do gestor ${i}`, ['Uma?', 'Duas?']);
+    if (i === 0) {
+      const pg = (await get(`/entrevistas/${id}/convidar`, gestor)).body;
+      assert.match(pg, /Gestor de entidade: convida sem subscrição e sem limite mensal de entrevistas \(0 este mês\)/);
+      assert.match(pg, /até 15 perguntas, incluindo as adicionais; até 15:00 min de respostas do entrevistado no total/);
+      assert.doesNotMatch(pg, /Precisa de uma subscrição ativa/);
+    }
+    assert.match((await post(`/entrevistas/${id}/convidar`, {}, gestor)).headers.location as string, /ok=/);
+    const iv = await db.one('SELECT collection_status, answer_limit_sec, question_limit, extra_cents FROM interviews WHERE id=$1', [id]);
+    assert.deepEqual([iv.collection_status, iv.answer_limit_sec, iv.question_limit, iv.extra_cents], ['invited', 900, 15, null]);
+  }
+  // os limites técnicos mantêm-se: perguntas no rascunho e áudio do entrevistador
+  const d = await draft(gestor, 'Limites do gestor', Array.from({ length: 16 }, (_, k) => `P${k + 1}?`));
+  assert.equal((await qids(d)).length, 15, 'a 16.ª pergunta é recusada');
+  const r = await audio(`/api/entrevistas/${d}/perguntas/${(await qids(d))[0]}/audio`, makeToneWav(123), gestor);
+  assert.equal(r.statusCode, 422); assert.match(r.json().error, /cada pergunta pode ter até 2:00 min/);
+
+  // Conta: sem subscrição necessária, sem planos para escolher; subscrever é recusado
+  const acc = (await get('/account', gestor)).body;
+  assert.match(acc, /Entity manager — no subscription needed and no monthly interview limit \(4 invited this month\)/);
+  assert.match(acc, /Gestor de entidade: sem subscrição necessária/);
+  assert.doesNotMatch(acc, /Choose a plan|Change plan/);
+  assert.match(acc, /Top up and statement/, 'os créditos continuam disponíveis');
+  assert.match(msgOf(await post('/subscribe/start', { terms: '1' }, gestor)), /Entity managers invite without a subscription[\s\S]*O gestor de entidade não precisa de subscrição/);
+  // lista de utilizadores e ficha do administrador
+  const list = (await get('/admin/utilizadores', admin)).body;
+  assert.match(list, /gestora@example\.com<\/td><td>entity_admin<\/td>[\s\S]*?<span class="pill ok">sem subscrição necessária<\/span>[\s\S]*?<td>4 este mês \(sem limite\)<\/td>/);
+  assert.match((await get(`/admin/utilizadores/${gid}`, admin)).body, /Gestor de entidade: sem subscrição necessária e sem limite mensal de entrevistas/);
+
+  // o entrevistador sem subscrição continua bloqueado
+  const semSub = `sid=${cookies(await post('/registar', { name: 'Sem Sub', email: 'semsub@example.com', password: PW, terms: 1 })).sid}`;
+  const s = await draft(semSub, 'Sem subscrição', ['Uma?']);
+  assert.match((await get(`/entrevistas/${s}/convidar`, semSub)).body, /Precisa de uma subscrição ativa para enviar convites/);
+  await post(`/entrevistas/${s}/convidar`, {}, semSub);
+  assert.equal((await db.one('SELECT collection_status s FROM interviews WHERE id=$1', [s])).s, 'draft');
+  assert.match((await get('/admin/utilizadores', admin)).body, /semsub@example\.com<\/td><td>interviewer<\/td>[\s\S]*?<span class="pill ">nenhuma<\/span>/);
+});
