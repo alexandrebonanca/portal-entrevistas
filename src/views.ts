@@ -29,7 +29,7 @@ table{width:100%;border-collapse:collapse;font-size:.95rem}th,td{text-align:left
 .flash{padding:12px 16px;border-radius:8px;margin:16px 0;font-family:system-ui;font-size:.95rem;border:1px solid var(--line);background:var(--card)}.flash.bad{border-color:var(--bad);color:var(--bad)}.flash.ok{border-color:var(--ok);color:var(--ok)}
 .row{display:flex;gap:12px;flex-wrap:wrap;align-items:center}.grow{flex:1}.right{margin-left:auto}
 .check{display:flex;gap:10px;align-items:flex-start;margin:10px 0;font-weight:400}.check input{margin-top:5px;width:20px;height:20px;flex:none}
-footer{border-top:1px solid var(--line);margin-top:64px;padding:28px 0;color:var(--mute);font:.88rem system-ui}
+footer{border-top:1px solid var(--line);margin-top:64px;padding:28px 0;color:var(--mute);font:.88rem system-ui}footer p{margin:0 0 6px}
 .hero{padding:72px 0 48px}.hero p.lead{font-size:1.25rem;max-width:40ch;color:var(--mute)}
 .grid3{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:20px}
 .step{counter-increment:s}.step h3::before{content:counter(s,decimal-leading-zero);display:block;font:700 .8rem system-ui;color:var(--accent);letter-spacing:.14em;margin-bottom:6px}
@@ -49,6 +49,16 @@ video.cam{width:100%;max-height:60vh;border-radius:12px;background:#000;transfor
 :focus-visible{outline:3px solid var(--accent);outline-offset:2px}
 `;
 
+const COUNTRY: Record<string, [string, string]> = { EE: ['Estónia', 'Estonia'], PT: ['Portugal', 'Portugal'] };
+
+/** Entidade proprietária e gestora do portal (português nas páginas em português, inglês nas outras). */
+export function ownerLine(lang = 'pt-PT') {
+  const o = config.owner, pt = /^pt/i.test(lang);
+  const country = COUNTRY[o.country]?.[pt ? 0 : 1] ?? o.country;
+  const site = o.site.replace(/^https?:\/\/(www\.)?/i, '').replace(/\/$/, '');
+  return `${pt ? `O ${esc(config.brand)} é propriedade da` : `${esc(config.brand)} is owned and operated by`} ${esc(o.name)}${country ? ` (${esc(country)})` : ''}${pt ? ', que o gere' : ''} · <a href="${esc(o.site)}" rel="noopener">${esc(site)}</a> · <a href="mailto:${esc(o.email)}">${esc(o.email)}</a>`;
+}
+
 export interface PageOpts { title: string; body: string; lang?: string; nav?: string; noindex?: boolean; desc?: string; script?: string; wide?: boolean; head?: string; styles?: string }
 
 export function page(o: PageOpts) {
@@ -59,7 +69,7 @@ ${o.noindex ? '<meta name="robots" content="noindex,nofollow"><meta name="referr
 <style>${CSS}${o.styles ?? ''}</style></head><body><a class="skip" href="#main">Skip to content</a>
 <header class="top"><div class="wrap"><a class="brand" href="/" aria-label="${esc(config.brand)}">${markSvg(28)}${wordmark()}</a><nav>${o.nav ?? ''}</nav></div></header>
 <main id="main">${o.body}</main>
-<footer><div class="wrap">${esc(config.brand)} · <a href="/privacy">Privacy</a> · ${esc(config.supportEmail)}</div></footer>
+<footer><div class="wrap"><p>${esc(config.brand)} · <a href="/privacy">Privacy</a> · ${esc(config.supportEmail)}</p><p>${ownerLine(o.lang)}</p></div></footer>
 ${o.script ? `<script src="/static/recorder.js" defer></script><script src="${o.script}" defer></script>` : ''}</body></html>`;
 }
 

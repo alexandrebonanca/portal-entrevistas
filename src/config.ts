@@ -8,6 +8,13 @@ export const config = {
   baseUrl: (env.BASE_URL ?? `http://localhost:${env.PORT ?? 3000}`).replace(/\/$/, ''),
   brand: env.BRAND_NAME ?? 'quietinterview',
   supportEmail: env.SUPPORT_EMAIL ?? 'support@example.com',
+  // Entidade proprietária e gestora do portal (rodapé de todas as páginas).
+  owner: {
+    name: env.OWNER_NAME ?? 'Certif Int Association OÜ',
+    country: env.OWNER_COUNTRY ?? 'EE',
+    site: env.OWNER_SITE ?? 'https://www.certifinternational.com',
+    email: env.OWNER_EMAIL ?? 'certifinternational@gmail.com',
+  },
   databaseUrl: env.DATABASE_URL ?? '',
   pgliteDir: env.PGLITE_DIR ?? './data/pglite',
   secret: env.APP_SECRET ?? (env.NODE_ENV === 'production' ? '' : 'dev-only-secret-' + randomBytes(8).toString('hex')),
