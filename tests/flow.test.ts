@@ -37,7 +37,7 @@ test('landing em inglês e primeira conta administradora', async () => {
   assert.match(r.body, /lang="en"/);
   assert.match(r.body, /Great interviews, recorded in your guest’s own time/);
   assert.match(r.body, /<span class="wq">quiet<\/span><span class="wi">interview<\/span>/, 'logótipo e nome no cabeçalho');
-  assert.match(r.body, /<footer>[\s\S]*quietinterview is owned and operated by Certif Int Association OÜ \(Estonia\) · <a href="https:\/\/www\.certifinternational\.com" rel="noopener">certifinternational\.com<\/a> · <a href="mailto:certifinternational@gmail\.com">certifinternational@gmail\.com<\/a><\/p><p>Sold by Telecert Consultoria Lda · VAT PT514907274 · Avenida 5 de Outubro, 38A, 8000-077 Faro · <a href="https:\/\/www\.livroreclamacoes\.pt\/Inicio\/" rel="noopener">Complaints book \(Livro de Reclamações\)<\/a>[\s\S]*<\/footer>/, 'entidade gestora e vendedora no rodapé');
+  assert.match(r.body, /<footer>[\s\S]*quietinterview is owned and operated by Certif Int Association OÜ \(Estonia\) · <a href="https:\/\/www\.certifinternational\.com" rel="noopener">certifinternational\.com<\/a> · <a href="mailto:certifinternational@gmail\.com">certifinternational@gmail\.com<\/a><\/p><\/div><\/footer>/, 'só a entidade proprietária e gestora no rodapé');
   assert.match(r.body, /€10/);
   assert.match(r.body, /Up to <strong>5 interviews/);
   // fotografias licenciadas nos cinco lugares, com créditos; sem ilustrações, não há o aviso das ilustrações

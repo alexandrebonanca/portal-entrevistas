@@ -59,15 +59,6 @@ export function ownerLine(lang = 'pt-PT') {
   return `${pt ? `O ${esc(config.brand)} é propriedade da` : `${esc(config.brand)} is owned and operated by`} ${esc(o.name)}${country ? ` (${esc(country)})` : ''}${pt ? ', que o gere' : ''} · <a href="${esc(o.site)}" rel="noopener">${esc(site)}</a> · <a href="mailto:${esc(o.email)}">${esc(o.email)}</a>`;
 }
 
-/** Quem comercializa o serviço (vende ao cliente final), com NIF, morada e o Livro de Reclamações Eletrónico. */
-export function sellerLine(lang = 'pt-PT') {
-  const s = config.seller, pt = /^pt/i.test(lang);
-  if (!s.name) return '';
-  return [`${pt ? 'Comercializado pela' : 'Sold by'} ${esc(s.name)}`, s.vat ? `${pt ? 'NIF' : 'VAT'} ${esc(s.vat)}` : '', s.address ? esc(s.address) : '',
-    s.complaintsUrl ? `<a href="${esc(s.complaintsUrl)}" rel="noopener">${pt ? 'Livro de Reclamações' : 'Complaints book (Livro de Reclamações)'}</a>` : '']
-    .filter(Boolean).join(' · ');
-}
-
 export interface PageOpts { title: string; body: string; lang?: string; nav?: string; noindex?: boolean; desc?: string; script?: string; wide?: boolean; head?: string; styles?: string }
 
 export function page(o: PageOpts) {
@@ -78,7 +69,7 @@ ${o.noindex ? '<meta name="robots" content="noindex,nofollow"><meta name="referr
 <style>${CSS}${o.styles ?? ''}</style></head><body><a class="skip" href="#main">Skip to content</a>
 <header class="top"><div class="wrap"><a class="brand" href="/" aria-label="${esc(config.brand)}">${markSvg(28)}${wordmark()}</a><nav>${o.nav ?? ''}</nav></div></header>
 <main id="main">${o.body}</main>
-<footer><div class="wrap"><p>${esc(config.brand)} · <a href="/privacy">Privacy</a> · ${esc(config.supportEmail)}</p><p>${ownerLine(o.lang)}</p>${sellerLine(o.lang) ? `<p>${sellerLine(o.lang)}</p>` : ''}</div></footer>
+<footer><div class="wrap"><p>${esc(config.brand)} · <a href="/privacy">Privacy</a> · ${esc(config.supportEmail)}</p><p>${ownerLine(o.lang)}</p></div></footer>
 ${o.script ? `<script src="/static/recorder.js" defer></script><script src="${o.script}" defer></script>` : ''}</body></html>`;
 }
 

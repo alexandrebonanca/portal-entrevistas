@@ -15,7 +15,8 @@ export const config = {
     site: env.OWNER_SITE ?? 'https://www.certifinternational.com',
     email: env.OWNER_EMAIL ?? 'certifinternational@gmail.com',
   },
-  // Quem comercializa o serviço (vende ao cliente final); a entidade gestora é a de cima.
+  // Quem comercializa o serviço (vende ao cliente final); a entidade gestora é a de cima. Não aparece no rodapé
+  // (decisão do dono): a identificação e o Livro de Reclamações vão para as páginas de compra e os termos.
   seller: {
     name: env.SELLER_NAME ?? 'Telecert Consultoria Lda',
     vat: env.SELLER_VAT ?? 'PT514907274',

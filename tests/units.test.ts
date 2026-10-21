@@ -5,14 +5,14 @@ import { validateScript } from '../src/ai/openai.ts';
 import { wrapTitle } from '../src/cover.ts';
 import { sniff } from '../src/media.ts';
 
-test('rodapé: entidade proprietária e gestora e quem comercializa, em português e em inglês', async () => {
-  const { ownerLine, sellerLine, page } = await import('../src/views.ts');
+test('rodapé: só a entidade proprietária e gestora, em português e em inglês', async () => {
+  const { ownerLine, page } = await import('../src/views.ts');
   assert.equal(ownerLine('pt-PT'), 'O quietinterview é propriedade da Certif Int Association OÜ (Estónia), que o gere · <a href="https://www.certifinternational.com" rel="noopener">certifinternational.com</a> · <a href="mailto:certifinternational@gmail.com">certifinternational@gmail.com</a>');
   assert.match(ownerLine('en'), /^quietinterview is owned and operated by Certif Int Association OÜ \(Estonia\) · /);
   assert.match(ownerLine('es'), /owned and operated by/, 'outras línguas em inglês');
-  assert.equal(sellerLine('pt-PT'), 'Comercializado pela Telecert Consultoria Lda · NIF PT514907274 · Avenida 5 de Outubro, 38A, 8000-077 Faro · <a href="https://www.livroreclamacoes.pt/Inicio/" rel="noopener">Livro de Reclamações</a>');
-  assert.match(sellerLine('en'), /^Sold by Telecert Consultoria Lda · VAT PT514907274 · .*Complaints book \(Livro de Reclamações\)<\/a>$/);
-  assert.match(page({ title: 'T', body: '' }), /<footer>[\s\S]*é propriedade da Certif Int Association OÜ \(Estónia\)[\s\S]*<p>Comercializado pela Telecert Consultoria Lda[\s\S]*Livro de Reclamações/, 'páginas em português (por omissão)');
+  const footer = /<footer>[\s\S]*<\/footer>/.exec(page({ title: 'T', body: '' }))![0];
+  assert.match(footer, /é propriedade da Certif Int Association OÜ \(Estónia\)/, 'páginas em português (por omissão)');
+  assert.doesNotMatch(footer, /Comercializado|Sold by|Telecert|Livro de Reclamações/, 'sem a comercialização no rodapé');
 });
 
 test('cues usam tempos medidos e não se sobrepõem', () => {
