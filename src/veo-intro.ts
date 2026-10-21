@@ -3,8 +3,8 @@ import { storage } from './storage.ts';
 import { saveAsset } from './media.ts';
 import { mockTalkingClip } from './video.ts';
 import { aiAvailable, type Word } from './ai/openai.ts';
-import { veoSubmit, veoAwait, veoIntroPrompt, veoModel, veoPricePerSec, veoPriceOfModel, veoConfigured, veoScopeId, isKeyRejected, opOfCurrentCreds, VeoQuotaError, VeoCancelled, VeoBusy, VeoFiltered, VeoOpError, VeoCredsMissing, type VeoTier } from './talking.ts';
-import { startImage, transcribeVeoClip, wordDiff, veoDuration, normWords, veoMock, QUOTA_PAUSE_MS, VEO_NO_CREDENTIALS } from './veo-episode.ts';
+import { veoSubmit, veoAwait, veoIntroPrompt, veoModel, veoPriceOfModel, veoConfigured, veoScopeId, isKeyRejected, opOfCurrentCreds, VeoQuotaError, VeoCancelled, VeoBusy, VeoFiltered, VeoOpError, VeoCredsMissing, type VeoTier } from './talking.ts';
+import { startImage, transcribeVeoClip, wordDiff, veoDuration, normWords, veoMock, veoCostPerSec, QUOTA_PAUSE_MS, VEO_NO_CREDENTIALS } from './veo-episode.ts';
 import { introPhrase, introBlock, INTRO_MAX_ATTEMPTS } from './intro.ts';
 import { PermanentError, JobPaused, type Handler } from './jobs.ts';
 import type { Db } from './db.ts';
@@ -165,17 +165,18 @@ async function generate(db: Db, job: any, row: any, progress: (done: number, tot
     } else {
       if (!(await canSend())) throw new PermanentError(stopWhy!);
       // Intenção gravada antes do envio, com a duração máxima: se o processo cair a meio, conta como gasta.
+      const price = await veoCostPerSec(db, tier); // o custo da tarifa (Definições → Tarifas), o mesmo das falas
       const reserved = await db.one(`INSERT INTO veo_ops(interview_id, chunk_key, op_name, duration_sec, state, model, usd_per_sec, cost_usd) VALUES ($1,$2,NULL,8,'reserved',$3,$4,$5) RETURNING id`,
-        [iv.id, key, veoModel(tier), veoPricePerSec(tier), 8 * veoPricePerSec(tier)]);
+        [iv.id, key, veoModel(tier), price, 8 * price]);
       try {
         if (mock) {
           outcome = veoMock.outcome?.({ segmentId: 'intro', role: 'host', text: phrase.text, attempt: tried + 1 }) ?? 'ok';
           if (outcome === 'quota') throw new VeoQuotaError('Limite de pedidos (quota) da Google esgotado (simulado).');
-          opName = `mock/${reserved.id}`; opModel = veoModel(tier); opPrice = veoPricePerSec(tier); opScope = veoScopeId(); opProject = null;
+          opName = `mock/${reserved.id}`; opModel = veoModel(tier); opPrice = price; opScope = veoScopeId(); opProject = null;
         } else {
           const s = await veoSubmit({ image: st.image, prompt: veoIntroPrompt({ text: phrase.text, voice }), aspectRatio: st.vertical ? '9:16' : '16:9', durationSeconds: dur, canSend, tier,
             onStatus: async m => progress(10 + tried * 40, 100, `${label} — ${m}`) });
-          opName = s.opName; dur = s.dur; opModel = s.model; opPrice = s.usdPerSec; opScope = s.scope; opProject = s.project;
+          opName = s.opName; dur = s.dur; opModel = s.model; opPrice = price; opScope = s.scope; opProject = s.project;
         }
       } catch (e: any) {
         // Recusado antes de a Google aceitar (400, 429, procura elevada, envio cancelado): a intenção não custa nada.

@@ -9,6 +9,7 @@ import { S, inEntity } from '../settings.ts';
 import { seller, sellerId, checkoutBlock, contactEmail, homeConsumerRate, termsBody, paymentsPrivacyBody, complaintsLink, TERMS_VERSION, WITHDRAWAL_DAYS, type Seller } from '../legal.ts';
 import { withVat, eurEn, eurPt, fmtRate, normNif, normPostal, normVatNumber, isEuCountry, outsideVatTerritory, countryName, EU_COUNTRIES, OUTSIDE_EU, type VatDecision } from '../vat.ts';
 import { queueEmail, emailShell } from '../mail.ts';
+import { rateForTier, quoteTier } from '../quotes.ts';
 import { helpNav } from '../support.ts';
 
 /** Mensagem nas duas línguas (a área de faturação é em inglês; o português é obrigatório para os consumidores). */
@@ -263,7 +264,9 @@ ${customerId ? '<form method="post" action="/billing/portal"><button class="ghos
   // ---- Termos e privacidade dos pagamentos (em português); o vendedor é o dono da conta Stripe de quem está a ver ----
   app.get('/termos', async (req, reply) => {
     const plans = await db.query('SELECT * FROM plans WHERE active ORDER BY sort');
-    const rates = await db.query(`SELECT label, cents_per_min, resolution FROM animation_rates WHERE active AND available ORDER BY cents_per_min DESC`);
+    // Só a tarifa que os orçamentos usam hoje (o nível do Veo das Definições globais), ativa e dentro da validade.
+    const rate = await rateForTier(db, quoteTier());
+    const rates = rate ? [rate] : [];
     return send(reply, page({ title: 'Termos e condições de venda', body: termsBody(plans, inEntity(req.user?.entity_id, seller), rates) }));
   });
   app.get('/privacidade-pagamentos', async (req, reply) => send(reply, page({ title: 'Privacidade nos pagamentos', body: paymentsPrivacyBody(inEntity(req.user?.entity_id, seller)) })));

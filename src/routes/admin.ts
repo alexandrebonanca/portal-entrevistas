@@ -323,9 +323,11 @@ ${ratesCard(rates)}`);
   });
 
   // ---------- tarifas da animação (orçamentos): editáveis, só valem para orçamentos novos ----------
+  /** Porque é que um motor não se pode ativar (o Lite não se vende; os outros esperam pelo Laboratório). */
+  const UNAVAILABLE_WHY = (r: any) => (r.engine === 'veo' && r.tier === 'lite' ? 'não se oferece (o Laboratório apanhou-o a pôr texto inventado no ecrã)' : 'por integrar e medir no Laboratório');
   const ratesCard = (rates: any[]) => `<div class="card" id="tarifas"><h2 style="margin-top:0">Tarifas da animação (orçamentos)</h2><p class="hint sans">1 crédito = 1 € sem IVA. O cliente paga créditos por minuto de fala (cada fala conta pelo menos 4 s); o custo é o que a Google fatura por segundo de clipe. O câmbio deve ser conservador (€ por 1 $): o teto interno de cada orçamento é 81,5% do valor ÷ câmbio. O nível do Google Veo escolhido em Definições → Google decide a tarifa. Uma alteração muda a versão: os rascunhos deixam de poder ser aceites e os orçamentos já aceites mantêm o preço. Confirme o preço do SKU na faturação Cloud do projeto (0,10 ou 0,15 $/s no Fast).</p>
 ${rates.map((r: any) => `<form method="post" action="/admin/tarifas/${esc(r.id)}" class="row sans" style="margin:8px 0"><strong style="min-width:170px">${esc(r.label)}</strong><input name="cr_min" type="number" step="0.5" min="0.5" value="${r.cents_per_min / 100}" aria-label="Créditos por minuto de fala" style="width:90px">cr/min<input name="cost" type="number" step="0.001" min="0.001" value="${Number(r.cost_usd_per_sec)}" aria-label="Custo faturado (USD por segundo)" style="width:90px">$/s<input name="usd_eur" type="number" step="0.0001" min="0.5" max="2" value="${Number(r.usd_eur)}" aria-label="Câmbio (€ por 1 $)" style="width:90px">€/$<input name="max_clip" type="number" min="1" max="60" value="${r.max_clip_sec}" aria-label="Duração máxima de um clipe (s)" style="width:70px">s/clipe<input name="valid_until" type="date" value="${r.valid_until ? new Date(r.valid_until).toISOString().slice(0, 10) : ''}" aria-label="Desativação do modelo" style="width:auto"><label class="check" style="margin:0"><input type="checkbox" name="active" value="1" ${r.active ? 'checked' : ''} ${r.available ? '' : 'disabled'}> ativo</label><button class="ghost">Guardar</button>
-<span class="hint" style="flex-basis:100%">versão ${r.version}${r.available ? ` · tarifa mínima recomendada para ~55% de margem típica: ${cr(recommendedCentsPerMin(r))} cr/min` : ' · por integrar e medir no Laboratório: não se pode ativar'}</span></form>`).join('')}</div>`;
+<span class="hint" style="flex-basis:100%">versão ${r.version}${r.available ? ` · tarifa mínima recomendada para ~55% de margem típica: ${cr(recommendedCentsPerMin(r))} cr/min` : ` · ${esc(UNAVAILABLE_WHY(r))}: não se pode ativar`}</span></form>`).join('')}</div>`;
 
   app.post('/admin/tarifas/:id', async (req, reply) => {
     if (!guard(req, reply)) return;
@@ -336,7 +338,7 @@ ${rates.map((r: any) => `<form method="post" action="/admin/tarifas/${esc(r.id)}
     const cents = Math.round(num(b.cr_min) * 100), cost = num(b.cost), usdEur = num(b.usd_eur), maxClip = parseInt(String(b.max_clip ?? ''));
     const until = b.valid_until ? new Date(`${b.valid_until}T23:59:59Z`) : null;
     if (!(cents > 0) || !(cost > 0) || !(usdEur >= 0.5 && usdEur <= 2) || !(maxClip >= 1 && maxClip <= 60) || (until && Number.isNaN(until.getTime()))) return back(reply, '/admin/definicoes', undefined, 'Valores da tarifa inválidos.');
-    if (b.active && !r.available) return back(reply, '/admin/definicoes', undefined, `${r.label}: motor por integrar e medir no Laboratório; não se pode ativar.`);
+    if (b.active && !r.available) return back(reply, '/admin/definicoes', undefined, `${r.label}: ${UNAVAILABLE_WHY(r)}; não se pode ativar.`);
     const active = !!b.active;
     const changed = cents !== r.cents_per_min || cost !== Number(r.cost_usd_per_sec) || usdEur !== Number(r.usd_eur) || maxClip !== r.max_clip_sec || active !== r.active
       || (until?.getTime() ?? null) !== (r.valid_until ? new Date(r.valid_until).getTime() : null);

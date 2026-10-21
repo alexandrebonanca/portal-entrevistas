@@ -512,15 +512,32 @@ test('tarifas: editáveis pelo administrador só para orçamentos novos; o Omni 
   assert.match(msg(await post(`/entrevistas/${ivId}/orcamentos/${d.id}/aceitar`, { start_now: '1', waiver: '1' }, cli.cookie)), /A tarifa mudou/);
   const n = await newQuote(HOST);
   assert.deepEqual([n.price_cents, n.rate.version, n.rate.cents_per_min], [centsOf(ep, HOST, 4500), 2, 4500]);
-  assert.match((await get('/termos')).body, /Google Veo 3\.1 Fast \(720p\), 45 créditos por minuto de fala \(55,35 € com IVA de 23%\)/);
+  const terms = (await get('/termos')).body;
+  assert.match(terms, /Google Veo 3\.1 Fast \(720p\), 45 créditos por minuto de fala \(55,35 € com IVA de 23%\)/);
+  assert.doesNotMatch(terms, /Veo 3\.1 Lite/, 'os termos só anunciam a tarifa que se vende');
   assert.equal(eurPt(withVat(4500, 23)), '55,35 €');
+  // o custo registado é o da tarifa (0,15 $/s), o mesmo que se reserva no teto: operações, orçamento e fator batem certo
+  await credit(cli.id, 5000);
+  await accept(n);
+  await drain();
+  const sn = await quoteOf(n.id);
+  assert.equal(sn.status, 'settled');
+  const nops = await db.query(`SELECT usd_per_sec, cost_usd, duration_sec FROM veo_ops WHERE quote_id=$1 AND state<>'void'`, [n.id]);
+  assert.ok(nops.length > 0 && nops.every((o: any) => Number(o.usd_per_sec) === 0.15 && Math.abs(o.cost_usd - o.duration_sec * 0.15) < 1e-9), JSON.stringify(nops));
+  assert.ok(Math.abs(sn.spent_usd - nops.reduce((s: number, o: any) => s + o.cost_usd, 0)) < 1e-9);
+  assert.equal(await V.veoCostPerSec(db, 'fast'), 0.15, 'o mesmo custo para o administrador, o gestor e a introdução');
+  await rejectAll();
   assert.match(msg(await post('/admin/tarifas/omni-flash', { cr_min: '30', cost: '0.101', usd_eur: '0.95', max_clip: '10', active: '1' }, admin)), /não se pode ativar/);
   assert.equal((await db.one(`SELECT active FROM animation_rates WHERE id='omni-flash'`)).active, false);
-  // nível Lite nas Definições: modelo e tarifa do Lite
+  // o Lite não se oferece (texto inventado no ecrã): fora de venda, não se ativa e, com o nível Lite nas Definições, não há orçamento
+  const lite = await db.one(`SELECT active, available FROM animation_rates WHERE id='veo-lite'`);
+  assert.deepEqual([lite.active, lite.available], [false, false]);
+  assert.match(msg(await post('/admin/tarifas/veo-lite', { cr_min: '15', cost: '0.05', usd_eur: '0.95', max_clip: '8', valid_until: '', active: '1' }, admin)), /não se oferece[^;]*; não se pode ativar/);
+  assert.equal((await db.one(`SELECT active FROM animation_rates WHERE id='veo-lite'`)).active, false);
   await saveSetting(db, 'VEO_TIER', 'lite');
   try {
-    const l = await newQuote(HOST);
-    assert.deepEqual([l.tier, l.rate_id, l.rate.cents_per_min, l.model, l.price_cents], ['lite', 'veo-lite', 1500, 'veo-3.1-lite-generate-preview', centsOf(ep, HOST, 1500)]);
+    assert.match(msg(await post(`/entrevistas/${ivId}/episodio/${epId}/orcamento`, { fala: HOST, lang: 'en' }, cli.cookie)), /Google Veo 3\.1 Lite não está disponível de momento/);
+    assert.equal(await Q.rateForTier(db, 'lite'), null);
   } finally { await saveSetting(db, 'VEO_TIER', ''); }
   // motor desativado: nada se orçamenta
   await post('/admin/tarifas/veo-fast', { cr_min: '30', cost: '0.10', usd_eur: '0.95', max_clip: '8', valid_until: '' }, admin);
@@ -618,11 +635,34 @@ test('gestor de entidade: o Veo sem créditos só com credenciais Google própri
 
     // um entrevistador da mesma entidade, mesmo com as credenciais dela, continua por orçamento
     await saveEntitySetting(db, ent, 'GEMINI_API_KEY', ('AIza' + 'Test' + 'X'.repeat(29)));
+    await saveEntitySetting(db, ent, 'VEO_TIER', 'lite');
     await db.query(`UPDATE users SET role='interviewer' WHERE id=$1`, [cli.id]);
     pg = (await get(`/entrevistas/${ivId}/producao`, cli.cookie)).body;
     assert.doesNotMatch(pg, /value="veo"/);
     assert.match(msg(await post(`/entrevistas/${ivId}/episodio/${epId}/video`, { engine: 'veo', lang: 'en' }, cli.cookie)), /faz-se por orçamento/);
+    // ... e o orçamento (pago com créditos) usa o nível e as credenciais Google do portal, nunca os da entidade:
+    // a entidade não paga à Google o que o cliente paga em créditos
+    assert.match(pg, /Animação por IA \(Google Veo 3\.1 Fast\), por orçamento/, 'o nível das Definições globais, não o Lite da entidade');
+    const w = await W.walletFor(db, cli.id, ent);
+    const tp = await db.one(`INSERT INTO credit_topups(wallet_id, user_id, entity_id, net_cents, vat_cents, gross_cents, vat_rate, vat_regime, customer_kind, customer_country) VALUES ($1,$2,$3,10000,2300,12300,23,'domestic','business','PT') RETURNING id`, [w.id, cli.id, ent]);
+    await db.tx((t: any) => W.creditTopup(t, tp.id, { paymentIntent: `pi_ent_${tp.id}` }));
+    const eq = await newQuote(['sx']);
+    assert.deepEqual([eq.tier, eq.rate_id], ['fast', 'veo-fast']);
+    await accept(eq);
+    await drain();
+    assert.equal((await quoteOf(eq.id)).status, 'settled', (await db.one('SELECT error FROM jobs WHERE id=$1', [(await quoteOf(eq.id)).job_id]))?.error ?? '');
+    const scopes = await db.query(`SELECT DISTINCT cred_scope FROM veo_ops WHERE quote_id=$1 AND state<>'void'`, [eq.id]);
+    assert.deepEqual(scopes.map((o: any) => o.cred_scope), ['global'], 'operações do orçamento com as credenciais do portal');
+    // um orçamento aceite antes de a entidade gravar credenciais próprias também segue com as do portal
+    await saveEntitySetting(db, ent, 'GEMINI_API_KEY', '');
+    await rejectAll();
+    const late = await accept(await newQuote(['sx']));
+    await saveEntitySetting(db, ent, 'GEMINI_API_KEY', ('AIza' + 'Test' + 'X'.repeat(29)));
+    await drain();
+    assert.equal((await quoteOf(late.id)).status, 'settled');
+    assert.deepEqual((await db.query(`SELECT DISTINCT cred_scope FROM veo_ops WHERE quote_id=$1 AND state<>'void'`, [late.id])).map((o: any) => o.cred_scope), ['global']);
   } finally {
+    await saveEntitySetting(db, ent, 'VEO_TIER', '');
     await saveEntitySetting(db, ent, 'GEMINI_API_KEY', '');
     await db.query(`UPDATE users SET role='interviewer', entity_id=NULL WHERE id=$1`, [cli.id]);
   }

@@ -8,8 +8,8 @@ import { inEntity } from '../settings.ts';
 import { seller, complaintsLink, TERMS_VERSION, WITHDRAWAL_DAYS } from '../legal.ts';
 import { findWallet, spendBlock, cr } from '../wallet.ts';
 import { VEO_NOTICE, veoWithoutQuote } from '../veo-episode.ts';
-import { veoTier, veoLabel } from '../talking.ts';
-import { createQuote, acceptQuote, cancelQuote, quoteProblem, quoteBlock, rateForTier, candidateFalas, consumerVatRate, isConsumerOwner,
+import { veoLabel } from '../talking.ts';
+import { quoteTier, createQuote, acceptQuote, cancelQuote, quoteProblem, quoteBlock, rateForTier, candidateFalas, consumerVatRate, isConsumerOwner,
   priceLabel, perMinuteLabel, acceptLabel, roleLabel, reasonLabel, GUARANTEES, QUOTE_STATUS, QuoteError, START_DEADLINE_HOURS, ENTITY_VEO_NO_QUOTE } from '../quotes.ts';
 import { helpNav } from '../support.ts';
 
@@ -31,7 +31,7 @@ export async function quoteSection(db: Db, iv: any, ep: any): Promise<string> {
   if (veoWithoutQuote(owner, owner.entity_id)) return `<h3 id="orcamento">Animação por IA</h3><p class="hint">${esc(ENTITY_VEO_NO_QUOTE)}</p>`;
   const quotes = await db.query(`SELECT * FROM animation_quotes WHERE episode_id=$1 ORDER BY created_at DESC LIMIT 5`, [ep.id]);
   return inEntity(owner.entity_id, async () => {
-    const tier = veoTier(), rate = await rateForTier(db, tier);
+    const tier = quoteTier(), rate = await rateForTier(db, tier);
     const vatRate = await consumerVatRate(db, owner.id, seller());
     const block = rate ? await quoteBlock(db, iv, ep) : `A animação com o ${veoLabel(tier)} não está disponível de momento.`;
     const open = quotes.find((q: any) => ['accepted', 'running'].includes(q.status));

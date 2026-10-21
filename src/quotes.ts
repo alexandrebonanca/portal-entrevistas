@@ -49,6 +49,11 @@ export async function rateForTier(db: Db, tier: VeoTier): Promise<AnimationRate 
 }
 
 export class QuoteError extends Error {}
+/**
+ * Nível do Veo de um orçamento: o das Definições globais. Um orçamento é pago com créditos e gera-se sempre com as
+ * credenciais Google do portal (veo-episode.ts), mesmo para um entrevistador de uma entidade com credenciais próprias.
+ */
+export const quoteTier = (): VeoTier => inEntity(null, () => veoTier());
 /** Entrevista do gestor de uma entidade com credenciais Google próprias: o Veo gera-se sem orçamento nem créditos. */
 export const ENTITY_VEO_NO_QUOTE = 'A entidade tem credenciais Google próprias: o gestor gera o vídeo do Google Veo sem orçamento nem créditos (a Google cobra no projeto Google da entidade), na opção do vídeo acima.';
 const guestAskedChanges = async (db: Db, scriptId: string) => !!(await db.one(`SELECT 1 FROM approvals a JOIN episodes e ON e.id=a.episode_id WHERE e.script_id=$1 AND a.actor='guest' AND a.valid AND a.decision='changes' LIMIT 1`, [scriptId]));
@@ -68,7 +73,7 @@ export async function quoteBlock(db: Db, iv: any, ep: any): Promise<string | nul
   if ((await db.one('SELECT status FROM scripts WHERE id=$1', [ep.script_id]))?.status !== 'approved') return VEO_SCRIPT_REPLACED;
   if (await guestAskedChanges(db, ep.script_id)) return VEO_CHANGES;
   const owner = await ownerOf(db, iv);
-  if (!config.openai.mock && !inEntity(owner?.entity_id, () => veoConfigured())) return VEO_NO_CREDENTIALS;
+  if (!config.openai.mock && !inEntity(null, () => veoConfigured())) return VEO_NO_CREDENTIALS; // credenciais do portal (ver quoteTier)
   if (!config.openai.mock && !inEntity(owner?.entity_id, () => aiAvailable())) return 'Falta a chave da OpenAI (transcrição para verificar os clipes) em Definições.';
   return null;
 }
@@ -121,7 +126,7 @@ export async function createQuote(db: Db, o: { iv: any; ep: any; actor: { email:
   if (veoWithoutQuote(owner, owner.entity_id)) throw new QuoteError(ENTITY_VEO_NO_QUOTE);
   if (await db.one(`SELECT 1 FROM animation_quotes WHERE episode_id=$1 AND status IN ('accepted','running')`, [ep.id])) throw new QuoteError('Já há um orçamento aceite em curso para este episódio: aguarde que a produção termine.');
   return inEntity(owner.entity_id, async () => {
-    const tier = veoTier();
+    const tier = quoteTier();
     const rate = await rateForTier(db, tier);
     if (!rate) throw new QuoteError(`A animação com o ${veoLabel(tier)} não está disponível de momento (motor inativo nas tarifas).`);
     const pick = new Set(o.segmentIds);
@@ -160,7 +165,7 @@ export async function createQuote(db: Db, o: { iv: any; ep: any; actor: { email:
       await t.query(`UPDATE animation_quotes SET status='cancelled', void_reason='substituído por um orçamento novo', updated_at=now() WHERE episode_id=$1 AND status='draft'`, [ep.id]);
       return t.one(`INSERT INTO animation_quotes(interview_id, episode_id, script_id, owner_id, entity_id, created_by, rate_id, rate, engine, model, tier, lang, selection, inputs_hash, speech_sec, price_cents, cap_usd, est_minutes, valid_until)
         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'veo',$9,$10,$11,$12,$13,$14,$15,$16,$17,$18) RETURNING *`,
-      [iv.id, ep.id, ep.script_id, owner.id, owner.entity_id ?? null, o.actor.email, rate.id, JSON.stringify(snapshot), veoModel(tier), tier, lang, JSON.stringify(selection), hash,
+      [iv.id, ep.id, ep.script_id, owner.id, owner.entity_id ?? null, o.actor.email, rate.id, JSON.stringify(snapshot), inEntity(null, () => veoModel(tier)), tier, lang, JSON.stringify(selection), hash,
         selection.reduce((n, x) => n + x.sec, 0), price, cap, Math.ceil(Math.ceil(genChunks / 2) * 1.5 + 2), new Date(validMs)]);
     });
   });
@@ -184,7 +189,7 @@ export async function quoteProblem(db: Db, q: any): Promise<string | null> {
   if (block) return block;
   const owner = await ownerOf(db, iv);
   return inEntity(owner?.entity_id, async () => {
-    if (veoTier() !== q.tier) return 'O motor escolhido em Definições mudou: peça um orçamento novo.';
+    if (quoteTier() !== q.tier) return 'O motor escolhido em Definições mudou: peça um orçamento novo.';
     for (const x of q.selection as any[]) if (!x.reused && x.cents > 0 && (await db.one('SELECT 1 FROM animation_charges WHERE interview_id=$1 AND reuse_key=$2 AND take=$3', [iv.id, x.reuseKey, x.take])))
       return 'Há falas deste orçamento que já foram pagas noutro: peça um orçamento novo (passam a 0 créditos).';
     const takes = new Map<string, number>((q.selection as any[]).map(x => [x.segmentId, Number(x.take) || 1]));

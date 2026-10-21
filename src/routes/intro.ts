@@ -9,8 +9,8 @@ import { enqueue } from '../jobs.ts';
 import { quotaFor } from '../billing.ts';
 import { aiAvailable } from '../ai/openai.ts';
 import { inEntity, entityOfInterview } from '../settings.ts';
-import { veoConfigured, veoTier, veoLabel, veoPricePerSec } from '../talking.ts';
-import { startImage, VEO_NOTICE, VEO_NO_CREDENTIALS } from '../veo-episode.ts';
+import { veoConfigured, veoTier, veoLabel } from '../talking.ts';
+import { startImage, veoCostPerSec, VEO_NOTICE, VEO_NO_CREDENTIALS } from '../veo-episode.ts';
 import { INTRO_PHRASES, introPhrase, introKeyOf, introBlock, introState, introsThisMonth, readyIntro } from '../intro.ts';
 
 /**
@@ -58,7 +58,7 @@ export async function introCard(db: Db, iv: any, user: any): Promise<string> {
   let cost = '';
   if (isAdmin) {
     const m = await db.one(`SELECT COALESCE(sum(cost_usd),0)::float AS usd, COALESCE(sum(failed_usd),0)::float AS failed, COALESCE(sum(billed_sec),0)::int AS sec, count(*)::int AS n FROM host_intros WHERE user_id=$1 AND created_at >= date_trunc('month', now())`, [owner.id]);
-    cost = `<p class="hint">Custo interno (só o administrador o vê; estimativa a ~$${veoPricePerSec(tier).toFixed(2)}/s da duração faturada)${shown ? `: esta introdução ~$${Number(shown.cost_usd).toFixed(2)} (${shown.billed_sec} s faturados, ${shown.sent} envio(s) à Google${Number(shown.failed_usd) ? `, ~$${Number(shown.failed_usd).toFixed(2)} em operações falhadas na Google` : ''})` : ''}; este mês, ${m.n} pedido(s) deste entrevistador, ~$${m.usd.toFixed(2)} (${m.sec} s)${m.failed ? ` e ~$${m.failed.toFixed(2)} falhados` : ''}. Registado no usage_ledger como «veo_usd_intro».</p>`;
+    cost = `<p class="hint">Custo interno (só o administrador o vê; estimativa a ~$${(await veoCostPerSec(db, tier)).toFixed(2)}/s da duração faturada, o custo da tarifa)${shown ? `: esta introdução ~$${Number(shown.cost_usd).toFixed(2)} (${shown.billed_sec} s faturados, ${shown.sent} envio(s) à Google${Number(shown.failed_usd) ? `, ~$${Number(shown.failed_usd).toFixed(2)} em operações falhadas na Google` : ''})` : ''}; este mês, ${m.n} pedido(s) deste entrevistador, ~$${m.usd.toFixed(2)} (${m.sec} s)${m.failed ? ` e ~$${m.failed.toFixed(2)} falhados` : ''}. Registado no usage_ledger como «veo_usd_intro».</p>`;
   }
   return `<div class="card" id="introducao"><h2 style="margin-top:0">Introdução animada (Google Veo), oferecida</h2>
 <p class="hint">Nos vídeos com animação do Google Veo, logo a seguir ao aviso inicial de IA e antes do cartão de título, aparece a sua fotografia animada a dizer uma frase de boas-vindas, com o aviso visível «${esc(VEO_NOTICE)}». É gerada uma vez e reaproveitada em todas as suas entrevistas, enquanto a fotografia, a frase, a voz, o nível do Veo (${esc(veoLabel(tier))}) e o formato não mudarem. Não usa créditos nem entra no orçamento. A frase é genérica, em inglês e sem nomes (o Google Veo recusa nomes de pessoas reais): o seu nome aparece em texto, no rodapé. Exige a sua fotografia, o direito a usá-la e a autorização para o Google Veo (em «Dados gerais»).</p>

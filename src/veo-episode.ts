@@ -7,7 +7,7 @@ import { renderBases, subtitleFrame, encodeComposite, buildAudioTrack, mockTalki
 import { cuesFromWords } from './subtitles.ts';
 import { peopleOf, cardBackground, titleCard, endCard, chapterTitles, planGraphics, graphicsOverlays, graphicsMeta, TITLE_CARD_MS, END_CARD_MS, type GfxSpan } from './graphics.ts';
 import { veoSubmit, veoAwait, veoEpisodePrompt, VeoQuotaError, VeoCancelled, VeoBusy, VeoFiltered, VeoOpError, VeoUnsupported, VeoCredsMissing, isKeyRejected, opOfCurrentCreds, veoTier, veoModel, veoBackend, veoConfigured, veoCredsScope, veoScopeId, veoPricePerSec, veoPriceOfModel, veoKeyModel, veoLabel, tierOfModel, type VeoTier } from './talking.ts';
-import { ownsAny, entityOfInterview, VEO_CRED_KEYS } from './settings.ts';
+import { ownsAny, entityOfInterview, inEntity, VEO_CRED_KEYS } from './settings.ts';
 import { PermanentError, JobPaused, type Handler } from './jobs.ts';
 import type { Db } from './db.ts';
 import { flushOutbox, queueEmail, emailShell } from './mail.ts';
@@ -385,6 +385,15 @@ export function canaryGate(on: boolean, aborted: () => boolean, fail: (e: Error)
     },
   };
 }
+/**
+ * Custo faturado pela Google por segundo de clipe de um nível: o da tarifa em Definições → «Tarifas da animação» (o dono
+ * confirma o SKU na faturação Cloud e edita-o lá); sem tarifa, o preço do código. É este o valor que se reserva no teto e
+ * que fica registado nas operações, no usage_ledger e no orçamento (as duas contas nunca divergem).
+ */
+export async function veoCostPerSec(db: Db, tier: VeoTier): Promise<number> {
+  const r = await db.one(`SELECT cost_usd_per_sec FROM animation_rates WHERE engine='veo' AND tier=$1`, [tier]);
+  return Number(r?.cost_usd_per_sec) > 0 ? Number(r.cost_usd_per_sec) : veoPricePerSec(tier);
+}
 /** Espera depois de uma resposta «procura elevada» da Google, multiplicada pelo número da tentativa. */
 export const BUSY_WAIT_MS = Number(process.env.VEO_BUSY_WAIT_MS ?? 45_000);
 /** Disjuntor da 2.ª passagem: depois de 10 repetições, menos de 30% aprovadas param as repetições. */
@@ -511,6 +520,10 @@ export async function renderVeoVideo(job: any, { db, progress }: Parameters<Hand
   const requester = quoteId || rebuildOf ? null : await requesterOf(db, job.input.requestedBy);
   if (!quoteId && !rebuildOf && !veoWithoutQuote(requester, await entityOfInterview(db, job.interview_id))) throw new PermanentError(VEO_NEEDS_QUOTE);
   const entityPays = !quoteId && !rebuildOf && requester?.role === 'entity_admin';
+  // Orçamento pago com créditos: o Veo gera-se sempre com as credenciais Google do portal (nível, região e conta), mesmo
+  // que a entidade tenha credenciais próprias ou as grave depois da aceitação (senão a entidade pagava à Google e o
+  // cliente pagava os créditos). Só o Veo: a transcrição e o resto seguem a entidade, como antes.
+  const veoCtx = <T>(fn: () => T): T => (quoteId ? inEntity(null, fn) : fn());
   // Retoma depois de um reinício: se este trabalho já liquidou o orçamento (o processo caiu entre a liquidação e o fim),
   // o resultado é o mesmo, sem gerar nem cobrar outra vez; o email do resultado (deduplicado) sai se ainda não saiu.
   if (quoteId) {
@@ -531,7 +544,7 @@ export async function renderVeoVideo(job: any, { db, progress }: Parameters<Hand
   if (!timing?.length) throw new PermanentError('Este episódio foi gerado antes do vídeo existir: gere o episódio de novo');
   const mock = config.openai.mock;
   // A reconstrução só monta clipes já pagos: nada vai à Google nem é transcrito.
-  if (!rebuildOf && !mock && !veoConfigured()) throw new PermanentError(VEO_NO_CREDENTIALS);
+  if (!rebuildOf && !mock && !veoCtx(veoConfigured)) throw new PermanentError(VEO_NO_CREDENTIALS);
   // Sem transcrição não há verificação: não se paga nenhum clipe que depois não se possa verificar.
   if (!rebuildOf && !mock && !aiAvailable()) throw new PermanentError('Falta a chave da OpenAI (transcrição para verificar os clipes) em Definições');
   const script = await db.one('SELECT status FROM scripts WHERE id=$1', [ep.script_id]);
@@ -547,7 +560,8 @@ export async function renderVeoVideo(job: any, { db, progress }: Parameters<Hand
   if (quoteId) await confirmationSent(db, quoteId);
   const quote = quoteId ? await startQuote(db, quoteId, iv.id) : null;
   const tier: VeoTier = quote ? (quote.tier === 'lite' ? 'lite' : 'fast') : veoTier();
-  const tierPrice = quote ? Number(quote.rate.cost_usd_per_sec) || veoPricePerSec(tier) : veoPricePerSec(tier), tierModel = veoModel(tier);
+  // O custo por segundo é o da tarifa (o do orçamento, congelado na aceitação): o mesmo na reserva e no registo.
+  const tierPrice = (quote ? Number(quote.rate.cost_usd_per_sec) : 0) || (await veoCostPerSec(db, tier)), tierModel = veoCtx(() => veoModel(tier));
   const maxClip = quote ? Number(quote.rate.max_clip_sec) || 8 : 8;
   // Lida de novo antes de cada envio à Google: uma autorização retirada ou um pedido de alterações a meio param o trabalho.
   const stillAllowed = async (role: Role): Promise<string | null> => {
@@ -781,10 +795,10 @@ export async function renderVeoVideo(job: any, { db, progress }: Parameters<Hand
             outcome = veoMock.outcome?.({ segmentId: c.seg.id, role: c.seg.role, text: c.text, attempt: u.atts.length + u.failures + 1 }) ?? 'ok';
             if (outcome === 'quota') throw new VeoQuotaError('Limite de pedidos (quota) da Google esgotado (simulado).');
             if (outcome === 'busy') throw new VeoBusy('Veo 503: high demand, try again later (simulado)');
-            opName = `mock/${reservedId}`; opScope = veoScopeId();
+            opName = `mock/${reservedId}`; opScope = veoCtx(veoScopeId);
           } else {
-            const s = await veoSubmit({ image: st.image, prompt: c.prompt, aspectRatio: st.vertical ? '9:16' : '16:9', durationSeconds: dur, onStatus, canSend, tier });
-            opName = s.opName; dur = s.dur; opModel = s.model; opPrice = s.usdPerSec; opScope = s.scope; opProject = s.project;
+            const s = await veoCtx(() => veoSubmit({ image: st.image, prompt: c.prompt, aspectRatio: st.vertical ? '9:16' : '16:9', durationSeconds: dur, onStatus, canSend, tier }));
+            opName = s.opName; dur = s.dur; opModel = s.model; opPrice = tierPrice; opScope = s.scope; opProject = s.project; // (o preço da tarifa, não o do código)
           }
           // A Google aceitou: a partir daqui a operação está paga (já não se anula a intenção).
           opId = reservedId; reservedId = null;
@@ -793,7 +807,7 @@ export async function renderVeoVideo(job: any, { db, progress }: Parameters<Hand
         if (mock && outcome === 'filtered') { const m = 'Veo: clipe bloqueado pelos filtros da Google (simulado)'; await moveToFailed(opId, dur, 'failed', m); throw new VeoFiltered(m); }
         try {
           if (mock) { await veoMock.poll?.({ opName, scope: opScope, project: opProject }); video = await mockTalkingClip(ffmpeg, st.image, dur * 1000, st.vertical); }
-          else video = (await veoAwait(opName, dur, onStatus, undefined, undefined, opScope)).video;
+          else video = (await veoCtx(() => veoAwait(opName, dur, onStatus, undefined, undefined, opScope))).video;
         } catch (e: any) {
           const m = String(e?.message ?? e);
           // Só uma operação que a própria Google deu como falhada (passageira, bloqueada ou sem vídeo) passa a «normalmente não cobrada».
@@ -803,7 +817,7 @@ export async function renderVeoVideo(job: any, { db, progress }: Parameters<Hand
           // fica 'failed' (inacessível, o custo continua como pago) e o pedaço segue para uma nova tentativa.
           // Outra recusa da CONSULTA (ex.: 404): não se sabe o que aconteceu à operação; fica 'failed' e o custo continua como pago.
           if (e instanceof VeoCredsMissing) { /* fica 'pending' */ }
-          else if (isKeyRejected(m) && opOfCurrentCreds(opName, opScope, opProject)) { /* fica 'pending' */ }
+          else if (isKeyRejected(m) && veoCtx(() => opOfCurrentCreds(opName, opScope, opProject))) { /* fica 'pending' */ }
           else if (isKeyRejected(m)) { foreign = true; await db.query(`UPDATE veo_ops SET state='failed', error=$2 WHERE id=$1 AND state='pending'`, [opId, `consulta recusada às credenciais que criaram a operação, não às em vigor: ${m}`.slice(0, 300)]); }
           else if (e instanceof VeoBusy) await moveToFailed(opId, dur, 'busy', m);
           else if (e instanceof VeoOpError) await moveToFailed(opId, dur, 'failed', m);
@@ -1079,7 +1093,7 @@ export async function renderVeoVideo(job: any, { db, progress }: Parameters<Hand
   const clipModels: Record<string, number> = {};
   for (const s of plan.segs) for (const { at } of falaOut.get(s.id)?.clips ?? []) { const k = at.model ?? UNKNOWN_MODEL; clipModels[k] = (clipModels[k] ?? 0) + 1; }
   // (a introdução mostra o entrevistador gerado pelo Veo: conta como vídeo IA dele, com a autorização verificada ao ligar)
-  const meta = { engine: 'veo', model: tierModel, tier, usdPerSec: tierPrice, backend: veoBackend(), lang, guestPhoto: !!plan.guestPhoto, hostPhoto: !!plan.hostPhoto, guestAiVideo: usedRoles.has('guest'), hostAiVideo: usedRoles.has('host') || !!intro,
+  const meta = { engine: 'veo', model: tierModel, tier, usdPerSec: tierPrice, backend: veoCtx(veoBackend), lang, guestPhoto: !!plan.guestPhoto, hostPhoto: !!plan.hostPhoto, guestAiVideo: usedRoles.has('guest'), hostAiVideo: usedRoles.has('host') || !!intro,
     intro: intro ? { id: intro.id, phrase: intro.phrase, model: intro.model, durMs: introMs, paidBy: 'internal' } : null,
     veoClips: want.reduce((n, s) => n + (reused.get(s.id)?.length ?? s.chunks.length), 0), veoSegments: veoSegs.size, fallbackSegments: fallbackSegs, generatedClips: generated, spentUsd: Math.max(0, spentUsd - failedUsd), failedUsd, veoUsd: costUsd, clipModels,
     googleBusy: fidelity.some(f => f.problem === 'busy' || f.problem === 'busycap'), quoteId: quote?.id ?? null, rebuildOf, paidBy: quote ? 'credits' : entityPays ? 'entity' : rebuildOf ? 'rebuild' : 'internal',

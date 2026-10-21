@@ -22,10 +22,11 @@ CREATE TABLE animation_rates (
   updated_at timestamptz NOT NULL DEFAULT now(),
   CHECK (available OR NOT active)
 );
--- Valores iniciais: Fast 30 cr/min (0,10 $/s) e Lite 15 cr/min (0,05 $/s), por confirmar na faturação Cloud do projeto.
+-- Valores iniciais: Fast 30 cr/min (0,10 $/s), por confirmar na faturação Cloud do projeto. O Lite (15 cr/min, 0,05 $/s)
+-- não se oferece: o Laboratório apanhou-o a pôr texto inventado no ecrã («2%7»), por isso fica fora de venda e não se ativa.
 INSERT INTO animation_rates(id, engine, tier, label, cents_per_min, cost_usd_per_sec, usd_eur, max_clip_sec, available, active) VALUES
   ('veo-fast', 'veo', 'fast', 'Google Veo 3.1 Fast', 3000, 0.10, 0.95, 8, true, true),
-  ('veo-lite', 'veo', 'lite', 'Google Veo 3.1 Lite', 1500, 0.05, 0.95, 8, true, true),
+  ('veo-lite', 'veo', 'lite', 'Google Veo 3.1 Lite', 1500, 0.05, 0.95, 8, false, false),
   ('omni-flash', 'omni', NULL, 'Gemini Omni Flash', 3000, 0.101, 0.95, 10, false, false);
 -- Orçamento firme de uma produção animada: as falas escolhidas (segundos, créditos, chave de reaproveitamento, take e
 -- as chaves dos pedaços congeladas), o retrato da tarifa, o teto interno e, no fim, a liquidação por fala.
