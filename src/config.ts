@@ -7,6 +7,8 @@ export const config = {
   port: Number(env.PORT ?? 3000),
   baseUrl: (env.BASE_URL ?? `http://localhost:${env.PORT ?? 3000}`).replace(/\/$/, ''),
   brand: env.BRAND_NAME ?? 'quietinterview',
+  // Endereço mostrado no cartão final dos vídeos.
+  brandSite: env.BRAND_SITE ?? 'quietinterview.com',
   supportEmail: env.SUPPORT_EMAIL ?? 'support@example.com',
   // Entidade proprietária e gestora do portal (rodapé de todas as páginas).
   owner: {
