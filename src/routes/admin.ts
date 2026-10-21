@@ -4,8 +4,15 @@ import { esc, fmtDate, hashPassword, isEmail } from '../lib.ts';
 import { page, flash, pill } from '../views.ts';
 import { audit } from '../app.ts';
 import { quotaFor, ACTIVE_STATUSES, stripe } from '../billing.ts';
-import { SETTING_DEFS, S, mask, saveSetting, fromDb, secretFingerprint } from '../settings.ts';
+import { SETTING_DEFS, S, maskSetting, saveSetting, fromDb, secretFingerprint, settingsFormError, type SettingDef } from '../settings.ts';
 import { queueEmail, emailShell, flushOutbox, retryFailedEmails } from '../mail.ts';
+
+/** Campo de uma definição: segredo (nunca devolvido), lista de opções ou texto. `blank` é a opção sem valor guardado. */
+export function settingInput(d: SettingDef, value: string, blank: string, blankLabel?: string) {
+  if (d.options) return `<select id="f_${d.key}" name="${d.key}">${blankLabel !== undefined ? `<option value="" ${value ? '' : 'selected'}>${esc(blankLabel)}</option>` : ''}${d.options.map(([v, l]) => `<option value="${esc(v)}" ${(value || blank) === v ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select>`;
+  return `<input id="f_${d.key}" name="${d.key}" type="${d.secret ? 'password' : 'text'}" autocomplete="${d.secret ? 'new-password' : 'off'}" data-lpignore="true" spellcheck="false" placeholder="${esc(d.secret ? maskSetting(d.key, value) || (d.hint ?? '') : (d.hint ?? ''))}" value="${d.secret ? '' : esc(value)}">`;
+}
+export const VERTEX_HINT = 'O Google Veo usa o Vertex AI quando há conta de serviço (Veo 3.1 Fast: veo-3.1-fast-generate-001; Lite: veo-3.1-lite-generate-001, em pré-visualização). Sem conta de serviço usa a Gemini API, que a Google desliga para estes modelos a partir de 22/10/2026. A chave JSON nunca volta a ser mostrada: aparece só o email da conta e o projeto.';
 
 const STATUSES: [string, string][] = [['active', 'Ativa'], ['comped', 'Oferta (sem cobrança)'], ['trialing', 'Em teste'], ['past_due', 'Pagamento em atraso'], ['canceled', 'Cancelada'], ['inactive', 'Inativa']];
 const eur = (c: number) => `€${(c / 100).toFixed(2)}`;
@@ -203,8 +210,9 @@ ${rows.map(({ u, qt }) => `<tr><td><a href="/admin/utilizadores/${u.id}">${esc(u
 <form method="post" action="/admin/definicoes">
 ${groups.map(g => `<div class="card"><div class="row"><h2 style="margin:0" class="grow">${esc(g)}</h2>${['OpenAI', 'Stripe', 'MailerSend', 'Moloni ON', 'Replicate', 'fal.ai', 'WaveSpeed', 'Google'].includes(g) ? `<button type="submit" formaction="/admin/definicoes/testar/${encodeURIComponent(g)}" class="ghost" name="testar" value="1">Guardar e testar</button>` : ''}</div>
 ${g === 'Stripe' ? `<p class="hint sans">Endpoint do webhook a registar no Stripe: <code>${esc(config.baseUrl)}/webhooks/stripe</code> — eventos: checkout.session.completed, customer.subscription.created/updated/deleted.</p>` : ''}
+${g === 'Google' ? `<p class="hint sans">${esc(VERTEX_HINT)}</p>` : ''}
 ${SETTING_DEFS.filter(d => d.group === g).map(d => `<label for="f_${d.key}">${esc(d.label)} <span class="hint">${S(d.key) ? (fromDb(d.key) ? '· definido' : '· definido por variável de ambiente') : '· por definir'}</span></label>
-<input id="f_${d.key}" name="${d.key}" type="${d.secret ? 'password' : 'text'}" autocomplete="${d.secret ? 'new-password' : 'off'}" data-lpignore="true" spellcheck="false" placeholder="${esc(d.secret ? mask(S(d.key)) || (d.hint ?? '') : '')}" value="${d.secret ? '' : esc(S(d.key))}">`).join('')}</div>`).join('')}
+${settingInput(d, S(d.key), d.options?.[0]?.[0] ?? '')}`).join('')}</div>`).join('')}
 <div class="card"><h2 style="margin-top:0">Registo de utilizadores</h2><label class="check"><input type="checkbox" name="signups_open" value="1" ${signups ? 'checked' : ''}> Permitir que novos utilizadores se registem (e subscrevam um plano)</label></div>
 <p><button class="accent">Guardar definições</button></p></form>
 <div class="card"><h2 style="margin-top:0">Planos</h2><p class="hint sans">Alterar o preço afeta apenas novas subscrições; as existentes mantêm o preço contratado no Stripe.</p>
@@ -214,6 +222,8 @@ ${plans.map((p: any) => `<form method="post" action="/admin/planos/${esc(p.id)}"
   app.post('/admin/definicoes', async (req, reply) => {
     if (!guard(req, reply)) return;
     const b = req.body as any;
+    const bad = settingsFormError(b);
+    if (bad) return back(reply, '/admin/definicoes', undefined, `Nada foi guardado: ${bad}`);
     for (const d of SETTING_DEFS) {
       const v = typeof b[d.key] === 'string' ? b[d.key].trim() : '';
       if (d.secret) { if (v === '-') await saveSetting(db, d.key, ''); else if (v) await saveSetting(db, d.key, v); }
@@ -228,6 +238,8 @@ ${plans.map((p: any) => `<form method="post" action="/admin/planos/${esc(p.id)}"
   app.post('/admin/definicoes/testar/:group', async (req, reply) => {
     if (!guard(req, reply)) return;
     const g = decodeURIComponent((req.params as any).group), b = req.body as any;
+    const bad = settingsFormError(b, SETTING_DEFS.filter(d => d.group === g));
+    if (bad) return back(reply, '/admin/definicoes', undefined, `Nada foi guardado: ${bad}`);
     for (const d of SETTING_DEFS.filter(d => d.group === g)) {
       const v = typeof b[d.key] === 'string' ? b[d.key].trim() : '';
       if (v && v !== '-') await saveSetting(db, d.key, v);

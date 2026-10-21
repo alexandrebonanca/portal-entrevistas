@@ -1,10 +1,10 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto';
+import { createCipheriv, createDecipheriv, createHash, createPrivateKey, randomBytes } from 'node:crypto';
 import { config } from './config.ts';
 import type { Db } from './db.ts';
 
 /** Definições introduzidas pelo administrador (chaves de serviços). Cifradas em repouso (AES-256-GCM, chave derivada de APP_SECRET). */
-export interface SettingDef { key: string; label: string; group: string; secret: boolean; hint?: string; env?: string }
+export interface SettingDef { key: string; label: string; group: string; secret: boolean; hint?: string; env?: string; options?: [string, string][] }
 
 export const SETTING_DEFS: SettingDef[] = [
   { key: 'OPENAI_API_KEY', label: 'API key', group: 'OpenAI', secret: true, hint: 'sk-…' },
@@ -17,7 +17,10 @@ export const SETTING_DEFS: SettingDef[] = [
   { key: 'REPLICATE_LIPSYNC_MODEL', label: 'Modelo de sincronização labial', group: 'Replicate', secret: false, hint: 'cjwbw/sadtalker' },
   { key: 'FAL_KEY', label: 'API key', group: 'fal.ai', secret: true, hint: 'chave da fal.ai' },
   { key: 'WAVESPEED_API_KEY', label: 'API key (HeyGen Avatar IV)', group: 'WaveSpeed', secret: true },
-  { key: 'GEMINI_API_KEY', label: 'Gemini API key (Veo 3.1)', group: 'Google', secret: true, hint: 'AIza…' },
+  { key: 'VERTEX_SA_JSON', label: 'Conta de serviço do Vertex AI (JSON)', group: 'Google', secret: true, hint: 'cole aqui o ficheiro .json da chave da conta de serviço' },
+  { key: 'VERTEX_LOCATION', label: 'Região do Vertex AI', group: 'Google', secret: false, hint: 'us-central1' },
+  { key: 'VEO_TIER', label: 'Modelo do Google Veo', group: 'Google', secret: false, options: [['fast', 'Veo 3.1 Fast (~$0,10/s)'], ['lite', 'Veo 3.1 Lite (~$0,05/s, metade do preço)']] },
+  { key: 'GEMINI_API_KEY', label: 'Gemini API key (reserva enquanto a Google a mantiver)', group: 'Google', secret: true, hint: 'AIza…' },
   { key: 'MOLONI_CLIENT_ID', label: 'Client ID (developer id)', group: 'Moloni ON', secret: false },
   { key: 'MOLONI_CLIENT_SECRET', label: 'Client secret', group: 'Moloni ON', secret: true },
   { key: 'MOLONI_USERNAME', label: 'Utilizador', group: 'Moloni ON', secret: false },
@@ -82,8 +85,61 @@ export function cleanSecret(raw: string): string {
   return v;
 }
 
-/** Só chaves/tokens de API são limpos; palavras-passe (ex.: Moloni) ficam exatamente como foram escritas. */
-export const isApiKey = (key: string) => !!SETTING_DEFS.find(d => d.key === key)?.secret && !/PASSWORD/i.test(key);
+/** Só chaves/tokens de API são limpos; palavras-passe (ex.: Moloni) e o JSON da conta de serviço ficam como foram escritos. */
+export const isApiKey = (key: string) => !!SETTING_DEFS.find(d => d.key === key)?.secret && !/PASSWORD/i.test(key) && key !== 'VERTEX_SA_JSON';
+
+/** Valor recusado ao guardar (mensagem para o ecrã; nunca inclui o valor). */
+export class SettingError extends Error {}
+
+/** Conta de serviço da Google (só os campos usados para obter o token). */
+export interface ServiceAccount { type: 'service_account'; project_id: string; private_key_id?: string; private_key: string; client_email: string }
+
+/**
+ * Valida o JSON da chave de uma conta de serviço. As mensagens nunca citam o texto colado: a do JSON.parse pode incluir
+ * parte dele (a chave privada), por isso é descartada.
+ */
+export function parseServiceAccount(raw: string): ServiceAccount {
+  let j: any;
+  try { j = JSON.parse(String(raw ?? '').trim()); } catch { throw new SettingError('A conta de serviço não é um JSON válido: cole o ficheiro .json completo, tal como foi descarregado da Google Cloud.'); }
+  if (!j || typeof j !== 'object' || Array.isArray(j)) throw new SettingError('A conta de serviço não é um JSON válido: cole o ficheiro .json completo.');
+  if (j.type !== undefined && j.type !== 'service_account') throw new SettingError(`O JSON colado não é a chave de uma conta de serviço${/^[a-z_]{1,30}$/.test(String(j.type)) ? ` (type «${j.type}»)` : ''}: crie uma chave JSON na conta de serviço.`);
+  const missing = ['client_email', 'private_key', 'project_id'].filter(k => typeof j[k] !== 'string' || !j[k].trim());
+  if (missing.length) throw new SettingError(`Faltam campos na conta de serviço: ${missing.join(', ')}.`);
+  if (!/^[^@\s"]+@[^@\s"]+\.[a-z]{2,}$/i.test(j.client_email)) throw new SettingError('O client_email da conta de serviço não é válido.');
+  // O projeto entra no caminho dos pedidos: só letras minúsculas, algarismos e hífenes (com o prefixo de domínio antigo).
+  if (!/^(?:[a-z0-9.-]+:)?[a-z][a-z0-9-]{4,61}[a-z0-9]$/.test(j.project_id)) throw new SettingError('O project_id da conta de serviço não é válido.');
+  try { if (createPrivateKey(j.private_key).asymmetricKeyType !== 'rsa') throw new Error(); }
+  catch { throw new SettingError('A private_key da conta de serviço não é uma chave RSA válida: crie uma chave JSON nova e cole o ficheiro completo.'); }
+  const kid = typeof j.private_key_id === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(j.private_key_id) ? j.private_key_id : undefined;
+  return { type: 'service_account', project_id: j.project_id, ...(kid ? { private_key_id: kid } : {}), private_key: j.private_key, client_email: j.client_email };
+}
+
+/** Região do Vertex AI (entra no nome do servidor: só o formato «us-central1»). */
+export const isVertexLocation = (v: string) => /^[a-z]+-[a-z]+\d{1,2}$/.test(v);
+
+/** Valor a guardar: limpo e validado (lança SettingError com uma mensagem clara). */
+export function prepareSetting(key: string, value: string): string {
+  if (!value) return value;
+  if (key === 'VERTEX_SA_JSON') return JSON.stringify(parseServiceAccount(value)); // só os campos necessários
+  if (key === 'VERTEX_LOCATION') {
+    const v = value.trim().toLowerCase();
+    if (!isVertexLocation(v)) throw new SettingError('Região do Vertex AI inválida (ex.: us-central1).');
+    return v;
+  }
+  const def = SETTING_DEFS.find(d => d.key === key);
+  if (def?.options && !def.options.some(o => o[0] === value)) throw new SettingError(`Valor inválido em «${def.label}».`);
+  return isApiKey(key) ? cleanSecret(value) : value;
+}
+
+/** Primeiro valor inválido de um formulário de definições (null = tudo válido); nada é guardado se houver um. */
+export function settingsFormError(body: any, defs: SettingDef[] = SETTING_DEFS): string | null {
+  for (const d of defs) {
+    const v = typeof body?.[d.key] === 'string' ? body[d.key].trim() : '';
+    if (!v || v === '-') continue;
+    try { prepareSetting(d.key, v); } catch (e: any) { if (e instanceof SettingError) return e.message; throw e; }
+  }
+  return null;
+}
 
 /** Retrato não secreto de uma chave guardada (para comparar com o painel do fornecedor). */
 export function secretFingerprint(v: string) {
@@ -96,7 +152,7 @@ export function secretFingerprint(v: string) {
 
 export async function saveEntitySetting(db: Db, entityId: string, key: string, value: string) {
   if (!SETTING_DEFS.some(d => d.key === key)) throw new Error('Definição desconhecida');
-  if (isApiKey(key)) value = cleanSecret(value);
+  value = prepareSetting(key, value);
   if (!value) { await db.query('DELETE FROM entity_settings WHERE entity_id=$1 AND key=$2', [entityId, key]); entityCache.get(entityId)?.delete(key); return; }
   await db.query(`INSERT INTO entity_settings(entity_id, key, value_enc) VALUES ($1,$2,$3) ON CONFLICT (entity_id, key) DO UPDATE SET value_enc=$3, updated_at=now()`, [entityId, key, encrypt(value)]);
   if (!entityCache.has(entityId)) entityCache.set(entityId, new Map());
@@ -114,8 +170,8 @@ export const isSet = (key: string) => !!S(key);
 export const fromDb = (key: string) => cache.has(key);
 
 export async function saveSetting(db: Db, key: string, value: string) {
-  if (isApiKey(key)) value = cleanSecret(value);
   if (!SETTING_DEFS.some(d => d.key === key) && key !== 'SIGNUPS_OPEN') throw new Error('Definição desconhecida');
+  value = prepareSetting(key, value);
   if (!value) {
     await db.query('DELETE FROM settings WHERE key=$1', [key]); cache.delete(key); return;
   }
@@ -125,3 +181,8 @@ export async function saveSetting(db: Db, key: string, value: string) {
 
 /** Mostra só o fim de um segredo; o valor completo nunca volta ao browser. */
 export const mask = (v: string) => (v ? '••••••••' + v.slice(-4) : '');
+/** Como mask, mas a conta de serviço aparece pela identidade (email e projeto), nunca pela chave. */
+export function maskSetting(key: string, v: string) {
+  if (key !== 'VERTEX_SA_JSON' || !v) return mask(v);
+  try { const sa = parseServiceAccount(v); return `guardada: ${sa.client_email} · projeto ${sa.project_id}`; } catch { return '••••••••'; }
+}

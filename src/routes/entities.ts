@@ -3,8 +3,8 @@ import { config } from '../config.ts';
 import { esc, slugify } from '../lib.ts';
 import { page, flash, pill } from '../views.ts';
 import { audit } from '../app.ts';
-import { SETTING_DEFS, S, mask, saveEntitySetting, entityHas, entityValue, inEntity } from '../settings.ts';
-import { serviceTest } from './admin.ts';
+import { SETTING_DEFS, S, saveEntitySetting, entityHas, entityValue, inEntity, settingsFormError } from '../settings.ts';
+import { serviceTest, settingInput, VERTEX_HINT } from './admin.ts';
 import { retryFailedEmails } from '../mail.ts';
 
 const GROUPS = ['OpenAI', 'Stripe', 'MailerSend', 'Moloni ON', 'Replicate', 'fal.ai', 'WaveSpeed', 'Google'];
@@ -69,8 +69,9 @@ ${req.user.role === 'admin' ? `<form method="post" action="/entidades/${e.id}" c
 <form method="post" action="/entidades/${e.id}/chaves">
 ${GROUPS.map(g => `<div class="card"><div class="row"><h2 style="margin:0" class="grow">${esc(g)}</h2><button type="submit" formaction="/entidades/${e.id}/testar/${encodeURIComponent(g)}" class="ghost">Guardar e testar</button></div>
 ${g === 'Stripe' ? `<p class="hint sans">Endpoint do webhook desta entidade, a registar no Stripe: <code>${esc(config.baseUrl)}/webhooks/stripe/${esc(e.slug)}</code> — eventos: checkout.session.completed, customer.subscription.created/updated/deleted.</p>` : ''}
+${g === 'Google' ? `<p class="hint sans">${esc(VERTEX_HINT)}</p>` : ''}
 ${SETTING_DEFS.filter(d => d.group === g).map(d => `<label for="f_${d.key}">${esc(d.label)} <span class="hint">· ${src(d.key)}</span></label>
-<input id="f_${d.key}" name="${d.key}" type="${d.secret ? 'password' : 'text'}" autocomplete="${d.secret ? 'new-password' : 'off'}" data-lpignore="true" spellcheck="false" placeholder="${esc(d.secret ? (entityHas(id, d.key) ? mask(entityValue(id, d.key)) : (d.hint ?? '')) : '')}" value="${d.secret ? '' : esc(entityValue(id, d.key))}">`).join('')}</div>`).join('')}
+${settingInput(d, entityValue(id, d.key), '', d.options ? `Como na definição global (${d.options.find(o => o[0] === inEntity(null, () => S(d.key)))?.[1] ?? d.options[0][1]})` : undefined)}`).join('')}</div>`).join('')}
 <p><button class="accent">Guardar chaves</button></p></form>`);
   });
 
@@ -86,6 +87,8 @@ ${SETTING_DEFS.filter(d => d.group === g).map(d => `<label for="f_${d.key}">${es
     const id = (req.params as any).id;
     if (!req.user) return reply.redirect('/entrar');
     if (!isUuid(id) || !canManage(req, id)) return reply.code(404).send('Não encontrada');
+    const bad = settingsFormError(req.body as any);
+    if (bad) return back(reply, `/entidades/${id}/chaves`, undefined, `Nada foi guardado: ${bad}`);
     await saveFromBody(id, req.body as any);
     if (['MAILERSEND_API_KEY', 'MAIL_FROM', 'MAIL_FROM_NAME'].some(k => typeof (req.body as any)[k] === 'string' && (req.body as any)[k].trim())) await retryFailedEmails(db);
     await audit(db, req.user.email, 'entity.keys_saved', null, { entityId: id, keys: SETTING_DEFS.filter(d => typeof (req.body as any)[d.key] === 'string' && (req.body as any)[d.key].trim()).map(d => d.key) });
@@ -96,6 +99,8 @@ ${SETTING_DEFS.filter(d => d.group === g).map(d => `<label for="f_${d.key}">${es
     const id = (req.params as any).id, g = decodeURIComponent((req.params as any).group);
     if (!req.user) return reply.redirect('/entrar');
     if (!isUuid(id) || !canManage(req, id) || !GROUPS.includes(g)) return reply.code(404).send('Não encontrada');
+    const bad = settingsFormError(req.body as any, SETTING_DEFS.filter(d => d.group === g));
+    if (bad) return back(reply, `/entidades/${id}/chaves`, undefined, `Nada foi guardado: ${bad}`);
     await saveFromBody(id, req.body as any, g);
     if (g === 'MailerSend') await retryFailedEmails(db);
     try { const msg = await inEntity(id, () => serviceTest(db, g, req.user!.email)); return back(reply, `/entidades/${id}/chaves`, msg); }
