@@ -104,7 +104,7 @@ ${settingInput(d, entityValue(id, d.key), '', d.options ? `Como na definição g
     await saveFromBody(id, req.body as any, g);
     if (g === 'MailerSend') await retryFailedEmails(db);
     try { const msg = await inEntity(id, () => serviceTest(db, g, req.user!.email)); return back(reply, `/entidades/${id}/chaves`, msg); }
-    catch (err: any) { return back(reply, `/entidades/${id}/chaves`, undefined, `Teste falhou: ${String(err.message).slice(0, 200)}`); }
+    catch (err: any) { return back(reply, `/entidades/${id}/chaves`, undefined, `Teste falhou: ${String(err.message).slice(0, 400)}`); }
   });
 
   app.post('/entidades/:id', async (req, reply) => {

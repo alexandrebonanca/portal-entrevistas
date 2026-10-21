@@ -1,6 +1,6 @@
-import { createHmac, timingSafeEqual } from 'node:crypto';
+import { createHash, createHmac, sign, timingSafeEqual } from 'node:crypto';
 import { config } from './config.ts';
-import { S } from './settings.ts';
+import { S, parseServiceAccount, isVertexLocation, type ServiceAccount } from './settings.ts';
 import { PermanentError } from './jobs.ts';
 
 /**
@@ -11,18 +11,21 @@ export interface TalkingProvider {
   id: string; label: string; partner: string; keyName: string;
   pricePerSec: number | null; note: string;
   ownAudio: boolean; // usa o NOSSO áudio (sincronização labial) ou gera a voz dele
+  preselected: boolean; // marcado por omissão no Laboratório (os outros ficam no código, desmarcados)
 }
 
 export const PROVIDERS: TalkingProvider[] = [
-  { id: 'omnihuman', label: 'OmniHuman 1.5 (ByteDance)', partner: 'fal.ai', keyName: 'FAL_KEY', pricePerSec: 0.16, ownAudio: true, note: 'Corpo, mãos e gestos; 720p' },
-  { id: 'fabric', label: 'VEED Fabric 1.0', partner: 'fal.ai', keyName: 'FAL_KEY', pricePerSec: 0.14, ownAudio: true, note: '720p' },
-  { id: 'infinitalk', label: 'InfiniteTalk', partner: 'fal.ai', keyName: 'FAL_KEY', pricePerSec: null, ownAudio: true, note: 'Código aberto; 480p; preço por confirmar no painel' },
-  { id: 'heygen', label: 'HeyGen Avatar IV', partner: 'WaveSpeed', keyName: 'WAVESPEED_API_KEY', pricePerSec: 0.10, ownAudio: true, note: '720p, expressividade média' },
-  { id: 'veo', label: 'Google Veo 3.1 Fast (Flow)', partner: 'Google', keyName: 'GEMINI_API_KEY', pricePerSec: 0.10, ownAudio: false, note: 'Gera a voz dele (não usa o nosso áudio); clipe de 8 s' },
-  { id: 'veo-lite', label: 'Google Veo 3.1 Lite', partner: 'Google', keyName: 'GEMINI_API_KEY', pricePerSec: 0.05, ownAudio: false, note: 'Metade do preço do Fast; gera a voz dele; clipe de 8 s' },
+  { id: 'omnihuman', label: 'OmniHuman 1.5 (ByteDance)', partner: 'fal.ai', keyName: 'FAL_KEY', pricePerSec: 0.16, ownAudio: true, preselected: false, note: 'Corpo, mãos e gestos; 720p' },
+  { id: 'fabric', label: 'VEED Fabric 1.0', partner: 'fal.ai', keyName: 'FAL_KEY', pricePerSec: 0.14, ownAudio: true, preselected: false, note: '720p' },
+  { id: 'infinitalk', label: 'InfiniteTalk', partner: 'fal.ai', keyName: 'FAL_KEY', pricePerSec: null, ownAudio: true, preselected: false, note: 'Código aberto; 480p; preço por confirmar no painel' },
+  { id: 'heygen', label: 'HeyGen Avatar IV', partner: 'WaveSpeed', keyName: 'WAVESPEED_API_KEY', pricePerSec: 0.10, ownAudio: true, preselected: false, note: '720p, expressividade média' },
+  { id: 'veo', label: 'Google Veo 3.1 Fast', partner: 'Google', keyName: 'VERTEX_SA_JSON', pricePerSec: 0.10, ownAudio: false, preselected: true, note: 'Gera a voz dele (não usa o nosso áudio); clipe de 8 s; 720p com áudio' },
+  { id: 'veo-lite', label: 'Google Veo 3.1 Lite', partner: 'Google', keyName: 'VERTEX_SA_JSON', pricePerSec: 0.05, ownAudio: false, preselected: true, note: 'Metade do preço do Fast; gera a voz dele; clipe de 8 s; 720p com áudio' },
 ];
 
-export const providerReady = (p: TalkingProvider) => config.openai.mock || !!S(p.keyName);
+export const isVeoProvider = (p: TalkingProvider) => p.id === 'veo' || p.id === 'veo-lite';
+/** Com credenciais: o Veo usa a conta de serviço do Vertex AI ou, na falta dela, a chave da Gemini API. */
+export const providerReady = (p: TalkingProvider) => config.openai.mock || (isVeoProvider(p) ? veoConfigured() : !!S(p.keyName));
 
 /** Direção de cena com regras de boa apresentação (usada pelos modelos que aceitam instruções de movimento). */
 export function presenterDirection(role: 'host' | 'guest' | 'presenter' = 'presenter') {
@@ -111,10 +114,84 @@ async function wavespeedHeygen(imageUrl: string, audioUrl: string, onStatus?: (s
   }
 }
 
-// ---------- Google Veo 3.1 (Gemini API) ----------
-export const VEO_MODEL = 'veo-3.1-fast-generate-preview';
-export const VEO_LITE_MODEL = 'veo-3.1-lite-generate-preview'; // Gemini API; $0,05/s em 720p (metade do Fast)
-export const VEO_PRICE_PER_SEC = 0.10; // Veo 3.1 Fast, 720p, com áudio
+// ---------- Google Veo 3.1: Vertex AI (conta de serviço) ou Gemini API (chave, enquanto a Google a mantiver) ----------
+export type VeoTier = 'fast' | 'lite';
+export type VeoBackend = 'vertex' | 'gemini';
+const VEO_MODELS: Record<VeoBackend, Record<VeoTier, string>> = {
+  vertex: { fast: 'veo-3.1-fast-generate-001', lite: 'veo-3.1-lite-generate-001' }, // Fast GA; Lite em pré-visualização
+  gemini: { fast: 'veo-3.1-fast-generate-preview', lite: 'veo-3.1-lite-generate-preview' }, // desligados a partir de 22/10/2026
+};
+const VEO_PRICES: Record<VeoTier, number> = { fast: 0.10, lite: 0.05 }; // USD por segundo, 720p com áudio
+export const VEO_MODEL = VEO_MODELS.gemini.fast;
+export const VEO_LITE_MODEL = VEO_MODELS.gemini.lite;
+export const VEO_PRICE_PER_SEC = VEO_PRICES.fast;
+/** O que não queremos na imagem nem no som (o Lite chegou a escrever «2%7» no ecrã). */
+export const VEO_NEGATIVE_PROMPT = 'on-screen text, captions, subtitles, written words, written letters or digits, logos, watermarks, signs, labels, title cards, background music';
+
+/** Nível escolhido pelo administrador (Definições → Google); por omissão o Fast. */
+export const veoTier = (): VeoTier => (S('VEO_TIER') === 'lite' ? 'lite' : 'fast');
+/** Vertex AI se houver conta de serviço; senão a Gemini API. */
+export const veoBackend = (): VeoBackend => (S('VERTEX_SA_JSON') ? 'vertex' : 'gemini');
+export const veoConfigured = () => !!S('VERTEX_SA_JSON') || !!S('GEMINI_API_KEY');
+export const veoModel = (tier: VeoTier = veoTier(), backend: VeoBackend = veoBackend()) => VEO_MODELS[backend][tier];
+export const veoPricePerSec = (tier: VeoTier = veoTier()) => VEO_PRICES[tier];
+export const veoLabel = (tier: VeoTier = veoTier()) => `Google Veo 3.1 ${tier === 'lite' ? 'Lite' : 'Fast'}`;
+export const tierOfModel = (model?: string | null): VeoTier => (/-lite-/.test(model ?? '') ? 'lite' : 'fast');
+/** Preço de um modelo registado (clipes e operações antigos não têm preço: eram todos do Fast). */
+export const veoPriceOfModel = (model?: string | null) => VEO_PRICES[tierOfModel(model)];
+/**
+ * Identificador do nível na chave dos clipes: o mesmo nos dois serviços, para um clipe já pago e verificado (ou uma
+ * operação pendente) se reaproveitar ao passar da Gemini API para o Vertex AI. O do Fast é o de sempre.
+ */
+export const veoKeyModel = (tier: VeoTier) => VEO_MODELS.gemini[tier];
+
+// ---------- Vertex AI: token OAuth da conta de serviço (JWT RS256), guardado até 60 s antes de expirar ----------
+const GOOGLE_TOKEN_URL = 'https://oauth2.googleapis.com/token';
+const VERTEX_SCOPE = 'https://www.googleapis.com/auth/cloud-platform';
+const tokens = new Map<string, { token: string; exp: number }>();
+export const clearVertexTokens = () => tokens.clear();
+
+export const vertexLocation = () => { const l = S('VERTEX_LOCATION').trim().toLowerCase(); return isVertexLocation(l) ? l : 'us-central1'; };
+
+/** Asserção assinada com a chave da conta de serviço (RFC 7523), válida 1 h. */
+export function serviceAccountJwt(sa: ServiceAccount, nowSec = Math.floor(Date.now() / 1000)) {
+  const b64 = (o: object) => Buffer.from(JSON.stringify(o)).toString('base64url');
+  const head = b64({ alg: 'RS256', typ: 'JWT', ...(sa.private_key_id ? { kid: sa.private_key_id } : {}) });
+  const claims = b64({ iss: sa.client_email, scope: VERTEX_SCOPE, aud: GOOGLE_TOKEN_URL, iat: nowSec, exp: nowSec + 3600 });
+  return `${head}.${claims}.${sign('RSA-SHA256', Buffer.from(`${head}.${claims}`), sa.private_key).toString('base64url')}`;
+}
+
+/**
+ * Token de acesso da conta de serviço em vigor (Definições → Google, da entidade ou global). Uma recusa da Google
+ * (chave apagada, conta desativada) dá «Veo 401: …» (isKeyRejected); a indisponibilidade dá «Veo 5xx: …» (passageira).
+ * As mensagens nunca incluem a chave nem a asserção.
+ */
+export async function vertexToken(): Promise<{ token: string; sa: ServiceAccount }> {
+  let sa: ServiceAccount;
+  try { sa = parseServiceAccount(S('VERTEX_SA_JSON')); }
+  catch (e: any) { throw new PermanentError(`Veo 401: conta de serviço do Vertex AI inválida em Definições (${String(e?.message ?? e).slice(0, 160)})`); }
+  const id = createHash('sha256').update(`${sa.client_email}|${sa.private_key_id ?? ''}|${sa.private_key}`).digest('hex');
+  const hit = tokens.get(id);
+  if (hit && hit.exp > Date.now()) return { token: hit.token, sa };
+  const res = await fetch(GOOGLE_TOKEN_URL, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer', assertion: serviceAccountJwt(sa) }).toString() });
+  const text = await res.text();
+  let j: any = {};
+  try { j = text ? JSON.parse(text) : {}; } catch { /* corpo não-JSON */ }
+  if (!res.ok || typeof j.access_token !== 'string' || !j.access_token) {
+    const why = `${String(j.error ?? res.status).slice(0, 40)}${j.error_description ? `: ${String(j.error_description).slice(0, 140)}` : ''}`;
+    if (res.status >= 500 || res.status === 429) throw new Error(`Veo ${res.status}: autenticação da Google indisponível (${why})`);
+    throw new PermanentError(`Veo 401: a Google recusou a conta de serviço ${sa.client_email} (${why})`);
+  }
+  const ttl = Number(j.expires_in) > 0 ? Number(j.expires_in) : 3600;
+  tokens.set(id, { token: j.access_token, exp: Date.now() + (ttl - 60) * 1000 });
+  return { token: j.access_token, sa };
+}
+
+const vertexModelUrl = (project: string, loc: string, model: string) => `https://${loc}-aiplatform.googleapis.com/v1/projects/${project}/locations/${loc}/publishers/google/models/${model}`;
+/** Operação do Vertex: projects/{p}/locations/{l}/publishers/google/models/{m}/operations/{id} (o modelo e a região vêm no nome). */
+const VERTEX_OP = /^projects\/((?:[a-z0-9.-]+:)?[a-z0-9-]+)\/locations\/([a-z]+-[a-z]+\d{1,2})\/publishers\/google\/models\/([a-z0-9.-]+)\/operations\/[A-Za-z0-9_-]+$/;
+export const isVertexOp = (opName: string) => opName.startsWith('projects/');
 
 /** Limite de pedidos da Google que não passa em minutos (quota esgotada): o trabalho pára em vez de esperar horas. */
 export class VeoQuotaError extends PermanentError {}
@@ -128,36 +205,62 @@ export class VeoOpError extends PermanentError {}
 export class VeoFiltered extends VeoOpError {}
 /** A CONSULTA de uma operação foi recusada (4xx): nada se sabe da operação, que pode ter sido feita e cobrada. */
 export class VeoPollError extends PermanentError {}
+/** O modelo escolhido recusou o próprio pedido (ex.: o Lite sem imagem inicial no Vertex): nada foi cobrado e o trabalho pára. */
+export class VeoUnsupported extends PermanentError {}
 // Passageiro só o que a Google diz que é passageiro (procura elevada, serviço indisponível).
 const BUSY_TEXT = /high demand|try again later|temporarily unavailable|service unavailable|overloaded/i;
 const BUSY_CODES = new Set([8, 14]); // RESOURCE_EXHAUSTED, UNAVAILABLE
-/** Chave recusada: 401/403, ou 400 com «API key» (é assim que a Gemini API responde a uma chave inválida). */
+/**
+ * Credenciais recusadas: 401/403 (Gemini API ou Vertex AI, incluindo a recusa do token da conta de serviço, que dá
+ * «Veo 401: …»), ou 400 com «API key» (é assim que a Gemini API responde a uma chave inválida).
+ */
 export const isKeyRejected = (m: string) => /^Veo 40[13]/.test(m) || (/^Veo 400/.test(m) && /API[ _-]?key/i.test(m));
 
 const quiet = async (f?: (s: string) => Promise<void>, s = '') => { try { await f?.(s); } catch { /* o progresso nunca interrompe uma operação já paga */ } };
 
+let geminiNegativeOk = true; // a Gemini API pode não aceitar negativePrompt: depois de uma recusa deixa de o enviar
+
 /**
- * Submete um clipe do Veo a partir de uma imagem inicial (formato do SDK oficial @google/genai: bytesBase64Encoded +
- * mimeType). A partir do momento em que a Google aceita, o clipe é cobrado pela duração pedida (4, 6 ou 8 s).
+ * Submete um clipe do Veo a partir de uma imagem inicial (bytesBase64Encoded + mimeType) no serviço em vigor: Vertex AI
+ * com conta de serviço (720p, com áudio, sem storageUri: o vídeo volta em base64) ou Gemini API. A partir do momento em
+ * que a Google aceita, o clipe é cobrado pela duração pedida (4, 6 ou 8 s) ao preço do nível escolhido.
  * Pedidos recusados (400/429) não são cobrados: o 429 espera e repete (até ~5 min), depois desiste com VeoQuotaError;
- * uma duração não aceite neste modo passa a 8 s.
+ * uma duração não aceite neste modo passa a 8 s. `model` só vale se for um modelo do serviço em vigor.
  */
-export async function veoSubmit(o: { image: Buffer; prompt: string; aspectRatio?: '16:9' | '9:16'; durationSeconds?: 4 | 6 | 8; onStatus?: (s: string) => Promise<void>; canSend?: () => Promise<boolean>; waitMs?: (attempt: number) => number; model?: string }): Promise<{ opName: string; dur: 4 | 6 | 8 }> {
-  const headers = { 'x-goog-api-key': S('GEMINI_API_KEY'), 'Content-Type': 'application/json' };
+export async function veoSubmit(o: { image: Buffer; prompt: string; aspectRatio?: '16:9' | '9:16'; durationSeconds?: 4 | 6 | 8; onStatus?: (s: string) => Promise<void>; canSend?: () => Promise<boolean>; waitMs?: (attempt: number) => number; model?: string; tier?: VeoTier }): Promise<{ opName: string; dur: 4 | 6 | 8; model: string; tier: VeoTier; usdPerSec: number; backend: VeoBackend }> {
+  const backend = veoBackend();
+  const tier = o.tier ?? (o.model ? tierOfModel(o.model) : veoTier());
+  const model = o.model && Object.values(VEO_MODELS[backend]).includes(o.model) ? o.model : veoModel(tier, backend);
   let dur: 4 | 6 | 8 = o.durationSeconds ?? 8;
   for (let attempt = 0; ; attempt++) {
     // Antes de CADA envio (também nas repetições após 429): autorização em vigor e trabalho não parado.
     if (o.canSend && !(await o.canSend())) throw new VeoCancelled('Envio à Google cancelado: autorização retirada ou trabalho parado');
+    const negative = backend === 'vertex' || geminiNegativeOk;
+    const instances = [{ prompt: o.prompt, image: { bytesBase64Encoded: o.image.toString('base64'), mimeType: 'image/jpeg' } }];
+    const parameters = { aspectRatio: o.aspectRatio ?? '16:9', durationSeconds: dur, personGeneration: 'allow_adult', ...(negative ? { negativePrompt: VEO_NEGATIVE_PROMPT } : {}) };
     try {
-      const op = await jsonFetch(`https://generativelanguage.googleapis.com/v1beta/models/${o.model ?? VEO_MODEL}:predictLongRunning`, {
-        method: 'POST', headers,
-        body: JSON.stringify({ instances: [{ prompt: o.prompt, image: { bytesBase64Encoded: o.image.toString('base64'), mimeType: 'image/jpeg' } }], parameters: { aspectRatio: o.aspectRatio ?? '16:9', durationSeconds: dur, personGeneration: 'allow_adult' } }),
-      }, 'Veo');
+      let op: any;
+      if (backend === 'vertex') {
+        const { token, sa } = await vertexToken();
+        op = await jsonFetch(`${vertexModelUrl(sa.project_id, vertexLocation(), model)}:predictLongRunning`, {
+          method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ instances, parameters: { ...parameters, generateAudio: true, sampleCount: 1, resolution: '720p' } }),
+        }, 'Veo');
+      } else {
+        op = await jsonFetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:predictLongRunning`, {
+          method: 'POST', headers: { 'x-goog-api-key': S('GEMINI_API_KEY'), 'Content-Type': 'application/json' },
+          body: JSON.stringify({ instances, parameters }),
+        }, 'Veo');
+      }
       if (!op?.name) throw new PermanentError('Veo não devolveu o identificador da operação');
-      return { opName: String(op.name), dur };
+      return { opName: String(op.name), dur, model, tier, usdPerSec: VEO_PRICES[tier], backend };
     } catch (e: any) {
       const m = String(e?.message ?? e);
       if (dur !== 8 && /^Veo 400/.test(m) && /duration/i.test(m)) { dur = 8; continue; }
+      if (backend === 'gemini' && negative && /^Veo 400/.test(m) && /negative/i.test(m)) { geminiNegativeOk = false; continue; }
+      // O Lite no Vertex: a ficha da Google contradiz-se sobre a imagem inicial; se a recusar, pára com uma indicação clara.
+      if (backend === 'vertex' && tier === 'lite' && /^Veo 400/.test(m) && /image|not supported|unsupported/i.test(m))
+        throw new VeoUnsupported(`O Veo 3.1 Lite (${model}) recusou a imagem inicial no Vertex AI (nada foi cobrado): escolha o Veo 3.1 Fast em Definições → Google. Resposta da Google: ${m.replace(/^Veo 400:\s*/, '').slice(0, 160)}`);
       if (/^Veo 429/.test(m)) {
         if (attempt >= 4) throw new VeoQuotaError('Limite de pedidos (quota) da Google esgotado: tente mais tarde.');
         await quiet(o.onStatus, 'Limite de pedidos do Google: a aguardar');
@@ -171,46 +274,114 @@ export async function veoSubmit(o: { image: Buffer; prompt: string; aspectRatio?
   }
 }
 
-/** Espera pela operação e descarrega o vídeo. Erros passageiros (rede, 5xx, 429) repetem a consulta, nunca a submissão. */
+/** Uma consulta da operação no serviço que a criou (o nome diz qual: 'projects/…' = Vertex AI, 'models/…' = Gemini API). */
+async function veoPoll(opName: string) {
+  if (isVertexOp(opName)) {
+    const m = VERTEX_OP.exec(opName);
+    if (!m) throw new VeoPollError('Veo: nome de operação do Vertex AI inesperado');
+    if (!S('VERTEX_SA_JSON')) throw new VeoPollError('Veo: há uma operação do Vertex AI por concluir, mas a conta de serviço foi retirada de Definições: não é possível consultá-la.');
+    const { token } = await vertexToken();
+    return jsonFetch(`${vertexModelUrl(m[1], m[2], m[3])}:fetchPredictOperation`, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ operationName: opName }) }, 'Veo');
+  }
+  if (opName.startsWith('models/') && !S('GEMINI_API_KEY')) throw new VeoPollError('Veo: há uma operação da Gemini API por concluir, mas a chave Gemini foi retirada de Definições: não é possível consultá-la.');
+  return jsonFetch(`https://generativelanguage.googleapis.com/v1beta/${opName}`, { headers: { 'x-goog-api-key': S('GEMINI_API_KEY') } }, 'Veo');
+}
+
+/** Vídeo de uma operação concluída do Vertex: em base64 (sem storageUri) ou, se a Google o guardar, no Cloud Storage. */
+async function vertexVideo(resp: any): Promise<Buffer> {
+  const v = resp?.videos?.[0];
+  if (!v?.bytesBase64Encoded && !v?.gcsUri) {
+    if (resp?.raiMediaFilteredCount || resp?.raiMediaFilteredReasons?.length) throw new VeoFiltered(`Veo: clipe bloqueado pelos filtros da Google: ${String(resp.raiMediaFilteredReasons?.[0] ?? '').slice(0, 200)}`);
+    throw new VeoOpError(`Veo não devolveu vídeo: ${JSON.stringify(resp ?? {}).slice(0, 200)}`);
+  }
+  if (v.bytesBase64Encoded) return Buffer.from(String(v.bytesBase64Encoded), 'base64');
+  const g = /^gs:\/\/([a-z0-9._-]+)\/(.+)$/.exec(String(v.gcsUri));
+  if (!g) throw new VeoOpError('Veo devolveu um endereço de vídeo inesperado');
+  const { token } = await vertexToken();
+  return download(`https://storage.googleapis.com/storage/v1/b/${g[1]}/o/${encodeURIComponent(g[2])}?alt=media`, { Authorization: `Bearer ${token}` });
+}
+
+/** Vídeo de uma operação concluída da Gemini API (descarregado com a chave). */
+async function geminiVideo(resp: any): Promise<Buffer> {
+  const gen = resp?.generateVideoResponse;
+  const uri = gen?.generatedSamples?.[0]?.video?.uri;
+  if (!uri && (gen?.raiMediaFilteredCount || gen?.raiMediaFilteredReasons?.length)) throw new VeoFiltered(`Veo: clipe bloqueado pelos filtros da Google: ${String(gen.raiMediaFilteredReasons?.[0] ?? '').slice(0, 200)}`);
+  if (!uri) throw new VeoOpError(`Veo não devolveu vídeo: ${JSON.stringify(resp ?? {}).slice(0, 200)}`);
+  return download(uri, { 'x-goog-api-key': S('GEMINI_API_KEY') });
+}
+
+/**
+ * Espera pela operação (no serviço que a criou) e obtém o vídeo. Erros passageiros (rede, 5xx, 429) repetem a consulta,
+ * nunca a submissão.
+ */
 export async function veoAwait(opName: string, dur: number, onStatus?: (s: string) => Promise<void>, deadlineMs = 20 * 60_000, pollMs = 10_000) {
-  const key = S('GEMINI_API_KEY');
-  const headers = { 'x-goog-api-key': key };
   const t0 = Date.now();
   let fails = 0;
   for (;;) {
     if (Date.now() - t0 > deadlineMs) throw new Error('Veo: tempo excedido (a operação fica pendente e é retomada na próxima tentativa)');
     await sleep(pollMs);
     let st: any;
-    try { st = await jsonFetch(`https://generativelanguage.googleapis.com/v1beta/${opName}`, { headers }, 'Veo'); fails = 0; }
-    catch (e: any) { if (e instanceof PermanentError) throw new VeoPollError(String(e.message)); if (++fails > 8) throw e; continue; }
+    try { st = await veoPoll(opName); fails = 0; }
+    catch (e: any) { if (e instanceof VeoPollError) throw e; if (e instanceof PermanentError) throw new VeoPollError(String(e.message)); if (++fails > 8) throw e; continue; }
     if (st.error) {
       const msg = String(st.error.message ?? JSON.stringify(st.error)).slice(0, 300);
       if (BUSY_TEXT.test(msg) || BUSY_CODES.has(Number(st.error.code))) throw new VeoBusy(`Veo: ${msg}`);
       throw new VeoOpError(`Veo: ${msg}`);
     }
     if (st.done) {
-      const gen = st.response?.generateVideoResponse;
-      const uri = gen?.generatedSamples?.[0]?.video?.uri;
-      if (!uri && (gen?.raiMediaFilteredCount || gen?.raiMediaFilteredReasons?.length)) throw new VeoFiltered(`Veo: clipe bloqueado pelos filtros da Google: ${String(gen.raiMediaFilteredReasons?.[0] ?? '').slice(0, 200)}`);
-      if (!uri) throw new VeoOpError(`Veo não devolveu vídeo: ${JSON.stringify(st.response ?? {}).slice(0, 200)}`);
       for (let k = 0; ; k++) {
-        try { return { video: await download(uri, { 'x-goog-api-key': key }), billedSec: dur }; }
-        catch (e) { if (k >= 3) throw e; await sleep(5000 * (k + 1)); }
+        try { return { video: isVertexOp(opName) ? await vertexVideo(st.response) : await geminiVideo(st.response), billedSec: dur }; }
+        catch (e) { if (e instanceof VeoOpError || k >= 3) throw e; await sleep(5000 * (k + 1)); }
       }
     }
     await quiet(onStatus, 'A gerar no Google Veo');
   }
 }
 
-export async function veoGenerate(o: { image: Buffer; prompt: string; aspectRatio?: '16:9' | '9:16'; durationSeconds?: 4 | 6 | 8; onStatus?: (s: string) => Promise<void>; model?: string }) {
+export async function veoGenerate(o: { image: Buffer; prompt: string; aspectRatio?: '16:9' | '9:16'; durationSeconds?: 4 | 6 | 8; onStatus?: (s: string) => Promise<void>; model?: string; tier?: VeoTier }) {
   const s = await veoSubmit(o);
-  return veoAwait(s.opName, s.dur, o.onStatus);
+  return { ...(await veoAwait(s.opName, s.dur, o.onStatus)), model: s.model };
 }
 
-async function veo(image: Buffer, text: string, onStatus?: (s: string) => Promise<void>, model?: string) {
+/**
+ * «Guardar e testar» do grupo Google, sem gerar vídeo (sem custo). Com conta de serviço: obtém o token e consulta uma
+ * operação que não existe no modelo escolhido (com acesso, a Google responde 404; sem acesso, 401/403). Sem conta de
+ * serviço: confirma a chave da Gemini API e o modelo, como antes.
+ */
+export async function veoCheck(): Promise<string> {
+  const tier = veoTier(), label = veoLabel(tier);
+  if (S('VERTEX_SA_JSON')) {
+    let tk: { token: string; sa: ServiceAccount };
+    try { tk = await vertexToken(); } catch (e: any) { throw new Error(String(e?.message ?? e).replace(/^Veo \d+:\s*/, '')); }
+    const { token, sa } = tk, loc = vertexLocation(), model = veoModel(tier, 'vertex');
+    const opName = `projects/${sa.project_id}/locations/${loc}/publishers/google/models/${model}/operations/00000000-0000-0000-0000-000000000000`;
+    const r = await fetch(`${vertexModelUrl(sa.project_id, loc, model)}:fetchPredictOperation`, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ operationName: opName }) });
+    const text = await r.text();
+    let j: any = {};
+    try { j = text ? JSON.parse(text) : {}; } catch { /* corpo não-JSON */ }
+    const gm = String(j?.error?.message ?? text).replace(/\s+/g, ' ').slice(0, 140);
+    if (r.status === 401) throw new Error(`a Google recusou o token da conta de serviço ${sa.client_email}: ${gm}`);
+    if (r.status === 403) throw new Error(/SERVICE_DISABLED|has not been used|is disabled/i.test(text)
+      ? `a Vertex AI API não está ativa no projeto ${sa.project_id}: ative-a na consola da Google Cloud e teste de novo.`
+      : `a conta de serviço ${sa.client_email} não tem acesso ao ${label} no projeto ${sa.project_id} (precisa da função «Vertex AI User»): ${gm}`);
+    if (r.status === 404 && /publisher model/i.test(gm) && !/operations\//.test(gm)) throw new Error(`o modelo ${model} não está disponível em ${loc} para o projeto ${sa.project_id}: ${gm}`);
+    if (r.status === 429 || r.status >= 500) throw new Error(`a Google respondeu ${r.status}; tente de novo daqui a pouco: ${gm}`);
+    if (!r.ok && r.status !== 404 && r.status !== 400) throw new Error(`resposta inesperada da Google (${r.status}): ${gm}`);
+    return `Google (Vertex AI): conta de serviço aceite (${sa.client_email}, projeto ${sa.project_id}, ${loc}) e acesso ao ${label} (${model}) confirmado, sem gerar vídeo.`
+      + (tier === 'lite' ? ' O Lite está em pré-visualização e a ficha da Google contradiz-se sobre a imagem inicial: se o Vertex a recusar, a geração pára com uma mensagem clara e pode escolher o Fast.' : '')
+      + (S('GEMINI_API_KEY') ? ' A chave Gemini fica guardada, mas o Veo usa o Vertex AI.' : '');
+  }
+  if (!S('GEMINI_API_KEY')) throw new Error('falta a conta de serviço do Vertex AI (ou a chave da Gemini API).');
+  const model = veoModel(tier, 'gemini');
+  const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}`, { headers: { 'x-goog-api-key': S('GEMINI_API_KEY') } });
+  if (!r.ok) throw new Error(`Google respondeu ${r.status} (chave inválida ou sem acesso ao ${label})`);
+  return `Google (Gemini API): chave válida e modelo ${label} (${model}) disponível. A Google desliga estes modelos na Gemini API a partir de 22/10/2026: configure a conta de serviço do Vertex AI.`;
+}
+
+async function veo(image: Buffer, text: string, onStatus: ((s: string) => Promise<void>) | undefined, tier: VeoTier) {
   // (a direção de cena entra no texto do pedido; o mesmo pedido no Fast e no Lite, para comparar só o modelo)
   const prompt = `The person in the image is a podcast host in a calm studio. They look at the camera and say, in a natural, warm voice: "${text.replace(/"/g, "'")}". ${presenterDirection()} No captions, no text on screen, no music.`;
-  return veoGenerate({ image, prompt, onStatus, model });
+  return veoGenerate({ image, prompt, onStatus, tier });
 }
 
 /**
@@ -231,8 +402,8 @@ export async function runProvider(p: TalkingProvider, a: { imageUrl: string; aud
     case 'fabric': return falRun('veed/fabric-1.0', { image_url: a.imageUrl, audio_url: a.audioUrl, resolution: '720p' }, onStatus);
     case 'infinitalk': return falRun('fal-ai/infinitalk', { image_url: a.imageUrl, audio_url: a.audioUrl, prompt: direction, resolution: '480p', num_frames: Math.min(721, Math.max(41, Math.round(a.audioSec * 25) + 5)) }, onStatus);
     case 'heygen': return wavespeedHeygen(a.imageUrl, a.audioUrl, onStatus);
-    case 'veo': return veo(a.image, a.text, onStatus);
-    case 'veo-lite': return veo(a.image, a.text, onStatus, VEO_LITE_MODEL);
+    case 'veo': return veo(a.image, a.text, onStatus, 'fast');
+    case 'veo-lite': return veo(a.image, a.text, onStatus, 'lite');
     default: throw new PermanentError(`Fornecedor desconhecido: ${p.id}`);
   }
 }

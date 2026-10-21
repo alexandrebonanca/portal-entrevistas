@@ -54,9 +54,9 @@ export async function serviceTest(db: any, g: string, userEmail: string): Promis
     if (r.status === 401 || r.status === 403) throw new Error(`WaveSpeed recusou a chave (${r.status})`);
     msg = 'WaveSpeed: chave aceite.';
   } else if (g === 'Google') {
-    const r = await fetch('https://generativelanguage.googleapis.com/v1beta/models/veo-3.1-fast-generate-preview', { headers: { 'x-goog-api-key': S('GEMINI_API_KEY') } });
-    if (!r.ok) throw new Error(`Google respondeu ${r.status} (chave inválida ou sem acesso ao Veo 3.1)`);
-    msg = 'Google: chave válida e modelo Veo 3.1 Fast disponível.';
+    // Vertex AI (conta de serviço) se houver; senão a Gemini API. Nunca gera vídeo.
+    const { veoCheck } = await import('../talking.ts');
+    msg = await veoCheck();
   } else if (g === 'Moloni ON') {
     const r = await fetch('https://api.moloni.pt/v1/grant/', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({ grant_type: 'password', client_id: S('MOLONI_CLIENT_ID'), client_secret: S('MOLONI_CLIENT_SECRET'), username: S('MOLONI_USERNAME'), password: S('MOLONI_PASSWORD') }).toString() });
@@ -248,7 +248,7 @@ ${plans.map((p: any) => `<form method="post" action="/admin/planos/${esc(p.id)}"
     try {
       const msg = await serviceTest(db, g, req.user!.email);
       return back(reply, '/admin/definicoes', msg);
-    } catch (e: any) { return back(reply, '/admin/definicoes', undefined, `Teste falhou: ${String(e.message).slice(0, 200)}`); }
+    } catch (e: any) { return back(reply, '/admin/definicoes', undefined, `Teste falhou: ${String(e.message).slice(0, 400)}`); }
   });
 
   app.post('/admin/planos/:id', async (req, reply) => {
