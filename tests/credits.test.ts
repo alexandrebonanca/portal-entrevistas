@@ -388,8 +388,74 @@ test('reembolsos: saldo disponível nos 14 dias pela Stripe (Idempotency-Key), e
   await completed(paidSession(await topup(biz.cookie, 25, biz.id)));
   wb = await walletOf(biz.id);
   assert.deepEqual([wb.available_cents, wb.debt_cents, wb.frozen], [500, 0, false]);
+  // inquérito do banco (warning_needs_response) que fecha sem chargeback (warning_closed): é como uma disputa ganha
+  const t8 = await topup(biz.cookie, 25, biz.id);
+  await completed(paidSession(t8));
+  const L8 = await db.one('SELECT * FROM credit_topups WHERE id=$1', [t8.id]);
+  await db.tx((t: any) => W.spend(t, w.id, 2000, { ref: 'teste:gasto-inquerito', note: 'teste' }));
+  assert.equal((await walletOf(biz.id)).available_cents, 1000);
+  await sendEvent({ id: 'evt_iq1', type: 'charge.dispute.created', data: { object: { id: 'dp_iq', amount: 3075, charge: L8.stripe_charge, payment_intent: L8.stripe_payment_intent, status: 'warning_needs_response' } } });
+  wb = await walletOf(biz.id);
+  assert.deepEqual([wb.available_cents, wb.debt_cents, wb.frozen], [0, 1500, true], 'aberto: créditos retidos, como numa disputa');
+  assert.match((await db.one('SELECT alert FROM credit_topups WHERE id=$1', [L8.id])).alert, /Inquérito do banco dp_iq aberto .*ainda sem chargeback/);
+  await sendEvent({ id: 'evt_iq2', type: 'charge.dispute.closed', data: { object: { id: 'dp_iq', amount: 3075, charge: L8.stripe_charge, status: 'warning_closed' } } });
+  wb = await walletOf(biz.id);
+  assert.deepEqual([wb.available_cents, wb.debt_cents, wb.frozen], [1000, 0, false], 'fechado sem chargeback: nada perdido, sem dívida e a carteira volta a funcionar');
+  assert.equal((await db.one('SELECT status FROM credit_topups WHERE id=$1', [L8.id])).status, 'paid');
+  assert.match((await db.one('SELECT alert FROM credit_topups WHERE id=$1', [L8.id])).alert, /Inquérito do banco dp_iq encerrado sem disputa \(sem chargeback\): créditos repostos/);
+  assert.equal((await db.one(`SELECT note FROM wallet_entries WHERE kind='dispute_won' AND stripe_ref='dp_iq'`)).note, 'inquérito do banco encerrado sem disputa: créditos repostos');
+  // estado desconhecido ao fechar: não se decide sozinho (fica congelada e com alerta)
+  await sendEvent({ id: 'evt_iq3', type: 'charge.dispute.created', data: { object: { id: 'dp_x', amount: 100, charge: L8.stripe_charge, payment_intent: L8.stripe_payment_intent, status: 'needs_response' } } });
+  await sendEvent({ id: 'evt_iq4', type: 'charge.dispute.closed', data: { object: { id: 'dp_x', charge: L8.stripe_charge, status: 'estado_novo' } } });
+  assert.equal((await walletOf(biz.id)).frozen, true);
+  assert.match((await db.one('SELECT alert FROM credit_topups WHERE id=$1', [L8.id])).alert, /estado «estado_novo», que o portal não conhece/);
+  await sendEvent({ id: 'evt_iq5', type: 'charge.dispute.closed', data: { object: { id: 'dp_x', charge: L8.stripe_charge, status: 'won' } } });
+  wb = await walletOf(biz.id);
+  assert.deepEqual([wb.available_cents, wb.debt_cents, wb.frozen], [1000, 0, false]);
+  await db.tx((t: any) => W.spend(t, w.id, 500, { ref: 'teste:repor-saldo', note: 'teste' })); // o teste seguinte parte de 5 créditos
   // reembolsos e disputas de pagamentos que não são carregamentos: ignorados
   assert.equal((await sendEvent({ id: 'evt_x', type: 'refund.created', data: { object: { id: 're_x', status: 'succeeded', amount: 100, payment_intent: 'pi_outro' } } })).json().result, 'ignored');
+  await check();
+});
+
+test('reembolso concluído que depois falha: os créditos voltam; a nota de crédito por emitir sai da lista e a já emitida é anulada', async () => {
+  const u = await register('Reembolsos', 'rf@example.com');
+  const w = await W.walletFor(db, u.id, null);
+  const lot = async (pi: string) => {
+    const tp = await db.one(`INSERT INTO credit_topups(wallet_id, user_id, net_cents, vat_cents, gross_cents, vat_rate, vat_regime, customer_kind, customer_country) VALUES ($1,$2,2500,575,3075,23,'domestic','business','PT') RETURNING id`, [w.id, u.id]);
+    await db.tx((t: any) => W.creditTopup(t, tp.id, { paymentIntent: pi }));
+    return db.one('SELECT * FROM credit_topups WHERE id=$1', [tp.id]);
+  };
+  // (a) reembolso pedido pela aplicação, concluído (nota de crédito por emitir); dias depois, refund.failed
+  fake.refundStatus = 'succeeded';
+  const A = await lot('pi_rf_a');
+  assert.match(msg(await post(`/admin/creditos/${A.id}/reembolsar`, {}, admin)), /Reembolso de 30,75 € feito \(25 créditos\)/);
+  const ra = await db.one('SELECT * FROM credit_refunds WHERE topup_id=$1', [A.id]);
+  assert.equal(ra.status, 'succeeded');
+  assert.ok(await db.one(`SELECT 1 FROM invoice_queue WHERE kind='topup_refund' AND topup_id=$1`, [A.id]));
+  assert.equal((await walletOf(u.id)).available_cents, 0);
+  assert.equal((await sendEvent({ id: 'evt_rfa', type: 'refund.failed', data: { object: { id: ra.stripe_refund_id, status: 'failed', failure_reason: 'expired_or_canceled_card', amount: 3075, payment_intent: 'pi_rf_a', metadata: { refund_id: ra.id } } } })).json().result, 'applied');
+  assert.equal((await walletOf(u.id)).available_cents, 2500, 'os créditos voltaram');
+  assert.equal(await db.one(`SELECT 1 FROM invoice_queue WHERE kind='topup_refund' AND topup_id=$1`, [A.id]), undefined, 'a nota de crédito por emitir saiu da lista');
+  assert.match((await db.one('SELECT alert FROM credit_topups WHERE id=$1', [A.id])).alert, /falhou na Stripe depois de concluído .*a nota de crédito por emitir saiu da lista/);
+  assert.ok(await db.one(`SELECT 1 FROM audit_events WHERE action='billing.topup_refund_failed_after_success' AND meta->>'topup'=$1`, [A.id]));
+  // (b) reembolso feito no painel da Stripe, nota de crédito já emitida; depois refund.failed: linha corretiva para a anular
+  const B = await lot('pi_rf_b');
+  assert.equal((await sendEvent({ id: 'evt_rfb1', type: 'refund.created', data: { object: { id: 're_rf_b', status: 'succeeded', amount: 3075, payment_intent: 'pi_rf_b' } } })).json().result, 'applied');
+  assert.equal((await walletOf(u.id)).available_cents, 2500);
+  const nc = await db.one(`SELECT id FROM invoice_queue WHERE stripe_ref='re_rf_b' AND kind='topup_refund'`);
+  assert.match(msg(await post(`/admin/faturacao/${nc.id}/faturada`, { moloni_doc: 'NC 2026/7' }, admin)), /NC 2026\/7/);
+  await sendEvent({ id: 'evt_rfb2', type: 'refund.failed', data: { object: { id: 're_rf_b', status: 'failed', failure_reason: 'lost_or_stolen_card', amount: 3075, payment_intent: 'pi_rf_b' } } });
+  assert.equal((await walletOf(u.id)).available_cents, 5000);
+  const fix = await db.one(`SELECT * FROM invoice_queue WHERE stripe_ref='re_rf_b:falhou'`);
+  assert.deepEqual([fix.kind, fix.status, fix.net_cents, fix.vat_cents, fix.total_cents, fix.topup_id], ['topup_refund_reversal', 'pending', 2500, 575, 3075, B.id]);
+  assert.match(fix.description, /Anular a nota de crédito n\.º NC 2026\/7/);
+  assert.match((await get('/admin/faturacao', admin)).body, /anular nota de crédito \(reembolso que falhou\)/);
+  assert.match((await db.one('SELECT alert FROM credit_topups WHERE id=$1', [B.id])).alert, /nota de crédito n\.º NC 2026\/7 já emitida tem de ser anulada/);
+  // o mesmo evento outra vez não duplica nada
+  await sendEvent({ id: 'evt_rfb3', type: 'refund.failed', data: { object: { id: 're_rf_b', status: 'failed', amount: 3075, payment_intent: 'pi_rf_b' } } });
+  assert.equal(Number((await db.one(`SELECT count(*)::int n FROM invoice_queue WHERE topup_id=$1`, [B.id])).n), 2);
+  assert.equal((await walletOf(u.id)).available_cents, 5000);
   await check();
 });
 

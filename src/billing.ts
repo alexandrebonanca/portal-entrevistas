@@ -646,6 +646,34 @@ async function refundInvoice(t: Db, refundId: string) {
 }
 
 /**
+ * Reembolso que a Stripe deu como concluído e que depois falhou (refund.failed, raro): os créditos já voltaram à carteira;
+ * a nota de crédito desse reembolso deixa de ter razão de ser. Por emitir, sai da lista «por faturar»; já emitida, entra
+ * na lista uma linha corretiva (valores positivos) para a anular no Moloni. Em ambos os casos, alerta no carregamento e
+ * registo na auditoria.
+ */
+async function refundInvoiceReversal(t: Db, r: any, why: string) {
+  if (!r?.stripe_refund_id) return;
+  const nc = await t.one(`SELECT * FROM invoice_queue WHERE stripe_ref=$1 AND kind='topup_refund'`, [r.stripe_refund_id]);
+  let note: string;
+  if (!nc) note = 'não havia nota de crédito na lista';
+  else if (nc.status === 'pending') {
+    await t.query(`DELETE FROM invoice_queue WHERE id=$1 AND status='pending'`, [nc.id]);
+    note = 'a nota de crédito por emitir saiu da lista «por faturar»';
+  } else {
+    await t.query(
+      `INSERT INTO invoice_queue(kind, user_id, entity_id, topup_id, stripe_ref, stripe_customer_id, reason, description, net_cents, vat_cents, total_cents, currency,
+         vat_rate, vat_regime, vat_country, vat_note, customer_kind, customer_country, customer, evidence, seller, terms_version, paid_at)
+       SELECT 'topup_refund_reversal', user_id, entity_id, topup_id, $2, stripe_customer_id, reason, $3, -net_cents, -vat_cents, -total_cents, currency,
+         vat_rate, vat_regime, vat_country, vat_note, customer_kind, customer_country, customer, evidence, seller, terms_version, now()
+       FROM invoice_queue WHERE id=$1 ON CONFLICT (stripe_ref) DO NOTHING`,
+      [nc.id, `${r.stripe_refund_id}:falhou`, `Anular a nota de crédito n.º ${nc.moloni_doc}: o reembolso ${r.stripe_refund_id} falhou na Stripe depois de concluído (${why.slice(0, 80)}) e os créditos voltaram à carteira do cliente`.slice(0, 500)]);
+    note = `a nota de crédito n.º ${nc.moloni_doc} já emitida tem de ser anulada (linha corretiva na lista «por faturar»)`;
+  }
+  await topupAlert(t, r.topup_id, `O reembolso ${r.stripe_refund_id} (${eurPt(r.gross_cents)}) falhou na Stripe depois de concluído (${why.slice(0, 80)}): os ${cr(r.net_cents)} créditos voltaram à carteira; ${note}.`);
+  await alert(t, 'billing.topup_refund_failed_after_success', { topup: r.topup_id, refund: r.stripe_refund_id, net: r.net_cents, creditNote: nc ? { id: nc.id, status: nc.status, doc: nc.moloni_doc ?? null } : null });
+}
+
+/**
  * Reembolso do saldo disponível de um carregamento (ação do administrador): debita a carteira numa transação e só depois
  * pede o reembolso à Stripe (Idempotency-Key do pedido), com as chaves da conta que recebeu o pagamento.
  */
@@ -699,13 +727,17 @@ async function refundEvent(t: Db, o: any): Promise<'applied' | 'ignored'> {
   const mine = (typeof o.metadata?.refund_id === 'string' && UUID.test(o.metadata.refund_id) ? await t.one(`SELECT * FROM credit_refunds WHERE id=$1 AND topup_id=$2 AND source='app'`, [o.metadata.refund_id, tp.id]) : null)
     ?? await t.one('SELECT * FROM credit_refunds WHERE stripe_refund_id=$1', [o.id]);
   if (mine?.source === 'app') {
-    if (gone) await refundFailed(t, mine.id, String(o.failure_reason ?? status));
-    else if ((await refundAccepted(t, mine.id, o.id, status === 'succeeded')) && status === 'succeeded') await refundInvoice(t, mine.id);
+    if (gone) {
+      await refundFailed(t, mine.id, String(o.failure_reason ?? status));
+      if (mine.status === 'succeeded') await refundInvoiceReversal(t, mine, String(o.failure_reason ?? status));
+    } else if ((await refundAccepted(t, mine.id, o.id, status === 'succeeded')) && status === 'succeeded') await refundInvoice(t, mine.id);
     return 'applied';
   }
   if (mine?.source === 'stripe') {
-    if (gone) await externalRefundFailed(t, o.id);
-    else if (status === 'succeeded' && (await externalRefundSucceeded(t, o.id))) await refundInvoice(t, mine.id);
+    if (gone) {
+      await externalRefundFailed(t, o.id);
+      if (mine.status === 'succeeded') await refundInvoiceReversal(t, mine, String(o.failure_reason ?? status));
+    } else if (status === 'succeeded' && (await externalRefundSucceeded(t, o.id))) await refundInvoice(t, mine.id);
     return 'applied';
   }
   if (gone) return 'ignored';
@@ -721,18 +753,29 @@ async function refundEvent(t: Db, o: any): Promise<'applied' | 'ignored'> {
   return 'applied';
 }
 
-/** Disputa (chargeback) do pagamento de um carregamento: aberta congela a carteira e debita; encerrada repõe se for ganha. */
+/**
+ * Disputa (chargeback) do pagamento de um carregamento: aberta congela a carteira e debita; encerrada repõe se o dinheiro
+ * não saiu. Um inquérito do emissor do cartão (estado warning_*) também abre por charge.dispute.created e é tratado como
+ * uma disputa (créditos retidos enquanto está aberto); se fechar sem chargeback (warning_closed) é como uma disputa
+ * ganha: os créditos voltam e a carteira descongela. Só 'lost' fica debitado; outro estado ao fechar fica para verificar.
+ */
 async function disputeEvent(t: Db, type: string, o: any): Promise<'applied' | 'ignored'> {
   if (typeof o?.id !== 'string') return 'ignored';
   const tp = await topupByPayment(t, ref(o.payment_intent), ref(o.charge));
   if (!tp) return 'ignored';
+  const status = String(o.status ?? '');
+  const inquiry = status.startsWith('warning_');
   if (type === 'charge.dispute.created') {
     if (!PAID.includes(tp.status)) { await topupAlert(t, tp.id, `Disputa ${o.id} sobre um carregamento que não foi creditado (${tp.status}): verificar.`); return 'applied'; }
-    const e = await disputeOpened(t, tp, { disputeId: o.id, grossCents: Math.round(Number(o.amount ?? tp.gross_cents)) });
-    if (e) await alert(t, 'billing.topup_disputed', { topup: tp.id, dispute: o.id, taken: -e.available_delta, debt: e.debt_delta });
+    const e = await disputeOpened(t, tp, { disputeId: o.id, grossCents: Math.round(Number(o.amount ?? tp.gross_cents)), inquiry });
+    if (e) await alert(t, 'billing.topup_disputed', { topup: tp.id, dispute: o.id, status: status || null, taken: -e.available_delta, debt: e.debt_delta });
     return 'applied';
   }
-  const r = await disputeClosed(t, { disputeId: o.id, won: o.status === 'won' });
-  if (r) await alert(t, 'billing.topup_dispute_closed', { topup: tp.id, dispute: o.id, status: o.status ?? null });
+  if (!['won', 'warning_closed', 'lost'].includes(status)) {
+    await topupAlert(t, tp.id, `Disputa ${o.id} encerrada com o estado «${status || '—'}», que o portal não conhece: verificar no painel da Stripe (a carteira continua congelada).`);
+    return 'applied';
+  }
+  const r = await disputeClosed(t, { disputeId: o.id, won: status !== 'lost', inquiry: status === 'warning_closed' });
+  if (r) await alert(t, 'billing.topup_dispute_closed', { topup: tp.id, dispute: o.id, status });
   return r ? 'applied' : 'ignored';
 }

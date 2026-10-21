@@ -286,7 +286,12 @@ export async function refundFailed(t: Db, refundId: string, error: string) {
  * Reembolso feito fora da aplicação (painel da Stripe), identificado pelo pagamento do carregamento: debita a carteira pelo
  * líquido proporcional; sem saldo, o resto fica em dívida e a carteira é congelada. Idempotente pelo id do reembolso.
  */
-export async function externalRefund(t: Db, tp: any, o: { stripeRefundId: string; grossCents: number; succeeded: boolean }) {
+export async function externalRefund(t: Db, tp0: any, o: { stripeRefundId: string; grossCents: number; succeeded: boolean }) {
+  if (await t.one('SELECT 1 FROM credit_refunds WHERE stripe_refund_id=$1', [o.stripeRefundId])) return null;
+  // A ordem de sempre (a carteira e depois o lote) ANTES de inserir o reembolso: o INSERT toma FOR KEY SHARE na carteira
+  // e no lote (chaves estrangeiras) e, sem estes bloqueios primeiro, cruzava-se com um gasto em curso (impasse).
+  await lockWallet(t, tp0.wallet_id);
+  const tp = await t.one('SELECT * FROM credit_topups WHERE id=$1 FOR UPDATE', [tp0.id]);
   if (await t.one('SELECT 1 FROM credit_refunds WHERE stripe_refund_id=$1', [o.stripeRefundId])) return null;
   const prev = await t.one(`SELECT COALESCE(sum(net_cents),0)::int AS net, COALESCE(sum(gross_cents),0)::int AS gross FROM credit_refunds WHERE topup_id=$1 AND status<>'failed'`, [tp.id]);
   const gross = Math.min(o.grossCents, tp.gross_cents - prev.gross);
@@ -320,27 +325,31 @@ export async function externalRefundSucceeded(t: Db, stripeRefundId: string) {
 }
 
 /** Disputa aberta sobre o pagamento de um carregamento: carteira congelada e débito do líquido (o que faltar fica em dívida). */
-export async function disputeOpened(t: Db, tp: any, o: { disputeId: string; grossCents: number }) {
+export async function disputeOpened(t: Db, tp: any, o: { disputeId: string; grossCents: number; inquiry?: boolean }) {
   if (await t.one(`SELECT 1 FROM wallet_entries WHERE kind='dispute' AND stripe_ref=$1`, [o.disputeId])) return null;
   const net = Math.min(tp.net_cents, Math.round((Math.min(o.grossCents, tp.gross_cents) * tp.net_cents) / tp.gross_cents));
-  const e = await forceDebit(t, tp.wallet_id, net, { kind: 'dispute', topupId: tp.id, stripeRef: o.disputeId, note: 'disputa do pagamento (chargeback)', freeze: true });
-  await t.query(`UPDATE credit_topups SET alert=$2, updated_at=now() WHERE id=$1`, [tp.id, `Disputa ${o.disputeId} aberta (${eurPt(o.grossCents)}): carteira congelada e debitada em ${cr(net)} créditos${e.debt_delta ? ` (${cr(e.debt_delta)} em dívida)` : ''}.`]);
+  const e = await forceDebit(t, tp.wallet_id, net, { kind: 'dispute', topupId: tp.id, stripeRef: o.disputeId, note: o.inquiry ? 'inquérito do banco sobre o pagamento (ainda sem chargeback)' : 'disputa do pagamento (chargeback)', freeze: true });
+  const what = o.inquiry ? `Inquérito do banco ${o.disputeId} aberto (${eurPt(o.grossCents)}; ainda sem chargeback)` : `Disputa ${o.disputeId} aberta (${eurPt(o.grossCents)})`;
+  await t.query(`UPDATE credit_topups SET alert=$2, updated_at=now() WHERE id=$1`, [tp.id, `${what}: carteira congelada e debitada em ${cr(net)} créditos${e.debt_delta ? ` (${cr(e.debt_delta)} em dívida)` : ''}${o.inquiry ? '; se fechar sem disputa, os créditos voltam' : ''}.`]);
   await topupStatus(t, tp.id);
   return e;
 }
-/** Disputa encerrada: ganha, os créditos voltam; perdida, ficam debitados. A carteira descongela sem disputas abertas. */
-export async function disputeClosed(t: Db, o: { disputeId: string; won: boolean }) {
+/**
+ * Disputa encerrada: ganha (ou inquérito do banco fechado sem chargeback, `inquiry`), os créditos voltam; perdida, ficam
+ * debitados. A carteira descongela sem disputas abertas.
+ */
+export async function disputeClosed(t: Db, o: { disputeId: string; won: boolean; inquiry?: boolean }) {
   const e = await t.one(`SELECT * FROM wallet_entries WHERE kind='dispute' AND stripe_ref=$1`, [o.disputeId]);
   if (!e) return null;
   await lockWallet(t, e.wallet_id);
   if (await t.one(`SELECT 1 FROM wallet_entries WHERE kind IN ('dispute_won','dispute_lost') AND stripe_ref=$1`, [o.disputeId])) return null;
   let left = 0;
-  if (o.won) left = await reverseForced(t, e, 'dispute_won', 'disputa ganha: créditos repostos');
+  if (o.won) left = await reverseForced(t, e, 'dispute_won', o.inquiry ? 'inquérito do banco encerrado sem disputa: créditos repostos' : 'disputa ganha: créditos repostos');
   else await entry(t, e.wallet_id, { kind: 'dispute_lost', topupId: e.topup_id, stripeRef: o.disputeId, note: 'disputa perdida: os créditos ficam debitados', actor: 'stripe' });
   // Descongela sem disputas abertas e sem dívida (a dívida de um reembolso fora da aplicação mantém-na congelada).
   const w2 = await t.one('SELECT debt_cents FROM wallets WHERE id=$1', [e.wallet_id]);
   if (!(await openWalletDisputes(t, e.wallet_id)) && !w2.debt_cents) await t.query('UPDATE wallets SET frozen=false, updated_at=now() WHERE id=$1', [e.wallet_id]);
-  await t.query(`UPDATE credit_topups SET alert=$2, updated_at=now() WHERE id=$1`, [e.topup_id, o.won ? `Disputa ${o.disputeId} ganha: créditos repostos${left ? `; ${cr(left)} créditos de dívida já pagos ficam por acertar à mão` : ''}.` : `Disputa ${o.disputeId} perdida: créditos debitados${e.debt_delta ? ` e ${cr(e.debt_delta)} em dívida` : ''}.`]);
+  await t.query(`UPDATE credit_topups SET alert=$2, updated_at=now() WHERE id=$1`, [e.topup_id, o.won ? `${o.inquiry ? `Inquérito do banco ${o.disputeId} encerrado sem disputa (sem chargeback)` : `Disputa ${o.disputeId} ganha`}: créditos repostos${left ? `; ${cr(left)} créditos de dívida já pagos ficam por acertar à mão` : ''}.` : `Disputa ${o.disputeId} perdida: créditos debitados${e.debt_delta ? ` e ${cr(e.debt_delta)} em dívida` : ''}.`]);
   await topupStatus(t, e.topup_id);
   return { won: o.won };
 }

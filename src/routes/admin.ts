@@ -373,7 +373,7 @@ ${rates.map((r: any) => `<form method="post" action="/admin/tarifas/${esc(r.id)}
   };
   const vatCell = (r: any) => `${r.vat_regime ? esc(REGIME_LABEL[r.vat_regime as 'domestic'] ?? r.vat_regime) : '—'}${r.vat_rate !== null && r.vat_rate !== undefined ? ` · ${fmtRate(Number(r.vat_rate))}%` : ''}${r.vat_country ? ` (${esc(r.vat_country)})` : ''}${r.vat_note ? `<br><strong>Menção: ${esc(r.vat_note)}</strong>` : ''}`;
   const amounts = (r: any) => `${eurPt(r.net_cents)} + IVA ${eurPt(r.vat_cents)}<br><strong>${eurPt(r.total_cents)}</strong>`;
-  const KIND_LABEL: Record<string, string> = { subscription: 'subscrição', topup: 'carregamento de créditos', topup_refund: 'nota de crédito (reembolso de créditos)' };
+  const KIND_LABEL: Record<string, string> = { subscription: 'subscrição', topup: 'carregamento de créditos', topup_refund: 'nota de crédito (reembolso de créditos)', topup_refund_reversal: 'anular nota de crédito (reembolso que falhou)' };
 
   app.get('/admin/faturacao', async (req, reply) => {
     if (!guard(req, reply)) return;
