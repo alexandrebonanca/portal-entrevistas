@@ -5,7 +5,8 @@ import { saveAsset, hasAudioStream } from './media.ts';
 import { transcribeClip, translateSubtitleCues, aiAvailable, type Word } from './ai/openai.ts';
 import { renderBases, subtitleFrame, encodeComposite, buildAudioTrack, mockTalkingClip, type Part, type Shot, type Scene, type AudioPiece } from './video.ts';
 import { cuesFromWords } from './subtitles.ts';
-import { veoSubmit, veoAwait, veoEpisodePrompt, VeoQuotaError, VeoCancelled, VeoBusy, VeoFiltered, VeoOpError, VeoUnsupported, isKeyRejected, veoTier, veoModel, veoBackend, veoConfigured, veoPricePerSec, veoPriceOfModel, veoKeyModel, veoLabel, tierOfModel, type VeoTier } from './talking.ts';
+import { veoSubmit, veoAwait, veoEpisodePrompt, VeoQuotaError, VeoCancelled, VeoBusy, VeoFiltered, VeoOpError, VeoUnsupported, isKeyRejected, veoTier, veoModel, veoBackend, veoConfigured, veoCredsScope, veoPricePerSec, veoPriceOfModel, veoKeyModel, veoLabel, tierOfModel, type VeoTier } from './talking.ts';
+import { ownsAny, entityOfInterview, VEO_CRED_KEYS } from './settings.ts';
 import { PermanentError, JobPaused, type Handler } from './jobs.ts';
 import type { Db } from './db.ts';
 import { flushOutbox, queueEmail, emailShell } from './mail.ts';
@@ -349,7 +350,17 @@ const unitProblem = (chosen: boolean, hasChecked: boolean, anyUnchecked: boolean
 /** Só para os testes (AI_MOCK): resultado simulado de cada clipe — aprovado, texto diferente, filtrado ou quota esgotada. */
 export const veoMock: { outcome: null | ((c: { segmentId: string; role: string; text: string; attempt: number }) => 'ok' | 'mismatch' | 'filtered' | 'quota') } = { outcome: null };
 
-const isAdminUser = async (db: Db, userId: unknown) => typeof userId === 'string' && /^[0-9a-f-]{36}$/i.test(userId) && (await db.one('SELECT role FROM users WHERE id=$1', [userId]))?.role === 'admin';
+/** Perfil e entidade de quem pediu o trabalho (lidos no momento: um perfil retirado entretanto deixa de valer). */
+const requesterOf = async (db: Db, userId: unknown): Promise<{ role: string; entity_id: string | null } | null> =>
+  (typeof userId === 'string' && /^[0-9a-f-]{36}$/i.test(userId) ? (await db.one('SELECT role, entity_id FROM users WHERE id=$1', [userId])) ?? null : null);
+
+/**
+ * Veo sem orçamento nem créditos: o administrador (custo interno) e o gestor de uma entidade com credenciais Google
+ * próprias (conta de serviço ou chave Gemini da entidade), nas entrevistas dessa entidade: a Google cobra no projeto dela.
+ * Os outros, e o gestor de uma entidade que usa as credenciais do portal, só por orçamento aceite (com créditos).
+ */
+export const veoWithoutQuote = (user: { role: string; entity_id?: string | null } | null | undefined, interviewEntity: string | null | undefined) =>
+  !!user && (user.role === 'admin' || (user.role === 'entity_admin' && !!user.entity_id && user.entity_id === interviewEntity && ownsAny(user.entity_id, VEO_CRED_KEYS)));
 
 /**
  * Liberta um orçamento aceite ou em curso (ou anula um rascunho): os créditos cativos voltam ao disponível, aos mesmos
@@ -435,8 +446,11 @@ async function settleQuote(t: Db, quoteId: string, out: Map<string, FalaOut>, me
 export async function renderVeoVideo(job: any, { db, progress }: Parameters<Handler>[1]) {
   const quoteId: string | null = typeof job.input.quoteId === 'string' ? job.input.quoteId : null;
   const rebuildOf: string | null = typeof job.input.rebuild === 'string' ? job.input.rebuild : null;
-  // Segunda barreira: sem orçamento aceite, o Veo só se gera a pedido do administrador (custo interno).
-  if (!quoteId && !rebuildOf && !(await isAdminUser(db, job.input.requestedBy))) throw new PermanentError(VEO_NEEDS_QUOTE);
+  // Segunda barreira: sem orçamento aceite, o Veo só se gera a pedido do administrador (custo interno) ou do gestor de uma
+  // entidade com credenciais Google próprias (paga a entidade, no projeto Google dela).
+  const requester = quoteId || rebuildOf ? null : await requesterOf(db, job.input.requestedBy);
+  if (!quoteId && !rebuildOf && !veoWithoutQuote(requester, await entityOfInterview(db, job.interview_id))) throw new PermanentError(VEO_NEEDS_QUOTE);
+  const entityPays = !quoteId && !rebuildOf && requester?.role === 'entity_admin';
   // Retoma depois de um reinício: se este trabalho já liquidou o orçamento (o processo caiu entre a liquidação e o fim),
   // o resultado é o mesmo, sem gerar nem cobrar outra vez; o email do resultado (deduplicado) sai se ainda não saiu.
   if (quoteId) {
@@ -695,6 +709,8 @@ export async function renderVeoVideo(job: any, { db, progress }: Parameters<Hand
       // Antes de CADA envio (também nas repetições após 429): trabalho não parado e autorizações em vigor.
       const canSend = async () => {
         if (abort) return false;
+        // Gestor sem orçamento: só com as credenciais da entidade em vigor (sem elas, pagaria o portal).
+        if (entityPays && veoCredsScope() !== 'entity') { stop(new PermanentError(VEO_ENTITY_CREDS_GONE)); return false; }
         const why = await stillAllowed(c.seg.role);
         if (why) { stop(new PermanentError(why)); return false; }
         return true;
@@ -981,7 +997,7 @@ export async function renderVeoVideo(job: any, { db, progress }: Parameters<Hand
   for (const s of plan.segs) for (const { at } of falaOut.get(s.id)?.clips ?? []) { const k = at.model ?? UNKNOWN_MODEL; clipModels[k] = (clipModels[k] ?? 0) + 1; }
   const meta = { engine: 'veo', model: tierModel, tier, usdPerSec: tierPrice, backend: veoBackend(), lang, guestPhoto: !!plan.guestPhoto, hostPhoto: !!plan.hostPhoto, guestAiVideo: usedRoles.has('guest'), hostAiVideo: usedRoles.has('host'),
     veoClips: want.reduce((n, s) => n + (reused.get(s.id)?.length ?? s.chunks.length), 0), veoSegments: veoSegs.size, fallbackSegments: fallbackSegs, generatedClips: generated, spentUsd: Math.max(0, spentUsd - failedUsd), failedUsd, veoUsd: costUsd, clipModels,
-    googleBusy: fidelity.some(f => f.problem === 'busy' || f.problem === 'busycap'), quoteId: quote?.id ?? null, rebuildOf,
+    googleBusy: fidelity.some(f => f.problem === 'busy' || f.problem === 'busycap'), quoteId: quote?.id ?? null, rebuildOf, paidBy: quote ? 'credits' : entityPays ? 'entity' : rebuildOf ? 'rebuild' : 'internal',
     fidelityIssues: fidelity.filter(f => !f.ok).length, fidelity, mock };
   const id = await saveAsset(db, { interviewId: iv.id, kind: 'episode_video', mime: 'video/mp4', ext: 'mp4', data: mp4, durationMs: t, meta });
   // Ligação ao episódio, fim das aprovações anteriores e liquidação do orçamento numa só transação, com as autorizações
@@ -1072,7 +1088,8 @@ export const VEO_CHANGES = 'O convidado pediu alterações a esta versão: revej
 export const VEO_BUSY = 'O Google Veo está com procura elevada e recusou vários clipes seguidos: tente gerar de novo mais tarde. Os clipes já obtidos ficam guardados e são reaproveitados; as operações que falharam normalmente não são cobradas.';
 export const VEO_NO_CREDENTIALS = 'Falta a conta de serviço do Vertex AI (ou a chave da Gemini API) em Definições → Google.';
 export const VEO_SCRIPT_REPLACED = 'O guião deste episódio foi substituído: aprove o guião revisto e gere o episódio de novo antes do vídeo do Google Veo.';
-export const VEO_NEEDS_QUOTE = 'A animação com o Google Veo faz-se por orçamento: calcule o orçamento e aceite-o (o valor fica cativo e só se cobram as falas animadas e verificadas). Sem orçamento aceite, só o administrador a gera.';
+export const VEO_NEEDS_QUOTE = 'A animação com o Google Veo faz-se por orçamento: calcule o orçamento e aceite-o (o valor fica cativo e só se cobram as falas animadas e verificadas). Sem orçamento, só a geram o administrador e o gestor de uma entidade com credenciais Google próprias.';
+export const VEO_ENTITY_CREDS_GONE = 'As credenciais Google da entidade foram retiradas durante a geração: nada mais foi enviado à Google. Sem elas, a animação do gestor faz-se por orçamento, com créditos.';
 export const VEO_HOST_WITHDRAWN = 'A autorização do entrevistador para o Google Veo foi retirada: nada mais foi enviado à Google e o vídeo não foi ligado ao episódio.';
 export const VEO_GUEST_WITHDRAWN = 'A autorização do convidado para o Google Veo foi retirada: nada mais foi enviado à Google e o vídeo não foi ligado ao episódio.';
 export const VEO_QUOTE_CLOSED = 'O orçamento já não está em curso (anulado, cancelado ou liquidado): nada mais foi enviado à Google.';

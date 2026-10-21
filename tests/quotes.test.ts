@@ -519,3 +519,64 @@ test('consumidor: € com IVA primeiro, botão «Aceitar e pagar … €» e o r
   }
   await check();
 });
+
+test('gestor de entidade: o Veo sem créditos só com credenciais Google próprias da entidade; com as do portal, por orçamento', async () => {
+  const { saveEntitySetting } = await import('../src/settings.ts');
+  const ent = (await db.one(`SELECT id FROM entities WHERE slug='telecert-formacao'`)).id;
+  await db.query(`UPDATE users SET role='entity_admin', entity_id=$2 WHERE id=$1`, [cli.id, ent]);
+  const entries = async () => Number((await db.one(`SELECT count(*)::int n FROM wallet_entries e JOIN wallets w ON w.id=e.wallet_id WHERE w.user_id=$1`, [cli.id])).n);
+  const videoJobs = async () => Number((await db.one(`SELECT count(*)::int n FROM jobs WHERE interview_id=$1 AND kind='render_video'`, [ivId])).n);
+  try {
+    // a entidade usa as credenciais do portal: o gestor anima por orçamento, com créditos, como os outros
+    let pg = (await get(`/entrevistas/${ivId}/producao`, cli.cookie)).body;
+    assert.doesNotMatch(pg, /value="veo"/); assert.doesNotMatch(pg, /value="lipsync"/);
+    assert.match(pg, /Animação por IA \(Google Veo 3\.1 Fast\), por orçamento/);
+    const n0 = await videoJobs();
+    assert.match(msg(await post(`/entrevistas/${ivId}/episodio/${epId}/video`, { engine: 'veo', lang: 'en' }, cli.cookie)), /faz-se por orçamento[\s\S]*gestor de uma entidade com credenciais Google próprias/);
+    assert.equal(await videoJobs(), n0);
+    await rejectAll();
+    const draft = await newQuote(HOST);
+    assert.equal(draft.status, 'draft');
+
+    // com credenciais Google próprias (aqui, uma chave Gemini falsa: em modo simulado nada sai para a Google), sem orçamento
+    await saveEntitySetting(db, ent, 'GEMINI_API_KEY', ('AIza' + 'Test' + 'X'.repeat(29)));
+    pg = (await get(`/entrevistas/${ivId}/producao`, cli.cookie)).body;
+    assert.match(pg, /<input type="radio" name="engine" value="veo" >/); assert.doesNotMatch(pg, /value="lipsync"/);
+    assert.match(pg, /Pedido pelo gestor da entidade, com as credenciais Google dela: sem orçamento nem créditos/);
+    assert.ok(pg.includes(Q.ENTITY_VEO_NO_QUOTE), 'a secção do orçamento explica porque não é precisa');
+    assert.match(msg(await post(`/entrevistas/${ivId}/episodio/${epId}/orcamento`, { fala: HOST, lang: 'en' }, cli.cookie)), /credenciais Google próprias: o gestor gera o vídeo do Google Veo sem orçamento nem créditos/);
+    assert.match(msg(await post(`/entrevistas/${ivId}/orcamentos/${draft.id}/aceitar`, { start_now: '1', waiver: '1' }, cli.cookie)), /sem orçamento nem créditos/, 'um rascunho de antes não se aceita (pagaria duas vezes)');
+    assert.equal((await quoteOf(draft.id)).status, 'draft');
+    const before = await entries();
+    assert.match(msg(await post(`/entrevistas/${ivId}/episodio/${epId}/video`, { engine: 'veo', lang: 'en' }, cli.cookie)), /Geração do vídeo iniciada/);
+    await drain();
+    const job = await lastJob();
+    assert.equal(job.state, 'done', job.error);
+    const ep = await db.one('SELECT video_asset_id FROM episodes WHERE id=$1', [epId]);
+    const meta = (await db.one('SELECT meta FROM assets WHERE id=$1', [ep.video_asset_id])).meta;
+    assert.deepEqual([meta.engine, meta.paidBy, meta.quoteId], ['veo', 'entity', null]);
+    assert.ok(meta.veoSegments > 0, 'falas animadas');
+    assert.equal(await entries(), before, 'nenhum crédito gasto nem cativo');
+    assert.match((await get(`/entrevistas/${ivId}/producao`, cli.cookie)).body, /pago pela entidade, no projeto Google dela \(sem créditos\)/);
+
+    // segunda barreira: credenciais retiradas depois do pedido — o trabalho recusa (pagaria o portal)
+    await rejectAll();
+    assert.match(msg(await post(`/entrevistas/${ivId}/episodio/${epId}/video`, { engine: 'veo', lang: 'en' }, cli.cookie)), /Geração do vídeo iniciada/);
+    await saveEntitySetting(db, ent, 'GEMINI_API_KEY', '');
+    await drain();
+    const j2 = await lastJob();
+    assert.equal(j2.state, 'failed'); assert.match(j2.error, /faz-se por orçamento/);
+    assert.equal(await entries(), before);
+
+    // um entrevistador da mesma entidade, mesmo com as credenciais dela, continua por orçamento
+    await saveEntitySetting(db, ent, 'GEMINI_API_KEY', ('AIza' + 'Test' + 'X'.repeat(29)));
+    await db.query(`UPDATE users SET role='interviewer' WHERE id=$1`, [cli.id]);
+    pg = (await get(`/entrevistas/${ivId}/producao`, cli.cookie)).body;
+    assert.doesNotMatch(pg, /value="veo"/);
+    assert.match(msg(await post(`/entrevistas/${ivId}/episodio/${epId}/video`, { engine: 'veo', lang: 'en' }, cli.cookie)), /faz-se por orçamento/);
+  } finally {
+    await saveEntitySetting(db, ent, 'GEMINI_API_KEY', '');
+    await db.query(`UPDATE users SET role='interviewer', entity_id=NULL WHERE id=$1`, [cli.id]);
+  }
+  await check();
+});

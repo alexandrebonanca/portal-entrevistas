@@ -7,10 +7,10 @@ import type { Db } from '../db.ts';
 import { inEntity } from '../settings.ts';
 import { seller, complaintsLink, TERMS_VERSION, WITHDRAWAL_DAYS } from '../legal.ts';
 import { findWallet, spendBlock, cr } from '../wallet.ts';
-import { VEO_NOTICE } from '../veo-episode.ts';
+import { VEO_NOTICE, veoWithoutQuote } from '../veo-episode.ts';
 import { veoTier, veoLabel } from '../talking.ts';
 import { createQuote, acceptQuote, cancelQuote, quoteProblem, quoteBlock, rateForTier, candidateFalas, consumerVatRate, isConsumerOwner,
-  priceLabel, perMinuteLabel, acceptLabel, roleLabel, reasonLabel, GUARANTEES, QUOTE_STATUS, QuoteError, START_DEADLINE_HOURS } from '../quotes.ts';
+  priceLabel, perMinuteLabel, acceptLabel, roleLabel, reasonLabel, GUARANTEES, QUOTE_STATUS, QuoteError, START_DEADLINE_HOURS, ENTITY_VEO_NO_QUOTE } from '../quotes.ts';
 
 const excerpt = (t: string, n = 90) => (t.length > n ? `${t.slice(0, n - 1)}…` : t);
 /** Posição na via dos vídeos, para o prazo do orçamento (por aceitar: o que está na fila agora; aceite: o que está à frente). */
@@ -27,6 +27,7 @@ const consent = async (db: Db, id: string, p: string) => !!(await db.one(`SELECT
 export async function quoteSection(db: Db, iv: any, ep: any): Promise<string> {
   const owner = await db.one('SELECT id, role, entity_id FROM users WHERE id=$1', [iv.owner_id]);
   if (!owner || owner.role === 'admin') return '';
+  if (veoWithoutQuote(owner, owner.entity_id)) return `<h3 id="orcamento">Animação por IA</h3><p class="hint">${esc(ENTITY_VEO_NO_QUOTE)}</p>`;
   const quotes = await db.query(`SELECT * FROM animation_quotes WHERE episode_id=$1 ORDER BY created_at DESC LIMIT 5`, [ep.id]);
   return inEntity(owner.entity_id, async () => {
     const tier = veoTier(), rate = await rateForTier(db, tier);

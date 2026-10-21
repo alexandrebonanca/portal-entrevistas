@@ -6,7 +6,7 @@ import { queueEmail, emailShell } from './mail.ts';
 import { inEntity } from './settings.ts';
 import { veoTier, veoModel, veoLabel, veoConfigured, veoKeyModel, type VeoTier } from './talking.ts';
 import { aiAvailable } from './ai/openai.ts';
-import { veoPlan, inputsHashOf, chunkExhausted, chunkKeyOf, releaseQuote, namesUsedIn, personNames, VEO_MAX_ATTEMPTS, VEO_NOTICE, FALA_REASON,
+import { veoPlan, inputsHashOf, chunkExhausted, chunkKeyOf, releaseQuote, namesUsedIn, personNames, veoWithoutQuote, VEO_MAX_ATTEMPTS, VEO_NOTICE, FALA_REASON,
   VEO_ONLY_PREVIEW, VEO_SCRIPT_REPLACED, VEO_CHANGES, VEO_NO_CREDENTIALS, type PlanSeg } from './veo-episode.ts';
 import { walletFor, reserve, spendBlock, cr } from './wallet.ts';
 import { seller, checkoutBlock, sellerBlock, TERMS_VERSION, WITHDRAWAL_DAYS, type Seller } from './legal.ts';
@@ -49,6 +49,8 @@ export async function rateForTier(db: Db, tier: VeoTier): Promise<AnimationRate 
 }
 
 export class QuoteError extends Error {}
+/** Entrevista do gestor de uma entidade com credenciais Google próprias: o Veo gera-se sem orçamento nem créditos. */
+export const ENTITY_VEO_NO_QUOTE = 'A entidade tem credenciais Google próprias: o gestor gera o vídeo do Google Veo sem orçamento nem créditos (a Google cobra no projeto Google da entidade), na opção do vídeo acima.';
 const guestAskedChanges = async (db: Db, scriptId: string) => !!(await db.one(`SELECT 1 FROM approvals a JOIN episodes e ON e.id=a.episode_id WHERE e.script_id=$1 AND a.actor='guest' AND a.valid AND a.decision='changes' LIMIT 1`, [scriptId]));
 const ownerOf = (db: Db, iv: any) => db.one('SELECT id, email, name, role, entity_id FROM users WHERE id=$1', [iv.owner_id]);
 export const isConsumerOwner = async (db: Db, userId: string) => (await db.one('SELECT kind FROM billing_profiles WHERE user_id=$1', [userId]))?.kind === 'consumer';
@@ -116,6 +118,7 @@ export async function createQuote(db: Db, o: { iv: any; ep: any; actor: { email:
   const owner = await ownerOf(db, iv);
   if (!owner) throw new QuoteError('Entrevista sem titular.');
   if (owner.role === 'admin') throw new QuoteError('Esta entrevista é do administrador: o vídeo do Google Veo gera-se sem orçamento (custo interno).');
+  if (veoWithoutQuote(owner, owner.entity_id)) throw new QuoteError(ENTITY_VEO_NO_QUOTE);
   if (await db.one(`SELECT 1 FROM animation_quotes WHERE episode_id=$1 AND status IN ('accepted','running')`, [ep.id])) throw new QuoteError('Já há um orçamento aceite em curso para este episódio: aguarde que a produção termine.');
   return inEntity(owner.entity_id, async () => {
     const tier = veoTier();
@@ -205,6 +208,8 @@ export async function acceptQuote(db: Db, user: any, quoteId: string, body: any,
   const q0 = await db.one('SELECT * FROM animation_quotes WHERE id=$1', [quoteId]);
   if (!q0) return { error: 'Orçamento inexistente.' };
   if (user.role === 'admin' || user.id !== q0.owner_id) return { error: 'Só o titular da entrevista aceita o orçamento: o administrador pode prepará-lo, mas nunca o aceita em nome do cliente.' };
+  // (orçamento feito antes de a entidade ter credenciais próprias: com elas, pagaria duas vezes, à Google e em créditos)
+  if (veoWithoutQuote(user, user.entity_id)) return { error: ENTITY_VEO_NO_QUOTE };
   const consumer = await isConsumerOwner(db, user.id);
   if (body?.start_now !== '1' || body?.waiver !== '1')
     return { error: consumer ? 'Para aceitar, assinale as duas caixas: o pedido de início imediato e o reconhecimento sobre a livre resolução.' : 'Para aceitar, assinale as duas caixas: o pedido de início imediato e a aceitação das condições do orçamento.' };
