@@ -12,7 +12,7 @@ npm test
 Primeira conta criada em `/registar` = administrador; depois o registo fecha (`ALLOW_SIGNUP=true` para abrir).
 
 ## Arquitetura
-Node 24 (TypeScript nativo, sem passo de compilação) · Fastify · PostgreSQL (`pg`; PGlite em desenvolvimento) · armazenamento local ou S3 · fila de trabalhos em Postgres (`FOR UPDATE SKIP LOCKED`) com worker no mesmo processo (`RUN_WORKER=0` + `npm run worker` para separar) · FFmpeg por binário (`@ffmpeg-installer`), sem shell · sharp para a capa · OpenAI SDK só no servidor.
+Node 24 (TypeScript nativo, sem passo de compilação) · Fastify · PostgreSQL (`pg`; PGlite em desenvolvimento) · armazenamento local ou S3 · fila de trabalhos em Postgres (`FOR UPDATE SKIP LOCKED`) com worker no mesmo processo (`RUN_WORKER=0` + `npm run worker` para separar; uma só instância de worker), com duas vias — a curta (transcrição, guião, episódio) e a dos vídeos, que leva de minutos a horas e nunca atrasa as outras entrevistas (`WORKER_LANES=1` volta à via única) — um trabalho por entrevista de cada vez, batimento dos trabalhos em curso e um vigilante próprio (retoma o que um reinício interrompeu; num vídeo com orçamento, o reinício não gasta tentativa) · FFmpeg por binário (`@ffmpeg-installer`), sem shell · sharp para a capa · OpenAI SDK só no servidor.
 Ver `docs/`.
 
 ## Vertex AI para o Veo
