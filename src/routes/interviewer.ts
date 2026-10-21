@@ -8,11 +8,16 @@ import { sniff, stripJpegMetadata, saveAsset, probeAudio } from '../media.ts';
 import { createInvitation } from '../invites.ts';
 import { enqueue } from '../jobs.ts';
 import { aiAvailable } from '../ai/openai.ts';
-import { quotaFor } from '../billing.ts';
+import { quotaFor, vatForProfile } from '../billing.ts';
+import { inEntity } from '../settings.ts';
+import { seller } from '../legal.ts';
+import { withVat, eurPt } from '../vat.ts';
+import { walletFor, findWallet, spend, spendBlock, cr, EXTRA_INTERVIEW_CENTS } from '../wallet.ts';
+import { paidConsentHtml, paidConsentOk } from './credits.ts';
 import { inviteLimits, draftQuestionMax, answeredMs, secondsLeft, mmss, FOLLOWUP_MIN_LEFT_SEC, LIMIT_SLACK_MS } from '../limits.ts';
 
 const H = { 'Content-Type': 'text/html; charset=utf-8' };
-const nav = (u: any) => `<a href="/painel">Painel</a><a href="/entrevistas/nova">Nova entrevista</a><a href="/account">Conta</a>${u.role === 'admin' ? '<a href="/admin/entidades">Entidades</a><a href="/admin/utilizadores">Utilizadores</a><a href="/admin/definicoes">Definições</a>' : u.role === 'entity_admin' ? '<a href="/entidade">Entidade</a>' : ''}<form method="post" action="/sair" style="display:inline"><button class="ghost" style="padding:6px 12px;min-height:0;margin-left:16px">Sair (${esc(u.name)})</button></form>`;
+const nav = (u: any) => `<a href="/painel">Painel</a><a href="/entrevistas/nova">Nova entrevista</a><a href="/account">Conta</a>${u.role === 'admin' ? '' : '<a href="/conta/creditos">Créditos</a>'}${u.role === 'admin' ? '<a href="/admin/entidades">Entidades</a><a href="/admin/utilizadores">Utilizadores</a><a href="/admin/definicoes">Definições</a>' : u.role === 'entity_admin' ? '<a href="/entidade">Entidade</a>' : ''}<form method="post" action="/sair" style="display:inline"><button class="ghost" style="padding:6px 12px;min-height:0;margin-left:16px">Sair (${esc(u.name)})</button></form>`;
 const LANGS: [string, string][] = [['pt-PT', 'Português (PT)'], ['en', 'English']];
 const SUBS = [['en', 'English'], ['pt-PT', 'Português (PT)'], ['es', 'Español'], ['fr', 'Français'], ['de', 'Deutsch']];
 const statusPill = (s: string) => pill(STATUS_LABEL[s] ?? s, ['submitted', 'ready', 'published', 'approved'].includes(s) ? 'ok' : ['failed', 'expired', 'cancelled', 'stale', 'withdrawn'].includes(s) ? 'bad' : '');
@@ -24,6 +29,20 @@ export async function interviewerRoutes(app: FastifyInstance) {
   // Áudio do entrevistador com duração máxima (o administrador não tem limite); a mesma tolerância das respostas.
   const tooLong = (req: any, durationMs: number, maxSec: number) => req.user.role !== 'admin' && durationMs > maxSec * 1000 + LIMIT_SLACK_MS;
   const recMax = (req: any, maxSec: number) => (req.user.role === 'admin' ? 300 : maxSec);
+  /**
+   * Entrevista extra paga com créditos (quota do plano esgotada): saldo na carteira da entidade, o que falta e o botão,
+   * que diz que há obrigação de pagar (consumidores: o valor com IVA primeiro).
+   */
+  const extraOffer = async (user: any) => inEntity(user.entity_id, async () => {
+    const w = await findWallet(db, user.id, user.entity_id);
+    const available = w?.available_cents ?? 0, blk = spendBlock(w);
+    const profile = await db.one('SELECT * FROM billing_profiles WHERE user_id=$1', [user.id]);
+    const consumer = profile?.kind === 'consumer';
+    const d = profile ? vatForProfile(profile, seller()) : null;
+    const button = consumer && d?.ok ? `Enviar convite e pagar ${eurPt(withVat(EXTRA_INTERVIEW_CENTS, d.rate))} (${cr(EXTRA_INTERVIEW_CENTS)} créditos)` : `Enviar convite e pagar ${cr(EXTRA_INTERVIEW_CENTS)} créditos`;
+    const missing = Math.max(0, EXTRA_INTERVIEW_CENTS - available);
+    return { available, consumer, button, missing, block: blk?.pt ?? null, canPay: !blk && !missing };
+  });
 
   /** Perguntas e tempo de resposta do convidado face aos limites fixados no convite; razão para recusar uma pergunta adicional (null = pode). */
   const followupState = async (iv: any, user: any, q: Db = db) => {
@@ -301,16 +320,19 @@ ${locked ? `${fu!.info ? `<p class="hint sans">${esc(fu!.info)}</p>` : ''}${fu!.
     const quota = await quotaFor(db, req.user!);
     const lim = inviteLimits(quota);
     const { qs, problems } = await readiness(iv, lim);
-    if (!quota.allowed) problems.push(quota.reason === 'quota' ? `Atingiu o limite de ${quota.limit} entrevistas deste período (${quota.used}/${quota.limit}). Mude de plano em Conta.` : 'Precisa de uma subscrição ativa para enviar convites (Conta).');
+    // Quota do plano esgotada (com subscrição ativa): pode convidar como entrevista extra, paga com créditos.
+    const extra = !quota.allowed && quota.reason === 'quota' ? await extraOffer(req.user!) : null;
+    if (!quota.allowed && !extra) problems.push('Precisa de uma subscrição ativa para enviar convites (Conta).');
     const body = `<div class="narrow" style="padding-top:32px"><h1>Rever e convidar</h1>${flash((req.query as any).e, 'bad')}${quota.unlimited ? '' : `<p class="hint sans">Uso neste período: ${quota.used}/${quota.limit}</p>`}
 ${problems.length ? `<div class="flash bad"><strong>Antes de enviar:</strong><ul>${problems.map(p => `<li>${esc(p)}</li>`).join('')}</ul></div>` : ''}
+${extra ? `<div class="flash bad" id="extra">Atingiu o limite de ${quota.limit} entrevistas deste período (${quota.used}/${quota.limit}). Pode mudar de plano em <a href="/account">Conta</a>, ou enviar este convite como <strong>entrevista extra por ${cr(EXTRA_INTERVIEW_CENTS)} créditos</strong> (saldo: ${cr(extra.available)} créditos). A entrevista extra tem os mesmos limites do plano.${extra.block ? `<br>${esc(extra.block)}` : extra.missing ? ` <a href="/conta/creditos/carregar?falta=${extra.missing}&amp;voltar=${encodeURIComponent(`/entrevistas/${iv.id}/convidar`)}">Carregar o que falta</a>` : ''}</div>` : ''}
 <div class="card"><p class="sans"><strong>Para:</strong> ${esc(iv.guest_name)} &lt;${esc(iv.guest_email)}&gt;<br><strong>Título:</strong> ${esc(iv.title)}<br><strong>Perguntas:</strong> ${qs.length}<br>
 <strong>Objetivo visível ao entrevistado:</strong> ${iv.objective_shared ? 'Sim' : 'Não (interno)'}<br><strong>Política de revisão:</strong> ${iv.review_policy === 'guest_preview' ? 'o entrevistado aprova a versão final' : 'só o entrevistador aprova'}<br>
 <strong>Limites da entrevista:</strong> ${lim.questionLimit == null ? 'sem limite de perguntas nem de tempo total (administrador)' : `até ${lim.questionLimit} perguntas, incluindo as adicionais; até ${mmss(lim.answerLimitSec!)} min de respostas do entrevistado no total`}; máximo de ${mmss(config.limits.maxAnswerSeconds)} min por resposta. Ficam fixos com o convite.</p>
 <ol>${qs.map((x: any) => `<li>${esc(x.text) || '<em>(pergunta em áudio)</em>'}</li>`).join('')}</ol>
 ${iv.objective_shared && iv.objective_text ? `<p class="hint">O entrevistado vê: <em>${esc(iv.objective_text)}</em></p>` : ''}</div>
 <p class="hint">Ao enviar, a versão ${iv.version} das perguntas fica fixa. O convite chega por email e o link permanece válido até ${config.limits.inviteDays} dias (ou ao prazo definido).</p>
-<form method="post" action="/entrevistas/${iv.id}/convidar" onsubmit="return confirm('Enviar o convite agora?')"><button class="accent" ${problems.length ? 'disabled' : ''}>Enviar convite</button> <a class="btn ghost" href="/entrevistas/${iv.id}/editar">Voltar</a></form></div>`;
+<form method="post" action="/entrevistas/${iv.id}/convidar" onsubmit="return confirm('Enviar o convite agora?')">${extra ? `<input type="hidden" name="extra" value="1">${paidConsentHtml(extra.consumer)}` : ''}<button class="accent" ${problems.length || (extra && !extra.canPay) ? 'disabled' : ''}>${extra ? esc(extra.button) : 'Enviar convite'}</button> <a class="btn ghost" href="/entrevistas/${iv.id}/editar">Voltar</a></form></div>`;
     return view(req, reply, 'Convidar', body);
   });
 
@@ -323,7 +345,34 @@ ${iv.objective_shared && iv.objective_text ? `<p class="hint">O entrevistado vê
     const lim = inviteLimits(quota);
     const { problems } = await readiness(iv, lim);
     if (problems.length) return reply.redirect(`/entrevistas/${iv.id}/convidar`);
-    if (!quota.allowed) return reply.redirect(`/entrevistas/${iv.id}/convidar?e=` + encodeURIComponent(quota.reason === 'quota' ? `Atingiu o limite de ${quota.limit} entrevistas deste período. Mude de plano em Conta.` : 'Precisa de uma subscrição ativa para enviar convites (Conta).'));
+    const again = (e: string) => reply.redirect(`/entrevistas/${iv.id}/convidar?e=` + encodeURIComponent(e));
+    if (!quota.allowed) {
+      if (quota.reason !== 'quota') return again('Precisa de uma subscrição ativa para enviar convites (Conta).');
+      // Entrevista extra: os créditos cobram-se com a entrevista bloqueada e uma só vez (a cobrança é única por entrevista,
+      // por isso um duplo clique ou uma repetição depois de uma falha no envio não cobram outra vez); depois segue o convite.
+      const b = (req.body ?? {}) as any;
+      const offer = await extraOffer(req.user!);
+      if (b.extra !== '1') return again(`Atingiu o limite de ${quota.limit} entrevistas deste período. Mude de plano em Conta, ou envie como entrevista extra por ${cr(EXTRA_INTERVIEW_CENTS)} créditos.`);
+      if (!paidConsentOk(b, offer.consumer)) return again('Para começar já, confirme o pedido de início imediato do serviço e o reconhecimento sobre a livre resolução.');
+      const r = await db.tx(async (tx) => {
+        const cur = await tx.one('SELECT collection_status, extra_cents FROM interviews WHERE id=$1 FOR UPDATE', [iv.id]);
+        if (cur.collection_status !== 'draft') return 'done';
+        if (cur.extra_cents) return 'paid';
+        const w = await walletFor(tx, req.user!.id, req.user!.entity_id);
+        const blk = spendBlock(w);
+        if (blk) return blk.pt;
+        const e = await spend(tx, w.id, EXTRA_INTERVIEW_CENTS, { ref: `extra:${iv.id}`, note: `Entrevista extra: ${String(iv.title).slice(0, 80)}`, interviewId: iv.id, actor: req.user!.email });
+        if (!e) return `Saldo insuficiente: a entrevista extra custa ${cr(EXTRA_INTERVIEW_CENTS)} créditos e tem ${cr(w.available_cents)}.`;
+        await tx.query('UPDATE interviews SET extra_cents=$2 WHERE id=$1', [iv.id, EXTRA_INTERVIEW_CENTS]);
+        return 'paid';
+      });
+      if (r === 'done') return reply.redirect(`/entrevistas/${iv.id}`);
+      if (r !== 'paid') return again(r);
+      await createInvitation(db, iv, { name: req.user!.name });
+      await db.query(`UPDATE interviews SET collection_status='invited', invited_at=now(), answer_limit_sec=$2, question_limit=$3 WHERE id=$1`, [iv.id, lim.answerLimitSec, lim.questionLimit]);
+      await audit(db, req.user!.email, 'invitation.sent', iv.id, { extraCredits: EXTRA_INTERVIEW_CENTS / 100, consumer: offer.consumer, startNow: offer.consumer, waiver: offer.consumer, ip: req.ip });
+      return reply.redirect(`/entrevistas/${iv.id}?ok=` + encodeURIComponent(`Convite enviado como entrevista extra (${cr(EXTRA_INTERVIEW_CENTS)} créditos).`));
+    }
     await createInvitation(db, iv, { name: req.user!.name });
     // Os limites do plano ficam fixos na entrevista: mudar de plano depois não altera o que foi prometido ao convidado.
     await db.query(`UPDATE interviews SET collection_status='invited', invited_at=now(), answer_limit_sec=$2, question_limit=$3 WHERE id=$1`, [iv.id, lim.answerLimitSec, lim.questionLimit]);

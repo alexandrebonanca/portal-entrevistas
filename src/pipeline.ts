@@ -13,6 +13,7 @@ import { cuesFromWords, fixOverlaps, checkCues, type Cue } from './subtitles.ts'
 import { composeCover } from './cover.ts';
 import { PermanentError, type Handler } from './jobs.ts';
 import { renderVeoVideo } from './veo-episode.ts';
+import { reverseDebit } from './wallet.ts';
 
 const usage = (db: Db, interviewId: string, kind: string, quantity: number, cost: number) =>
   db.query('INSERT INTO usage_ledger(interview_id, kind, quantity, cost_usd, estimated) VALUES ($1,$2,$3,$4,true)', [interviewId, kind, quantity, cost]);
@@ -401,6 +402,8 @@ export const handlers: Record<string, Handler> = {
   async __onFail(job, { db }) {
     if (job.interview_id && ['process_submission', 'prepare_script', 'generate_episode'].includes(job.kind))
       await db.query(`UPDATE interviews SET production_status='failed' WHERE id=$1`, [job.interview_id]);
+    // Regeneração paga que falhou: o crédito volta (uma regeneração falhada também não conta para as incluídas).
+    if (job.input?.paidCents) await db.tx(t => reverseDebit(t, `regen:${job.id}`, 'a regeneração falhou: crédito devolvido'));
   },
 };
 

@@ -39,4 +39,4 @@ export async function regenerationsUsed(db: Db, interviewId: string): Promise<nu
     AND input->>'regen'='true' AND state<>'failed'`, [interviewId]))?.n ?? 0);
 }
 
-export const REGEN_BLOCKED = () => `Já usou as ${config.limits.includedRegenerations} regenerações incluídas nesta entrevista (guião e episódio). Cada regeneração seguinte custa 1 crédito; o pagamento com créditos ainda não está disponível na sua conta.`;
+export const REGEN_BLOCKED = () => `Já usou as ${config.limits.includedRegenerations} regenerações incluídas nesta entrevista (guião e episódio). Cada regeneração seguinte custa 1 crédito.`;
