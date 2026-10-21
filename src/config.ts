@@ -43,6 +43,16 @@ export const config = {
     inviteDays: Number(env.INVITE_DAYS ?? 14),
     resendCooldownSec: Number(env.RESEND_COOLDOWN_SEC ?? 120),
   },
+  // Fila de trabalhos: duas vias (curta e vídeos; WORKER_LANES=1 volta à via única), batimento de quem corre um trabalho,
+  // silêncio a partir do qual o trabalho se dá como interrompido, ciclo do vigilante e reinícios tolerados num trabalho
+  // de orçamento (que retoma sem gastar tentativa).
+  queue: {
+    lanes: Number(env.WORKER_LANES ?? 2) === 1 ? 1 : 2,
+    heartbeatMs: Number(env.JOB_HEARTBEAT_MS ?? 30_000),
+    staleMs: Number(env.JOB_STALE_MS ?? 180_000),
+    watchdogMs: Number(env.WORKER_WATCHDOG_MS ?? 60_000),
+    maxInterruptions: Number(env.JOB_MAX_INTERRUPTIONS ?? 10),
+  },
   // Preços ilustrativos e atualizáveis (USD). São ESTIMATIVAS, nunca custos confirmados.
   prices: {
     transcribePerMin: Number(env.PRICE_TRANSCRIBE_PER_MIN ?? 0.006),

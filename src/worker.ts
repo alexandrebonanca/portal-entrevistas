@@ -1,42 +1,51 @@
 import type { Db } from './db.ts';
-import { runOne, recoverOrphans } from './jobs.ts';
-import { handlers } from './pipeline.ts';
+import { config } from './config.ts';
+import { runOne, recoverOrphans, recoverStale, markReady, type Handler, type Lane } from './jobs.ts';
+import { handlers as pipelineHandlers } from './pipeline.ts';
 import { flushOutbox } from './mail.ts';
 import { openDb, migrate } from './db.ts';
 import { walletHousekeeping } from './wallet.ts';
 import { quoteHousekeeping } from './quotes.ts';
 
-/** Ciclo do worker: emails da outbox e trabalhos pesados (FFmpeg, IA) fora do ciclo de pedidos HTTP. */
-export function startWorker(db: Db, intervalMs = 2000) {
-  let stopped = false, busy = false;
-  const tick = async () => {
-    if (stopped || busy) return;
-    busy = true;
-    try {
-      await flushOutbox(db);
-      while (!stopped && (await runOne(db, handlers))) { /* esvazia a fila */ }
-    } catch (e: any) { console.error('[worker]', e?.message ?? e); }
-    finally { busy = false; }
+/**
+ * Worker, fora do ciclo de pedidos HTTP, com cada parte no seu ciclo (nenhuma espera pelas outras):
+ * - duas vias de trabalhos: a curta (transcrição, guião, episódio) e a dos vídeos, que leva de minutos a horas;
+ * - a outbox dos emails (convites, confirmações dos orçamentos);
+ * - o vigilante da fila: retoma trabalhos de um processo que morreu, marca os vídeos que já podem arrancar (prazo de 24 h)
+ *   e liberta os orçamentos parados;
+ * - as carteiras de créditos (de hora a hora): aviso 30 dias antes da validade, caducidade e devoluções.
+ */
+export function startWorker(db: Db, o: { intervalMs?: number; handlers?: Record<string, Handler>; recover?: boolean } = {}) {
+  const intervalMs = o.intervalMs ?? 2000, handlers = o.handlers ?? pipelineHandlers;
+  let stopped = false;
+  const timers: ReturnType<typeof setInterval>[] = [];
+  const inFlight = new Set<Promise<void>>();
+  /** Ciclo com exclusão: uma volta não começa enquanto a anterior corre. */
+  const cycle = (name: string, everyMs: number, fn: () => Promise<unknown>) => {
+    let busy = false;
+    const run = (): Promise<void> => {
+      if (stopped || busy) return Promise.resolve();
+      busy = true;
+      const p = fn().then(() => {}, (e: any) => { console.error(`[worker] ${name}`, e?.message ?? e); }).finally(() => { busy = false; inFlight.delete(p); });
+      inFlight.add(p);
+      return p;
+    };
+    timers.push(setInterval(run, everyMs));
+    return run;
   };
-  const h = setInterval(tick, intervalMs);
-  // Emails (convites, pré-visualizações) num ciclo próprio: um vídeo do Veo de dezenas de minutos não os atrasa.
-  let mailing = false;
-  const mail = setInterval(async () => {
-    if (stopped || mailing || !busy) return; // com o worker livre, o tick já trata da outbox
-    mailing = true;
-    try { await flushOutbox(db); } catch (e: any) { console.error('[worker] outbox', e?.message ?? e); } finally { mailing = false; }
-  }, Math.max(intervalMs, 5000));
-  // Carteiras de créditos num ciclo próprio (de hora a hora): aviso 30 dias antes da validade, caducidade dos lotes,
-  // devolução do crédito de regenerações falhadas e libertação dos orçamentos parados. Corre mesmo com o worker ocupado.
-  let housekeeping = false;
-  const wallets = async () => {
-    if (stopped || housekeeping) return;
-    housekeeping = true;
-    try { await walletHousekeeping(db); await quoteHousekeeping(db); } catch (e: any) { console.error('[worker] carteiras', e?.message ?? e); } finally { housekeeping = false; }
+  const drain = (lane: Lane | 'all') => async () => { while (!stopped && (await runOne(db, handlers, lane))) { /* esvazia a via */ } };
+  const lanes = config.queue.lanes === 1 ? [cycle('fila', intervalMs, drain('all'))] : [cycle('via curta', intervalMs, drain('short')), cycle('via dos vídeos', intervalMs, drain('video'))];
+  const mail = cycle('outbox', intervalMs, () => flushOutbox(db));
+  const watchdog = cycle('vigilante', config.queue.watchdogMs, async () => { await recoverStale(db, handlers); await markReady(db); await quoteHousekeeping(db); });
+  const wallets = cycle('carteiras', Number(process.env.WALLET_HOUSEKEEPING_MS ?? 3600_000), () => walletHousekeeping(db));
+  const recover = o.recover ?? process.env.RUN_WORKER !== '0';
+  void (recover ? recoverOrphans(db, handlers).catch(e => console.error('[worker] recuperação', e?.message)) : Promise.resolve())
+    .then(() => Promise.all([...lanes.map(l => l()), mail(), watchdog(), wallets()]));
+  return {
+    /** Pára os ciclos; a promessa resolve quando as voltas em curso terminam (o servidor não espera por um vídeo). */
+    stop: () => { stopped = true; timers.forEach(clearInterval); return Promise.all([...inFlight]).then(() => {}); },
+    tick: () => Promise.all(lanes.map(l => l())),
   };
-  const hk = setInterval(wallets, Number(process.env.WALLET_HOUSEKEEPING_MS ?? 3600_000));
-  void (process.env.RUN_WORKER === '0' ? Promise.resolve() : recoverOrphans(db).catch(e => console.error('[worker] recuperação', e?.message))).then(tick).then(wallets);
-  return { stop: () => { stopped = true; clearInterval(h); clearInterval(mail); clearInterval(hk); }, tick };
 }
 
 if (import.meta.url === `file://${process.argv[1].replace(/\\/g, '/')}` || process.argv[1]?.endsWith('worker.ts')) {
