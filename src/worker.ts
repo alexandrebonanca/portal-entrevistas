@@ -3,6 +3,7 @@ import { runOne, recoverOrphans } from './jobs.ts';
 import { handlers } from './pipeline.ts';
 import { flushOutbox } from './mail.ts';
 import { openDb, migrate } from './db.ts';
+import { purgeAssistantLog } from './assistant.ts';
 
 /** Ciclo do worker: emails da outbox e trabalhos pesados (FFmpeg, IA) fora do ciclo de pedidos HTTP. */
 export function startWorker(db: Db, intervalMs = 2000) {
@@ -11,6 +12,7 @@ export function startWorker(db: Db, intervalMs = 2000) {
     if (stopped || busy) return;
     busy = true;
     try {
+      await purgeAssistantLog(db); // registo do assistente com mais de 180 dias (no máximo uma vez por hora)
       await flushOutbox(db);
       while (!stopped && (await runOne(db, handlers))) { /* esvazia a fila */ }
     } catch (e: any) { console.error('[worker]', e?.message ?? e); }

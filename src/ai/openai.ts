@@ -120,6 +120,20 @@ export function validateScript(raw: any, input?: ScriptInput) {
   return { titleEnglish: String(raw?.titleEnglish ?? input?.title ?? 'Untitled'), segments, reviewFlags: flags, blockingIssues: blocking };
 }
 
+/**
+ * Assistente da página de ajuda: resposta curta redigida só a partir das entradas da base de conhecimento (o prompt
+ * e as entradas vêm de src/assistant.ts). Pedido curto (20 s no máximo), para a página não ficar à espera.
+ */
+export async function answerHelp(system: string, user: string): Promise<{ answer: string; answered: boolean }> {
+  const c = await openai();
+  const r = await c.chat.completions.create({
+    model: config.openai.assistantModel, temperature: 0.2, response_format: { type: 'json_object' },
+    messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
+  }, { timeout: 20_000 });
+  const j = JSON.parse(r.choices[0].message.content ?? '{}');
+  return { answer: String(j.answer ?? '').trim(), answered: j.answered !== false };
+}
+
 export async function reviewScript(transcriptSummary: unknown, script: unknown) {
   if (config.openai.mock) return { issues: [] as any[] };
   const r = await chatJson(REVIEW_SYSTEM, `<interview_data>\n${JSON.stringify({ transcript: transcriptSummary, script })}\n</interview_data>`);
