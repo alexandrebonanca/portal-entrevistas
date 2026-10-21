@@ -3,7 +3,8 @@ import { config } from '../config.ts';
 import { esc, fmtDate, hashPassword, isEmail } from '../lib.ts';
 import { page, flash, pill } from '../views.ts';
 import { audit } from '../app.ts';
-import { quotaFor, ACTIVE_STATUSES, stripe, savedTaxRates, STRIPE_EVENTS } from '../billing.ts';
+import { quotaFor, ACTIVE_STATUSES, stripe, savedTaxRates, STRIPE_EVENTS, refundTopup, sendRefund } from '../billing.ts';
+import { findWallet, ledgerCheck, RefundError, cr, REFUND_WINDOW_DAYS } from '../wallet.ts';
 import { SETTING_DEFS, S, maskSetting, saveSetting, saveStripeScoped, fromDb, secretFingerprint, settingsFormError, SELLER_GROUP, type SettingDef } from '../settings.ts';
 import { seller, sellerWarnings, sameCompany, savedStripeAccount } from '../legal.ts';
 import { REGIME_LABEL, regionalRate, countryName, eurPt, fmtRate } from '../vat.ts';
@@ -103,7 +104,7 @@ export async function serviceTest(db: any, g: string, userEmail: string): Promis
 
 export async function adminRoutes(app: FastifyInstance) {
   const db = app.db;
-  const adminNav = `<a href="/painel">Painel</a><a href="/admin/utilizadores">Utilizadores</a><a href="/admin/definicoes">Definições</a><a href="/admin/faturacao">Faturação</a><a href="/admin/laboratorio">Laboratório</a><form method="post" action="/sair" style="display:inline"><button class="ghost" style="padding:6px 12px;min-height:0;margin-left:16px">Sair</button></form>`;
+  const adminNav = `<a href="/painel">Painel</a><a href="/admin/utilizadores">Utilizadores</a><a href="/admin/definicoes">Definições</a><a href="/admin/faturacao">Faturação</a><a href="/admin/creditos">Créditos</a><a href="/admin/laboratorio">Laboratório</a><form method="post" action="/sair" style="display:inline"><button class="ghost" style="padding:6px 12px;min-height:0;margin-left:16px">Sair</button></form>`;
   const view = (reply: any, title: string, body: string) => reply.type('text/html; charset=utf-8').send(page({ title, body: `<div class="wrap" style="padding-top:32px">${body}</div>`, nav: adminNav, noindex: true }));
   const guard = (req: any, reply: any) => {
     if (!req.user) { reply.redirect('/entrar'); return false; }
@@ -181,6 +182,7 @@ ${rows.map(({ u, qt }) => `<tr><td><a href="/admin/utilizadores/${u.id}">${esc(u
     const qt = await quotaFor(db, u);
     const bp = await db.one('SELECT * FROM billing_profiles WHERE user_id=$1', [u.id]);
     const iv = await db.query('SELECT id, title, collection_status, invited_at FROM interviews WHERE owner_id=$1 ORDER BY created_at DESC LIMIT 10', [u.id]);
+    const wallets = await db.query('SELECT w.*, en.name AS entity_name FROM wallets w LEFT JOIN entities en ON en.id=w.entity_id WHERE w.user_id=$1 ORDER BY w.created_at', [u.id]);
     const date = (d: any) => (d ? new Date(d).toISOString().slice(0, 10) : '');
     return view(reply, u.name, `<p><a href="/admin/utilizadores">← Utilizadores</a></p><h1>${esc(u.name)} ${u.active ? pill('ativa', 'ok') : pill('desativada', 'bad')}</h1>${flash(q.ok)}${flash(q.e, 'bad')}
 <div class="card"><h2 style="margin-top:0">Conta</h2><p class="sans">${esc(u.email)} · criada em ${fmtDate(u.created_at)}${u.stripe_customer_id ? ' · Stripe: ' + esc(u.stripe_customer_id) : ''}</p>
@@ -196,6 +198,7 @@ ${rows.map(({ u, qt }) => `<tr><td><a href="/admin/utilizadores/${u.id}">${esc(u
 <div class="row"><div class="grow"><label for="pe">Fim do período</label><input id="pe" name="period_end" type="date" value="${date(sub?.current_period_end)}"></div>
 <div class="grow"><label for="ov">Limite mensal personalizado (vazio = o do plano)</label><input id="ov" name="override" type="number" min="0" value="${sub?.interviews_override ?? ''}"></div></div>
 <p class="hint">Alterações manuais não alteram a cobrança no Stripe: para cancelar ou reembolsar uma subscrição paga, use o painel do Stripe.</p><button class="accent">Guardar subscrição</button></form></div>
+<div class="card"><h2 style="margin-top:0">Créditos</h2>${wallets.length ? `<table><tbody>${wallets.map((w: any) => `<tr><td>${esc(w.entity_name ?? 'sem entidade')}</td><td>${cr(w.available_cents)} disponíveis · ${cr(w.reserved_cents)} cativos${w.debt_cents ? ` · <strong>${cr(w.debt_cents)} em dívida</strong>` : ''}${w.frozen ? ` ${pill('congelada', 'bad')}` : ''}</td></tr>`).join('')}</tbody></table>` : '<p class="hint">Sem carteira de créditos.</p>'}<p><a href="/admin/creditos?u=${u.id}">Carregamentos e reembolsos</a></p></div>
 <div class="card"><h2 style="margin-top:0">Entrevistas recentes</h2>${iv.length ? `<table><tbody>${iv.map((i: any) => `<tr><td><a href="/entrevistas/${i.id}">${esc(i.title)}</a></td><td>${esc(i.collection_status)}</td><td>${fmtDate(i.invited_at)}</td></tr>`).join('')}</tbody></table>` : '<p class="hint">Sem entrevistas.</p>'}</div>`);
   });
 
@@ -205,6 +208,15 @@ ${rows.map(({ u, qt }) => `<tr><td><a href="/admin/utilizadores/${u.id}">${esc(u
     if (id === req.user!.id && role !== 'admin') return back(reply, `/admin/utilizadores/${id}`, undefined, 'Não pode retirar o seu próprio perfil de administrador.');
     const ent = rb.entity_id && /^[0-9a-f-]{36}$/i.test(rb.entity_id) ? await db.one('SELECT id FROM entities WHERE id=$1', [rb.entity_id]) : null;
     if (role === 'entity_admin' && !ent) return back(reply, `/admin/utilizadores/${id}`, undefined, 'Um gestor de entidade precisa de uma entidade.');
+    // Os créditos pertencem à entidade em que foram pagos: com saldo, cativo, dívida ou um carregamento em curso, a entidade não muda.
+    const cur = await db.one('SELECT entity_id FROM users WHERE id=$1', [id]);
+    if (cur && (cur.entity_id ?? null) !== (ent?.id ?? null)) {
+      const w = await findWallet(db, id, cur.entity_id);
+      if (w && (w.available_cents || w.reserved_cents || w.debt_cents))
+        return back(reply, `/admin/utilizadores/${id}`, undefined, `Não é possível mudar a entidade: o utilizador tem ${cr(w.available_cents)} créditos disponíveis, ${cr(w.reserved_cents)} cativos e ${cr(w.debt_cents)} em dívida na entidade atual. Reembolse ou acerte primeiro (Créditos).`);
+      if (await db.one(`SELECT 1 FROM credit_topups WHERE user_id=$1 AND entity_id IS NOT DISTINCT FROM $2 AND status='pending' AND created_at > now() - interval '1 day' LIMIT 1`, [id, cur.entity_id]))
+        return back(reply, `/admin/utilizadores/${id}`, undefined, 'Não é possível mudar a entidade: o utilizador tem um carregamento de créditos por concluir na entidade atual.');
+    }
     await db.query('UPDATE users SET role=$2, entity_id=$3 WHERE id=$1', [id, role, ent?.id ?? null]);
     await audit(db, req.user!.email, 'admin.role_changed', null, { userId: id, role });
     return back(reply, `/admin/utilizadores/${id}`, 'Perfil guardado.');
@@ -317,6 +329,7 @@ ${plans.map((p: any) => `<form method="post" action="/admin/planos/${esc(p.id)}"
   };
   const vatCell = (r: any) => `${r.vat_regime ? esc(REGIME_LABEL[r.vat_regime as 'domestic'] ?? r.vat_regime) : '—'}${r.vat_rate !== null && r.vat_rate !== undefined ? ` · ${fmtRate(Number(r.vat_rate))}%` : ''}${r.vat_country ? ` (${esc(r.vat_country)})` : ''}${r.vat_note ? `<br><strong>Menção: ${esc(r.vat_note)}</strong>` : ''}`;
   const amounts = (r: any) => `${eurPt(r.net_cents)} + IVA ${eurPt(r.vat_cents)}<br><strong>${eurPt(r.total_cents)}</strong>`;
+  const KIND_LABEL: Record<string, string> = { subscription: 'subscrição', topup: 'carregamento de créditos', topup_refund: 'nota de crédito (reembolso de créditos)' };
 
   app.get('/admin/faturacao', async (req, reply) => {
     if (!guard(req, reply)) return;
@@ -327,10 +340,10 @@ ${plans.map((p: any) => `<form method="post" action="/admin/planos/${esc(p.id)}"
     const wd = await db.query(`SELECT w.*, u.email, u.name FROM withdrawals w JOIN users u ON u.id=w.user_id ORDER BY (w.status='requested') DESC, w.requested_at DESC LIMIT 50`);
     const now = Date.now();
     return view(reply, 'Faturação', `<h1>Faturação</h1>${flash(q.ok)}${flash(q.e, 'bad')}${warn.map(w => flash(w, 'bad')).join('')}
-<p class="hint sans">Cada pagamento recebido pela Stripe (subscrições; os carregamentos de créditos entram na fase seguinte) espera uma fatura-recibo emitida à mão no Moloni da empresa vendedora indicada, com os dados do cliente, a taxa de IVA e a menção mostradas. Depois de a emitir, escreva aqui o número. Prazo: 5.º dia útil depois do pagamento (CIVA, art. 36.º, n.º 1, al. a); a contagem não desconta feriados). O recibo da Stripe não é fatura.</p>
+<p class="hint sans">Cada pagamento recebido pela Stripe (subscrições e carregamentos de créditos) espera uma fatura-recibo emitida à mão no Moloni da empresa vendedora indicada, com os dados do cliente, a taxa de IVA e a menção mostradas; cada reembolso de créditos espera a nota de crédito (valores negativos), que referencia a fatura-recibo do carregamento. Os créditos são vale de finalidade única: o IVA e a fatura são do carregamento, e o consumo dos créditos não se fatura. Depois de emitir o documento, escreva aqui o número. Prazo: 5.º dia útil depois do pagamento (CIVA, art. 36.º, n.º 1, al. a); a contagem não desconta feriados). O recibo da Stripe não é fatura.</p>
 <div class="card" style="overflow-x:auto"><h2 style="margin-top:0">Por faturar (${pending.length})</h2>${pending.length ? `<table><thead><tr><th>Pago</th><th>Cliente</th><th>Descrição</th><th>Valores</th><th>IVA</th><th>Vendedora</th><th>Fatura Moloni</th></tr></thead><tbody>
 ${pending.map((r: any) => { const dl = invoiceDeadline(r.paid_at); const flags = invoiceFlags(r); return `<tr id="f-${r.id}"><td>${day(r.paid_at)}<br><span class="hint">até ${day(dl)}</span>${dl.getTime() < now ? ` ${pill('fora de prazo', 'bad')}` : ''}<br><span class="hint">${esc(r.stripe_number ?? r.stripe_ref)}</span></td>
-<td>${customerCell(r)}</td><td>${esc(r.description)}${r.period_start ? `<br><span class="hint">${day(r.period_start)} a ${r.period_end ? day(r.period_end) : '—'}</span>` : ''}</td><td>${amounts(r)}</td><td>${vatCell(r)}</td>
+<td>${customerCell(r)}</td><td>${KIND_LABEL[r.kind] ? `${pill(KIND_LABEL[r.kind])}<br>` : ''}${esc(r.description)}${r.period_start ? `<br><span class="hint">${day(r.period_start)} a ${r.period_end ? day(r.period_end) : '—'}</span>` : ''}</td><td>${amounts(r)}</td><td>${vatCell(r)}</td>
 <td>${esc(r.seller?.name || r.seller?.tradeName || '—')}${r.seller?.nif ? `<br><span class="hint">NIF ${esc(r.seller.nif)}</span>` : ''}</td>
 <td><form method="post" action="/admin/faturacao/${r.id}/faturada"><label for="m-${r.id}" style="margin-top:0">Fatura Moloni n.º</label><input id="m-${r.id}" name="moloni_doc" type="text" maxlength="60" required placeholder="FR …" style="min-width:120px"><button class="accent" style="margin-top:6px">Marcar faturada</button></form></td></tr>
 ${flags.length ? `<tr><td colspan="7" class="hint" style="color:var(--bad)">${flags.map(esc).join(' · ')}</td></tr>` : ''}`; }).join('')}</tbody></table>` : '<p class="hint">Nada por faturar.</p>'}</div>
@@ -350,8 +363,10 @@ ${wd.map((w: any) => `<tr><td>${fmtDate(w.requested_at)}<br><span class="hint">r
     if (!isUuid(id)) return reply.code(404).send();
     const doc = String((req.body as any)?.moloni_doc ?? '').replace(/\s+/g, ' ').trim().slice(0, 60);
     if (!doc) return back(reply, '/admin/faturacao', undefined, 'Indique o número da fatura emitida no Moloni.');
-    const r = await db.one(`UPDATE invoice_queue SET status='issued', moloni_doc=$2, issued_at=now(), issued_by=$3 WHERE id=$1 AND status='pending' RETURNING id`, [id, doc, req.user!.email]);
+    const r = await db.one(`UPDATE invoice_queue SET status='issued', moloni_doc=$2, issued_at=now(), issued_by=$3 WHERE id=$1 AND status='pending' RETURNING id, kind, topup_id`, [id, doc, req.user!.email]);
     if (!r) return back(reply, '/admin/faturacao', undefined, 'Este pagamento já estava marcado como faturado (ou não existe).');
+    // O número da fatura-recibo fica também no lote de créditos (extrato do cliente e notas de crédito).
+    if (r.kind === 'topup' && r.topup_id) await db.query('UPDATE credit_topups SET moloni_doc=$2, updated_at=now() WHERE id=$1', [r.topup_id, doc]);
     await audit(db, req.user!.email, 'admin.invoice_issued', null, { queue: id, moloni: doc });
     return back(reply, '/admin/faturacao', `Marcado como faturado no Moloni n.º ${doc}.`);
   });
@@ -360,7 +375,8 @@ ${wd.map((w: any) => `<tr><td>${fmtDate(w.requested_at)}<br><span class="hint">r
     if (!guard(req, reply)) return;
     const id = (req.params as any).id;
     if (!isUuid(id)) return reply.code(404).send();
-    const r = await db.one(`UPDATE invoice_queue SET status='pending', moloni_doc=NULL, issued_at=NULL, issued_by=NULL WHERE id=$1 AND status='issued' RETURNING id`, [id]);
+    const r = await db.one(`UPDATE invoice_queue SET status='pending', moloni_doc=NULL, issued_at=NULL, issued_by=NULL WHERE id=$1 AND status='issued' RETURNING id, kind, topup_id`, [id]);
+    if (r?.kind === 'topup' && r.topup_id) await db.query('UPDATE credit_topups SET moloni_doc=NULL, updated_at=now() WHERE id=$1', [r.topup_id]);
     if (r) await audit(db, req.user!.email, 'admin.invoice_reopened', null, { queue: id });
     return back(reply, '/admin/faturacao', r ? 'Voltou à lista «por faturar».' : undefined);
   });
@@ -373,5 +389,68 @@ ${wd.map((w: any) => `<tr><td>${fmtDate(w.requested_at)}<br><span class="hint">r
     const r = await db.one(`UPDATE withdrawals SET status='processed', processed_at=now(), processed_by=$2, note=$3 WHERE id=$1 AND status='requested' RETURNING id`, [id, req.user!.email, note || null]);
     if (r) await audit(db, req.user!.email, 'admin.withdrawal_processed', null, { withdrawal: id });
     return back(reply, '/admin/faturacao', r ? 'Pedido de livre resolução marcado como tratado.' : undefined);
+  });
+  // ---------- créditos: carteiras, carregamentos, reembolsos e conferência do livro-razão ----------
+  const LOT_STATUS: Record<string, [string, '' | 'ok' | 'bad' | 'warn']> = { pending: ['por pagar', 'warn'], paid: ['pago', 'ok'], failed: ['não pago', ''], expired: ['expirado (Stripe)', ''], refunded: ['reembolsado', ''], partially_refunded: ['reembolsado em parte', ''], disputed: ['em disputa', 'bad'] };
+  app.get('/admin/creditos', async (req, reply) => {
+    if (!guard(req, reply)) return;
+    const q = req.query as any;
+    const only = typeof q.u === 'string' && isUuid(q.u) ? q.u : null;
+    const problems = await ledgerCheck(db);
+    const wallets = await db.query(`SELECT w.*, u.email, u.name, en.name AS entity_name FROM wallets w JOIN users u ON u.id=w.user_id LEFT JOIN entities en ON en.id=w.entity_id
+      WHERE ($1::uuid IS NULL OR w.user_id=$1::uuid) AND (w.available_cents>0 OR w.reserved_cents>0 OR w.debt_cents>0 OR w.frozen OR $1::uuid IS NOT NULL) ORDER BY w.frozen DESC, w.debt_cents DESC, w.updated_at DESC LIMIT 200`, [only]);
+    const lots = await db.query(`SELECT tp.*, u.email, u.name, (SELECT COALESCE(sum(gross_cents),0)::int FROM credit_refunds r WHERE r.topup_id=tp.id AND r.status<>'failed') AS refunded_gross
+      FROM credit_topups tp JOIN users u ON u.id=tp.user_id WHERE ($1::uuid IS NULL OR tp.user_id=$1::uuid) AND (tp.status<>'failed' OR tp.alert IS NOT NULL) ORDER BY (tp.alert IS NOT NULL) DESC, tp.created_at DESC LIMIT 100`, [only]);
+    const refunds = await db.query(`SELECT cr.*, u.email FROM credit_refunds cr JOIN credit_topups tp ON tp.id=cr.topup_id JOIN users u ON u.id=tp.user_id WHERE ($1::uuid IS NULL OR tp.user_id=$1::uuid) ORDER BY cr.created_at DESC LIMIT 50`, [only]);
+    const now = Date.now();
+    const lotRow = (l: any) => {
+      const [label, kind] = LOT_STATUS[l.status] ?? [l.status, ''];
+      const within = l.paid_at && now - new Date(l.paid_at).getTime() <= REFUND_WINDOW_DAYS * 86400_000;
+      // O mesmo cálculo de refundGross: o último reembolso do lote acerta o arredondamento do IVA.
+      const est = !l.remaining_cents ? 0 : l.refunded_cents + l.remaining_cents >= l.net_cents ? l.gross_cents - l.refunded_gross : l.remaining_cents + Math.round((l.remaining_cents * l.vat_cents) / l.net_cents);
+      const action = ['paid', 'partially_refunded'].includes(l.status) && l.remaining_cents > 0
+        ? `<form method="post" action="/admin/creditos/${l.id}/reembolsar" onsubmit="return confirm('Reembolsar ${cr(l.remaining_cents)} créditos (${eurPt(est)}) pela Stripe?')">${within ? '' : `<label class="check" style="margin:0"><input type="checkbox" name="encerramento" value="1" required> Encerramento do serviço (passaram os ${REFUND_WINDOW_DAYS} dias)</label>`}<button class="${within ? 'accent' : 'danger'}" style="padding:6px 12px;min-height:0">Reembolsar saldo disponível (${cr(l.remaining_cents)} cr = ${eurPt(est)})</button></form>${within ? `<span class="hint">até ${day(new Date(new Date(l.paid_at).getTime() + REFUND_WINDOW_DAYS * 86400_000))}</span>` : ''}` : '';
+      return `<tr id="l-${l.id}"><td>${fmtDate(l.created_at)}<br><span class="hint">${esc(l.stripe_payment_intent ?? l.stripe_session_id ?? '')}</span></td><td>${esc(l.name)}<br><span class="hint">${esc(l.email)}</span></td>
+<td>${cr(l.net_cents)} cr<br><span class="hint">${eurPt(l.net_cents)} + IVA ${fmtRate(Number(l.vat_rate))}% = ${eurPt(l.gross_cents)}</span></td>
+<td>resta ${cr(l.remaining_cents)}<br><span class="hint">usado ${cr(l.used_cents)} · reemb. ${cr(l.refunded_cents)} · caduc. ${cr(l.expired_cents)}${l.disputed_cents ? ` · disputa ${cr(l.disputed_cents)}` : ''}</span></td>
+<td>${pill(label, kind)}<br><span class="hint">${l.expires_at ? `válido até ${day(l.expires_at)}` : ''}</span></td><td>${l.moloni_doc ? esc(l.moloni_doc) : l.paid_at ? '<span class="hint">por emitir</span>' : ''}</td><td>${action}</td></tr>
+${l.alert ? `<tr><td colspan="7" class="hint" style="color:var(--bad)">${esc(l.alert)}</td></tr>` : ''}`;
+    };
+    return view(reply, 'Créditos', `<h1>Créditos</h1>${flash(q.ok)}${flash(q.e, 'bad')}
+${problems.length ? `<div class="flash bad"><strong>O livro-razão não confere:</strong><ul>${problems.map(p => `<li>${esc(p)}</li>`).join('')}</ul></div>` : '<p class="hint sans">Livro-razão conferido: a soma dos movimentos é igual aos saldos de todas as carteiras e o disponível é igual ao que resta nos carregamentos.</p>'}
+<p class="hint sans">1 crédito = 1 € sem IVA. O reembolso devolve só o saldo disponível do carregamento (nunca o cativo), pelo mesmo cartão e sem descontar a comissão da Stripe: nos ${REFUND_WINDOW_DAYS} dias seguintes ao carregamento, ou depois disso só por encerramento do serviço. A nota de crédito entra na lista «por faturar». Reembolsos feitos no painel da Stripe e disputas são detetados pelo pagamento e debitam a carteira (o que faltar fica em dívida e a carteira é congelada).${only ? ' <a href="/admin/creditos">Ver todos</a>' : ''}</p>
+<div class="card" style="overflow-x:auto"><h2 style="margin-top:0">Carteiras</h2>${wallets.length ? `<table><thead><tr><th>Cliente</th><th>Entidade</th><th>Disponível</th><th>Cativo</th><th>Dívida</th><th></th></tr></thead><tbody>
+${wallets.map((w: any) => `<tr><td><a href="/admin/utilizadores/${w.user_id}">${esc(w.name)}</a><br><span class="hint">${esc(w.email)}</span></td><td>${esc(w.entity_name ?? '—')}</td><td>${cr(w.available_cents)}</td><td>${cr(w.reserved_cents)}</td><td>${w.debt_cents ? `<strong>${cr(w.debt_cents)}</strong>` : '0'}</td><td>${w.frozen ? pill('congelada (disputa)', 'bad') : ''}</td></tr>`).join('')}</tbody></table>` : '<p class="hint">Sem carteiras com saldo.</p>'}</div>
+<div class="card" style="overflow-x:auto"><h2 style="margin-top:0">Carregamentos</h2>${lots.length ? `<table><thead><tr><th>Data</th><th>Cliente</th><th>Valor</th><th>Saldo do lote</th><th>Estado</th><th>FR</th><th></th></tr></thead><tbody>${lots.map(lotRow).join('')}</tbody></table>` : '<p class="hint">Sem carregamentos.</p>'}</div>
+<div class="card" style="overflow-x:auto"><h2 style="margin-top:0">Reembolsos</h2>${refunds.length ? `<table><thead><tr><th>Pedido</th><th>Cliente</th><th>Valor</th><th>Origem</th><th>Estado</th></tr></thead><tbody>
+${refunds.map((r: any) => `<tr><td>${fmtDate(r.created_at)}<br><span class="hint">${esc(r.requested_by ?? '')}</span></td><td>${esc(r.email)}</td><td>${cr(r.net_cents)} cr = ${eurPt(r.gross_cents)}</td><td>${r.source === 'app' ? (r.reason === 'closure' ? 'aplicação (encerramento)' : 'aplicação (14 dias)') : 'painel da Stripe'}<br><span class="hint">${esc(r.stripe_refund_id ?? '')}</span></td>
+<td>${pill(r.status === 'succeeded' ? 'feito' : r.status === 'failed' ? 'falhou' : 'pendente', r.status === 'succeeded' ? 'ok' : r.status === 'failed' ? 'bad' : 'warn')}${r.error ? `<br><span class="hint">${esc(r.error)}</span>` : ''}${r.status === 'pending' && r.source === 'app' && !r.stripe_refund_id ? `<form method="post" action="/admin/creditos/reembolsos/${r.id}/repetir"><button class="ghost" style="padding:6px 12px;min-height:0">Repetir o pedido à Stripe</button></form>` : ''}</td></tr>`).join('')}</tbody></table>` : '<p class="hint">Sem reembolsos.</p>'}</div>`);
+  });
+
+  app.post('/admin/creditos/:id/reembolsar', async (req, reply) => {
+    if (!guard(req, reply)) return;
+    const id = (req.params as any).id;
+    if (!isUuid(id)) return reply.code(404).send();
+    const tp = await db.one('SELECT paid_at FROM credit_topups WHERE id=$1', [id]);
+    if (!tp) return reply.code(404).send();
+    const within = tp.paid_at && Date.now() - new Date(tp.paid_at).getTime() <= REFUND_WINDOW_DAYS * 86400_000;
+    if (!within && (req.body as any)?.encerramento !== '1') return back(reply, '/admin/creditos', undefined, `Passaram mais de ${REFUND_WINDOW_DAYS} dias desde o carregamento: só se reembolsa por encerramento do serviço (assinale a caixa).`);
+    try {
+      const r = await refundTopup(db, id, { reason: within ? 'withdrawal' : 'closure', actor: req.user!.email });
+      await audit(db, req.user!.email, 'admin.credits_refund', null, { topup: id, status: r.status, reason: within ? 'withdrawal' : 'closure' });
+      return back(reply, '/admin/creditos', r.status === 'failed' || r.status === 'unknown' ? undefined : r.message, r.status === 'failed' || r.status === 'unknown' ? r.message : undefined);
+    } catch (e: any) {
+      if (e instanceof RefundError) return back(reply, '/admin/creditos', undefined, e.message);
+      throw e;
+    }
+  });
+
+  app.post('/admin/creditos/reembolsos/:id/repetir', async (req, reply) => {
+    if (!guard(req, reply)) return;
+    const id = (req.params as any).id;
+    if (!isUuid(id)) return reply.code(404).send();
+    const r = await sendRefund(db, id);
+    await audit(db, req.user!.email, 'admin.credits_refund_retry', null, { refund: id, status: r.status });
+    return back(reply, '/admin/creditos', r.status === 'succeeded' || r.status === 'pending' ? r.message : undefined, r.status === 'succeeded' || r.status === 'pending' ? undefined : r.message);
   });
 }
