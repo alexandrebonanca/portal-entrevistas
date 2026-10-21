@@ -213,3 +213,43 @@ test('Veo por entidade: credenciais em conjunto — a conta de serviço global n
     await saveSetting(db, 'VERTEX_SA_JSON', '');
   }
 });
+
+test('Veo por entidade: sem credenciais próprias, o nível e a região são os globais (o gestor não escolhe o que o portal paga)', async () => {
+  const { generateKeyPairSync } = await import('node:crypto');
+  const t = await import('../src/talking.ts');
+  const key = () => generateKeyPairSync('rsa', { modulusLength: 2048, privateKeyEncoding: { type: 'pkcs8', format: 'pem' }, publicKeyEncoding: { type: 'spki', format: 'pem' } }).privateKey;
+  // chaves falsas, geradas aqui
+  const saDono = JSON.stringify({ type: 'service_account', project_id: 'portal-dono-veo', private_key: key(), client_email: 'veo@portal-dono-veo.iam.gserviceaccount.com' });
+  const saOutra = JSON.stringify({ type: 'service_account', project_id: 'outra-veo', private_key: key(), client_email: 'veo@outra-veo.iam.gserviceaccount.com' });
+  const calls: string[] = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async (u: any) => {
+    calls.push(String(u));
+    const ok = (b: any) => new Response(JSON.stringify(b), { status: 200, headers: { 'content-type': 'application/json' } });
+    return String(u) === 'https://oauth2.googleapis.com/token' ? ok({ access_token: 'ya29.teste', expires_in: 3600 }) : ok({ name: 'projects/1/locations/us-central1/publishers/google/models/veo-3.1-lite-generate-001/operations/1' });
+  }) as any;
+  try {
+    await saveSetting(db, 'VERTEX_SA_JSON', saDono); await saveSetting(db, 'VEO_TIER', 'lite');
+    // o gestor da entidade sem credenciais Google grava o Fast e outra região: não valem
+    assert.match(decodeURIComponent((await post(`/entidades/${otherId}/chaves`, { VEO_TIER: 'fast', VERTEX_LOCATION: 'europe-west4' }, other)).headers.location as string), /Chaves guardadas/);
+    assert.equal(inEntity(otherId, () => t.veoCredsScope()), 'global');
+    assert.equal(inEntity(otherId, () => t.veoTier()), 'lite', 'o nível global');
+    assert.equal(inEntity(otherId, () => t.vertexLocation()), 'us-central1', 'a região global');
+    const pg = await get(`/entidades/${otherId}/chaves`, other);
+    assert.match(pg.body, /Modelo do Google Veo <span class="hint">· da entidade, sem efeito enquanto a entidade não tiver credenciais Google próprias/);
+    assert.match(pg.body, /Região do Vertex AI <span class="hint">· da entidade, sem efeito/);
+    assert.match(pg.body, /O modelo e a região da entidade só valem com credenciais Google próprias/);
+    t.clearVertexTokens();
+    const s = await inEntity(otherId, () => t.veoSubmit({ image: Buffer.from('x'), prompt: 'p', durationSeconds: 8 }));
+    assert.deepEqual([s.tier, s.usdPerSec, s.model], ['lite', 0.05, 'veo-3.1-lite-generate-001']);
+    assert.match(calls.at(-1)!, /^https:\/\/us-central1-aiplatform\.googleapis\.com\/v1\/projects\/portal-dono-veo\/locations\/us-central1\/publishers\/google\/models\/veo-3\.1-lite-generate-001:predictLongRunning$/);
+    // com conta de serviço própria, o nível e a região da entidade passam a valer (paga ela)
+    await post(`/entidades/${otherId}/chaves`, { VERTEX_SA_JSON: saOutra }, other);
+    assert.equal(inEntity(otherId, () => t.veoTier()), 'fast'); assert.equal(inEntity(otherId, () => t.vertexLocation()), 'europe-west4');
+    assert.match((await get(`/entidades/${otherId}/chaves`, other)).body, /Modelo do Google Veo <span class="hint">· da entidade<\/span>/);
+  } finally {
+    globalThis.fetch = realFetch;
+    await post(`/entidades/${otherId}/chaves`, { VERTEX_SA_JSON: '-', VEO_TIER: '', VERTEX_LOCATION: '-' }, other);
+    await saveSetting(db, 'VERTEX_SA_JSON', ''); await saveSetting(db, 'VEO_TIER', '');
+  }
+});

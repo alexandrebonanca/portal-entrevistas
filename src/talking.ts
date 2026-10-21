@@ -1,6 +1,6 @@
 import { createHash, createHmac, sign, timingSafeEqual } from 'node:crypto';
 import { config } from './config.ts';
-import { S, parseServiceAccount, isVertexLocation, scopedS, ownsAny, currentEntity, VEO_CRED_KEYS, type ServiceAccount } from './settings.ts';
+import { S, parseServiceAccount, isVertexLocation, scopedS, ownsAny, currentEntity, inEntity, VEO_CRED_KEYS, type ServiceAccount } from './settings.ts';
 import { PermanentError } from './jobs.ts';
 
 /**
@@ -128,8 +128,13 @@ export const VEO_PRICE_PER_SEC = VEO_PRICES.fast;
 /** O que não queremos na imagem nem no som (o Lite chegou a escrever «2%7» no ecrã). */
 export const VEO_NEGATIVE_PROMPT = 'on-screen text, captions, subtitles, written words, written letters or digits, logos, watermarks, signs, labels, title cards, background music';
 
-/** Nível escolhido pelo administrador (Definições → Google); por omissão o Fast. */
-export const veoTier = (): VeoTier => (S('VEO_TIER') === 'lite' ? 'lite' : 'fast');
+/**
+ * Nível e região do Veo: os da entidade só quando o Veo dela usa credenciais próprias (é ela que paga); senão os globais,
+ * escolhidos pelo administrador (um gestor de entidade não escolhe o que o portal paga).
+ */
+const veoOpt = (key: 'VEO_TIER' | 'VERTEX_LOCATION') => (veoCredsScope() === 'entity' ? S(key) : inEntity(null, () => S(key)));
+/** Nível escolhido em Definições → Google; por omissão o Fast. */
+export const veoTier = (): VeoTier => (veoOpt('VEO_TIER') === 'lite' ? 'lite' : 'fast');
 /**
  * Credenciais do Veo lidas em conjunto: as da entidade em contexto se ela tiver alguma (conta de serviço ou chave Gemini),
  * nunca misturadas com as globais; senão as globais. O Veo de uma entidade paga sempre no projeto Google dela.
@@ -158,7 +163,7 @@ const VERTEX_SCOPE = 'https://www.googleapis.com/auth/cloud-platform';
 const tokens = new Map<string, { token: string; exp: number }>();
 export const clearVertexTokens = () => tokens.clear();
 
-export const vertexLocation = () => { const l = S('VERTEX_LOCATION').trim().toLowerCase(); return isVertexLocation(l) ? l : 'us-central1'; };
+export const vertexLocation = () => { const l = veoOpt('VERTEX_LOCATION').trim().toLowerCase(); return isVertexLocation(l) ? l : 'us-central1'; };
 
 /** Asserção assinada com a chave da conta de serviço (RFC 7523), válida 1 h. */
 export function serviceAccountJwt(sa: ServiceAccount, nowSec = Math.floor(Date.now() / 1000)) {

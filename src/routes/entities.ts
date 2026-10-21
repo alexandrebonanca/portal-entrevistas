@@ -10,7 +10,7 @@ import { retryFailedEmails } from '../mail.ts';
 
 const GROUPS = ['OpenAI', 'Stripe', 'MailerSend', 'Moloni ON', 'Replicate', 'fal.ai', 'WaveSpeed', 'Google', SELLER_GROUP];
 const SELLER_ENTITY_HINT = 'Só conta se a entidade tiver Stripe própria: é então ela que vende, e estes dados (sem os valores globais) aparecem nos termos e na lista «por faturar». Nunca se inventam: sem a denominação, o NIF e a morada, os pagamentos com a Stripe da entidade ficam suspensos.';
-const VEO_ENTITY_HINT = 'Se a entidade tiver conta de serviço ou chave Gemini próprias, o Veo dela usa só essas (e paga no projeto Google dela); as globais servem só às entidades sem credenciais Google.';
+const VEO_ENTITY_HINT = 'Se a entidade tiver conta de serviço ou chave Gemini próprias, o Veo dela usa só essas (e paga no projeto Google dela); as globais servem só às entidades sem credenciais Google. O modelo e a região da entidade só valem com credenciais Google próprias: sem elas, valem os do portal.';
 
 export async function entityRoutes(app: FastifyInstance) {
   const db = app.db;
@@ -67,7 +67,7 @@ ${rows.map((e: any) => `<tr><td><a href="/entidades/${e.id}/chaves">${esc(e.name
     // As credenciais do Veo valem em conjunto: se a entidade tiver alguma, as globais não se aplicam a ela.
     const veoOwn = ownsAny(id, VEO_CRED_KEYS);
     const sellerKey = (k: string) => SETTING_DEFS.some(d => d.key === k && d.group === SELLER_GROUP);
-    const src = (k: string) => (entityHas(id, k) ? 'da entidade' : sellerKey(k) ? 'por preencher (sem reserva global)' : inEntity(null, () => (!S(k) ? 'por definir'
+    const src = (k: string) => (entityHas(id, k) ? (!veoOwn && ['VEO_TIER', 'VERTEX_LOCATION'].includes(k) ? 'da entidade, sem efeito enquanto a entidade não tiver credenciais Google próprias' : 'da entidade') : sellerKey(k) ? 'por preencher (sem reserva global)' : inEntity(null, () => (!S(k) ? 'por definir'
       : veoOwn && (VEO_CRED_KEYS as readonly string[]).includes(k) ? 'global, não usada: o Veo usa as credenciais Google desta entidade' : 'global (reserva)')));
     return view(req, reply, e.name, `<h1>${esc(e.name)} ${e.active ? pill('ativa', 'ok') : pill('inativa', 'bad')}</h1>${flash(q.ok)}${flash(q.e, 'bad')}
 ${req.user.role === 'admin' ? `<form method="post" action="/entidades/${e.id}" class="card"><h2 style="margin-top:0">Dados</h2><div class="row"><div class="grow"><label for="n">Nome</label><input id="n" name="name" type="text" value="${esc(e.name)}" required></div><div class="grow"><label for="u">URL do site</label><input id="u" name="url" type="url" value="${esc(e.url)}"></div></div>
