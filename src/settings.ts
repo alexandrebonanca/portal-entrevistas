@@ -169,6 +169,21 @@ export const S = (key: string): string => {
 export const isSet = (key: string) => !!S(key);
 export const fromDb = (key: string) => cache.has(key);
 
+/** Credenciais do Google Veo: valem em conjunto (ver scopedS). */
+export const VEO_CRED_KEYS = ['VERTEX_SA_JSON', 'GEMINI_API_KEY'] as const;
+export const currentEntity = () => als.getStore() ?? null;
+/** A entidade tem alguma destas definições própria? */
+export const ownsAny = (entityId: string | null | undefined, keys: readonly string[]) => !!entityId && keys.some(k => !!entityCache.get(entityId)?.get(k));
+/**
+ * Definições que só valem em conjunto (as credenciais de um mesmo serviço): se a entidade em contexto tiver alguma delas,
+ * usam-se só as dela; senão as globais. Uma credencial global nunca passa à frente de outra da entidade (ex.: a conta de
+ * serviço global não substitui a chave Gemini da entidade, o que poria o Veo dela a pagar no projeto do dono).
+ */
+export const scopedS = (keys: readonly string[], key: string): string => {
+  const e = als.getStore();
+  return ownsAny(e, keys) ? (entityCache.get(e!)!.get(key) ?? '') : (cache.get(key) ?? process.env[key] ?? '');
+};
+
 export async function saveSetting(db: Db, key: string, value: string) {
   if (!SETTING_DEFS.some(d => d.key === key) && key !== 'SIGNUPS_OPEN') throw new Error('Definição desconhecida');
   value = prepareSetting(key, value);

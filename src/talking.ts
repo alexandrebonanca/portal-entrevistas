@@ -1,6 +1,6 @@
 import { createHash, createHmac, sign, timingSafeEqual } from 'node:crypto';
 import { config } from './config.ts';
-import { S, parseServiceAccount, isVertexLocation, type ServiceAccount } from './settings.ts';
+import { S, parseServiceAccount, isVertexLocation, scopedS, ownsAny, currentEntity, VEO_CRED_KEYS, type ServiceAccount } from './settings.ts';
 import { PermanentError } from './jobs.ts';
 
 /**
@@ -130,9 +130,16 @@ export const VEO_NEGATIVE_PROMPT = 'on-screen text, captions, subtitles, written
 
 /** Nível escolhido pelo administrador (Definições → Google); por omissão o Fast. */
 export const veoTier = (): VeoTier => (S('VEO_TIER') === 'lite' ? 'lite' : 'fast');
-/** Vertex AI se houver conta de serviço; senão a Gemini API. */
-export const veoBackend = (): VeoBackend => (S('VERTEX_SA_JSON') ? 'vertex' : 'gemini');
-export const veoConfigured = () => !!S('VERTEX_SA_JSON') || !!S('GEMINI_API_KEY');
+/**
+ * Credenciais do Veo lidas em conjunto: as da entidade em contexto se ela tiver alguma (conta de serviço ou chave Gemini),
+ * nunca misturadas com as globais; senão as globais. O Veo de uma entidade paga sempre no projeto Google dela.
+ */
+const veoS = (key: typeof VEO_CRED_KEYS[number]) => scopedS(VEO_CRED_KEYS, key);
+/** De onde vêm as credenciais do Veo em vigor: da entidade em contexto ou globais. */
+export const veoCredsScope = (): 'entity' | 'global' => (ownsAny(currentEntity(), VEO_CRED_KEYS) ? 'entity' : 'global');
+/** Vertex AI se houver conta de serviço (no âmbito das credenciais em vigor); senão a Gemini API. */
+export const veoBackend = (): VeoBackend => (veoS('VERTEX_SA_JSON') ? 'vertex' : 'gemini');
+export const veoConfigured = () => !!veoS('VERTEX_SA_JSON') || !!veoS('GEMINI_API_KEY');
 export const veoModel = (tier: VeoTier = veoTier(), backend: VeoBackend = veoBackend()) => VEO_MODELS[backend][tier];
 export const veoPricePerSec = (tier: VeoTier = veoTier()) => VEO_PRICES[tier];
 export const veoLabel = (tier: VeoTier = veoTier()) => `Google Veo 3.1 ${tier === 'lite' ? 'Lite' : 'Fast'}`;
@@ -168,7 +175,7 @@ export function serviceAccountJwt(sa: ServiceAccount, nowSec = Math.floor(Date.n
  */
 export async function vertexToken(): Promise<{ token: string; sa: ServiceAccount }> {
   let sa: ServiceAccount;
-  try { sa = parseServiceAccount(S('VERTEX_SA_JSON')); }
+  try { sa = parseServiceAccount(veoS('VERTEX_SA_JSON')); }
   catch (e: any) { throw new PermanentError(`Veo 401: conta de serviço do Vertex AI inválida em Definições (${String(e?.message ?? e).slice(0, 160)})`); }
   const id = createHash('sha256').update(`${sa.client_email}|${sa.private_key_id ?? ''}|${sa.private_key}`).digest('hex');
   const hit = tokens.get(id);
@@ -248,7 +255,7 @@ export async function veoSubmit(o: { image: Buffer; prompt: string; aspectRatio?
         }, 'Veo');
       } else {
         op = await jsonFetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:predictLongRunning`, {
-          method: 'POST', headers: { 'x-goog-api-key': S('GEMINI_API_KEY'), 'Content-Type': 'application/json' },
+          method: 'POST', headers: { 'x-goog-api-key': veoS('GEMINI_API_KEY'), 'Content-Type': 'application/json' },
           body: JSON.stringify({ instances, parameters }),
         }, 'Veo');
       }
@@ -279,12 +286,12 @@ async function veoPoll(opName: string) {
   if (isVertexOp(opName)) {
     const m = VERTEX_OP.exec(opName);
     if (!m) throw new VeoPollError('Veo: nome de operação do Vertex AI inesperado');
-    if (!S('VERTEX_SA_JSON')) throw new VeoPollError('Veo: há uma operação do Vertex AI por concluir, mas a conta de serviço foi retirada de Definições: não é possível consultá-la.');
+    if (!veoS('VERTEX_SA_JSON')) throw new VeoPollError('Veo: há uma operação do Vertex AI por concluir, mas a conta de serviço foi retirada de Definições: não é possível consultá-la.');
     const { token } = await vertexToken();
     return jsonFetch(`${vertexModelUrl(m[1], m[2], m[3])}:fetchPredictOperation`, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ operationName: opName }) }, 'Veo');
   }
-  if (opName.startsWith('models/') && !S('GEMINI_API_KEY')) throw new VeoPollError('Veo: há uma operação da Gemini API por concluir, mas a chave Gemini foi retirada de Definições: não é possível consultá-la.');
-  return jsonFetch(`https://generativelanguage.googleapis.com/v1beta/${opName}`, { headers: { 'x-goog-api-key': S('GEMINI_API_KEY') } }, 'Veo');
+  if (opName.startsWith('models/') && !veoS('GEMINI_API_KEY')) throw new VeoPollError('Veo: há uma operação da Gemini API por concluir, mas a chave Gemini foi retirada de Definições: não é possível consultá-la.');
+  return jsonFetch(`https://generativelanguage.googleapis.com/v1beta/${opName}`, { headers: { 'x-goog-api-key': veoS('GEMINI_API_KEY') } }, 'Veo');
 }
 
 /** Vídeo de uma operação concluída do Vertex: em base64 (sem storageUri) ou, se a Google o guardar, no Cloud Storage. */
@@ -307,7 +314,7 @@ async function geminiVideo(resp: any): Promise<Buffer> {
   const uri = gen?.generatedSamples?.[0]?.video?.uri;
   if (!uri && (gen?.raiMediaFilteredCount || gen?.raiMediaFilteredReasons?.length)) throw new VeoFiltered(`Veo: clipe bloqueado pelos filtros da Google: ${String(gen.raiMediaFilteredReasons?.[0] ?? '').slice(0, 200)}`);
   if (!uri) throw new VeoOpError(`Veo não devolveu vídeo: ${JSON.stringify(resp ?? {}).slice(0, 200)}`);
-  return download(uri, { 'x-goog-api-key': S('GEMINI_API_KEY') });
+  return download(uri, { 'x-goog-api-key': veoS('GEMINI_API_KEY') });
 }
 
 /**
@@ -346,11 +353,14 @@ export async function veoGenerate(o: { image: Buffer; prompt: string; aspectRati
 /**
  * «Guardar e testar» do grupo Google, sem gerar vídeo (sem custo). Com conta de serviço: obtém o token e consulta uma
  * operação que não existe no modelo escolhido (com acesso, a Google responde 404; sem acesso, 401/403). Sem conta de
- * serviço: confirma a chave da Gemini API e o modelo, como antes.
+ * serviço: confirma a chave da Gemini API e o modelo, como antes. Numa entidade diz se as credenciais são dela ou as globais.
  */
 export async function veoCheck(): Promise<string> {
   const tier = veoTier(), label = veoLabel(tier);
-  if (S('VERTEX_SA_JSON')) {
+  const whose = !currentEntity() ? '' : veoCredsScope() === 'entity'
+    ? ' Usa as credenciais Google desta entidade (as globais não se aplicam a ela).'
+    : ' A entidade não tem credenciais Google próprias: o Veo usa as globais do portal.';
+  if (veoS('VERTEX_SA_JSON')) {
     let tk: { token: string; sa: ServiceAccount };
     try { tk = await vertexToken(); } catch (e: any) { throw new Error(String(e?.message ?? e).replace(/^Veo \d+:\s*/, '')); }
     const { token, sa } = tk, loc = vertexLocation(), model = veoModel(tier, 'vertex');
@@ -369,13 +379,13 @@ export async function veoCheck(): Promise<string> {
     if (!r.ok && r.status !== 404 && r.status !== 400) throw new Error(`resposta inesperada da Google (${r.status}): ${gm}`);
     return `Google (Vertex AI): conta de serviço aceite (${sa.client_email}, projeto ${sa.project_id}, ${loc}) e acesso ao ${label} (${model}) confirmado, sem gerar vídeo.`
       + (tier === 'lite' ? ' O Lite está em pré-visualização e a ficha da Google contradiz-se sobre a imagem inicial: se o Vertex a recusar, a geração pára com uma mensagem clara e pode escolher o Fast.' : '')
-      + (S('GEMINI_API_KEY') ? ' A chave Gemini fica guardada, mas o Veo usa o Vertex AI.' : '');
+      + (veoS('GEMINI_API_KEY') ? ' A chave Gemini fica guardada, mas o Veo usa o Vertex AI.' : '') + whose;
   }
-  if (!S('GEMINI_API_KEY')) throw new Error('falta a conta de serviço do Vertex AI (ou a chave da Gemini API).');
+  if (!veoS('GEMINI_API_KEY')) throw new Error('falta a conta de serviço do Vertex AI (ou a chave da Gemini API).');
   const model = veoModel(tier, 'gemini');
-  const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}`, { headers: { 'x-goog-api-key': S('GEMINI_API_KEY') } });
+  const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}`, { headers: { 'x-goog-api-key': veoS('GEMINI_API_KEY') } });
   if (!r.ok) throw new Error(`Google respondeu ${r.status} (chave inválida ou sem acesso ao ${label})`);
-  return `Google (Gemini API): chave válida e modelo ${label} (${model}) disponível. A Google desliga estes modelos na Gemini API a partir de 22/10/2026: configure a conta de serviço do Vertex AI.`;
+  return `Google (Gemini API): chave válida e modelo ${label} (${model}) disponível. A Google desliga estes modelos na Gemini API a partir de 22/10/2026: configure a conta de serviço do Vertex AI.${whose}`;
 }
 
 async function veo(image: Buffer, text: string, onStatus: ((s: string) => Promise<void>) | undefined, tier: VeoTier) {

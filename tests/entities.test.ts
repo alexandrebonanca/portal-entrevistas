@@ -122,3 +122,79 @@ test('Veo por entidade: conta de serviço e nível da entidade com prioridade so
   await post(`/entidades/${tcId}/chaves`, { VERTEX_SA_JSON: '-', VEO_TIER: '' }, gestor);
   assert.equal(inEntity(tcId, () => veoBackend()), 'gemini'); assert.equal(inEntity(tcId, () => veoTier()), 'fast', 'volta ao nível global');
 });
+
+test('Veo por entidade: credenciais em conjunto — a conta de serviço global não passa à frente da chave Gemini da entidade', async () => {
+  const { generateKeyPairSync } = await import('node:crypto');
+  const t = await import('../src/talking.ts');
+  const key = () => generateKeyPairSync('rsa', { modulusLength: 2048, privateKeyEncoding: { type: 'pkcs8', format: 'pem' }, publicKeyEncoding: { type: 'spki', format: 'pem' } }).privateKey;
+  // chaves falsas, geradas aqui
+  const saDono = JSON.stringify({ type: 'service_account', project_id: 'portal-dono-veo', private_key: key(), client_email: 'veo@portal-dono-veo.iam.gserviceaccount.com' });
+  const saTc = JSON.stringify({ type: 'service_account', project_id: 'telecert-veo', private_key: key(), client_email: 'veo@telecert-veo.iam.gserviceaccount.com' });
+  const geminiTc = 'AIzaTesteDaEntidade0000000000000000000';
+  await saveSetting(db, 'VERTEX_SA_JSON', saDono);
+  await post(`/entidades/${tcId}/chaves`, { GEMINI_API_KEY: geminiTc }, gestor);
+
+  // a entidade com chave Gemini própria usa só a dela; a outra (sem credenciais) usa a conta de serviço global
+  assert.equal(inEntity(tcId, () => t.veoBackend()), 'gemini');
+  assert.equal(inEntity(tcId, () => t.veoCredsScope()), 'entity');
+  assert.equal(inEntity(otherId, () => t.veoBackend()), 'vertex');
+  assert.equal(inEntity(otherId, () => t.veoCredsScope()), 'global');
+  assert.equal(t.veoBackend(), 'vertex', 'fora de uma entidade: as globais');
+
+  const calls: { url: string; headers: Record<string, string>; body: string }[] = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async (u: any, init: any = {}) => {
+    const c = { url: String(u), headers: Object.fromEntries(Object.entries(init.headers ?? {}).map(([k, v]) => [k.toLowerCase(), String(v)])), body: String(init.body ?? '') };
+    calls.push(c);
+    const ok = (b: any) => new Response(JSON.stringify(b), { status: 200, headers: { 'content-type': 'application/json' } });
+    if (c.url === 'https://oauth2.googleapis.com/token') return ok({ access_token: 'ya29.teste', expires_in: 3600 });
+    if (c.url.includes(':predictLongRunning')) return ok({ name: c.url.includes('aiplatform') ? 'projects/x/locations/us-central1/publishers/google/models/veo-3.1-fast-generate-001/operations/1' : 'models/veo-3.1-fast-generate-preview/operations/1' });
+    if (c.url.includes(':fetchPredictOperation')) return new Response(JSON.stringify({ error: { code: 404, message: 'Operation not found' } }), { status: 404 });
+    return ok({ name: 'models/veo-3.1-fast-generate-preview' });
+  }) as any;
+  try {
+    t.clearVertexTokens();
+    const s = await inEntity(tcId, () => t.veoSubmit({ image: Buffer.from('x'), prompt: 'p', durationSeconds: 8 }));
+    assert.equal(s.backend, 'gemini'); assert.equal(s.model, 'veo-3.1-fast-generate-preview');
+    assert.equal(calls.length, 1, 'nenhum token pedido com a conta de serviço global');
+    assert.match(calls[0].url, /^https:\/\/generativelanguage\.googleapis\.com\//);
+    assert.equal(calls[0].headers['x-goog-api-key'], geminiTc, 'a chave da entidade');
+
+    // «Guardar e testar» da entidade diz de quem são as credenciais
+    calls.length = 0;
+    let r = await post(`/entidades/${tcId}/testar/Google`, { VEO_TIER: '' }, gestor);
+    let msg = decodeURIComponent(r.headers.location as string);
+    assert.match(msg, /Gemini API/); assert.match(msg, /credenciais Google desta entidade/);
+    assert.ok(calls.every(c => !c.url.includes('oauth2') && !c.url.includes('aiplatform')), 'o teste não usa a conta de serviço global');
+    let pg = await get(`/entidades/${tcId}/chaves`, gestor);
+    assert.match(pg.body, /Conta de serviço do Vertex AI \(JSON\) <span class="hint">· global, não usada: o Veo usa as credenciais Google desta entidade/);
+    assert.match(pg.body, /Gemini API key[^<]*<span class="hint">· da entidade/);
+
+    // a outra entidade (sem credenciais próprias) usa as globais e o teste avisa
+    calls.length = 0;
+    const s2 = await inEntity(otherId, () => t.veoSubmit({ image: Buffer.from('x'), prompt: 'p', durationSeconds: 8 }));
+    assert.equal(s2.backend, 'vertex');
+    assert.match(calls[1].url, /\/projects\/portal-dono-veo\/locations\/us-central1\//);
+    r = await post(`/entidades/${otherId}/testar/Google`, { VEO_TIER: '' }, other);
+    msg = decodeURIComponent(r.headers.location as string);
+    assert.match(msg, /Vertex AI/); assert.match(msg, /não tem credenciais Google próprias/);
+    pg = await get(`/entidades/${otherId}/chaves`, other);
+    assert.match(pg.body, /Conta de serviço do Vertex AI \(JSON\) <span class="hint">· global \(reserva\)/);
+
+    // com conta de serviço própria, a entidade paga no projeto dela
+    await post(`/entidades/${tcId}/chaves`, { VERTEX_SA_JSON: saTc }, gestor);
+    calls.length = 0; t.clearVertexTokens();
+    const s3 = await inEntity(tcId, () => t.veoSubmit({ image: Buffer.from('x'), prompt: 'p', durationSeconds: 8 }));
+    assert.equal(s3.backend, 'vertex');
+    assert.equal(JSON.parse(Buffer.from(new URLSearchParams(calls[0].body).get('assertion')!.split('.')[1], 'base64url').toString()).iss, 'veo@telecert-veo.iam.gserviceaccount.com');
+    assert.match(calls[1].url, /\/projects\/telecert-veo\//);
+
+    // sem credenciais próprias, volta às globais
+    await post(`/entidades/${tcId}/chaves`, { VERTEX_SA_JSON: '-', GEMINI_API_KEY: '-' }, gestor);
+    assert.equal(inEntity(tcId, () => t.veoCredsScope()), 'global');
+    assert.equal(inEntity(tcId, () => t.veoBackend()), 'vertex');
+  } finally {
+    globalThis.fetch = realFetch;
+    await saveSetting(db, 'VERTEX_SA_JSON', '');
+  }
+});
