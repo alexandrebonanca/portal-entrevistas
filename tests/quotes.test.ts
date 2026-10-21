@@ -585,6 +585,29 @@ test('consumidor: € com IVA primeiro, botão «Aceitar e pagar … €» e o r
   await check();
 });
 
+test('empresa da UE em autoliquidação: o orçamento não diz «+ IVA, já pago no carregamento»', async () => {
+  await db.query(`UPDATE billing_profiles SET country='DE', nif=NULL, vat_number='DE123456789', vat_status='verified', postal_code='10115', city='Berlin' WHERE user_id=$1`, [cli.id]);
+  try {
+    await rejectAll();
+    const q = await newQuote(HOST);
+    const label = `${W.cr(q.price_cents)} créditos (= ${eurPt(q.price_cents)}, sem IVA: autoliquidação)`;
+    const pg = (await get(`/entrevistas/${ivId}/orcamentos/${q.id}`, cli.cookie)).body;
+    assert.ok(pg.includes(label), label);
+    assert.doesNotMatch(pg, /já pago no carregamento/);
+    assert.ok((await get(`/entrevistas/${ivId}/producao`, cli.cookie)).body.includes(label), 'também na lista da produção');
+    assert.match(msg(await post(`/entrevistas/${ivId}/orcamentos/${q.id}/aceitar`, { start_now: '1', waiver: '1' }, cli.cookie)), /Orçamento aceite/);
+    const em = (await db.one(`SELECT text_body FROM emails WHERE dedupe_key=$1`, [`quote:${q.id}`])).text_body;
+    assert.ok(em.includes(`Total: ${label}`), 'e no email da aceitação (suporte duradouro)');
+    assert.equal((await quoteOf(q.id)).acceptance.vatRegime, 'reverse_charge');
+    assert.match(msg(await post(`/entrevistas/${ivId}/orcamentos/${q.id}/cancelar`, {}, cli.cookie)), /Orçamento cancelado/);
+    assert.equal(Q.priceLabel(1350, null, 'not_registered'), '13,50 créditos (= 13,50 €)');
+    assert.equal(Q.priceLabel(1350, null, 'domestic'), '13,50 créditos (= 13,50 € + IVA, já pago no carregamento)');
+  } finally {
+    await db.query(`UPDATE billing_profiles SET country='PT', nif=$2, vat_number=NULL, vat_status=NULL, postal_code='1000-001', city='Lisboa' WHERE user_id=$1`, [cli.id, nifOf('51234567')]);
+  }
+  await check();
+});
+
 test('gestor de entidade: o Veo sem créditos só com credenciais Google próprias da entidade; com as do portal, por orçamento', async () => {
   const { saveEntitySetting } = await import('../src/settings.ts');
   const ent = (await db.one(`SELECT id FROM entities WHERE slug='telecert-formacao'`)).id;

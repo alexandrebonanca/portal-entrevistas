@@ -357,6 +357,8 @@ test('planos Start e Pro (só imagens) à venda; os antigos inativos, mas as sub
   assert.match(home.body, /Start from €19 \+ VAT \/ month/);
   assert.match(home.body, /AI animation is never part of a plan: each animated production is quoted before anything is generated and paid with prepaid credits/);
   assert.match(home.body, /AI video \(optional, quoted separately\)/);
+  // a landing mostra preços e a vendedora: com o acesso ao Livro de Reclamações Eletrónico (o rodapé fica só com a Certif)
+  assert.match(home.body, /Sold by [^<]+\. <a href="\/termos">Terms of sale · Termos e condições<\/a> · (<a href="https:\/\/[^"]+" rel="noopener" target="_blank">)?Livro de Reclamações Eletrónico/);
   assert.doesNotMatch(home.body, /€12\.50|€10<|Starter/);
   // quem ainda tem o Studio (subscrição manual do teste anterior) continua com ele
   const m = await db.one(`SELECT s.plan_id, s.status FROM subscriptions s JOIN users u ON u.id=s.user_id WHERE u.email='ze@example.com'`);
@@ -606,7 +608,7 @@ test('consumidores: preço com IVA, pedido de início imediato, confirmação po
   await post('/billing/profile', { kind: 'consumer', name: 'Maria Consumidora', country: 'PT', tax_id: '', address: 'Rua B', postal_code: '1000-001', city: 'Lisboa' }, c.cookie);
   // sem o email e o Livro de Reclamações da vendedora, a venda a consumidores está bloqueada
   let acc = await get('/account', c.cookie);
-  assert.match(acc.body, /Online subscriptions for consumers are not open yet/);
+  assert.match(acc.body, /Online sales to consumers are not open yet/);
   assert.match(msg(await post('/subscribe/start', { terms: '1', start_now: '1', waiver: '1' }, c.cookie)), /consumidores ainda não está disponível/);
   await post('/admin/definicoes', { SELLER_EMAIL: 'vendas@exemplo.pt', SELLER_COMPLAINTS_URL: 'https://www.livroreclamacoes.pt/Inicio/', signups_open: '1' }, admin);
   assert.doesNotMatch((await get('/admin/definicoes', admin)).body, /venda a consumidores bloqueada/);
@@ -630,6 +632,10 @@ test('consumidores: preço com IVA, pedido de início imediato, confirmação po
   const mail = await db.one(`SELECT to_email, text_body FROM emails WHERE dedupe_key='contract:sub_C'`);
   assert.equal(mail.to_email, 'consumidora@example.com');
   assert.match(mail.text_body, /23,37 €\/mês com IVA \(19,00 € \+ IVA 23%\)[\s\S]*Desistir do contrato aqui[\s\S]*Empresa Vendedora de Teste, Lda\., NIF/);
+  // o email do contrato traz os dois consentimentos tal como foram assinalados e o modelo de formulário de livre resolução
+  assert.match(mail.text_body, /Consentimentos assinalados na subscrição: «Peço que o serviço comece já\. Sei que posso desistir nos 14 dias seguintes[^»]*» e «Reconheço que perco o direito de livre resolução quando o serviço estiver integralmente prestado[^»]*»/);
+  assert.match(mail.text_body, /Modelo de formulário de livre resolução\n\(só deve preencher e devolver o presente formulário se quiser resolver o contrato\)\n— Para: Empresa Vendedora de Teste, Lda\., Rua de Teste, 1, 1000-001 Lisboa, vendas@exemplo\.pt\n— Pela presente comunico\/comunicamos \(\*\)/);
+  assert.match(mail.text_body, /— Assinatura do\(s\) consumidor\(es\) \(só no caso de o presente formulário ser notificado em papel\)\n— Data\n\(\*\) Riscar o que não interessa\./);
   // botão de livre resolução nos 14 dias
   acc = await get('/account', c.cookie);
   assert.match(acc.body, /<a class="btn ghost" href="\/billing\/livre-resolucao">Desistir do contrato aqui<\/a>/);
@@ -663,6 +669,19 @@ test('termos e privacidade dos pagamentos: vendedora identificada, Livro de Recl
   assert.match(t.body, /A animação por IA não está incluída em nenhum plano/);
   assert.match(t.body, /Desistir do contrato aqui/);
   assert.match(t.body, /art\. 17\.º, n\.º 1, als\. a\) e l\)/);
+  // livre resolução também dos carregamentos e o modelo de formulário (DL 24/2014, anexo, parte B) com a vendedora preenchida
+  assert.match(t.body, /de cada carregamento de créditos, nos 14 dias seguintes ao pagamento, pelo botão «Desistir do contrato aqui» desse carregamento, em «Créditos»/);
+  assert.match(t.body, /<div id="formulario-livre-resolucao"[^>]*><p[^>]*><strong>Modelo de formulário de livre resolução<\/strong>/);
+  assert.match(t.body, /— Para: Empresa Vendedora de Teste, Lda\., Rua de Teste, 1, 1000-001 Lisboa, [^<]+@[^<]+<br>— Pela presente comunico\/comunicamos/);
+  // as regenerações incluídas vêm da configuração (as mesmas que a produção cobra)
+  const { config } = await import('../src/config.ts');
+  const before = config.limits.includedRegenerations;
+  (config.limits as any).includedRegenerations = 2;
+  try {
+    const t2 = (await get('/termos')).body;
+    assert.match(t2, /com 2 regenerações do guião ou do episódio incluídas/); assert.match(t2, /para além das 2 incluídas em cada entrevista/);
+    assert.doesNotMatch(t2, /3 regenerações|das 3 incluídas/);
+  } finally { (config.limits as any).includedRegenerations = before; }
   const pp = await get('/privacidade-pagamentos');
   assert.equal(pp.statusCode, 200);
   assert.match(pp.body, /Responsável pelo tratamento<\/h2><p>Empresa Vendedora de Teste, Lda\./);

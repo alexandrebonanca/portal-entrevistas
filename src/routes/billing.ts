@@ -6,7 +6,7 @@ import { audit } from '../app.ts';
 import { quotaFor, noSubscriptionNeeded, createCheckout, changePlan, cancelNow, createPortal, stripeConfigured, verifyStripeSignature, applyStripeEvent, verifyVatNumber, vatForProfile, customerFor, ACTIVE_STATUSES, LIVE_STRIPE } from '../billing.ts';
 import { findWallet, crEn } from '../wallet.ts';
 import { S, inEntity } from '../settings.ts';
-import { seller, sellerId, checkoutBlock, contactEmail, homeConsumerRate, termsBody, paymentsPrivacyBody, complaintsLink, TERMS_VERSION, WITHDRAWAL_DAYS, type Seller } from '../legal.ts';
+import { seller, sellerId, checkoutBlock, contactEmail, homeConsumerRate, termsBody, paymentsPrivacyBody, complaintsLink, CONSENT_START_NOW, CONSENT_WAIVER, TERMS_VERSION, WITHDRAWAL_DAYS, type Seller } from '../legal.ts';
 import { withVat, eurEn, eurPt, fmtRate, normNif, normPostal, normVatNumber, isEuCountry, outsideVatTerritory, countryName, EU_COUNTRIES, OUTSIDE_EU, type VatDecision } from '../vat.ts';
 import { queueEmail, emailShell } from '../mail.ts';
 import { rateForTier, quoteTier } from '../quotes.ts';
@@ -78,8 +78,8 @@ export async function billingRoutes(app: FastifyInstance) {
       const form = current ? `<p>${pill('Your current plan', 'ok')}</p>`
         : !profile ? '<p class="hint">Fill in your billing details first (below). · <span lang="pt-PT">Preencha primeiro os dados de faturação.</span></p>'
         : `<label class="check"><input type="checkbox" name="terms" value="1" required> <span>I accept the <a href="/termos">terms of sale</a> (<span lang="pt-PT">termos e condições</span>) and the <a href="/privacidade-pagamentos">payments privacy notice</a>.</span></label>
-${consumer ? `<label class="check" lang="pt-PT"><input type="checkbox" name="start_now" value="1" required> <span>Peço que o serviço comece já. Sei que posso desistir nos ${WITHDRAWAL_DAYS} dias seguintes e que, nesse caso, pago a parte do serviço já prestada.</span></label>
-<label class="check" lang="pt-PT"><input type="checkbox" name="waiver" value="1" required> <span>Reconheço que perco o direito de livre resolução quando o serviço estiver integralmente prestado e, quanto a cada episódio ou vídeo, quando me for disponibilizado.</span></label>` : ''}
+${consumer ? `<label class="check" lang="pt-PT"><input type="checkbox" name="start_now" value="1" required> <span>${esc(CONSENT_START_NOW)}</span></label>
+<label class="check" lang="pt-PT"><input type="checkbox" name="waiver" value="1" required> <span>${esc(CONSENT_WAIVER)}</span></label>` : ''}
 <button class="accent" ${canBuy ? '' : 'disabled'}>${button(p)}</button>`;
       return `<form method="post" action="/subscribe/${esc(p.id)}" class="card"><h3 style="margin-top:0">${esc(p.name)}</h3>${price(p)}
 <p>Up to <strong>${p.interviews_per_month}</strong> interviews per month · up to ${p.max_questions} questions and ${Math.round(p.max_answer_total_sec / 60)} min of answers per interview · photos only.</p>${form}</form>`;

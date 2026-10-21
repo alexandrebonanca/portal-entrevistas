@@ -9,7 +9,7 @@ import { seller, complaintsLink, TERMS_VERSION, WITHDRAWAL_DAYS } from '../legal
 import { findWallet, spendBlock, cr } from '../wallet.ts';
 import { VEO_NOTICE, veoWithoutQuote } from '../veo-episode.ts';
 import { veoLabel } from '../talking.ts';
-import { quoteTier, createQuote, acceptQuote, cancelQuote, quoteProblem, quoteBlock, rateForTier, candidateFalas, consumerVatRate, isConsumerOwner,
+import { quoteTier, createQuote, acceptQuote, cancelQuote, quoteProblem, quoteBlock, rateForTier, candidateFalas, consumerVatRate, vatRegimeOf, isConsumerOwner,
   priceLabel, perMinuteLabel, acceptLabel, roleLabel, reasonLabel, GUARANTEES, QUOTE_STATUS, QuoteError, START_DEADLINE_HOURS, ENTITY_VEO_NO_QUOTE } from '../quotes.ts';
 import { helpNav } from '../support.ts';
 
@@ -32,7 +32,7 @@ export async function quoteSection(db: Db, iv: any, ep: any): Promise<string> {
   const quotes = await db.query(`SELECT * FROM animation_quotes WHERE episode_id=$1 ORDER BY created_at DESC LIMIT 5`, [ep.id]);
   return inEntity(owner.entity_id, async () => {
     const tier = quoteTier(), rate = await rateForTier(db, tier);
-    const vatRate = await consumerVatRate(db, owner.id, seller());
+    const vatRate = await consumerVatRate(db, owner.id, seller()), regime = await vatRegimeOf(db, owner.id, seller());
     const block = rate ? await quoteBlock(db, iv, ep) : `A animação com o ${veoLabel(tier)} não está disponível de momento.`;
     const open = quotes.find((q: any) => ['accepted', 'running'].includes(q.status));
     // Quem autorizou (sem carregar as fotografias; o orçamento confirma tudo).
@@ -43,8 +43,8 @@ export async function quoteSection(db: Db, iv: any, ep: any): Promise<string> {
     const script = await db.one('SELECT segments FROM scripts WHERE id=$1', [ep.script_id]);
     const falas = rate ? candidateFalas(ep, script?.segments ?? [], allowed, rate) : [];
     let html = `<h3 id="orcamento">Animação por IA (${esc(veoLabel(tier))}), por orçamento</h3>
-<p class="hint">${rate ? `Tarifa: ${esc(perMinuteLabel(rate.cents_per_min, vatRate))}, medidos no áudio do episódio (cada fala conta pelo menos 4 s). ` : ''}1 crédito = 1 € sem IVA. O orçamento é grátis e não cativa nada; só o titular da entrevista o aceita. Paga apenas as falas que saírem animadas e verificadas.</p>`;
-    if (quotes.length) html += `<ul class="sans">${quotes.map((q: any) => { const [l, k] = QUOTE_STATUS[q.status] ?? [q.status, '']; return `<li><a href="/entrevistas/${iv.id}/orcamentos/${q.id}">Orçamento de ${fmtDate(q.created_at)}</a> · ${pill(l, k)} · ${esc(priceLabel(q.price_cents, vatRate))}${q.status === 'settled' ? ` · cobrados ${cr(q.charged_cents ?? 0)}, libertados ${cr(q.released_cents ?? 0)}` : ''}</li>`; }).join('')}</ul>`;
+<p class="hint">${rate ? `Tarifa: ${esc(perMinuteLabel(rate.cents_per_min, vatRate, regime))}, medidos no áudio do episódio (cada fala conta pelo menos 4 s). ` : ''}1 crédito = 1 € sem IVA. O orçamento é grátis e não cativa nada; só o titular da entrevista o aceita. Paga apenas as falas que saírem animadas e verificadas.</p>`;
+    if (quotes.length) html += `<ul class="sans">${quotes.map((q: any) => { const [l, k] = QUOTE_STATUS[q.status] ?? [q.status, '']; return `<li><a href="/entrevistas/${iv.id}/orcamentos/${q.id}">Orçamento de ${fmtDate(q.created_at)}</a> · ${pill(l, k)} · ${esc(priceLabel(q.price_cents, vatRate, regime))}${q.status === 'settled' ? ` · cobrados ${cr(q.charged_cents ?? 0)}, libertados ${cr(q.released_cents ?? 0)}` : ''}</li>`; }).join('')}</ul>`;
     if (block) return `${html}<p class="hint"><strong>${esc(block)}</strong></p>`;
     if (open) {
       const fila = open.status === 'accepted' ? await videoQueue(db, open.job_id) : null;
@@ -103,7 +103,7 @@ export async function quoteRoutes(app: FastifyInstance) {
     const isOwner = req.user!.id === q.owner_id && req.user!.role !== 'admin';
     return inEntity(owner.entity_id, async () => {
       const s = seller(), consumer = await isConsumerOwner(db, owner.id);
-      const vatRate = consumer ? await consumerVatRate(db, owner.id, s) : null;
+      const vatRate = consumer ? await consumerVatRate(db, owner.id, s) : null, regime = await vatRegimeOf(db, owner.id, s);
       const w = await findWallet(db, owner.id, owner.entity_id);
       const avail = w?.available_cents ?? 0, wblock = spendBlock(w);
       const problem = q.status === 'draft' ? await quoteProblem(db, q) : null;
@@ -140,8 +140,8 @@ ${q.status === 'running' && q.status_note ? flash(q.status_note) : ''}${['accept
 ${settled ? `<div class="flash ok">Produção concluída: cobrados <strong>${cr(q.charged_cents ?? 0)}</strong> créditos (só as falas animadas e verificadas); libertados e de volta ao saldo <strong>${cr(q.released_cents ?? 0)}</strong> créditos.</div>` : ''}
 <div class="card" style="overflow-x:auto"><table class="sans"><thead><tr><th>Fala</th><th>Segundos</th><th>Créditos</th><th>Notas</th>${settled ? '<th>Resultado</th>' : ''}</tr></thead><tbody>${rows}</tbody></table></div>
 <div class="card sans"><table><tbody>
-<tr><th>Total</th><td><strong id="total">${esc(priceLabel(q.price_cents, vatRate))}</strong><br><span class="hint">É o máximo que paga. ${q.speech_sec} s de fala no total.</span></td></tr>
-<tr><th>Tarifa</th><td>${esc(perMinuteLabel(q.rate.cents_per_min, vatRate))}</td></tr>
+<tr><th>Total</th><td><strong id="total">${esc(priceLabel(q.price_cents, vatRate, regime))}</strong><br><span class="hint">É o máximo que paga. ${q.speech_sec} s de fala no total.</span></td></tr>
+<tr><th>Tarifa</th><td>${esc(perMinuteLabel(q.rate.cents_per_min, vatRate, regime))}</td></tr>
 ${q.status === 'draft' ? `<tr><th>Saldo</th><td id="saldo">${cr(avail)} créditos → ${cr(Math.max(0, after))} créditos depois de aceitar${after < 0 ? ' (insuficiente)' : ''} <span class="hint">(o valor fica cativo até ao fim da produção)</span></td></tr>` : ''}
 <tr><th>Motor</th><td>${esc(q.rate.label)}, ${esc(q.rate.resolution)}, com imagem e voz geradas pelo modelo a partir da fotografia e do texto aprovado</td></tr>
 <tr><th>Validade</th><td>Até ${fmtDate(q.valid_until)}, com o preço fixo</td></tr>

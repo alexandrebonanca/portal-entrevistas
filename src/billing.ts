@@ -4,7 +4,7 @@ import { config } from './config.ts';
 import { esc } from './lib.ts';
 import { S, stripeScopedValue, saveStripeScoped, stripeScope, inEntity } from './settings.ts';
 import { vatFor, countryName, ptRegion, regionalRate, withVat, vatOf, eurPt, eurEn, fmtRate, type VatDecision, type VatOk } from './vat.ts';
-import { seller, sellerBlock, contactEmail, TERMS_VERSION, WITHDRAWAL_DAYS, type Seller } from './legal.ts';
+import { seller, sellerBlock, contactEmail, withdrawalFormText, withdrawalFormHtml, CONSENT_START_NOW, CONSENT_WAIVER, TERMS_VERSION, WITHDRAWAL_DAYS, type Seller } from './legal.ts';
 import { queueEmail, emailShell } from './mail.ts';
 import { walletFor, creditTopup, refundAccepted, refundFailed, externalRefund, externalRefundFailed, externalRefundSucceeded, disputeOpened, disputeClosed, startRefund, cr, crEn, REFUND_WINDOW_DAYS } from './wallet.ts';
 
@@ -367,9 +367,12 @@ async function contractEmail(t: Db, userId: string, planId: string | null, key: 
   const p = await t.one('SELECT postal_code, country FROM billing_profiles WHERE user_id=$1', [userId]);
   const rate = vatRate !== undefined && vatRate !== '' && Number.isFinite(Number(vatRate)) ? Number(vatRate) : p?.country === 'PT' ? ptRegion(p.postal_code).rate : null;
   const price = plan ? (rate === null ? `${eurPt(plan.price_cents)}/mês + IVA` : `${eurPt(withVat(plan.price_cents, rate))}/mês com IVA (${eurPt(plan.price_cents)} + IVA ${fmtRate(rate)}%)`) : '';
-  const text = `Confirmamos a sua subscrição ${plan?.name ?? ''} de ${config.brand}${price ? `, por ${price}` : ''}, renovada todos os meses até a cancelar. Pediu que o serviço começasse já: pode desistir nos ${WITHDRAWAL_DAYS} dias seguintes, sem indicar o motivo, pelo botão «Desistir do contrato aqui» na sua conta (${config.baseUrl}/account), e nesse caso paga a parte do serviço já prestada. Termos e condições: ${config.baseUrl}/termos (versão ${TERMS_VERSION}). Vendedor: ${s.name || s.tradeName}${s.nif ? `, NIF ${s.nif}` : ''}.`;
-  await queueEmail(t, { key: `contract:${key}`, to: email || u.email, subject: `Confirmação da subscrição ${config.brand}`, text,
-    html: emailShell('Confirmação da subscrição', `<p>${esc(text)}</p>${sellerBlock(s)}`) });
+  const text = `Confirmamos a sua subscrição ${plan?.name ?? ''} de ${config.brand}${price ? `, por ${price}` : ''}, renovada todos os meses até a cancelar. Pediu que o serviço começasse já: pode desistir nos ${WITHDRAWAL_DAYS} dias seguintes, sem indicar o motivo, pelo botão «Desistir do contrato aqui» na sua conta (${config.baseUrl}/account), com o modelo de formulário abaixo ou por email para ${contactEmail(s)}, e nesse caso paga a parte do serviço já prestada. Termos e condições: ${config.baseUrl}/termos (versão ${TERMS_VERSION}). Vendedor: ${s.name || s.tradeName}${s.nif ? `, NIF ${s.nif}` : ''}.`;
+  // Os dois consentimentos tal como os assinalou (pedido de início imediato e reconhecimento da perda do direito; art. 6.º).
+  const consents = `Consentimentos assinalados na subscrição: «${CONSENT_START_NOW}» e «${CONSENT_WAIVER}»`;
+  const form = { ...s, email: contactEmail(s) };
+  await queueEmail(t, { key: `contract:${key}`, to: email || u.email, subject: `Confirmação da subscrição ${config.brand}`, text: `${text}\n\n${consents}\n\n${withdrawalFormText(form)}`,
+    html: emailShell('Confirmação da subscrição', `<p>${esc(text)}</p><p>${esc(consents)}</p>${withdrawalFormHtml(form)}${sellerBlock(s)}`) });
 }
 
 async function subscriptionChanged(t: Db, type: string, o: any): Promise<'applied' | 'ignored'> {
@@ -611,10 +614,14 @@ async function topupEmail(t: Db, tp: any) {
   const consumer = tp.customer_kind === 'consumer';
   const until = new Date(new Date(tp.paid_at).getTime() + REFUND_WINDOW_DAYS * 86400_000);
   const price = consumer ? `${eurPt(tp.gross_cents)} com IVA (${eurPt(tp.net_cents)} + IVA ${fmtRate(Number(tp.vat_rate))}%)` : `${eurPt(tp.net_cents)} + IVA ${eurPt(tp.vat_cents)} = ${eurPt(tp.gross_cents)}`;
-  const pt = `Carregámos ${cr(tp.net_cents)} créditos na sua conta ${config.brand}, por ${price}. 1 crédito = 1 € sem IVA. Os créditos valem até ${dayPt(tp.expires_at)} e gastam-se pela ordem de validade. Pode pedir o reembolso do saldo ainda disponível deste carregamento até ${dayPt(until)} (14 dias), por email para ${s.email || contactEmail()}; é devolvido pelo mesmo meio de pagamento. A fatura-recibo é emitida pela empresa vendedora e enviada por email (o recibo da Stripe é só um comprovativo). Termos: ${config.baseUrl}/termos (versão ${tp.terms_version ?? TERMS_VERSION}). Vendedor: ${s.name || s.tradeName || '—'}${s.nif ? `, NIF ${s.nif}` : ''}.`;
+  const refund = consumer
+    ? `Pode desistir deste carregamento (livre resolução) até ${dayPt(until)} (${WITHDRAWAL_DAYS} dias), sem indicar o motivo, pelo botão «Desistir do contrato aqui» em ${config.baseUrl}/conta/creditos, com o modelo de formulário abaixo ou por email para ${s.email || contactEmail()}: devolvemos o saldo ainda disponível deste carregamento pelo mesmo meio de pagamento.`
+    : `Pode pedir o reembolso do saldo ainda disponível deste carregamento até ${dayPt(until)} (14 dias), por email para ${s.email || contactEmail()}; é devolvido pelo mesmo meio de pagamento.`;
+  const pt = `Carregámos ${cr(tp.net_cents)} créditos na sua conta ${config.brand}, por ${price}. 1 crédito = 1 € sem IVA. Os créditos valem até ${dayPt(tp.expires_at)} e gastam-se pela ordem de validade. ${refund} A fatura-recibo é emitida pela empresa vendedora e enviada por email (o recibo da Stripe é só um comprovativo). Termos: ${config.baseUrl}/termos (versão ${tp.terms_version ?? TERMS_VERSION}). Vendedor: ${s.name || s.tradeName || '—'}${s.nif ? `, NIF ${s.nif}` : ''}.`;
   const en = `We added ${crEn(tp.net_cents)} credits to your ${config.brand} account (${eurEn(tp.gross_cents)} paid). Credits are valid until ${new Date(tp.expires_at).toISOString().slice(0, 10)}; the unused balance of this top-up can be refunded until ${until.toISOString().slice(0, 10)}.`;
-  await queueEmail(t, { key: `topup:${tp.id}`, to, subject: `Créditos carregados · Credits added (${cr(tp.net_cents)})`, text: `${pt}\n\n${en}`,
-    html: emailShell('Créditos carregados · Credits added', `<p>${esc(pt)}</p><p lang="en">${esc(en)}</p>`) });
+  const form = { ...s, email: s.email || contactEmail() };
+  await queueEmail(t, { key: `topup:${tp.id}`, to, subject: `Créditos carregados · Credits added (${cr(tp.net_cents)})`, text: `${pt}\n\n${en}${consumer ? `\n\n${withdrawalFormText(form)}` : ''}`,
+    html: emailShell('Créditos carregados · Credits added', `<p>${esc(pt)}</p><p lang="en">${esc(en)}</p>${consumer ? withdrawalFormHtml(form) : ''}`) });
 }
 
 /** Regresso do Checkout (success_url): aplica já o pagamento, sem esperar pelo webhook. Idempotente (o mesmo efeito do webhook). */

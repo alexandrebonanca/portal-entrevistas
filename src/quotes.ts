@@ -59,6 +59,16 @@ export const ENTITY_VEO_NO_QUOTE = 'A entidade tem credenciais Google próprias:
 const guestAskedChanges = async (db: Db, scriptId: string) => !!(await db.one(`SELECT 1 FROM approvals a JOIN episodes e ON e.id=a.episode_id WHERE e.script_id=$1 AND a.actor='guest' AND a.valid AND a.decision='changes' LIMIT 1`, [scriptId]));
 const ownerOf = (db: Db, iv: any) => db.one('SELECT id, email, name, role, entity_id FROM users WHERE id=$1', [iv.owner_id]);
 export const isConsumerOwner = async (db: Db, userId: string) => (await db.one('SELECT kind FROM billing_profiles WHERE user_id=$1', [userId]))?.kind === 'consumer';
+/**
+ * Regime de IVA dos dados de faturação do cliente (o dos carregamentos): 'domestic', 'reverse_charge', 'not_registered', …;
+ * null sem dados. Decide o texto do preço («+ IVA, já pago no carregamento» só quando houve IVA).
+ */
+export async function vatRegimeOf(db: Db, userId: string, s: Seller): Promise<string | null> {
+  const p = await db.one('SELECT * FROM billing_profiles WHERE user_id=$1', [userId]);
+  if (!p) return s.regime === 'not_registered' ? 'not_registered' : null;
+  const d = vatForProfile(p, s);
+  return d.ok ? d.regime : null;
+}
 /** Taxa de IVA com que o consumidor pagou os créditos (para mostrar o € com IVA primeiro); null para empresas ou sem dados. */
 export async function consumerVatRate(db: Db, userId: string, s: Seller): Promise<number | null> {
   const p = await db.one('SELECT * FROM billing_profiles WHERE user_id=$1', [userId]);
@@ -223,6 +233,7 @@ export async function acceptQuote(db: Db, user: any, quoteId: string, body: any,
     const blk = checkoutBlock(s, consumer);
     if (blk) return { error: blk.pt };
     const vatRate = consumer ? await consumerVatRate(db, user.id, s) : null;
+    const regime = await vatRegimeOf(db, user.id, s);
     let missing = 0;
     try {
       return await db.tx(async (t): Promise<any> => {
@@ -237,7 +248,7 @@ export async function acceptQuote(db: Db, user: any, quoteId: string, body: any,
           missing = Math.max(0, q.price_cents - w.available_cents);
           return { error: `Saldo insuficiente: o orçamento é de ${cr(q.price_cents)} créditos e tem ${cr(w.available_cents)} disponíveis.`, missingCents: missing };
         }
-        const acceptance = { startNow: true, second: consumer ? 'waiver' : 'conditions', consumer, vatRate, ip, at: new Date().toISOString(), termsVersion: TERMS_VERSION, priceCents: q.price_cents, rateVersion: q.rate?.version ?? null, seller: { name: s.name, nif: s.nif } };
+        const acceptance = { startNow: true, second: consumer ? 'waiver' : 'conditions', consumer, vatRate, vatRegime: regime, ip, at: new Date().toISOString(), termsVersion: TERMS_VERSION, priceCents: q.price_cents, rateVersion: q.rate?.version ?? null, seller: { name: s.name, nif: s.nif } };
         const done = await t.one(`UPDATE animation_quotes SET status='accepted', wallet_id=$2, accepted_by=$3, accepted_at=now(), accepted_ip=$4, terms_version=$5, acceptance=$6, updated_at=now() WHERE id=$1 AND status='draft' RETURNING *`,
           [q.id, w.id, user.email, ip, TERMS_VERSION, JSON.stringify(acceptance)]);
         if (!done) return { error: 'Este orçamento já não está por aceitar.' };
@@ -245,7 +256,7 @@ export async function acceptQuote(db: Db, user: any, quoteId: string, body: any,
         if (!jobId) throw new Error('Trabalho do orçamento já existente');
         await t.query('UPDATE animation_quotes SET job_id=$2 WHERE id=$1', [q.id, jobId]);
         const iv = await t.one('SELECT id, title FROM interviews WHERE id=$1', [q.interview_id]);
-        await queueEmail(t, quoteEmail({ ...done, job_id: jobId }, iv, user, s, consumer, vatRate));
+        await queueEmail(t, quoteEmail({ ...done, job_id: jobId }, iv, user, s, consumer, vatRate, regime));
         return { ok: true, jobId, quote: done, consumer };
       });
     } catch (e: any) {
@@ -301,12 +312,18 @@ export const QUOTE_STATUS: Record<string, [string, '' | 'ok' | 'bad' | 'warn']> 
   draft: ['rascunho por aceitar', 'warn'], accepted: ['aceite: na fila', 'ok'], running: ['em produção', 'ok'], settled: ['liquidado', 'ok'], void: ['anulado', 'bad'], cancelled: ['cancelado', ''],
 };
 export const roleLabel = (r: string) => (r === 'host' ? 'Entrevistador' : 'Convidado');
-/** Valor para o cliente: consumidor com o € com IVA primeiro; empresa em créditos (= € + IVA, já pago no carregamento). */
-export const priceLabel = (cents: number, vatRate: number | null) => (vatRate != null
-  ? `${eurPt(withVat(cents, vatRate))} com IVA (${cr(cents)} créditos)`
-  : `${cr(cents)} créditos (= ${eurPt(cents)} + IVA, já pago no carregamento)`);
-export const perMinuteLabel = (centsPerMin: number, vatRate: number | null) => (vatRate != null
+/**
+ * Valor para o cliente: consumidor com o € com IVA primeiro; empresa em créditos (= € + IVA, já pago no carregamento). Sem
+ * IVA no carregamento (autoliquidação de uma empresa da UE, ou vendedora não registada para IVA), o texto di-lo.
+ */
+export const priceLabel = (cents: number, vatRate: number | null, regime: string | null = null) =>
+  regime === 'not_registered' ? (vatRate != null ? `${eurPt(cents)} (${cr(cents)} créditos)` : `${cr(cents)} créditos (= ${eurPt(cents)})`)
+  : vatRate != null ? `${eurPt(withVat(cents, vatRate))} com IVA (${cr(cents)} créditos)`
+  : regime === 'reverse_charge' ? `${cr(cents)} créditos (= ${eurPt(cents)}, sem IVA: autoliquidação)`
+  : `${cr(cents)} créditos (= ${eurPt(cents)} + IVA, já pago no carregamento)`;
+export const perMinuteLabel = (centsPerMin: number, vatRate: number | null, regime: string | null = null) => (vatRate != null && regime !== 'not_registered'
   ? `≈ ${eurPt(withVat(centsPerMin, vatRate))} por minuto de fala, com IVA (${cr(centsPerMin)} créditos)`
+  : vatRate != null ? `≈ ${eurPt(centsPerMin)} por minuto de fala (${cr(centsPerMin)} créditos)`
   : `≈ ${cr(centsPerMin)} créditos por minuto de fala`);
 /** Botão de aceitação: diz sem ambiguidade que há obrigação de pagar (TJUE C-249/21). */
 export const acceptLabel = (cents: number, vatRate: number | null) => (!cents ? 'Aceitar (0 créditos: tudo reaproveitado)'
@@ -321,13 +338,13 @@ export const GUARANTEES = [
 ];
 
 /** Email com o orçamento aceite, os consentimentos e as condições (suporte duradouro), antes de o trabalho começar. */
-export function quoteEmail(q: any, iv: any, user: any, s: Seller, consumer: boolean, vatRate: number | null) {
+export function quoteEmail(q: any, iv: any, user: any, s: Seller, consumer: boolean, vatRate: number | null, regime: string | null = null) {
   const sel = q.selection as any[];
   const cents = (x: any) => (x.reused ? 'reaproveitado: 0 cr' : x.dup ? 'igual a outra fala: incluída' : `${cr(x.cents)} cr`);
   const url = `${config.baseUrl}/entrevistas/${iv.id}/orcamentos/${q.id}`;
   const second = consumer ? 'Reconheço que perco o direito de livre resolução quando a produção estiver concluída.' : 'Aceito este orçamento e as condições (o valor fica cativo e só se cobram as falas animadas e verificadas).';
-  const head = [`Orçamento aceite para a animação do episódio de «${iv.title}».`, `Motor: ${q.rate.label}, ${q.rate.resolution}. Tarifa: ${perMinuteLabel(q.rate.cents_per_min, vatRate)}.`];
-  const total = `Total: ${priceLabel(q.price_cents, vatRate)}. É o máximo que paga; o valor ficou cativo na sua carteira.`;
+  const head = [`Orçamento aceite para a animação do episódio de «${iv.title}».`, `Motor: ${q.rate.label}, ${q.rate.resolution}. Tarifa: ${perMinuteLabel(q.rate.cents_per_min, vatRate, regime)}.`];
+  const total = `Total: ${priceLabel(q.price_cents, vatRate, regime)}. É o máximo que paga; o valor ficou cativo na sua carteira.`;
   const proof = [
     `Aceite por ${user.email} em ${new Date(q.accepted_at ?? Date.now()).toISOString()} (IP ${q.accepted_ip ?? '—'}), termos de venda versão ${q.terms_version ?? TERMS_VERSION}.`,
     `Consentimentos assinalados: «Peço que a produção comece já.» e «${second}»`,

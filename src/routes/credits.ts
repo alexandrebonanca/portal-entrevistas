@@ -1,10 +1,12 @@
 import type { FastifyInstance } from 'fastify';
+import { config } from '../config.ts';
 import { esc, fmtDate } from '../lib.ts';
 import { page, flash, pill } from '../views.ts';
 import { audit } from '../app.ts';
 import { stripeConfigured, verifyVatNumber, vatForProfile, startTopup, confirmTopupSession } from '../billing.ts';
 import { inEntity } from '../settings.ts';
-import { seller, sellerId, checkoutBlock, contactEmail, complaintsLink, TERMS_VERSION, type Seller } from '../legal.ts';
+import { seller, sellerId, checkoutBlock, contactEmail, complaintsLink, homeConsumerRate, withdrawalFormHtml, TERMS_VERSION, WITHDRAWAL_DAYS, type Seller } from '../legal.ts';
+import { queueEmail, emailShell } from '../mail.ts';
 import { withVat, vatOf, eurEn, eurPt, fmtRate, type VatDecision } from '../vat.ts';
 import { findWallet, spendBlock, packFor, cr, crEn, ENTRY_LABEL, TOPUP_PACKS, TOPUP_MIN_CENTS, TOPUP_MAX_CENTS, CREDIT_VALID_MONTHS, REFUND_WINDOW_DAYS, EXTRA_INTERVIEW_CENTS, EXTRA_REGEN_CENTS } from '../wallet.ts';
 import { helpNav } from '../support.ts';
@@ -42,8 +44,9 @@ export async function creditRoutes(app: FastifyInstance) {
   const back = (reply: any, e: string, extra = '') => reply.redirect('/conta/creditos?e=' + encodeURIComponent(e.slice(0, 500)) + extra);
 
   /** Preço de um carregamento para este cliente: consumidores com IVA primeiro (também em português); empresas «+ IVA». */
-  const priceOf = (net: number, d: VatDecision | null, consumer: boolean) => {
-    if (!d || !d.ok) return `${eurEn(net)} + VAT`;
+  const priceOf = (net: number, d: VatDecision | null, consumer: boolean, home: number | null = null) => {
+    if (!d) return `${eurEn(net)} + VAT${home ? ` (${eurEn(withVat(net, home))} incl. ${fmtRate(home)}% VAT · <span lang="pt-PT">consumidores: ${eurPt(withVat(net, home))} com IVA</span>)` : ''}`;
+    if (!d.ok) return `${eurEn(net)} + VAT`;
     const gross = withVat(net, d.rate);
     if (consumer) return `${eurEn(gross)} incl. VAT · <span lang="pt-PT">${eurPt(gross)} com IVA (${eurPt(net)} + IVA ${fmtRate(d.rate)}%)</span>`;
     if (d.regime === 'reverse_charge') return `${eurEn(net)} (no VAT: reverse charge)`;
@@ -81,14 +84,19 @@ export async function creditRoutes(app: FastifyInstance) {
         const refundUntil = l.paid_at ? new Date(new Date(l.paid_at).getTime() + REFUND_WINDOW_DAYS * 86400_000) : null;
         return `<tr><td>${fmtDate(l.created_at)}</td><td><strong>${crEn(l.net_cents)}</strong></td><td>${eurEn(l.gross_cents)}${l.vat_cents ? ` <span class="hint">(VAT ${fmtRate(Number(l.vat_rate))}%)</span>` : ''}</td>
 <td>${l.paid_at ? crEn(l.remaining_cents) : '—'}</td><td>${l.expires_at ? new Date(l.expires_at).toISOString().slice(0, 10) : '—'}</td><td>${pill(label, kind)}${refundUntil && l.remaining_cents > 0 && Date.now() < refundUntil.getTime() && ['paid', 'partially_refunded'].includes(l.status) ? `<br><span class="hint">refundable until ${refundUntil.toISOString().slice(0, 10)}</span>` : ''}</td>
-<td>${l.moloni_doc ? esc(l.moloni_doc) : l.paid_at ? '<span class="hint">to be issued</span>' : '—'}</td></tr>`;
+<td>${l.moloni_doc ? esc(l.moloni_doc) : l.paid_at ? '<span class="hint">to be issued</span>' : '—'}</td></tr>
+${consumer && asked.has(`topup:${l.id}`) ? `<tr><td colspan="7" class="hint" lang="pt-PT">Pedido de livre resolução deste carregamento recebido: devolvemos o saldo ainda disponível no prazo de ${WITHDRAWAL_DAYS} dias.</td></tr>`
+  : consumer && topupWithdrawable(l) ? `<tr><td colspan="7"><a class="btn ghost" href="/conta/creditos/${l.id}/livre-resolucao" lang="pt-PT">Desistir do contrato aqui</a> <span class="hint" lang="pt-PT">(livre resolução deste carregamento até ${fmtDate(new Date(new Date(l.paid_at).getTime() + WITHDRAWAL_DAYS * 86400_000))})</span></td></tr>` : ''}`;
       };
       const entryRow = (e: any) => {
         const lb = ENTRY_LABEL[e.kind] ?? { en: e.kind, pt: e.kind };
         const parts = [e.available_delta ? `${e.available_delta > 0 ? '+' : '−'}${crEn(Math.abs(e.available_delta))} available` : '', e.reserved_delta ? `${e.reserved_delta > 0 ? '+' : '−'}${crEn(Math.abs(e.reserved_delta))} on hold` : '', e.debt_delta ? `${e.debt_delta > 0 ? '+' : '−'}${crEn(Math.abs(e.debt_delta))} owed` : ''].filter(Boolean);
         return `<tr><td>${fmtDate(e.created_at)}</td><td>${esc(lb.en)} <span class="hint" lang="pt-PT">· ${esc(lb.pt)}</span>${e.note ? `<br><span class="hint">${esc(e.note)}</span>` : ''}</td><td>${parts.join('<br>') || '0'}</td></tr>`;
       };
-      const radios = TOPUP_PACKS.map((p, i) => `<label class="check"><input type="radio" name="valor" value="${p / 100}" ${i === 0 ? 'checked' : ''}> <span><strong>${crEn(p)} credits</strong> — ${priceOf(p, d, consumer)}</span></label>`).join('');
+      const home = homeConsumerRate(s);
+      const radios = TOPUP_PACKS.map((p, i) => `<label class="check"><input type="radio" name="valor" value="${p / 100}" ${i === 0 ? 'checked' : ''}> <span><strong>${crEn(p)} credits</strong> — ${priceOf(p, d, consumer, home)}</span></label>`).join('');
+      // Livre resolução de um carregamento (consumidores, nos 14 dias seguintes ao pagamento): botão por carregamento.
+      const asked = new Set((await db.query(`SELECT stripe_ref FROM withdrawals WHERE user_id=$1 AND kind='topup'`, [user.id])).map((r: any) => String(r.stripe_ref)));
       const body = `<div class="narrow" style="padding-top:36px"><h1>Credits <span class="hint" lang="pt-PT">· Créditos</span></h1>
 ${flash(paidMsg)}${returnTo ? `<p><a class="btn ghost" href="${esc(returnTo)}">Back to your interview · Voltar à entrevista</a></p>` : ''}${q.carregamento === 'cancelado' ? flash('Top-up cancelled — nothing was charged. · Carregamento cancelado: nada foi cobrado.', 'bad') : ''}${flash(q.ok)}${flash(q.e, 'bad')}
 <div class="card sans" id="saldo"><p style="font-size:1.6rem;margin:.2em 0"><strong id="available">${crEn(avail)}</strong> credits available <span class="hint" lang="pt-PT">· créditos disponíveis</span></p>
@@ -101,7 +109,7 @@ ${!profile ? '<p class="hint">Fill in your billing details first, in <a href="/a
 <label for="c_custom">Credits (${TOPUP_MIN_CENTS / 100} to ${TOPUP_MAX_CENTS / 100}) · <span lang="pt-PT">Créditos (${TOPUP_MIN_CENTS / 100} a ${TOPUP_MAX_CENTS / 100})</span></label><input id="c_custom" name="outro" type="text" inputmode="numeric" maxlength="4" placeholder="${TOPUP_MIN_CENTS / 100}" style="max-width:160px">
 <p><button class="accent" ${profile ? '' : 'disabled'}>Continue · Continuar</button></p></form>${RULES}</div>`}
 ${lots.length ? `<div class="card sans" style="overflow-x:auto"><h2 style="margin-top:0">Top-ups <span class="hint" lang="pt-PT">· Carregamentos</span></h2><table><thead><tr><th>Date</th><th>Credits</th><th>Paid</th><th>Left</th><th>Valid until</th><th>Status</th><th>Invoice</th></tr></thead><tbody>${lots.map(lotRow).join('')}</tbody></table>
-<p class="hint">Refunds of an unused balance within ${REFUND_WINDOW_DAYS} days: email ${esc(contactEmail(s))}. · Reembolsos nos ${REFUND_WINDOW_DAYS} dias: por email.</p></div>` : ''}
+<p class="hint">Refunds of an unused balance within ${REFUND_WINDOW_DAYS} days: ask through Help or email ${esc(contactEmail(s))}${consumer ? '; as a consumer you can also use «Desistir do contrato aqui» on each top-up' : ''}. · <span lang="pt-PT">Reembolsos nos ${REFUND_WINDOW_DAYS} dias: pela Ajuda ou por email${consumer ? '; como consumidor, também pelo botão «Desistir do contrato aqui» de cada carregamento' : ''}.</span></p></div>` : ''}
 <div class="card sans" style="overflow-x:auto"><h2 style="margin-top:0">Statement <span class="hint" lang="pt-PT">· Extrato de créditos</span></h2><p class="hint">This statement is not an invoice or a receipt: the invoice is issued for each top-up. · Este extrato não é fatura nem recibo.</p>
 ${entries.length ? `<table><thead><tr><th>Date</th><th>Movement</th><th>Credits</th></tr></thead><tbody>${entries.map(entryRow).join('')}</tbody></table>` : '<p class="hint">No movements yet. · Sem movimentos.</p>'}</div>
 <p class="hint">Seller · <span lang="pt-PT">Vendedora</span>: ${sellerId(s)} · <a href="/termos">Terms of sale · Termos e condições</a> · ${complaintsLink(s)}</p></div>`;
@@ -115,8 +123,54 @@ ${entries.length ? `<table><thead><tr><th>Date</th><th>Movement</th><th>Credits<
       const missing = Math.max(0, Math.round(Number(q.falta)));
       return { cents: Number.isFinite(missing) && missing > 0 ? packFor(missing) : null, missing: Number.isFinite(missing) ? missing : null };
     }
-    return { cents: parseTopupEuros(q.valor === 'outro' ? q.outro : q.valor), missing: null };
+    // O valor escrito em «Outro valor» conta mesmo que o botão marcado seja um pacote (a página não tem JavaScript para o
+    // marcar sozinho); o resumo antes de pagar mostra sempre o valor escolhido.
+    const typed = typeof q.outro === 'string' && q.outro.trim() !== '';
+    return { cents: parseTopupEuros(q.valor === 'outro' || typed ? q.outro : q.valor), missing: null };
   };
+
+  /** Carregamento pago de um consumidor, ainda nos 14 dias da livre resolução. */
+  const topupWithdrawable = (l: any) => !!l?.paid_at && ['paid', 'partially_refunded'].includes(l.status) && Date.now() - new Date(l.paid_at).getTime() <= WITHDRAWAL_DAYS * 86400_000;
+  const myTopup = async (req: any) => {
+    const id = String((req.params as any).id ?? '');
+    return /^[0-9a-f-]{36}$/i.test(id) ? db.one('SELECT * FROM credit_topups WHERE id=$1 AND user_id=$2', [id, req.user.id]) : undefined;
+  };
+
+  // ---- Livre resolução de um carregamento (consumidores, 14 dias): botão → confirmação → pedido registado ----
+  app.get('/conta/creditos/:id/livre-resolucao', async (req, reply) => {
+    if (!req.user) return reply.redirect('/entrar');
+    return inEntity(req.user.entity_id, async () => {
+      const tp = await myTopup(req), profile = await profileOf(req.user!.id);
+      if (!tp || profile?.kind !== 'consumer' || !topupWithdrawable(tp)) return reply.redirect('/conta/creditos');
+      const s = seller();
+      const body = `<div class="narrow" style="padding-top:36px" lang="pt-PT"><h1>Desistir do contrato</h1>
+<div class="card sans"><p>Contrato: carregamento de <strong>${cr(tp.net_cents)} créditos</strong> de ${esc(config.brand)}, pago em ${fmtDate(tp.paid_at)} (${eurPt(tp.gross_cents)}).<br>Cliente: ${esc(profile.name)} · ${esc(req.user!.email)}</p>
+<p>Ao confirmar, regista o pedido de livre resolução deste carregamento. Devolvemos o saldo ainda disponível deste carregamento (hoje ${cr(tp.remaining_cents)} créditos) no prazo de ${WITHDRAWAL_DAYS} dias, pelo mesmo meio de pagamento; os créditos já usados num serviço que pediu para começar já não se devolvem. Enviamos a confirmação deste pedido para ${esc(req.user!.email)}.</p>
+<form method="post" action="/conta/creditos/${tp.id}/livre-resolucao"><button class="danger">Confirmar a desistência</button> <a href="/conta/creditos">Voltar</a></form></div>
+<p class="hint">Também pode enviar o modelo de formulário por email para ${esc(contactEmail(s))}.</p>${withdrawalFormHtml({ ...s, email: contactEmail(s) })}</div>`;
+      return send(reply, page({ lang: 'pt-PT', title: 'Desistir do contrato', body, nav: nav(req.user), noindex: true }));
+    });
+  });
+
+  app.post('/conta/creditos/:id/livre-resolucao', async (req, reply) => {
+    if (!req.user) return reply.redirect('/entrar');
+    return inEntity(req.user.entity_id, async () => {
+      const user = req.user!;
+      const tp = await myTopup(req), profile = await profileOf(user.id);
+      if (!tp || profile?.kind !== 'consumer' || !topupWithdrawable(tp)) return reply.redirect('/conta/creditos');
+      const w = await db.one(`INSERT INTO withdrawals(user_id, kind, stripe_ref, contract_started_at, ip) VALUES ($1,'topup',$2,$3,$4) ON CONFLICT (user_id, stripe_ref) DO NOTHING RETURNING *`,
+        [user.id, `topup:${tp.id}`, tp.paid_at, req.ip]);
+      if (!w) return reply.redirect('/conta/creditos');
+      // O administrador vê o pedido no carregamento (Créditos, com o botão do reembolso) e na lista da livre resolução (Faturação).
+      await db.query('UPDATE credit_topups SET alert=$2, updated_at=now() WHERE id=$1', [tp.id, `Pedido de livre resolução do consumidor em ${fmtDate(w.requested_at)}: reembolsar o saldo disponível deste carregamento (${cr(tp.remaining_cents)} créditos nesse momento) no prazo de ${WITHDRAWAL_DAYS} dias.`]);
+      // Aviso de receção em suporte duradouro (DL 24/2014, art. 11.º, n.º 4).
+      const s = seller();
+      const text = `Recebemos em ${fmtDate(w.requested_at)} o seu pedido de livre resolução do carregamento de ${cr(tp.net_cents)} créditos de ${config.brand}, pago em ${fmtDate(tp.paid_at)}. Devolvemos o saldo ainda disponível deste carregamento no prazo de ${WITHDRAWAL_DAYS} dias, pelo mesmo meio de pagamento.${s.name ? ` ${s.name}${s.nif ? `, NIF ${s.nif}` : ''}.` : ''}`;
+      await queueEmail(db, { key: `withdrawal:${w.id}`, to: user.email, subject: 'Recebemos o seu pedido de livre resolução', html: emailShell('Pedido de livre resolução recebido', `<p>${esc(text)}</p>`), text });
+      await audit(db, user.email, 'credits.withdrawal_requested', null, { withdrawal: w.id, topup: tp.id, remaining: tp.remaining_cents, ip: req.ip });
+      return reply.redirect('/conta/creditos?ok=' + encodeURIComponent('Pedido de desistência registado: devolvemos o saldo disponível deste carregamento. Enviámos a confirmação por email.'));
+    });
+  });
 
   // Resumo antes de pagar (informação pré-contratual imediatamente antes da encomenda) e botão com a obrigação de pagar.
   app.get('/conta/creditos/carregar', async (req, reply) => {

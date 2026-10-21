@@ -4,7 +4,7 @@ import { config } from './config.ts';
 import { esc } from './lib.ts';
 import { page } from './views.ts';
 import { markSvg } from './brand.ts';
-import { seller, homeConsumerRate } from './legal.ts';
+import { seller, homeConsumerRate, complaintsLink } from './legal.ts';
 import { withVat, eurPt, fmtRate } from './vat.ts';
 
 const eur = (c: number) => `€${(c / 100).toFixed(c % 100 ? 2 : 0)}`;
@@ -140,7 +140,7 @@ ${video ? `
     <p>Up to <strong>${p.interviews_per_month} interviews</strong> per month.</p><ul class="sans" style="padding-left:18px"><li>Invitations, recording and photos</li><li>Transcription, English script, narration</li><li>Subtitles, cover, player and video with photos</li><li>Cancel any time</li></ul>
     <a class="btn accent" href="/registar?plan=${esc(p.id)}">Choose ${esc(p.name)}</a></div>`).join('')}</div>
   <p class="hint">Plans include photos only. AI animation is never part of a plan: each animated production is quoted before anything is generated and paid with prepaid credits. · <span lang="pt-PT">A animação por IA é orçamentada à parte e paga com créditos.</span></p>
-  <p class="hint">Billing is monthly through Stripe, card only. Prices exclude VAT; the price with VAT is always shown before you pay.${s.tradeName || s.name ? ` Sold by ${esc(s.name || s.tradeName)}.` : ''} <a href="/termos">Terms of sale · Termos e condições</a>. Plans and limits may change for new subscribers.</p>
+  <p class="hint">Billing is monthly through Stripe, card only. Prices exclude VAT; the price with VAT is always shown before you pay.${s.tradeName || s.name ? ` Sold by ${esc(s.name || s.tradeName)}.` : ''} <a href="/termos">Terms of sale · Termos e condições</a> · ${complaintsLink(s)}. Plans and limits may change for new subscribers.</p>
 </section>
 
 <section class="wrap lp-section"><div class="card lp-cta"><h2 style="margin-top:0">Your next great guest is one polite invitation away.</h2>

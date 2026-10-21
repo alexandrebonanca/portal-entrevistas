@@ -507,6 +507,13 @@ test('a entidade não muda com saldo; entrevista extra a 6 créditos; regeneraç
   pg = (await get(`/entrevistas/${id}/producao`, biz.cookie)).body;
   assert.match(pg, /<input type="hidden" name="pagar" value="1"><button class="ghost" >Regenerar guião a partir das transcrições — pagar 1 crédito<\/button>/);
   assert.match(pg, /Cada regeneração seguinte custa 1 crédito\. Saldo: 24 créditos/);
+  // como consumidor, o botão mostra primeiro o valor com IVA (como a entrevista extra e o orçamento) e pede as duas caixas
+  await db.query(`UPDATE billing_profiles SET kind='consumer' WHERE user_id=$1`, [biz.id]);
+  try {
+    const cp = (await get(`/entrevistas/${id}/producao`, biz.cookie)).body;
+    assert.match(cp, /Regenerar guião a partir das transcrições — pagar 1,23 € \(1 crédito\)<\/button>/);
+    assert.match(cp, /name="waiver" value="1" required/);
+  } finally { await db.query(`UPDATE billing_profiles SET kind='business' WHERE user_id=$1`, [biz.id]); }
   // sem o pedido expresso de pagar, nada é cobrado nem gerado
   assert.match(msg(await post(`/entrevistas/${id}/guiao/regenerar`, {}, biz.cookie)), /Cada regeneração seguinte custa 1 crédito\. Saldo: 24 créditos/);
   assert.match(msg(await post(`/entrevistas/${id}/guiao/regenerar`, { pagar: '1' }, biz.cookie)), /Guião em regeneração \(1 crédito\)/);
@@ -545,7 +552,10 @@ test('consumidor: preço com IVA primeiro, botão «Pagar … €» e as duas ca
   assert.equal(cs.params.get('locale'), 'pt'); assert.match(cs.params.get('line_items[0][tax_rates][0]')!, /^txr_PT16_/);
   const L = await db.one('SELECT * FROM credit_topups WHERE user_id=$1', [c.id]);
   await completed(paidSession(L, { customer_details: { email: 'consumidora@example.com', address: { country: 'PT', postal_code: '9500-001' } } }));
-  assert.match((await db.one(`SELECT text_body FROM emails WHERE dedupe_key=$1`, [`topup:${L.id}`])).text_body, /por 29,00 € com IVA \(25,00 € \+ IVA 16%\)/);
+  const tmail = (await db.one(`SELECT text_body FROM emails WHERE dedupe_key=$1`, [`topup:${L.id}`])).text_body;
+  assert.match(tmail, /por 29,00 € com IVA \(25,00 € \+ IVA 16%\)/);
+  assert.match(tmail, /Pode desistir deste carregamento \(livre resolução\) até [^,]+, sem indicar o motivo, pelo botão «Desistir do contrato aqui» em http:\/\/test\.local\/conta\/creditos, com o modelo de formulário abaixo/);
+  assert.match(tmail, /Modelo de formulário de livre resolução[\s\S]*— Para: Empresa Vendedora de Teste, Lda\.[^\n]*vendas@exemplo\.pt[\s\S]*Riscar o que não interessa/);
   // entrevista extra: o consumidor tem de pedir o início imediato e reconhecer a perda da livre resolução
   await db.query(`INSERT INTO subscriptions(user_id, plan_id, status, source, interviews_override) VALUES ($1,'start','active','manual',0)`, [c.id]);
   const n = await post('/entrevistas', { title: 'Extra consumidor' }, c.cookie);
@@ -569,5 +579,38 @@ test('consumidor: preço com IVA primeiro, botão «Pagar … €» e as duas ca
   assert.match(t, /vale de finalidade única: o IVA é cobrado no carregamento/);
   assert.match(t, /válido durante 24 meses a contar do pagamento; avisamos por email 30 dias antes/);
   assert.match(t, /reembolsado por inteiro, a pedido, nos 14 dias seguintes a esse carregamento/);
+  assert.match(t, /de cada carregamento de créditos, nos 14 dias seguintes ao pagamento/);
+
+  // livre resolução de um carregamento: botão nos 14 dias → confirmação → pedido registado, aviso de receção e alerta
+  let cp = (await get('/conta/creditos', c.cookie)).body;
+  assert.match(cp, new RegExp(`<a class="btn ghost" href="/conta/creditos/${L.id}/livre-resolucao" lang="pt-PT">Desistir do contrato aqui</a>`));
+  assert.doesNotMatch((await get('/conta/creditos', biz.cookie)).body, /Desistir do contrato aqui<\/a>/, 'empresas não têm o botão');
+  assert.equal((await get(`/conta/creditos/${L.id}/livre-resolucao`, biz.cookie)).statusCode, 302, 'só o dono do carregamento');
+  const conf = (await get(`/conta/creditos/${L.id}/livre-resolucao`, c.cookie)).body;
+  assert.match(conf, /carregamento de <strong>25 créditos<\/strong>/); assert.match(conf, /hoje 19 créditos/); assert.match(conf, /Confirmar a desistência/);
+  assert.match(msg(await post(`/conta/creditos/${L.id}/livre-resolucao`, {}, c.cookie)), /Pedido de desistência registado/);
+  const wd = await db.one(`SELECT * FROM withdrawals WHERE user_id=$1 AND kind='topup'`, [c.id]);
+  assert.deepEqual([wd.status, wd.stripe_ref], ['requested', `topup:${L.id}`]);
+  assert.ok(await db.one(`SELECT 1 FROM emails WHERE dedupe_key=$1`, [`withdrawal:${wd.id}`]));
+  assert.match((await db.one('SELECT alert FROM credit_topups WHERE id=$1', [L.id])).alert, /Pedido de livre resolução do consumidor[\s\S]*reembolsar o saldo disponível deste carregamento \(19 créditos/);
+  assert.equal((await post(`/conta/creditos/${L.id}/livre-resolucao`, {}, c.cookie)).headers.location, '/conta/creditos', 'um só pedido');
+  cp = (await get('/conta/creditos', c.cookie)).body;
+  assert.match(cp, /Pedido de livre resolução deste carregamento recebido/);
+  const fat = (await get('/admin/faturacao', admin)).body;
+  assert.match(fat, new RegExp(`carregamento de créditos pago em [^<]+<br><span class="hint"><a href="/admin/creditos#l-${L.id}">reembolsar o saldo disponível em Créditos</a>`));
+  // passados os 14 dias, já não há botão
+  await db.query(`UPDATE credit_topups SET paid_at=now() - interval '15 days' WHERE id=$1`, [L.id]);
+  await db.query(`DELETE FROM withdrawals WHERE id=$1`, [wd.id]);
+  assert.doesNotMatch((await get('/conta/creditos', c.cookie)).body, /Desistir do contrato aqui<\/a>/);
+  assert.equal((await get(`/conta/creditos/${L.id}/livre-resolucao`, c.cookie)).statusCode, 302);
+
+  // sem dados de faturação, a lista de pacotes já mostra aos consumidores o preço com IVA (como a Conta e a landing)
+  const nova = await register('Sem Perfil', 'semperfil@example.com');
+  const np = (await get('/conta/creditos', nova.cookie)).body;
+  assert.match(np, /<strong>25 credits<\/strong> — €25 \+ VAT \(€30\.75 incl\. 23% VAT · <span lang="pt-PT">consumidores: 30,75 € com IVA<\/span>\)/);
+  // «Outro valor» escrito sem marcar o botão: conta o valor escrito
+  assert.match((await get('/conta/creditos/carregar?valor=25&outro=40', c.cookie)).body, /<h1>Top up 40 credits/);
+  assert.match((await get('/conta/creditos/carregar?valor=25&outro=', c.cookie)).body, /<h1>Top up 25 credits/);
+  assert.match(msg(await get('/conta/creditos/carregar?valor=25&outro=7', c.cookie)), /Choose between 25 and 1000 credits/);
   await check();
 });

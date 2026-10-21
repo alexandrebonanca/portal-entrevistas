@@ -17,6 +17,9 @@ import { inEntity, entityOfInterview } from '../settings.ts';
 import { guestMustApprove, videoMeta as loadVideoMeta } from '../approval.ts';
 import { walletFor, findWallet, spend, spendBlock, cr, EXTRA_REGEN_CENTS, type Wallet } from '../wallet.ts';
 import { paidConsentHtml, paidConsentOk, isConsumer } from './credits.ts';
+import { vatForProfile } from '../billing.ts';
+import { seller } from '../legal.ts';
+import { withVat, eurPt } from '../vat.ts';
 import { quoteSection } from './quotes.ts';
 import { introProductionHint } from './intro.ts';
 import { helpNav } from '../support.ts';
@@ -83,11 +86,16 @@ export async function productionRoutes(app: FastifyInstance) {
   const REGEN_NOTE: Record<string, string> = { process_submission: 'Regeneração extra: processar de novo', prepare_script: 'Regeneração extra do guião', generate_episode: 'Regeneração extra do episódio' };
   class NoFunds extends Error {}
   /** Saldo do dono para pagar uma regeneração extra: carteira da entidade dele, bloqueios e se é consumidor. */
-  const regenPayment = async (user: any) => {
+  const regenPayment = async (user: any) => inEntity(user.entity_id, async () => {
     const w = await findWallet(db, user.id, user.entity_id);
     const available = w?.available_cents ?? 0, blk = spendBlock(w);
-    return { available, block: blk?.pt ?? null, consumer: await isConsumer(db, user.id), canPay: !blk && available >= EXTRA_REGEN_CENTS, missing: Math.max(0, EXTRA_REGEN_CENTS - available) };
-  };
+    // Consumidor: o valor com IVA primeiro, como na entrevista extra e no orçamento.
+    const profile = await db.one('SELECT * FROM billing_profiles WHERE user_id=$1', [user.id]);
+    const consumer = profile?.kind === 'consumer';
+    const d = consumer ? vatForProfile(profile, seller()) : null;
+    const label = d?.ok && d.regime !== 'not_registered' ? `pagar ${eurPt(withVat(EXTRA_REGEN_CENTS, d.rate))} (${cr(EXTRA_REGEN_CENTS)} crédito)` : `pagar ${cr(EXTRA_REGEN_CENTS)} crédito`;
+    return { available, block: blk?.pt ?? null, consumer, label, canPay: !blk && available >= EXTRA_REGEN_CENTS, missing: Math.max(0, EXTRA_REGEN_CENTS - available) };
+  });
   /** Já houve um guião nesta entrevista (processar de novo, depois de «Recomeçar», é uma regeneração). */
   const hadScript = async (q: Db, id: string) => !!(await q.one('SELECT 1 FROM scripts WHERE interview_id=$1 LIMIT 1', [id]));
   /** Já houve um episódio gerado (ou a gerar) nesta entrevista. */
@@ -144,7 +152,7 @@ export async function productionRoutes(app: FastifyInstance) {
     const pay = exhausted ? await regenPayment(req.user) : null;
     const regenHint = pay ? `<p class="hint">${esc(REGEN_BLOCKED())} Saldo: ${cr(pay.available)} créditos.${pay.block ? ` ${esc(pay.block)}` : !pay.canPay ? ` <a href="/conta/creditos/carregar?falta=${pay.missing}&amp;voltar=${encodeURIComponent(`/entrevistas/${iv.id}/producao`)}">Carregar créditos</a>` : ''}</p>` : '';
     const payFields = pay?.canPay ? `<input type="hidden" name="pagar" value="1">${paidConsentHtml(pay.consumer)}` : '';
-    const PAY = ` — pagar ${cr(EXTRA_REGEN_CENTS)} crédito`;
+    const PAY = ` — ${pay?.label ?? `pagar ${cr(EXTRA_REGEN_CENTS)} crédito`}`;
     const canRegen = !exhausted || !!pay?.canPay;
     let body = `<div class="wrap" style="padding-top:32px"><p><a href="/entrevistas/${iv.id}">← ${esc(iv.title)}</a></p><h1>Produção do podcast</h1>${flash(q.ok)}${flash(q.e, 'bad')}
 <p class="sans">${pill(STATUS_LABEL[iv.production_status] ?? iv.production_status)} ${pill(STATUS_LABEL[iv.publication_status] ?? iv.publication_status)} · Utilização registada (estimativa): <strong>$${ledger.usd.toFixed(2)}</strong>

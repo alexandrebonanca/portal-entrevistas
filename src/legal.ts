@@ -8,6 +8,35 @@ import { sellerVatProblems, normVatNumber, isEuCountry, countryName, regionalRat
 export const TERMS_VERSION = '2026-10-21';
 /** Prazo da livre resolução dos consumidores (DL 24/2014, art. 10.º). */
 export const WITHDRAWAL_DAYS = 14;
+/** As duas caixas que o consumidor assinala ao subscrever (o mesmo texto na página e no email de confirmação do contrato). */
+export const CONSENT_START_NOW = `Peço que o serviço comece já. Sei que posso desistir nos ${WITHDRAWAL_DAYS} dias seguintes e que, nesse caso, pago a parte do serviço já prestada.`;
+export const CONSENT_WAIVER = 'Reconheço que perco o direito de livre resolução quando o serviço estiver integralmente prestado e, quanto a cada episódio ou vídeo, quando me for disponibilizado.';
+
+/**
+ * Modelo de formulário de livre resolução (DL 24/2014, anexo, parte B), com a vendedora já identificada (nome, morada e
+ * email). Vai nos termos e nos emails de confirmação dos contratos com consumidores (subscrição e carregamento).
+ */
+export function withdrawalFormLines(s: { name?: string; tradeName?: string; address?: string; email?: string }): string[] {
+  const to = [s.name || s.tradeName || '', s.address || '', s.email || ''].filter(Boolean).join(', ') || '(empresa vendedora)';
+  return [
+    'Modelo de formulário de livre resolução',
+    '(só deve preencher e devolver o presente formulário se quiser resolver o contrato)',
+    `— Para: ${to}`,
+    '— Pela presente comunico/comunicamos (*) que resolvo/resolvemos (*) do meu/nosso (*) contrato de venda do seguinte bem/para a prestação do seguinte serviço (*)',
+    '— Solicitado em (*)/recebido em (*)',
+    '— Nome do(s) consumidor(es)',
+    '— Endereço do(s) consumidor(es)',
+    '— Assinatura do(s) consumidor(es) (só no caso de o presente formulário ser notificado em papel)',
+    '— Data',
+    '(*) Riscar o que não interessa.',
+  ];
+}
+export const withdrawalFormText = (s: Parameters<typeof withdrawalFormLines>[0]) => withdrawalFormLines(s).join('\n');
+export function withdrawalFormHtml(s: Parameters<typeof withdrawalFormLines>[0]) {
+  const [title, sub, ...rest] = withdrawalFormLines(s);
+  return `<div id="formulario-livre-resolucao" style="border:1px solid #cfc6b8;border-radius:8px;padding:12px 16px;margin:12px 0"><p style="margin-top:0"><strong>${esc(title)}</strong><br><em>${esc(sub)}</em></p><p style="margin-bottom:0">${rest.map(esc).join('<br>')}</p></div>`;
+}
+
 /** Entidade proprietária e gestora da plataforma (não vende ao cliente final): a do rodapé (config.owner). */
 export const PLATFORM_MANAGER = { name: config.owner.name, country: countryName(config.owner.country), url: config.owner.site, email: config.owner.email };
 
@@ -49,7 +78,7 @@ export const contactEmail = (s: Seller = seller()) => s.email || config.supportE
 export function checkoutBlock(s: Seller, consumer: boolean): { pt: string; en: string } | null {
   const c = contactEmail(s);
   if (!s.canSell) return { pt: `Os pagamentos em linha estão suspensos enquanto faltarem dados da empresa vendedora. Contacte-nos: ${c}.`, en: `Online payments are paused until the seller’s details are complete. Please contact us at ${c}.` };
-  if (consumer && !s.canSellConsumer) return { pt: `A subscrição em linha para consumidores ainda não está disponível. Contacte-nos: ${c}.`, en: `Online subscriptions for consumers are not open yet. Please contact us at ${c}.` };
+  if (consumer && !s.canSellConsumer) return { pt: `A venda em linha a consumidores ainda não está disponível. Contacte-nos: ${c}.`, en: `Online sales to consumers are not open yet. Please contact us at ${c}.` };
   return null;
 }
 
@@ -127,14 +156,14 @@ export function termsBody(plans: any[], s: Seller, rates: TermsRate[] = []) {
   return `<div class="narrow" style="padding-top:40px"><h1>Termos e condições de venda</h1><p class="hint">Versão ${TERMS_VERSION}</p>
 <h2>1. Quem vende</h2>${sellerBlock(s)}${managerBlock()}
 <h2>2. O serviço</h2><p>${esc(config.brand)} é um serviço em linha para fazer entrevistas assíncronas e produzir, a partir das respostas, um episódio em áudio e um vídeo com fotografias e legendas.</p>
-<p>As subscrições incluem só imagens: fotografias, voz sintética, transcrição, tradução para inglês, guião, legendas em cinco línguas e o vídeo com fotografias.${p0 ? ` Cada entrevista tem até ${p0.max_questions} perguntas (incluindo as adicionais) e até ${Math.round(p0.max_answer_total_sec / 60)} minutos de respostas no total, com 3 regenerações do guião ou do episódio incluídas.` : ''} As entrevistas não usadas não passam para o mês seguinte.</p>
+<p>As subscrições incluem só imagens: fotografias, voz sintética, transcrição, tradução para inglês, guião, legendas em cinco línguas e o vídeo com fotografias.${p0 ? ` Cada entrevista tem até ${p0.max_questions} perguntas (incluindo as adicionais) e até ${Math.round(p0.max_answer_total_sec / 60)} minutos de respostas no total, com ${config.limits.includedRegenerations} regenerações do guião ou do episódio incluídas.` : ''} As entrevistas não usadas não passam para o mês seguinte.</p>
 <p><strong>A animação por IA não está incluída em nenhum plano.</strong> Cada produção animada tem um orçamento próprio, aceite antes de gerar, e é paga com créditos pré-pagos.</p>
 <h2>2-A. Créditos pré-pagos</h2><ul>
-<li>1 crédito = 1 € sem IVA, sempre. Os créditos compram-se por carregamento (de 25 a 1000 créditos, só por cartão) e pagam apenas serviços de ${esc(config.brand)} prestados pela empresa vendedora: animação por IA (orçamentada e aceite antes de gerar), entrevistas para além da quota do plano (6 créditos cada) e regenerações do guião ou do episódio para além das 3 incluídas em cada entrevista (1 crédito cada).</li>
+<li>1 crédito = 1 € sem IVA, sempre. Os créditos compram-se por carregamento (de 25 a 1000 créditos, só por cartão) e pagam apenas serviços de ${esc(config.brand)} prestados pela empresa vendedora: animação por IA (orçamentada e aceite antes de gerar), entrevistas para além da quota do plano (6 créditos cada) e regenerações do guião ou do episódio para além das ${config.limits.includedRegenerations} incluídas em cada entrevista (1 crédito cada).</li>
 ${pt ? `<li>Preço com IVA: ${[2500, 10000].map(c => `${c / 100} créditos custam ${regions.map(([cp, l]) => `${eurPt(withVat(c, regionalRate('PT', cp)))} (${l}, ${regionalRate('PT', cp)}%)`).join(', ')}`).join('; ')}.</li>` : ''}
 <li>São um vale de finalidade única: o IVA é cobrado no carregamento, à taxa que se aplica ao cliente nesse momento, e a fatura-recibo é emitida pelo carregamento; o uso dos créditos não tem IVA nem fatura (mostra-se um extrato de créditos, que não é fatura nem recibo).</li>
 <li>Cada carregamento é válido durante 24 meses a contar do pagamento; avisamos por email 30 dias antes. Os créditos gastam-se pela ordem de validade (os mais antigos primeiro). Os créditos são nominativos e intransmissíveis, e pertencem à conta e à entidade em que foram pagos.</li>
-<li>Reembolso: o saldo ainda disponível de cada carregamento é reembolsado por inteiro, a pedido, nos 14 dias seguintes a esse carregamento, pelo mesmo meio de pagamento e sem descontar comissões; os créditos cativos de um orçamento aceite não se reembolsam enquanto o orçamento estiver em curso. Se o serviço encerrar, devolvemos todo o saldo disponível. Pedidos por email para ${mail(contactEmail(s))}.</li>
+<li>Reembolso: o saldo ainda disponível de cada carregamento é reembolsado por inteiro, a pedido, nos 14 dias seguintes a esse carregamento, pelo mesmo meio de pagamento e sem descontar comissões; os créditos cativos de um orçamento aceite não se reembolsam enquanto o orçamento estiver em curso. Se o serviço encerrar, devolvemos todo o saldo disponível. Pedidos pela página «Ajuda» do portal ou por email para ${mail(contactEmail(s))}; se é consumidor, também pelo botão «Desistir do contrato aqui» de cada carregamento, em «Créditos» (secção 7).</li>
 <li>Se um pagamento for anulado junto do banco (disputa) ou reembolsado fora do portal, os créditos correspondentes são retirados da carteira; se já tiverem sido usados, ficam em dívida e o carregamento seguinte paga-os primeiro.</li>
 <li>Se é consumidor e usa créditos num serviço que começa logo (entrevista extra, regeneração, animação), pede expressamente esse início e reconhece que perde o direito de livre resolução quando o serviço estiver integralmente prestado e o resultado lhe for disponibilizado.</li></ul>
 <h2>2-B. Animação por orçamento</h2><ul>
@@ -148,7 +177,8 @@ ${pt ? `<li>Preço com IVA: ${[2500, 10000].map(c => `${c / 100} créditos custa
 <h2>4. Quem pode comprar</h2><p>Empresas e consumidores com morada de faturação num país da União Europeia (exceto os territórios fora do território de IVA da UE, como as Canárias). Para outros países, contacte-nos: ${mail(contactEmail(s))}.</p>
 <h2>5. Pagamento, renovação e cancelamento</h2><p>Pagamento só por cartão, processado pela Stripe. A subscrição renova-se todos os meses até ser cancelada na conta («Manage card, Stripe receipts &amp; cancellation»); o cancelamento produz efeito no fim do período já pago. Ao mudar de plano, a diferença é cobrada ou creditada de imediato, na proporção do tempo que falta.</p>
 <h2>6. Faturas</h2><p>Por cada pagamento, a empresa vendedora emite uma fatura-recibo num programa de faturação certificado, com os dados de faturação indicados, e envia-a por email. O recibo da Stripe é só um comprovativo de pagamento.</p>
-<h2>7. Direito de livre resolução (consumidores)</h2><p>Se é consumidor, pode desistir do contrato nos ${WITHDRAWAL_DAYS} dias seguintes à subscrição, sem indicar o motivo, pelo botão «Desistir do contrato aqui» na sua conta ou por email para ${mail(contactEmail(s))}. Como pede que o serviço comece logo, paga a parte do serviço já prestada até à desistência (DL 24/2014, art. 15.º); o resto é devolvido no prazo de 14 dias, pelo mesmo meio de pagamento. Perde o direito de livre resolução quando o serviço estiver integralmente prestado e, quanto a cada episódio ou vídeo já disponibilizado com o seu consentimento prévio e expresso, a partir desse momento (art. 17.º, n.º 1, als. a) e l)).</p>
+<h2>7. Direito de livre resolução (consumidores)</h2><p>Se é consumidor, pode desistir do contrato sem indicar o motivo: da subscrição, nos ${WITHDRAWAL_DAYS} dias seguintes à subscrição, pelo botão «Desistir do contrato aqui» na sua conta; de cada carregamento de créditos, nos ${WITHDRAWAL_DAYS} dias seguintes ao pagamento, pelo botão «Desistir do contrato aqui» desse carregamento, em «Créditos» (devolvemos o saldo ainda disponível desse carregamento). Também pode usar o modelo de formulário abaixo, ou qualquer outra declaração inequívoca, enviados por email para ${mail(contactEmail(s))}. Como pede que o serviço comece logo, paga a parte do serviço já prestada até à desistência (DL 24/2014, art. 15.º); o resto é devolvido no prazo de 14 dias, pelo mesmo meio de pagamento. Perde o direito de livre resolução quando o serviço estiver integralmente prestado e, quanto a cada episódio ou vídeo já disponibilizado com o seu consentimento prévio e expresso, a partir desse momento (art. 17.º, n.º 1, als. a) e l)).</p>
+${withdrawalFormHtml({ ...s, email: contactEmail(s) })}
 <h2>8. Reclamações e litígios</h2><p>Pode reclamar no ${complaintsLink(s)} ou por email para ${mail(contactEmail(s))}. ${s.adr ? `Em caso de litígio de consumo, pode recorrer a ${esc(s.adr)}.` : 'Em caso de litígio de consumo, pode recorrer a uma entidade de resolução alternativa de litígios de consumo (lista no Portal do Consumidor, <a href="https://www.consumidor.gov.pt" rel="noopener">www.consumidor.gov.pt</a>).'} Mantém sempre o direito de recorrer aos tribunais.</p>
 <p class="hint">Ver também a <a href="/privacidade-pagamentos">privacidade nos pagamentos</a> e a <a href="/privacy">privacidade das entrevistas</a>.</p></div>`;
 }
