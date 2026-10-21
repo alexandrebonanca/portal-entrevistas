@@ -159,6 +159,8 @@ test('convidado ↔ administrador: na língua do convidado, com o contexto da en
   assert.match(help.body, /lang="en"/);
   assert.match(help.body, /Contact support/);
   assert.match(help.body, /not by email/);
+  assert.match(help.body, /<form method="post" action="\/entrevista\/ajuda#suporte">/, 'erros do formulário à vista (sem JavaScript)');
+  assert.match(help.body, /while it is valid/, 'diz até quando a resposta fica visível');
 
   const r = await post('/entrevista/ajuda', { subject: '', message: 'My microphone does not work\non my phone.' }, guest, '10.0.0.7');
   assert.equal(r.statusCode, 302);
@@ -174,6 +176,8 @@ test('convidado ↔ administrador: na língua do convidado, com o contexto da en
   assert.match(at.body, /<strong>Língua:<\/strong> Inglês/);
   assert.match(at.body, /Responder \(em inglês/);
   assert.match(at.body, /<strong>Convidado \(Rui\)<\/strong>/);
+  assert.match(at.body, /Não escreva palavras-passe nem chaves nas respostas/);
+  assert.doesNotMatch(at.body, /já não tem um convite válido/, 'convite válido: sem aviso');
   assert.match((await get('/admin/suporte', admin)).body, /Convidado: Rui<br><span class="hint">«Fibra ótica em Portugal»/);
 
   await post(`/admin/suporte/${guestThread}/responder`, { message: 'Please allow the microphone in the browser settings.' }, admin);
@@ -254,8 +258,9 @@ test('limites: mensagem vazia ou longa demais, 10 mensagens por hora por remeten
     for (let k = 0; k < 10; k++) assert.equal((await post('/ajuda', { message: `pedido ${k}` }, c, ip)).statusCode, 302);
   }
   const fourth = await newUser('Quarta', 'c4@example.com');
-  assert.equal((await post('/ajuda', { message: 'pedido' }, fourth, ip)).statusCode, 429);
-  assert.equal((await post('/ajuda', { message: 'pedido' }, fourth, '10.2.0.2')).statusCode, 302, 'noutro IP passa');
+  for (let k = 0; k < 10; k++) assert.equal((await post('/ajuda', { message: 'pedido' }, fourth, ip)).statusCode, 429);
+  // As recusas pelo IP não gastaram o limite da pessoa: noutro IP envia as 10 mensagens da hora.
+  for (let k = 0; k < 10; k++) assert.equal((await post('/ajuda', { message: `pedido ${k}` }, fourth, '10.2.0.2')).statusCode, 302, `noutro IP passa (${k})`);
 
   // convidado: o mesmo limite por entrevista
   for (let k = 0; k < 10; k++) assert.equal((await post('/entrevista/ajuda', { message: `ajuda ${k}` }, guestPt, '10.3.0.1')).statusCode, 302);
@@ -300,4 +305,84 @@ test('preparação do assistente: um pedido aberto a partir dele guarda a respos
   // o lugar do assistente na página de ajuda fica antes do formulário
   const help = (await get('/ajuda', ana)).body;
   assert.ok(help.indexOf('<h1>Ajuda</h1>') < help.indexOf('id="suporte"') && help.indexOf('id="suporte"') < help.indexOf('id="pedidos"'));
+});
+
+test('limites: rateLimitAll só conta quando todos os limites estão livres', async () => {
+  const { rateLimitAll } = await import('../src/lib.ts');
+  assert.equal(rateLimitAll([['t:pessoa', 2, 60_000], ['t:ip', 1, 60_000]]), true);
+  assert.equal(rateLimitAll([['t:pessoa', 2, 60_000], ['t:ip', 1, 60_000]]), false, 'IP cheio');
+  assert.equal(rateLimitAll([['t:pessoa', 2, 60_000], ['t:ip2', 5, 60_000]]), true, 'a recusa anterior não gastou o limite da pessoa');
+  assert.equal(rateLimitAll([['t:pessoa', 2, 60_000], ['t:ip2', 5, 60_000]]), false, 'agora a pessoa está no limite');
+});
+
+test('convite cancelado: o convidado continua a ler as respostas (só leitura) e o administrador é avisado', async () => {
+  const { id, gs } = await invite('Entrevista a cancelar', 'pt-PT', 'Sofia', 'sofia@example.com');
+  const r = await post('/entrevista/ajuda', { message: 'Apaguem os meus dados, por favor.' }, gs, '10.5.0.1');
+  const tid = threadOf(r.headers.location as string);
+  await post(`/entrevistas/${id}/cancelar`, {}, admin);
+  await post(`/admin/suporte/${tid}/responder`, { message: 'Os seus dados foram apagados.' }, admin);
+  const at = await get(`/admin/suporte/${tid}`, admin);
+  assert.match(at.body, /O convidado já não tem um convite válido \(entrevista cancelada\)/);
+  assert.match(at.body, /só consegue ler as respostas no navegador onde abriu o convite/);
+  assert.match(at.body, /contacte-o também por email: sofia@example\.com/);
+
+  // O convidado: ajuda só de leitura, com o contador de respostas por ler; as páginas da entrevista continuam fechadas.
+  const help = await get('/entrevista/ajuda', gs);
+  assert.equal(help.statusCode, 200);
+  assert.match(help.body, /O seu convite já não está ativo/);
+  assert.match(help.body, /support@example\.com/);
+  assert.match(help.body, /<a href="\/entrevista\/ajuda">Ajuda <span class="badge" aria-hidden="true">1<\/span>/);
+  assert.doesNotMatch(help.body, /id="sp-m"|id="as-q"|Voltar à entrevista/, 'sem formulários nem regresso à entrevista');
+  assert.match(help.body, /Apaguem os meus dados/);
+  const seen = await get(`/entrevista/ajuda/${tid}`, gs);
+  assert.equal(seen.statusCode, 200);
+  assert.match(seen.body, /Os seus dados foram apagados\./);
+  assert.match(seen.body, /não pode escrever/);
+  assert.doesNotMatch(seen.body, /\/responder"|\/fechar"|\/reabrir"/);
+  assert.equal((await db.one('SELECT unread_user FROM support_threads WHERE id=$1', [tid])).unread_user, false, 'lida');
+  assert.equal((await get('/entrevista', gs)).headers.location, '/');
+
+  // Escrever é recusado sem gravar nada.
+  const n = Number((await db.one('SELECT count(*)::int n FROM support_messages')).n);
+  for (const [url, body] of [[`/entrevista/ajuda/${tid}/responder`, { message: 'mais uma' }], ['/entrevista/ajuda', { message: 'novo pedido' }], [`/entrevista/ajuda/${tid}/fechar`, {}], ['/entrevista/ajuda/assistente', { q: 'olá' }]] as const) {
+    const w = await post(url, body, gs, '10.5.0.1');
+    assert.equal(w.statusCode, 303, url); assert.equal(w.headers.location, '/entrevista/ajuda', url);
+  }
+  assert.equal(Number((await db.one('SELECT count(*)::int n FROM support_messages')).n), n);
+  assert.equal((await db.one('SELECT status FROM support_threads WHERE id=$1', [tid])).status, 'answered');
+  // Outro convidado não vê este pedido.
+  assert.equal((await get(`/entrevista/ajuda/${tid}`, guest)).statusCode, 404);
+});
+
+test('convite recusado ou substituído por um link novo: a sessão antiga só lê; o link novo volta a escrever', async () => {
+  const { id, token, gs } = await invite('Entrevista recusada', 'en', 'Tiago', 'tiago@example.com');
+  const tid = threadOf((await post('/entrevista/ajuda', { message: 'Can I take part later?' }, gs, '10.6.0.1')).headers.location as string);
+  await post(`/i/${token}/recusar`, {}, '', '10.6.0.1');
+  const help = await get('/entrevista/ajuda', gs);
+  assert.match(help.body, /Your invitation is no longer active/);
+  assert.match((await get(`/entrevista/ajuda/${tid}`, gs)).body, /Can I take part later\?/);
+  assert.match((await get(`/admin/suporte/${tid}`, admin)).body, /já não tem um convite válido \(convite recusado\)/);
+
+  // Link novo (reenvio): a sessão antiga fica só de leitura; com o link novo, o convidado volta a escrever.
+  const b = await invite('Entrevista reenviada', 'pt-PT', 'Vera', 'vera@example.com');
+  const t2 = threadOf((await post('/entrevista/ajuda', { message: 'Pergunta antes do reenvio.' }, b.gs, '10.6.0.2')).headers.location as string);
+  await post(`/entrevistas/${b.id}/reenviar`, {}, admin);
+  await flushOutbox(db);
+  assert.match((await get('/entrevista/ajuda', b.gs)).body, /O seu convite já não está ativo/);
+  assert.doesNotMatch((await get(`/admin/suporte/${t2}`, admin)).body, /já não tem um convite válido/, 'há um link novo válido');
+  const mail = await db.one(`SELECT text_body FROM emails WHERE interview_id=$1 AND dedupe_key LIKE 'invite:%' ORDER BY created_at DESC LIMIT 1`, [b.id]);
+  const fresh = `gs=${cookies(await post(`/i/${/\/i\/([A-Za-z0-9_-]{40,})/.exec(mail.text_body)![1]}/abrir`, {}, '', '10.9.9.9')).gs}`;
+  const page2 = await get('/entrevista/ajuda', fresh);
+  assert.match(page2.body, /id="sp-m"/); assert.match(page2.body, /Pergunta antes do reenvio\./);
+  assert.equal((await post(`/entrevista/ajuda/${t2}/responder`, { message: 'Já tenho o link novo.' }, fresh, '10.6.0.2')).statusCode, 302);
+  assert.ok(id);
+});
+
+test('TRUST_PROXY: número de saltos, lista de endereços ou true/false (sem valor fica como antes)', async () => {
+  const { parseTrustProxy } = await import('../src/config.ts');
+  assert.equal(parseTrustProxy(undefined), true);
+  assert.equal(parseTrustProxy(' '), true);
+  assert.equal(parseTrustProxy('1'), 1);
+  assert.equal(parseTrustProxy('false'), false);
+  assert.equal(parseTrustProxy('10.0.0.0/8,127.0.0.1'), '10.0.0.0/8,127.0.0.1');
 });

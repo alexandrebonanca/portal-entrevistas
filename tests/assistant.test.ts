@@ -8,13 +8,16 @@ process.env.AI_MOCK = '1';
 process.env.PGLITE_MEMORY = '1';
 process.env.STORAGE_DIR = mkdtempSync(join(tmpdir(), 'pe-test-'));
 process.env.BASE_URL = 'http://test.local';
+process.env.ASSISTANT_AI_PER_HOUR = '5'; // teto global de respostas redigidas pela IA (testado com a IA simulada por injeção)
 
 const { openDb, migrate } = await import('../src/db.ts');
 const { buildApp } = await import('../src/app.ts');
 const { flushOutbox } = await import('../src/mail.ts');
 const { config } = await import('../src/config.ts');
 const A = await import('../src/assistant.ts');
+const { helpRequest, parseHelp, HELP_MAX_TOKENS } = await import('../src/ai/openai.ts');
 const { FAQ_SEED, seedAssistant } = await import('../src/assistant-faq.ts');
+const { SUPPORT_RATE } = await import('../src/support.ts');
 
 let db: any, app: any;
 before(async () => { db = await openDb(); await migrate(db); app = await buildApp(db); });
@@ -67,6 +70,17 @@ test('pesquisa: sem acentos, sem palavras vazias, sinónimos pt/en, língua da p
   assert.equal(A.detectLang('How can I record my answer?'), 'en');
   assert.equal(A.detectLang('Ação?'), 'pt', 'acentos portugueses');
   assert.equal(A.detectLang('xyz'), null);
+  // Formas verbais: «apago» encontra «apagar», «partilho» encontra «partilhar», «anulo» encontra «anular».
+  assert.deepEqual(A.tokens('apago'), A.tokens('apagar'));
+  assert.deepEqual(A.tokens('elimino'), A.tokens('eliminar'));
+  assert.deepEqual(A.tokens('anulo'), A.tokens('anular'));
+  assert.deepEqual(A.tokens('partilho'), A.tokens('partilhar'));
+  assert.deepEqual(A.tokens('apagamos'), A.tokens('apagou'));
+  assert.notDeepEqual(A.tokens('convidado'), A.tokens('convidar'), 'o convidado não é o convite');
+  // Espanhol e francês não passam por português só por terem acentos: fica a língua da página.
+  for (const q of ['¿Mi foto será pública?', '¿Puedo hacer un vídeo con mis fotos?', 'Où est le lien vidéo ?', 'Mi foto será pública']) assert.equal(A.detectLang(q), null, q);
+  assert.equal(A.detectLang('A minha fotografia será pública?'), 'pt');
+  assert.equal(A.detectLang('Não recebi'), 'pt', 'o til só existe em português');
 });
 
 test('pesquisa: tapa emails, links do convite, números longos e códigos; valida o tamanho da pergunta', () => {
@@ -110,6 +124,23 @@ test('pesquisa sobre a semente: perguntas reais encontram a entrada certa (pt e 
     ['can I skip a question', 'en', 'guest', 'convidado-recusar-pergunta'],
     ['how do I contact support', 'en', 'guest', 'convidado-suporte'],
     ['who sells this service', 'en', 'guest', 'quem-gere'],
+    // formas verbais e perguntas naturais
+    ['Como apago uma entrevista?', 'pt', 'interviewer', 'cancelar'],
+    ['Como elimino a entrevista?', 'pt', 'interviewer', 'cancelar'],
+    ['Como anulo a entrevista?', 'pt', 'interviewer', 'cancelar'],
+    ['Como partilho o episódio?', 'pt', 'interviewer', 'publicar'],
+    ['Como publico o episódio?', 'pt', 'interviewer', 'publicar'],
+    ['How do I publish?', 'en', 'interviewer', 'publicar'],
+    ['Who can see the episode?', 'en', 'interviewer', 'publicar'],
+    ['Quem pode ver o episódio?', 'pt', 'interviewer', 'publicar'],
+    ['Quem gere o portal?', 'pt', 'interviewer', 'quem-gere'],
+    ['Quem é o dono do portal?', 'pt', 'interviewer', 'quem-gere'],
+    ['Quem é a Certif?', 'pt', 'interviewer', 'quem-gere'],
+    ['Who runs this portal?', 'en', 'interviewer', 'quem-gere'],
+    ['Who owns this website?', 'en', 'interviewer', 'quem-gere'],
+    ['Who runs this portal?', 'en', 'guest', 'quem-gere'],
+    ['O que acontece às perguntas que faço ao assistente?', 'pt', 'interviewer', 'assistente-privacidade'],
+    ['Who can listen to my episode?', 'en', 'guest', 'convidado-publicacao'],
   ];
   for (const [q, lang, aud, key] of cases) {
     const hits = A.searchFaq(seedEntries(lang, aud), q);
@@ -145,8 +176,23 @@ test('semente: pt e en em cada entrada, dentro dos limites, marcadores conhecido
   assert.match(A.fillVars(by('perguntas').pt[1]), new RegExp(`até ${config.limits.maxQuestions} perguntas`));
   assert.match(A.fillVars(by('validade-link').pt[1]), new RegExp(`${config.limits.inviteDays} dias`));
   assert.ok(A.fillVars(by('quem-gere').pt[1]).includes(config.owner.name) && A.fillVars(by('quem-gere').pt[1]).includes(config.seller.name));
-  assert.match(by('video-ia').pt[1], /só é pedida pelo administrador/); assert.match(by('video-ia').pt[1], /chegar em breve/);
-  assert.match(by('video-ia').en[1], /only be requested by the portal administrator/); assert.match(by('video-ia').en[1], /coming soon/);
+  // Vídeo IA: verdadeiro com e sem «Permitir vídeo IA a todos»; aprovação obrigatória só para o entrevistado animado.
+  assert.match(by('video-ia').pt[1], /só o administrador os pede/); assert.match(by('video-ia').pt[1], /chegar em breve/);
+  assert.match(by('video-ia').pt[1], /quando o administrador do portal os abre a todos os entrevistadores/);
+  assert.match(by('video-ia').pt[1], /se for o entrevistado, ele vê e aprova o vídeo/);
+  assert.match(by('video-ia').en[1], /only the administrator requests them/); assert.match(by('video-ia').en[1], /coming soon/);
+  assert.match(by('video-ia').en[1], /if it is the guest, they see and approve the video/);
+  // Correções de conteúdo verificadas no código
+  assert.match(by('galeria').pt[1], /se quiser, indique um tema \(sem tema, fica no grupo «Other»\)/); assert.doesNotMatch(by('galeria').pt[1], /e indicar um tema/);
+  assert.match(by('galeria').en[1], /without one, it is listed under «Other»/);
+  for (const l of ['pt', 'en'] as const) assert.doesNotMatch(by('estados')[l][1], /expirar|expiry/, `estados/${l}: «expirada» nunca é gravado`);
+  assert.match(by('objetivo').pt[1], /Só o texto é mostrado ao entrevistado/); assert.match(by('objetivo').en[1], /Only the text is shown to the guest/);
+  assert.match(by('validacao-entrevistado').pt[1], /com «Só o entrevistador aprova», a aprovação é só sua/);
+  assert.match(by('validacao-entrevistado').en[1], /the approval is yours alone/);
+  assert.match(by('palavra-passe').pt[1], /nunca é escrita nas mensagens do suporte/); assert.match(by('palavra-passe').en[1], /never written in support messages/);
+  assert.match(by('convidado-suporte').pt[1], /enquanto for válido/); assert.match(by('convidado-suporte').en[1], /while it is valid/);
+  assert.match(A.fillVars(by('convidado-privacidade').pt[1]), new RegExp(`não seguem para serviços de IA\\) e ficam registadas sem identificação durante ${A.ASSISTANT_LOG_DAYS} dias`));
+  assert.match(A.fillVars(by('assistente-privacidade').pt[1]), new RegExp(`durante ${A.ASSISTANT_LOG_DAYS} dias`));
 });
 
 // ======================= fluxos =======================
@@ -186,6 +232,9 @@ test('utilizador: pergunta, resposta com as entradas (AI_MOCK), registo sem dado
   assert.match(help.body, /<summary>Quem gere e quem comercializa o quietinterview\?<\/summary>/, 'as de «todos», com o marcador preenchido');
   assert.doesNotMatch(help.body, /Como gravo uma resposta\?/, 'sem as perguntas só para convidados');
   assert.match(help.body, /<script src="\/static\/assistant\.js" defer><\/script>/);
+  // Sem subscrição (e em AI_MOCK) a pergunta nunca vai para a IA, e o aviso diz isso e o prazo do registo.
+  assert.match(help.body, /não é enviada a serviços de IA\) e fica registada sem identificação durante 180 dias/);
+  assert.match(help.body, /<form method="post" action="\/ajuda#suporte">/, 'erros do formulário à vista (sem JavaScript)');
   assert.ok(help.body.indexOf('id="assistente"') < help.body.indexOf('id="suporte"'), 'assistente antes de «Falar com o suporte»');
 
   const r = await post('/ajuda/assistente', { q: 'Como envio o convite? Sou a ana@example.com' }, ana);
@@ -202,8 +251,8 @@ test('utilizador: pergunta, resposta com as entradas (AI_MOCK), registo sem dado
   assert.equal(page.statusCode, 200);
   assert.match(page.body, /Perguntou: «Como envio o convite\? Sou a \[email\]»/);
   assert.match(page.body, /<h3 class="as-h">Como envio o convite ao entrevistado\?<\/h3><p class="msgbody">Na página de edição, carregue em «Rever e convidar»/);
-  assert.match(page.body, new RegExp(`<form method="post" action="/ajuda/assistente/${id}/ajudou" class="as-fb" data-as>`));
-  assert.match(page.body, /Isto ajudou\?/);
+  assert.match(page.body, new RegExp(`<form method="post" action="/ajuda/assistente/${id}/ajudou" data-as><div class="as-fb" role="group" aria-labelledby="as-fb-q">`));
+  assert.match(page.body, /<span id="as-fb-q">Isto ajudou\?<\/span>/, 'o grupo dos botões tem nome para os leitores de ecrã');
   assert.match(page.body, new RegExp(`href="/ajuda\\?r=${id}&amp;s=[^"]+&amp;apoio=1#suporte">Falar com o suporte</a>`));
 
   // Outro utilizador, com o mesmo link, não vê a resposta nem pode dizer se ajudou.
@@ -239,14 +288,14 @@ test('«Não ajudou» → pedido ao suporte já com a pergunta e a resposta do a
   const pg = await get(no.headers.location as string, ana);
   assert.match(pg.body, /Lamentamos\. Envie a pergunta ao suporte/);
   assert.match(pg.body, /A sua pergunta e a resposta do assistente seguem com o pedido/);
-  assert.match(pg.body, new RegExp(`<form method="post" action="/ajuda/assistente/${id}/suporte"><input type="hidden" name="s" value="[^"]+">`));
+  assert.match(pg.body, new RegExp(`<form method="post" action="/ajuda/assistente/${id}/suporte#suporte"><input type="hidden" name="s" value="[^"]+">`));
   assert.match(pg.body, /<textarea id="sp-m" name="message"[^>]*>Como altero a minha palavra-passe\?<\/textarea>/);
   assert.equal(pg.body.split('id="sp-m"').length - 1, 1, 'um só formulário de suporte na página');
 
   // erros: mensagem vazia (formulário mantém-se), assinatura errada
   const empty = await post(`/ajuda/assistente/${id}/suporte`, { s, subject: '', message: '  ' }, ana);
   assert.equal(empty.statusCode, 422);
-  assert.match(empty.body, new RegExp(`action="/ajuda/assistente/${id}/suporte"`));
+  assert.match(empty.body, new RegExp(`action="/ajuda/assistente/${id}/suporte#suporte"`));
   assert.equal((await post(`/ajuda/assistente/${id}/suporte`, { s: 'x', message: 'olá' }, ana)).statusCode, 404);
   assert.equal((await post(`/ajuda/assistente/${id}/suporte`, { s, message: 'olá' }, bruno)).statusCode, 404);
   assert.equal(Number((await db.one(`SELECT count(*)::int n FROM support_threads WHERE origin='assistant'`)).n), 0);
@@ -279,7 +328,7 @@ test('«Não ajudou» → pedido ao suporte já com a pergunta e a resposta do a
   // depois de enviado, a resposta mostra que já foi ao suporte e o formulário volta ao normal
   const again = await get(no.headers.location as string, ana);
   assert.match(again.body, /Pedido enviado\. A resposta aparece nesta página\./);
-  assert.match(again.body, /<form method="post" action="\/ajuda"><label for="sp-s">/);
+  assert.match(again.body, /<form method="post" action="\/ajuda#suporte"><label for="sp-s">/);
   assert.equal(await nEmails(), emails, 'nenhum email');
 });
 
@@ -442,6 +491,47 @@ test('sem resposta: o administrador vê a pergunta, cria, edita e desativa entra
   assert.equal((await get('/admin/assistente/00000000-0000-0000-0000-000000000000', admin)).statusCode, 404);
 });
 
+test('administrador: a língua de uma entrada da semente não muda (sem «Erro interno»); «tratada» fica na auditoria', async () => {
+  const sid = await seedId('quem-gere');
+  const before = await db.one('SELECT * FROM assistant_faq WHERE id=$1', [sid]);
+  const ed = await get(`/admin/assistente/${sid}`, admin);
+  assert.doesNotMatch(ed.body, /<select id="f-lang"/, 'sem escolha de língua numa entrada da semente');
+  assert.match(ed.body, /<input type="hidden" name="lang" value="pt">/);
+  assert.match(ed.body, /a língua não muda/);
+  const r = await post(`/admin/assistente/${sid}`, { lang: 'en', audience: 'all', question: 'Quem gere e quem comercializa o {brand}?', keywords: 'quem gere', answer: 'Texto novo.', sort: '5', active: '1' }, admin);
+  assert.equal(r.statusCode, 422, 'recusado com explicação, não «Erro interno»');
+  assert.match(r.body, /A língua de uma entrada da semente não muda/);
+  assert.match(r.body, /<input type="hidden" name="lang" value="pt">/);
+  assert.match(r.body, /Texto novo\./, 'o que foi escrito não se perde');
+  const after = await db.one('SELECT * FROM assistant_faq WHERE id=$1', [sid]);
+  assert.equal(after.lang, 'pt'); assert.equal(after.answer, before.answer);
+  // Sem mudar de língua, guarda normalmente.
+  const ok = await post(`/admin/assistente/${sid}`, { lang: 'pt', audience: 'all', question: before.question, keywords: before.keywords, answer: before.answer, sort: String(before.sort), active: '1' }, admin);
+  assert.equal(ok.headers.location, '/admin/assistente?ok=saved#base');
+  // Numa entrada criada pelo administrador, a língua escolhe-se e muda-se.
+  await post('/admin/assistente', { lang: 'pt', audience: 'all', question: 'Pergunta de teste da língua?', keywords: 'teste', answer: 'Resposta.', sort: '1', active: '1' }, admin);
+  const mine = await db.one(`SELECT id FROM assistant_faq WHERE question='Pergunta de teste da língua?'`);
+  assert.match((await get(`/admin/assistente/${mine.id}`, admin)).body, /<select id="f-lang" name="lang"/);
+  assert.equal((await post(`/admin/assistente/${mine.id}`, { lang: 'en', audience: 'all', question: 'Language test question?', keywords: 'test', answer: 'Answer.', sort: '1', active: '0' }, admin)).statusCode, 302);
+  assert.equal((await db.one('SELECT lang FROM assistant_faq WHERE id=$1', [mine.id])).lang, 'en');
+
+  // «Marcar como tratada» fica na auditoria; um registo inexistente dá 404.
+  const q = await A.answerQuestion(db, { question: 'zzqx pergunta sem resposta', pageLang: 'pt', audience: 'interviewer' });
+  assert.equal((await post(`/admin/assistente/perguntas/${q}/tratada`, {}, admin)).headers.location, '/admin/assistente?ok=reviewed#h-melhorar');
+  assert.ok(await db.one(`SELECT 1 FROM audit_events WHERE action='assistant.question_reviewed' AND actor='admin@example.com' AND meta->>'questionId'=$1`, [q]));
+  assert.equal((await post('/admin/assistente/perguntas/00000000-0000-0000-0000-000000000000/tratada', {}, admin)).statusCode, 404);
+});
+
+test('limites: um pedido já enviado a partir do assistente não gasta o limite de mensagens', async () => {
+  const hugo = await newUser('Hugo', 'hugo@example.com');
+  const r = await post('/ajuda/assistente', { q: 'Como envio o convite?' }, hugo, '10.80.0.1');
+  const id = logOf(r.headers.location as string), s = decodeURIComponent(/[?&]s=([^&#]+)/.exec(r.headers.location as string)![1]);
+  assert.equal((await post(`/ajuda/assistente/${id}/suporte`, { s, message: 'Não percebi.' }, hugo, '10.80.0.1')).statusCode, 302);
+  for (let i = 0; i < 5; i++) assert.equal((await post(`/ajuda/assistente/${id}/suporte`, { s, message: 'Não percebi.' }, hugo, '10.80.0.1')).headers.location, '/ajuda#pedidos');
+  for (let i = 1; i < SUPPORT_RATE.perSender; i++) assert.equal((await post('/ajuda', { message: `mensagem ${i}` }, hugo, '10.80.0.1')).statusCode, 302, `mensagem ${i}`);
+  assert.equal((await post('/ajuda', { message: 'a mais' }, hugo, '10.80.0.1')).statusCode, 429);
+});
+
 test('limites: pergunta vazia ou longa; 20 perguntas por hora por pessoa e 60 por IP; o mesmo para convidados', async () => {
   const empty = await post('/ajuda/assistente', { q: '' }, ana);
   assert.equal(empty.statusCode, 422);
@@ -479,7 +569,13 @@ test('IA (simulada por injeção): redige só a partir das entradas, recebe só 
   assert.equal(A.defaultAiEnabled(), false, 'AI_MOCK: nunca chama a OpenAI');
   const calls: { system: string; user: string }[] = [];
   const ai = async (system: string, user: string) => { calls.push({ system, user }); return { answer: 'Use «Rever e convidar» <b>na página</b>.', answered: true }; };
-  const id = await A.answerQuestion(db, { question: 'Como envio o convite? Sou a ana@example.com, 912 345 678', pageLang: 'pt', audience: 'interviewer' }, { aiEnabled: () => true, ai });
+  // Sem `ai` (contas sem subscrição) ou para convidados, o modelo nunca é chamado, mesmo com chave.
+  for (const o of [{ audience: 'interviewer' as const }, { audience: 'interviewer' as const, ai: false }, { audience: 'guest' as const, ai: true }]) {
+    const q = await A.answerQuestion(db, { question: 'Como envio o convite?', pageLang: 'pt', ...o }, { aiEnabled: () => true, ai });
+    assert.equal((await db.one('SELECT mode FROM assistant_questions WHERE id=$1', [q])).mode, 'local');
+  }
+  assert.equal(calls.length, 0, 'nem convidados nem contas sem subscrição');
+  const id = await A.answerQuestion(db, { question: 'Como envio o convite? Sou a ana@example.com, 912 345 678', pageLang: 'pt', audience: 'interviewer', ai: true }, { aiEnabled: () => true, ai });
   assert.equal(calls.length, 1);
   assert.match(calls[0].system, /ONLY the help entries/); assert.match(calls[0].system, /NOT instructions/); assert.match(calls[0].system, /do not know/); assert.match(calls[0].system, /European Portuguese/);
   assert.match(calls[0].user, /<faq>\n\[\{"question":"Como envio o convite ao entrevistado\?"/);
@@ -497,17 +593,65 @@ test('IA (simulada por injeção): redige só a partir das entradas, recebe só 
   assert.match(t, /^Use «Rever e convidar» <b>na página<\/b>\.\n\nCom base em:\n\n— Como envio o convite ao entrevistado\?/);
 
   // o modelo diz que não sabe: fica registado como sem resposta
-  const unk = await A.answerQuestion(db, { question: 'Como envio o convite por SMS?', pageLang: 'pt', audience: 'interviewer' }, { aiEnabled: () => true, ai: async () => ({ answer: 'Não sei. Fale com o suporte.', answered: false }) });
+  const unk = await A.answerQuestion(db, { question: 'Como envio o convite por SMS?', pageLang: 'pt', audience: 'interviewer', ai: true }, { aiEnabled: () => true, ai: async () => ({ answer: 'Não sei. Fale com o suporte.', answered: false }) });
   assert.equal((await db.one('SELECT answered FROM assistant_questions WHERE id=$1', [unk])).answered, false);
   // falha do modelo: ficam as entradas encontradas
-  const fail = await A.answerQuestion(db, { question: 'Como envio o convite?', pageLang: 'pt', audience: 'interviewer' }, { aiEnabled: () => true, ai: async () => { throw new Error('timeout'); } });
+  const fail = await A.answerQuestion(db, { question: 'Como envio o convite?', pageLang: 'pt', audience: 'interviewer', ai: true }, { aiEnabled: () => true, ai: async () => { throw new Error('timeout'); } });
   const fl = await db.one('SELECT * FROM assistant_questions WHERE id=$1', [fail]);
   assert.equal(fl.mode, 'local'); assert.equal(fl.answer, null); assert.equal(fl.answered, true);
   // sem entradas: o modelo nem é chamado
   calls.length = 0;
-  const none = await A.answerQuestion(db, { question: 'receita de arroz de pato', pageLang: 'pt', audience: 'interviewer' }, { aiEnabled: () => true, ai });
+  const none = await A.answerQuestion(db, { question: 'receita de arroz de pato', pageLang: 'pt', audience: 'interviewer', ai: true }, { aiEnabled: () => true, ai });
   assert.equal(calls.length, 0);
   assert.equal((await db.one('SELECT answered, mode FROM assistant_questions WHERE id=$1', [none])).mode, 'local');
+
+  // Teto global por hora (ASSISTANT_AI_PER_HOUR=5 neste teste; já foram 3 chamadas): acima dele, só a pesquisa local.
+  assert.equal(config.openai.assistantAiPerHour, 5);
+  const modes: string[] = [];
+  for (let i = 0; i < 4; i++) modes.push((await db.one('SELECT mode FROM assistant_questions WHERE id=$1', [await A.answerQuestion(db, { question: 'Como envio o convite?', pageLang: 'pt', audience: 'interviewer', ai: true }, { aiEnabled: () => true, ai })])).mode);
+  assert.deepEqual(modes, ['ai', 'ai', 'local', 'local']);
+  assert.equal(calls.length, 2, 'o teto não depende do IP nem da conta');
+
+  // Teto de tokens no pedido; uma resposta cortada conta como falha (ficam as entradas encontradas).
+  const req = helpRequest('sys', 'user');
+  assert.equal(req.max_completion_tokens, HELP_MAX_TOKENS); assert.ok(HELP_MAX_TOKENS <= 500);
+  assert.deepEqual(parseHelp({ choices: [{ finish_reason: 'stop', message: { content: '{"answer":" Olá ","answered":true}' } }] }), { answer: 'Olá', answered: true });
+  assert.throws(() => parseHelp({ choices: [{ finish_reason: 'length', message: { content: '{"answer":"Lorem ipsum' } }] }), /cortada/);
+
+  // Os marcadores {…} das perguntas também são preenchidos para o modelo e no pedido ao suporte.
+  const qg = (await db.one(`SELECT id, lang, audience, question, answer, keywords, sort FROM assistant_faq WHERE seed_key='quem-gere' AND lang='pt'`));
+  assert.match(A.assistantPrompt('Quem vende?', [qg], 'pt').user, new RegExp(`"question":"Quem gere e quem comercializa o ${config.brand}\\?"`));
+  assert.doesNotMatch(A.assistantPrompt('Quem vende?', [qg], 'pt').user, /\{brand\}/);
+  const tr = A.assistantTranscript({ log: { answer: null }, entries: [qg] }, 'pt');
+  assert.match(tr, new RegExp(`— Quem gere e quem comercializa o ${config.brand}\\?`)); assert.doesNotMatch(tr, /\{\w+\}/);
+});
+
+test('IA só para contas com subscrição ativa (e o administrador); convidados e contas sem subscrição na pesquisa local', async () => {
+  const u = async (email: string) => db.one('SELECT id, role FROM users WHERE email=$1', [email]);
+  assert.equal(await A.assistantAiFor(db, await u('admin@example.com')), true);
+  assert.equal(await A.assistantAiFor(db, await u('ana@example.com')), false, 'sem subscrição');
+  const b = await u('bruno@example.com');
+  await db.query(`INSERT INTO subscriptions(user_id, plan_id, status, source, interviews_override) VALUES ($1,'starter','active','manual',0)`, [b.id]);
+  assert.equal(await A.assistantAiFor(db, b), true, 'com subscrição ativa, mesmo com a quota do mês gasta');
+  await db.query(`UPDATE subscriptions SET status='canceled' WHERE user_id=$1`, [b.id]);
+  assert.equal(await A.assistantAiFor(db, b), false, 'subscrição cancelada');
+  await db.query(`DELETE FROM subscriptions WHERE user_id=$1`, [b.id]);
+  // O convidado vê o aviso de que a pergunta não vai para a IA, na língua dele.
+  assert.match((await get('/entrevista/ajuda', guest)).body, /it is not sent to AI services\) and is stored without identification for 180 days/);
+  assert.match((await get('/entrevista/ajuda', guestPt)).body, /não é enviada a serviços de IA/);
+  // A página de privacidade explica o assistente e o suporte.
+  const priv = await get('/privacy');
+  assert.match(priv.body, /Help assistant and support/); assert.match(priv.body, /never sent to AI services/); assert.match(priv.body, /stored for 180 days/);
+});
+
+test('convidado com página em inglês que pergunta em espanhol ou francês: resposta em inglês (não em português)', async () => {
+  for (const q of ['¿Mi foto será pública?', '¿Puedo hacer un vídeo con mis fotos?', 'Où est le lien vidéo ?']) {
+    const r = await post('/entrevista/ajuda/assistente', { q }, guest, '10.71.0.1');
+    const id = logOf(r.headers.location as string);
+    assert.equal((await db.one('SELECT lang FROM assistant_questions WHERE id=$1', [id])).lang, 'en', q);
+    const pg = await get(r.headers.location as string, guest);
+    assert.doesNotMatch(pg.body, /<h3 class="as-h">(Quem|Como|O que|Posso|Tenho)/, `${q}: nada em português`);
+  }
 });
 
 test('registo: apagado ao fim de 180 dias (trabalho periódico e consulta do administrador)', async () => {
