@@ -142,8 +142,12 @@ ${faq.map((e: any) => `<tr><td>${e.sort}</td><td><a href="/admin/assistente/${e.
   /** Formulário de uma entrada (nova ou existente), com os marcadores disponíveis e a pré-visualização da resposta. */
   const form = (e: any, action: string, err?: string) => {
     const vars = faqVars();
+    // A língua de uma entrada da semente não muda: a outra língua já existe com a mesma chave (e voltaria a ser semeada).
+    const lang = e.seed_key
+      ? `<p class="sans" style="margin:12px 0 0"><strong>Língua:</strong> ${esc(LANG_LABEL[e.lang] ?? e.lang)}</p><p class="hint" style="margin:2px 0 0">Entrada da semente: a língua não muda. Para a outra língua, edite a entrada correspondente.</p><input type="hidden" name="lang" value="${esc(e.lang)}">`
+      : `<label for="f-lang">Língua</label>${sel('lang', e.lang, FAQ_LANGS.map(l => [l, LANG_LABEL[l]]), 'Língua')}`;
     return `${flash(err, 'bad')}<form method="post" action="${esc(action)}" class="card">
-<div class="row"><div class="grow"><label for="f-lang">Língua</label>${sel('lang', e.lang, FAQ_LANGS.map(l => [l, LANG_LABEL[l]]), 'Língua')}</div>
+<div class="row"><div class="grow">${lang}</div>
 <div class="grow"><label for="f-audience">Público</label>${sel('audience', e.audience, FAQ_AUDIENCES.map(a => [a, AUD_LABEL[a]]), 'Público')}</div>
 <div><label for="f-sort">Ordem</label><input id="f-sort" name="sort" type="number" min="0" max="100000" value="${esc(e.sort)}" style="width:120px;padding:11px 12px;border:1px solid var(--line);border-radius:8px;background:var(--card);color:var(--ink)"></div></div>
 <label for="f-q">Pergunta</label><input id="f-q" name="question" type="text" required maxlength="${FAQ_LIMITS.question}" value="${esc(e.question)}">
@@ -205,9 +209,16 @@ ${e.answer ? `<div class="card"><h2 style="margin-top:0;font-size:1.2rem">Pré-v
     const e = await entryOf(req);
     if (!e) return reply.code(404).send('Não encontrada');
     const r = read(req.body);
-    if (!r.ok) return view(req, reply, 'Editar entrada', `${back('#base')}<h1 style="font-size:1.8rem">Editar entrada</h1>${form({ ...r.v, id: e.id }, `/admin/assistente/${e.id}`, r.e)}`, 422);
+    const again = (msg: string) => view(req, reply, 'Editar entrada', `${back('#base')}<h1 style="font-size:1.8rem">Editar entrada</h1>${form({ ...r.v, id: e.id, seed_key: e.seed_key, lang: e.seed_key ? e.lang : r.v.lang }, `/admin/assistente/${e.id}`, msg)}`, 422);
+    if (!r.ok) return again(r.e);
     const v = r.v;
-    await db.query(`UPDATE assistant_faq SET lang=$2, audience=$3, question=$4, answer=$5, keywords=$6, sort=$7, active=$8, updated_at=now() WHERE id=$1`, [e.id, v.lang, v.audience, v.question, v.answer, v.keywords, v.sort, v.active]);
+    if (e.seed_key && v.lang !== e.lang) return again('A língua de uma entrada da semente não muda (a outra língua já existe). Edite a entrada nessa língua ou crie uma nova.');
+    try {
+      await db.query(`UPDATE assistant_faq SET lang=$2, audience=$3, question=$4, answer=$5, keywords=$6, sort=$7, active=$8, updated_at=now() WHERE id=$1`, [e.id, v.lang, v.audience, v.question, v.answer, v.keywords, v.sort, v.active]);
+    } catch (err: any) {
+      if (err?.code !== '23505') throw err;
+      return again('Já existe uma entrada da semente com esta chave nesta língua: nada foi guardado.');
+    }
     await audit(db, req.user!.email, 'assistant.faq_updated', null, { faqId: e.id });
     return reply.redirect('/admin/assistente?ok=saved#base');
   });
@@ -226,7 +237,8 @@ ${e.answer ? `<div class="card"><h2 style="margin-top:0;font-size:1.2rem">Pré-v
     if (!guard(req, reply)) return;
     const id = (req.params as any).id;
     if (!isUuid(id)) return reply.code(404).send('Não encontrada');
-    await db.query('UPDATE assistant_questions SET reviewed=true WHERE id=$1', [id]);
+    if (!(await db.one('UPDATE assistant_questions SET reviewed=true WHERE id=$1 RETURNING id', [id]))) return reply.code(404).send('Não encontrada');
+    await audit(db, req.user!.email, 'assistant.question_reviewed', null, { questionId: id });
     return reply.redirect('/admin/assistente?ok=reviewed#h-melhorar');
   });
 }
