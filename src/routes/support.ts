@@ -10,6 +10,8 @@ import {
   SUPPORT_CSS, SUPPORT_MAX_BODY, cleanBody, cleanSubject, supportAllowed, openThread, addMessage, setThreadStatus, threadMessages, isUuid,
   guestHelpNav,
 } from '../support.ts';
+import { cleanQuestion, assistantAllowed, answerQuestion, assistantSig, assistantSigOk, loadAnswer, assistantTranscript, faqLang, ASSISTANT_MAX_QUESTION, type Audience } from '../assistant.ts';
+import { assistantSection, assistantResult, asStateFrom, ASSISTANT_CSS, type AsCtx, type AsState, type Escalation } from './assistant.ts';
 
 type Dict = ReturnType<typeof t>;
 const HTML = { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' };
@@ -24,12 +26,12 @@ const statusPill = (s: string, d: Dict) => pill((d.supportStatus as Record<strin
 const okMsg = (d: Dict, c: unknown) => ({ sent: d.supportSent, reply: d.supportReplySent, closed: d.supportClosedOk, reopened: d.supportReopenedOk } as Record<string, string>)[String(c)];
 const errMsg = (d: Dict, c: unknown) => ({ empty: d.supportEmpty, long: d.supportTooLong(SUPPORT_MAX_BODY), rate: d.supportRate, closed: d.supportClosedNote } as Record<string, string>)[String(c)];
 
-/** Secção do assistente virtual na página de ajuda (perguntas e respostas): entra na fase seguinte; por agora vazia. */
-const assistantSection = async (_audience: 'interviewer' | 'guest', _lang: Lang) => '';
+const HELP_CSS = SUPPORT_CSS + ASSISTANT_CSS;
+const wantsJson = (req: FastifyRequest) => String(req.headers.accept ?? '').includes('application/json');
 
-/** Formulário «Falar com o suporte»; o assistente virtual reutiliza-o para abrir um pedido já preenchido. */
-export function supportForm(action: string, d: Dict, v: { subject?: string; message?: string } = {}) {
-  return `<form method="post" action="${esc(action)}"><label for="sp-s">${esc(d.supportSubject)}</label><input id="sp-s" name="subject" type="text" maxlength="140" value="${esc(v.subject ?? '')}">
+/** Formulário «Falar com o suporte»; o assistente virtual reutiliza-o para abrir um pedido já preenchido (com campos escondidos). */
+export function supportForm(action: string, d: Dict, v: { subject?: string; message?: string } = {}, hidden: Record<string, string> = {}) {
+  return `<form method="post" action="${esc(action)}">${Object.entries(hidden).map(([k, x]) => `<input type="hidden" name="${esc(k)}" value="${esc(x)}">`).join('')}<label for="sp-s">${esc(d.supportSubject)}</label><input id="sp-s" name="subject" type="text" maxlength="140" value="${esc(v.subject ?? '')}">
 <label for="sp-m">${esc(d.supportMessage)}</label><textarea id="sp-m" name="message" required maxlength="${SUPPORT_MAX_BODY}" rows="6">${esc(v.message ?? '')}</textarea>
 <p class="hint">${esc(d.supportMaxHint(SUPPORT_MAX_BODY))}</p><p><button class="accent">${esc(d.supportSend)}</button></p></form>`;
 }
@@ -43,13 +45,17 @@ const threadList = (rows: any[], base: string, d: Dict, lang: string) => rows.le
   ? `<ul class="threads sans">${rows.map(r => `<li><a href="${base}/${r.id}">${esc(r.subject)}</a> ${statusPill(r.status, d)}${r.unread_user ? ' ' + pill(d.supportNew, 'warn') : ''}<br><span class="hint">${esc(when(r.updated_at, lang))}</span></li>`).join('')}</ul>`
   : `<p class="hint">${esc(d.supportNone)}</p>`;
 
-/** Página de ajuda de quem pede (entrevistador/gestor ou convidado): assistente, formulário e pedidos. */
-const helpBody = (o: { d: Dict; lang: string; intro: string; assistant: string; base: string; rows: any[]; ok?: string; e?: string; form?: { subject?: string; message?: string }; top?: string; noForm?: string }) => {
+/**
+ * Página de ajuda de quem pede (entrevistador/gestor ou convidado): assistente, formulário e pedidos. Vindo do assistente
+ * («Não» ou «Falar com o suporte»), o formulário já vem preenchido com a pergunta e segue para o pedido com a resposta dele.
+ */
+const helpBody = (o: { d: Dict; lang: string; intro: string; assistant: string; base: string; rows: any[]; ok?: string; e?: string; form?: { subject?: string; message?: string }; top?: string; noForm?: string; escalate?: Escalation }) => {
   const unread = o.rows.filter(r => r.unread_user).length;
+  const x = o.escalate;
   return `${o.top ?? ''}<h1>${esc(o.d.helpTitle)}</h1>${flash(o.ok)}${unread ? `<div class="flash"><a href="#pedidos">${esc(o.d.supportUnreadSr(unread))}</a></div>` : ''}
 ${o.assistant}
 <section id="suporte" class="card" aria-labelledby="h-suporte"><h2 id="h-suporte" style="margin-top:0">${esc(o.d.supportTitle)}</h2>${flash(o.e, 'bad')}
-${o.noForm ?? `<p>${esc(o.intro)}</p>${supportForm(o.base, o.d, o.form)}`}</section>
+${o.noForm ?? (x ? `<p>${esc(x.note)}</p>${supportForm(x.action, o.d, o.form ?? { subject: x.subject, message: x.message }, x.hidden)}` : `<p>${esc(o.intro)}</p>${supportForm(o.base, o.d, o.form)}`)}</section>
 <section id="pedidos" aria-labelledby="h-pedidos"><h2 id="h-pedidos">${esc(o.d.supportMine)}</h2>${threadList(o.rows, o.base, o.d, o.lang)}</section>`;
 };
 
@@ -69,30 +75,96 @@ ${th.status === 'closed'
 export async function supportRoutes(app: FastifyInstance) {
   const db = app.db;
 
+  // ================= assistente virtual (comum a utilizadores e convidados) =================
+  /** Pergunta ao assistente: valida, aplica o limite, responde e regista; depois mostra a resposta (sem JavaScript, por redirecionamento). */
+  const ask = async (req: FastifyRequest, reply: FastifyReply, c: AsCtx, render: (st: AsState, code: number) => unknown) => {
+    const d = t(c.lang), raw = String((req.body as any)?.q ?? '');
+    const q = cleanQuestion(raw);
+    const fail = async (err: string, code: number) => (wantsJson(req) ? reply.code(code).send({ error: err, html: (await assistantResult(db, c, { err })).html }) : render({ q: raw.slice(0, ASSISTANT_MAX_QUESTION * 2), err }, code));
+    if (!q.ok) return fail(q.error === 'empty' ? d.asEmpty : d.asTooLong(ASSISTANT_MAX_QUESTION), 422);
+    if (!assistantAllowed(c.asker, req.ip)) return fail(d.asRate, 429);
+    const id = await answerQuestion(db, { question: q.text, pageLang: faqLang(c.lang), audience: c.audience });
+    const s = assistantSig(id, c.asker), url = `${c.base}?r=${id}&s=${encodeURIComponent(s)}`;
+    if (wantsJson(req)) return reply.headers({ 'Cache-Control': 'no-store' }).send({ html: (await assistantResult(db, c, { r: id, s })).html, url });
+    return reply.redirect(`${url}#as-resposta`, 303);
+  };
+
+  /** «Isto ajudou?»: só quem perguntou (assinatura); «Não» leva ao pedido ao suporte já preenchido. */
+  const feedback = async (req: FastifyRequest, reply: FastifyReply, c: AsCtx) => {
+    const id = (req.params as any).id, b = (req.body ?? {}) as any;
+    if (!assistantSigOk(id, c.asker, b.s)) return reply.code(404).send(wantsJson(req) ? { error: 'not found' } : 'Not found');
+    const url = `${c.base}?r=${id}&s=${encodeURIComponent(b.s)}`;
+    if (b.v !== 'sim' && b.v !== 'nao') return reply.redirect(`${url}#as-resposta`, 303);
+    await db.query('UPDATE assistant_questions SET helped=$2 WHERE id=$1', [id, b.v === 'sim']);
+    if (b.v === 'nao' && c.canEscalate) return wantsJson(req) ? reply.send({ redirect: `${url}&apoio=1#suporte` }) : reply.redirect(`${url}&apoio=1#suporte`, 303);
+    if (wantsJson(req)) return reply.headers({ 'Cache-Control': 'no-store' }).send({ html: (await assistantResult(db, c, { r: id, s: b.s })).html });
+    return reply.redirect(`${url}#as-resposta`, 303);
+  };
+
+  /** Resposta do assistente que vai para o pedido (o que a pessoa viu); null se já não existir ou a assinatura não for dela. */
+  const escalation = async (req: FastifyRequest, c: AsCtx) => {
+    const id = (req.params as any).id, s = (req.body as any)?.s;
+    if (!assistantSigOk(id, c.asker, s)) return null;
+    const a = await loadAnswer(db, id);
+    return a ? { a, st: { r: id, s: String(s), apoio: true } as AsState } : null;
+  };
+  /** Marca a pergunta como enviada ao suporte, uma só vez (um segundo envio do mesmo formulário não abre outro pedido). */
+  const claimEscalation = async (logId: string) => !!(await db.one('UPDATE assistant_questions SET escalated=true WHERE id=$1 AND NOT escalated RETURNING id', [logId]));
+
   // ================= entrevistadores e gestores de entidade =================
   const PT = t('pt-PT');
   const USER_INTRO = 'Escreva a sua dúvida ou o problema que encontrou. A equipa do portal responde nesta página, não por email; a ligação «Ajuda» no topo mostra quando há respostas por ler.';
   const userPage = (req: FastifyRequest, reply: FastifyReply, title: string, body: string, code = 200) =>
-    reply.code(code).headers(HTML).send(page({ title, body: `<div class="narrow" style="padding-top:32px">${body}</div>`, nav: interviewerNav(req.user), noindex: true, styles: SUPPORT_CSS }));
+    reply.code(code).headers(HTML).send(page({ title, body: `<div class="narrow" style="padding-top:32px">${body}</div>`, nav: interviewerNav(req.user), noindex: true, styles: HELP_CSS }));
+  const userAs = (req: FastifyRequest): AsCtx => ({ audience: 'interviewer' as Audience, lang: 'pt-PT', base: '/ajuda', asker: `user:${req.user!.id}`, canEscalate: req.user!.role !== 'admin' });
   const myThreads = (userId: string) => db.query('SELECT * FROM support_threads WHERE user_id=$1 ORDER BY updated_at DESC LIMIT 100', [userId]);
   const myThread = async (req: FastifyRequest) => {
     const id = (req.params as any).id;
     return isUuid(id) ? db.one('SELECT * FROM support_threads WHERE id=$1 AND user_id=$2', [id, req.user!.id]) : undefined;
   };
 
-  const userHelp = async (req: FastifyRequest, reply: FastifyReply, o: { e?: string; form?: { subject?: string; message?: string } } = {}, code = 200) => {
+  const userHelp = async (req: FastifyRequest, reply: FastifyReply, o: { e?: string; form?: { subject?: string; message?: string }; as?: AsState } = {}, code = 200) => {
     const u = req.user!, q = req.query as any;
     const admin = u.role === 'admin';
+    const as = await assistantSection(db, userAs(req), o.as ?? asStateFrom(q));
     return userPage(req, reply, PT.helpTitle, helpBody({
-      d: PT, lang: 'pt-PT', intro: USER_INTRO, assistant: await assistantSection('interviewer', 'pt-PT'), base: '/ajuda', rows: admin ? [] : await myThreads(u.id),
-      ok: okMsg(PT, q.ok), e: o.e ?? errMsg(PT, q.e), form: o.form,
-      noForm: admin ? '<p>Os pedidos dos utilizadores e dos convidados chegam à caixa de entrada do administrador: <a href="/admin/suporte">Suporte</a>.</p>' : undefined,
+      d: PT, lang: 'pt-PT', intro: USER_INTRO, assistant: as.html, base: '/ajuda', rows: admin ? [] : await myThreads(u.id),
+      ok: okMsg(PT, q.ok), e: o.e ?? errMsg(PT, q.e), form: o.form, escalate: as.escalate,
+      noForm: admin ? '<p>Os pedidos dos utilizadores e dos convidados chegam à caixa de entrada do administrador: <a href="/admin/suporte">Suporte</a>. A base do assistente edita-se em <a href="/admin/assistente">Assistente</a>.</p>' : undefined,
     }), code);
   };
 
   app.get('/ajuda', async (req, reply) => {
     if (!requireUser(req, reply)) return;
     return userHelp(req, reply);
+  });
+
+  app.post('/ajuda/assistente', async (req, reply) => {
+    if (!requireUser(req, reply)) return;
+    return ask(req, reply, userAs(req), (st, code) => userHelp(req, reply, { as: st }, code));
+  });
+
+  app.post('/ajuda/assistente/:id/ajudou', async (req, reply) => {
+    if (!requireUser(req, reply)) return;
+    return feedback(req, reply, userAs(req));
+  });
+
+  // Pedido ao suporte a partir do assistente: a pergunta (editável) e, a seguir, a resposta que o assistente deu.
+  app.post('/ajuda/assistente/:id/suporte', async (req, reply) => {
+    if (!requireUser(req, reply)) return;
+    const u = req.user!, b = (req.body ?? {}) as any;
+    if (u.role === 'admin') return reply.redirect('/admin/suporte');
+    const x = await escalation(req, userAs(req));
+    if (!x) return userHelp(req, reply, { as: { err: PT.asExpired } }, 404);
+    const form = { subject: String(b.subject ?? '').slice(0, 300), message: String(b.message ?? '').slice(0, SUPPORT_MAX_BODY * 2) };
+    const body = cleanBody(b.message);
+    if (!body.ok) return userHelp(req, reply, { e: errMsg(PT, body.error), form, as: x.st }, 422);
+    if (!supportAllowed(`user:${u.id}`, req.ip)) return userHelp(req, reply, { e: PT.supportRate, form, as: x.st }, 429);
+    if (!(await claimEscalation(x.a.log.id))) return reply.redirect('/ajuda#pedidos'); // já enviado (por exemplo, clique duplo)
+    const id = await openThread(db, { userId: u.id, entityId: u.entity_id, subject: cleanSubject(b.subject, body.text), body: body.text, origin: 'assistant', author: 'user', authorUserId: u.id,
+      lang: x.a.log.lang === 'en' ? 'en' : 'pt-PT', assistantBody: assistantTranscript(x.a, faqLang(x.a.log.lang)) });
+    await audit(db, u.email, 'support.thread_opened', null, { threadId: id, via: 'assistant' });
+    return reply.redirect(`/ajuda/${id}?ok=sent`);
   });
 
   app.post('/ajuda', async (req, reply) => {
@@ -157,18 +229,20 @@ export async function supportRoutes(app: FastifyInstance) {
     return { iv, lang, d: t(lang) };
   };
   const guestPage = (req: FastifyRequest, reply: FastifyReply, lang: Lang, title: string, body: string, code = 200) =>
-    reply.code(code).headers(HTML).send(page({ lang, title, body: `<div class="narrow" style="padding:28px 20px 0">${body}</div>`, noindex: true, nav: guestHelpNav(req.guest, lang), styles: SUPPORT_CSS }));
+    reply.code(code).headers(HTML).send(page({ lang, title, body: `<div class="narrow" style="padding:28px 20px 0">${body}</div>`, noindex: true, nav: guestHelpNav(req.guest, lang), styles: HELP_CSS }));
+  const guestAs = (c: { iv: any; lang: Lang }): AsCtx => ({ audience: 'guest', lang: c.lang, base: '/entrevista/ajuda', asker: `guest:${c.iv.id}`, canEscalate: true });
   const guestThreadOf = async (req: FastifyRequest, interviewId: string) => {
     const id = (req.params as any).id;
     return isUuid(id) ? db.one('SELECT * FROM support_threads WHERE id=$1 AND interview_id=$2', [id, interviewId]) : undefined;
   };
 
-  const guestHelp = async (req: FastifyRequest, reply: FastifyReply, c: { iv: any; lang: Lang; d: Dict }, o: { e?: string; form?: { subject?: string; message?: string } } = {}, code = 200) => {
+  const guestHelp = async (req: FastifyRequest, reply: FastifyReply, c: { iv: any; lang: Lang; d: Dict }, o: { e?: string; form?: { subject?: string; message?: string }; as?: AsState } = {}, code = 200) => {
     const q = req.query as any;
     const rows = await db.query('SELECT * FROM support_threads WHERE interview_id=$1 ORDER BY updated_at DESC LIMIT 100', [c.iv.id]);
+    const as = await assistantSection(db, guestAs(c), o.as ?? asStateFrom(q));
     return guestPage(req, reply, c.lang, c.d.helpTitle, helpBody({
-      d: c.d, lang: c.lang, intro: c.d.supportIntro, assistant: await assistantSection('guest', c.lang), base: '/entrevista/ajuda', rows,
-      ok: okMsg(c.d, q.ok), e: o.e ?? errMsg(c.d, q.e), form: o.form,
+      d: c.d, lang: c.lang, intro: c.d.supportIntro, assistant: as.html, base: '/entrevista/ajuda', rows,
+      ok: okMsg(c.d, q.ok), e: o.e ?? errMsg(c.d, q.e), form: o.form, escalate: as.escalate,
       // Depois de submeter, a entrevista continua no comprovativo (com a pré-visualização do episódio, quando houver).
       top: `<p class="sans"><a href="${c.iv.collection_status === 'submitted' ? '/entrevista/obrigado' : '/entrevista'}">← ${esc(c.d.supportBackInterview)}</a></p>`,
     }), code);
@@ -177,6 +251,32 @@ export async function supportRoutes(app: FastifyInstance) {
   app.get('/entrevista/ajuda', async (req, reply) => {
     const c = await guestCtx(req, reply); if (!c) return;
     return guestHelp(req, reply, c);
+  });
+
+  app.post('/entrevista/ajuda/assistente', async (req, reply) => {
+    const c = await guestCtx(req, reply); if (!c) return;
+    return ask(req, reply, guestAs(c), (st, code) => guestHelp(req, reply, c, { as: st }, code));
+  });
+
+  app.post('/entrevista/ajuda/assistente/:id/ajudou', async (req, reply) => {
+    const c = await guestCtx(req, reply); if (!c) return;
+    return feedback(req, reply, guestAs(c));
+  });
+
+  app.post('/entrevista/ajuda/assistente/:id/suporte', async (req, reply) => {
+    const c = await guestCtx(req, reply); if (!c) return;
+    const b = (req.body ?? {}) as any;
+    const x = await escalation(req, guestAs(c));
+    if (!x) return guestHelp(req, reply, c, { as: { err: c.d.asExpired } }, 404);
+    const form = { subject: String(b.subject ?? '').slice(0, 300), message: String(b.message ?? '').slice(0, SUPPORT_MAX_BODY * 2) };
+    const body = cleanBody(b.message);
+    if (!body.ok) return guestHelp(req, reply, c, { e: errMsg(c.d, body.error), form, as: x.st }, 422);
+    if (!supportAllowed(`guest:${c.iv.id}`, req.ip)) return guestHelp(req, reply, c, { e: c.d.supportRate, form, as: x.st }, 429);
+    if (!(await claimEscalation(x.a.log.id))) return reply.redirect('/entrevista/ajuda#pedidos');
+    const id = await openThread(db, { interviewId: c.iv.id, entityId: (await entityOfInterview(db, c.iv.id)) ?? null, subject: cleanSubject(b.subject, body.text), body: body.text,
+      origin: 'assistant', author: 'guest', lang: c.lang, assistantBody: assistantTranscript(x.a, faqLang(x.a.log.lang)) });
+    await audit(db, 'guest', 'support.thread_opened', c.iv.id, { threadId: id, via: 'assistant' });
+    return reply.redirect(`/entrevista/ajuda/${id}?ok=sent`);
   });
 
   app.post('/entrevista/ajuda', async (req, reply) => {

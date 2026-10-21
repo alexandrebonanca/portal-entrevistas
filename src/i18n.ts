@@ -69,6 +69,16 @@ const D = {
     supportEmpty: 'Escreva a sua mensagem.', supportTooLong: (n: number) => `A mensagem tem mais de ${n} caracteres.`,
     supportRate: 'Enviou muitas mensagens na última hora. Tente de novo mais tarde.',
     supportBack: 'Voltar à ajuda', supportBackInterview: 'Voltar à entrevista', supportNotFound: 'Pedido não encontrado.',
+    // assistente virtual (perguntas e respostas)
+    asTitle: 'Assistente virtual', asIntro: 'Escreva a sua dúvida: o assistente responde com as perguntas frequentes do portal. Se não resolver, fale com o suporte.',
+    asLabel: 'A sua pergunta', asAsk: 'Perguntar', asPrivacy: 'Não escreva dados pessoais, palavras-passe nem dados de pagamento.',
+    asYouAsked: 'Perguntou', asAiLabel: 'Resposta do assistente', asAiNote: 'Escrita automaticamente a partir destas perguntas frequentes; confirme nelas os pormenores:',
+    asRelated: 'Perguntas relacionadas', asNone: 'Não encontrei resposta a isto nas perguntas frequentes.', asNoneHint: 'Pode reformular a pergunta ou falar com o suporte: a equipa do portal responde nesta página.',
+    asHelped: 'Isto ajudou?', asYes: 'Sim', asNo: 'Não', asThanks: 'Obrigado pela resposta.', asSorry: 'Lamentamos. Envie a pergunta ao suporte: a equipa do portal responde nesta página.',
+    asTalk: 'Falar com o suporte', asEscalateNote: 'A sua pergunta e a resposta do assistente seguem com o pedido. Pode acrescentar pormenores.',
+    asFaq: 'Perguntas frequentes', asAllFaq: (n: number) => `Ver todas as perguntas frequentes (${n})`,
+    asEmpty: 'Escreva a sua pergunta.', asTooLong: (n: number) => `A pergunta tem mais de ${n} caracteres.`, asRate: 'Fez muitas perguntas na última hora. Tente de novo mais tarde.',
+    asExpired: 'Esta resposta já não está disponível. Faça a pergunta de novo.',
   },
   en: {
     inviteTitle: 'Invitation to an interview',
@@ -137,6 +147,16 @@ const D = {
     supportEmpty: 'Please write your message.', supportTooLong: (n: number) => `The message is longer than ${n} characters.`,
     supportRate: 'You have sent many messages in the last hour. Please try again later.',
     supportBack: 'Back to help', supportBackInterview: 'Back to the interview', supportNotFound: 'Request not found.',
+    // virtual assistant (questions and answers)
+    asTitle: 'Virtual assistant', asIntro: 'Type your question: the assistant answers from the portal’s frequently asked questions. If that does not solve it, contact support.',
+    asLabel: 'Your question', asAsk: 'Ask', asPrivacy: 'Do not include personal data, passwords or payment details.',
+    asYouAsked: 'You asked', asAiLabel: 'Assistant’s answer', asAiNote: 'Written automatically from these frequently asked questions; check the details there:',
+    asRelated: 'Related questions', asNone: 'I could not find an answer to this in the frequently asked questions.', asNoneHint: 'You can rephrase the question or contact support: the portal team replies on this page.',
+    asHelped: 'Did this help?', asYes: 'Yes', asNo: 'No', asThanks: 'Thank you for your feedback.', asSorry: 'Sorry about that. Send your question to support: the portal team replies on this page.',
+    asTalk: 'Contact support', asEscalateNote: 'Your question and the assistant’s answer are sent with the request. You can add details.',
+    asFaq: 'Frequently asked questions', asAllFaq: (n: number) => `See all frequently asked questions (${n})`,
+    asEmpty: 'Please type your question.', asTooLong: (n: number) => `The question is longer than ${n} characters.`, asRate: 'You have asked many questions in the last hour. Please try again later.',
+    asExpired: 'This answer is no longer available. Please ask your question again.',
   },
 } as const;
 
