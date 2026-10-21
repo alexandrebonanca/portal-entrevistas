@@ -48,7 +48,7 @@ video.cam{width:100%;max-height:60vh;border-radius:12px;background:#000;transfor
 .pbar{height:14px;border-radius:99px;background:var(--line);overflow:hidden}.pfill{height:100%;width:0;background:var(--accent);border-radius:99px;transition:width .6s ease}
 @media (prefers-reduced-motion:reduce){.pfill{transition:none}}
 :focus-visible{outline:3px solid var(--accent);outline-offset:2px}
-.compose{position:fixed;right:16px;bottom:16px;width:min(380px,calc(100vw - 32px));max-height:min(80vh,760px);overflow:auto;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px;box-shadow:0 12px 32px rgba(0,0,0,.22);z-index:30;font-family:system-ui}
+.compose{position:fixed;right:16px;bottom:16px;width:min(380px,calc(100vw - 32px));max-height:min(60vh,760px);overflow:auto;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px;box-shadow:0 12px 32px rgba(0,0,0,.22);z-index:30;font-family:system-ui}
 .compose textarea{min-height:56px}.compose .row{gap:8px;flex-wrap:wrap}.compose button{font-size:.9rem;padding:9px 14px;min-height:40px}.compose h2{font-size:1.05rem;margin:0}
 .compose-tips{margin:10px 0;padding-left:18px;font-size:.9rem;color:var(--mute)}.compose-tips li{margin:4px 0}.compose-item{border-top:1px solid var(--line);padding:10px 0;font-size:.95rem}.compose-item p{margin:4px 0}.compose-item.used{opacity:.6}
 #nq,#fq{scroll-margin-top:40vh}.compose-fab{position:fixed;right:16px;bottom:16px;z-index:29;box-shadow:0 6px 18px rgba(0,0,0,.22)}

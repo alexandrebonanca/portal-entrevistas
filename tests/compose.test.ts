@@ -54,7 +54,7 @@ test('editar: cada ação sobre as perguntas volta ao sítio onde se estava, nã
   const id = await newInterview(admin);
   const page = (await get(`/entrevistas/${id}/editar`, admin)).body;
   assert.match(page, /<div class="card" id="perguntas">/, 'a âncora #perguntas existe (antes não existia e a página ficava no topo)');
-  assert.match(page, /<form id="nova" method="post" action="\/entrevistas\/[0-9a-f-]{36}\/perguntas"><label for="nq">Nova pergunta<\/label><textarea id="nq" name="text" maxlength="1000"><\/textarea><div class="row"><button class="accent">Adicionar pergunta<\/button><button class="ghost" name="audio" value="1">Pergunta só em áudio<\/button>/);
+  assert.match(page, /<form id="nova" method="post" action="\/entrevistas\/[0-9a-f-]{36}\/perguntas"><label for="nq">Nova pergunta<\/label><textarea id="nq" name="text" maxlength="1000"><\/textarea><div class="row"><button class="accent">Adicionar pergunta<\/button><button class="ghost" name="audio" value="1">Adicionar e gravar áudio<\/button>/);
 
   // adicionar: volta ao campo da nova pergunta (a âncora é o próprio campo: o browser põe lá o cursor)
   const add = await post(`/entrevistas/${id}/perguntas`, { text: '  Como começou na cozinha?  ' }, admin);
@@ -63,11 +63,11 @@ test('editar: cada ação sobre as perguntas volta ao sítio onde se estava, nã
   assert.equal(q1.text, 'Como começou na cozinha?');
   assert.match((await get(`/entrevistas/${id}/editar`, admin)).body, new RegExp(`<div class="card" id="q-${q1.id}" style="margin:12px 0">`));
 
-  // pergunta só em áudio (botão próprio ou caixa vazia): fica sem texto e a página vai para ela, para a gravar
-  const audio = await post(`/entrevistas/${id}/perguntas`, { text: 'texto ignorado', audio: '1' }, admin);
+  // «Adicionar e gravar áudio» (guarda o texto escrito, se houver) ou caixa vazia: a página vai para a pergunta, para a gravar
+  const audio = await post(`/entrevistas/${id}/perguntas`, { text: ' Qual é o seu prato preferido? ', audio: '1' }, admin);
   const empty = await post(`/entrevistas/${id}/perguntas`, { text: '   ' }, admin);
   let qs = await questions(id);
-  assert.deepEqual(qs.map((q: any) => q.text), ['Como começou na cozinha?', '', '']);
+  assert.deepEqual(qs.map((q: any) => q.text), ['Como começou na cozinha?', 'Qual é o seu prato preferido?', ''], 'o texto escrito não se perde');
   assert.equal(audio.headers.location, `/entrevistas/${id}/editar#q-${qs[1].id}`);
   assert.equal(empty.headers.location, `/entrevistas/${id}/editar#q-${qs[2].id}`);
   // vinda do assistente: a página mostra a pergunta acrescentada (não abre o teclado do telemóvel na caixa)
@@ -77,6 +77,9 @@ test('editar: cada ação sobre as perguntas volta ao sítio onde se estava, nã
   for (const q of qs.slice(1)) await post(`/entrevistas/${id}/perguntas/${q.id}/eliminar`, {}, admin);
 
   assert.equal((await post(`/entrevistas/${id}/perguntas/${q1.id}`, { text: 'Como começou a cozinhar?' }, admin)).headers.location, `/entrevistas/${id}/editar#q-${q1.id}`);
+  await post(`/entrevistas/${id}/perguntas/${q1.id}`, { text: '   ' }, admin);
+  assert.equal((await questions(id))[0].text, '', 'só espaços conta como sem texto (a transcrição pode preenchê-lo)');
+  await post(`/entrevistas/${id}/perguntas/${q1.id}`, { text: 'Como começou a cozinhar?' }, admin);
   const dup = await post(`/entrevistas/${id}/perguntas/${q1.id}/duplicar`, {}, admin);
   qs = await questions(id);
   assert.equal(qs.length, 2);
@@ -95,6 +98,12 @@ test('editar: cada ação sobre as perguntas volta ao sítio onde se estava, nã
   const dupFull = await post(`/entrevistas/${cid}/perguntas/${(await questions(cid))[0].id}/duplicar`, {}, com);
   assert.equal(dupFull.headers.location, full.headers.location);
   assert.match((await get(full.headers.location as string, com)).body, /<div class="flash bad" role="status">Limite de \d+ perguntas por entrevista atingido\.<\/div><form id="nova"/, 'o aviso aparece junto da caixa, onde a página fica');
+
+  // pedidos em simultâneo não passam o máximo (contagem e inserção com a entrevista bloqueada)
+  const rid = await newInterview(com);
+  for (let i = 1; i <= max - 2; i++) await db.query('INSERT INTO questions(interview_id, position, text) VALUES ($1,$2,$3)', [rid, i, `P${i}?`]);
+  await Promise.all(Array.from({ length: 6 }, (_, i) => post(`/entrevistas/${rid}/perguntas`, { text: `Corrida ${i}?` }, com)));
+  assert.equal((await questions(rid)).length, max);
 });
 
 test('entrevista enviada: o aviso do pedido adicional aparece uma só vez, junto do campo', async () => {
@@ -117,7 +126,7 @@ test('painel do assistente: só no rascunho; sugestões por IA só para o admini
   const a = (await get(`/entrevistas/${aid}/editar`, admin)).body;
   assert.match(a, /<aside id="compor" class="compose" hidden aria-labelledby="compor-t" data-max-questions="\d+" data-answer-limit="">/, 'administrador: sem limite de tempo de resposta');
   assert.match(a, /data-act="sugerir">Sugerir perguntas<\/button><button type="button" class="ghost" data-act="rever">Rever as perguntas<\/button><button type="button" class="ghost" data-act="objetivo">Melhorar título e objetivo/);
-  assert.match(a, /tal como estão escritos \(os emails, links e números de telefone são tapados\)\. Os campos de nome e de email e a mensagem pessoal não são enviados\./);
+  assert.match(a, /tal como estão guardados \(os emails, os endereços de sites e os números de telefone são tapados\)\. Os campos de nome e de email e a mensagem pessoal não são enviados\./);
   assert.match(a, /<button type="button" id="comporBtn" class="accent compose-fab" aria-controls="compor" aria-expanded="false" hidden>/);
   assert.match(a, new RegExp(`<div class="card" id="q-${aq.id}" data-audio="1"`), 'as perguntas com áudio estão marcadas (as dicas não as dão como vazias)');
 
@@ -129,7 +138,7 @@ test('painel do assistente: só no rascunho; sugestões por IA só para o admini
   const s = (await get(`/entrevistas/${sid}/editar`, sem)).body;
   assert.match(s, /id="compor"/, 'sem plano: o painel abre com as dicas da página');
   assert.doesNotMatch(s, /data-act=/);
-  assert.match(s, /estão incluídas nos planos\. <a href="\/account">Ver os planos<\/a>/);
+  assert.match(s, /estão disponíveis para contas com subscrição ativa\. <a href="\/account">Ver os planos<\/a>/);
 
   // depois do convite, perguntas e objetivo ficam bloqueados: sem painel
   await db.query(`UPDATE interviews SET collection_status='invited' WHERE id=$1`, [sid]);
@@ -145,7 +154,7 @@ test('pedido ao assistente: acesso, ações e respostas', async () => {
   const semId = await newInterview(sem);
   const no = await assist(semId, 'sugerir', sem);
   assert.equal(no.statusCode, 403);
-  assert.match(no.json().error, /incluídas nos planos/);
+  assert.match(no.json().error, /subscrição ativa/);
 
   // rever sem perguntas escritas: resposta local, sem chamar o modelo nem contar
   const before = Number((await db.one(`SELECT COALESCE(sum(n),0)::int n FROM compose_usage`)).n);
@@ -202,6 +211,40 @@ test('pedido enorme: recusado logo pelo tamanho, sem expressões regulares sobre
   assert.equal(d.objective.length, 1500);
   assert.equal(d.questions[0].text.length, 1000);
   assert.equal(C.scrub('x'.repeat(290) + ' a@b.pt', 300).length <= 300, true);
+});
+
+test('tapar: emails, sites e telefones em vários formatos; datas, valores e números curtos ficam', () => {
+  const phones = ['912 345 678', '912-345-678', '(+351) 912 345 678', '00351912345678', '21 123 4567', '+351 21 123 45 67', '912.345.678', '+44 20 7946 0958'];
+  for (const p of phones) assert.equal(C.scrub(`Ligue ${p} hoje`, 1000), 'Ligue [número] hoje', p);
+  for (const l of ['empresa.pt/contactos', 'exemplo.com', 'https://x.y/z', 'www.a.b', 'Sub.Dominio.org']) assert.equal(C.scrub(`Veja ${l}, depois`, 1000), 'Veja [link], depois', l);
+  assert.equal(C.scrub('Escreva a rui.costa@empresa.pt', 1000), 'Escreva a [email]');
+  const keep = 'Entre 1990-2020 e 2010 e 2020, 3.5 vezes, Node.js, e.g. 25%, 12 000 euros, 2.500.000 de pessoas, ano 2024.';
+  assert.equal(C.scrub(keep, 1000), keep);
+});
+
+test('rascunho com mais perguntas do que o máximo: o pedido leva só as que cabem', () => {
+  const d = C.composeDraft({ title: 't' }, Array.from({ length: 800 }, (_, i) => ({ text: `Pergunta ${i}?` })), { maxQuestions: 15, answerLimitSec: null });
+  assert.equal(d.questions.length, 15);
+  assert.equal(JSON.parse(C.composePrompt('rever', d, '').user.split('\n')[1]).questions.length, 15);
+});
+
+test('recusas não gastam quota; o portal pode desligar o assistente com 0', async () => {
+  const d = draft();
+  const ok = counting();
+  await db.query(`INSERT INTO compose_usage(who, day, n) VALUES ('q1', current_date, $1)`, [C.COMPOSE_RATE.perDay]);
+  assert.equal(((await C.composeAssist(db, 'q1', 'sugerir', d, '', ok)) as any).status, 429);
+  assert.equal(Number((await db.one(`SELECT n FROM compose_usage WHERE who='q1' AND day=current_date`)).n), C.COMPOSE_RATE.perDay, 'o contador não passa o teto');
+  // teto do portal cheio: a pessoa não perde o pedido
+  const g = await db.one(`SELECT n FROM compose_usage WHERE who='global' AND day=current_date`);
+  await db.query(`INSERT INTO compose_usage(who, day, n) VALUES ('global', current_date, $1) ON CONFLICT (who, day) DO UPDATE SET n=$1`, [config.openai.composeAiPerDay]);
+  assert.match(((await C.composeAssist(db, 'q2', 'sugerir', d, '', ok)) as any).error, /muito solicitado/);
+  assert.equal(Number((await db.one(`SELECT COALESCE(sum(n),0)::int n FROM compose_usage WHERE who='q2'`)).n), 0);
+  await db.query(`UPDATE compose_usage SET n=$1 WHERE who='global' AND day=current_date`, [g?.n ?? 0]);
+  // com o teto global a 0, o assistente fica indisponível (sem chamar o modelo)
+  const was = config.openai.composeAiPerHour;
+  config.openai.composeAiPerHour = 0;
+  try { assert.equal(((await C.composeAssist(db, 'q3', 'sugerir', d, '')) as any).status, 503); }
+  finally { config.openai.composeAiPerHour = was; }
 });
 
 test('sugerir com o máximo de perguntas: recusado antes de chamar o modelo (sem custo)', async () => {
@@ -276,7 +319,7 @@ test('falhas e limites: modelo indisponível, por hora, por dia, por mês e do p
   assert.deepEqual(req.response_format, { type: 'json_object' });
   assert.equal(req.model, config.openai.assistantModel);
   // tetos configuráveis: um valor inválido ou vazio nunca tira o teto
-  assert.deepEqual(['abc', '', ' ', '0', '-5', undefined, '75'].map(v => positive(v, 200)), [200, 200, 200, 200, 200, 200, 75]);
+  assert.deepEqual(['abc', '', ' ', '0', '-5', undefined, '75'].map(v => positive(v, 200)), [200, 200, 200, 0, 200, 200, 75], '0 desliga; inválido fica o valor por omissão');
 });
 
 test('ajuda: a entrada do assistente de composição diz os limites em vigor e aparece na pesquisa', async () => {
@@ -291,5 +334,11 @@ test('ajuda: a entrada do assistente de composição diz os limites em vigor e a
     assert.equal(searchFaq(entries, q)[0]?.entry.id, 'assistente-composicao', q);
   assert.equal(searchFaq(entries, 'O que acontece às perguntas que faço ao assistente?')[0]?.entry.id, 'assistente-privacidade', 'a entrada da privacidade do assistente da ajuda continua à frente');
   assert.match(e.en[2], /suggest questions, suggestions,/);
-  assert.match(FAQ_SEED.find(x => x.key === 'perguntas')!.pt[1], /«Pergunta só em áudio»/);
+  assert.match(FAQ_SEED.find(x => x.key === 'perguntas')!.pt[1], /«Adicionar e gravar áudio»/);
+  assert.match(e.pt[1], /os emails, os endereços de sites e os números de telefone são tapados/);
+  for (const [lang, q, want] of [['pt', 'Como escrevo o objetivo?', 'objetivo'], ['pt', 'Como gravo uma pergunta em áudio?', 'perguntas']] as const) {
+    const list = FAQ_SEED.filter(x => x.audience !== 'guest').map((x, i) => ({ id: x.key, lang, audience: x.audience, question: x[lang][0], answer: x[lang][1], keywords: x[lang][2], sort: i }));
+    assert.equal(searchFaq(list, q)[0]?.entry.id, want, q);
+  }
+  assert.match((await get('/privacy')).body, /<h2>Composition assistant<\/h2><p>[^<]*sent to OpenAI[^<]*the name and email fields and the personal message are not sent/);
 });

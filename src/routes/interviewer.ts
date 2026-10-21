@@ -9,7 +9,7 @@ import { createInvitation } from '../invites.ts';
 import { enqueue } from '../jobs.ts';
 import { aiAvailable } from '../ai/openai.ts';
 import { quotaFor, vatForProfile } from '../billing.ts';
-import { inEntity } from '../settings.ts';
+import { inEntity, entityOfInterview } from '../settings.ts';
 import { seller } from '../legal.ts';
 import { withVat, eurPt } from '../vat.ts';
 import { walletFor, findWallet, spend, spendBlock, cr, EXTRA_INTERVIEW_CENTS } from '../wallet.ts';
@@ -36,8 +36,8 @@ const composePanel = (iv: any, quota: any, ai: boolean) => `<aside id="compor" c
 ${ai ? `<label for="cp">O que pretende? (opcional)</label><textarea id="cp" rows="2" maxlength="${COMPOSE_MAX_REQUEST}" placeholder="Ex.: foco no percurso profissional e em conselhos práticos"></textarea>
 <div class="row" style="margin-top:8px"><button type="button" class="accent" data-act="sugerir">Sugerir perguntas</button><button type="button" class="ghost" data-act="rever">Rever as perguntas</button><button type="button" class="ghost" data-act="objetivo">Melhorar título e objetivo</button></div>
 <div data-c="out" aria-live="polite"></div>
-<p class="hint">Sugestões geradas por IA (OpenAI) a partir do título, do objetivo, das funções e das perguntas deste rascunho, tal como estão escritos (os emails, links e números de telefone são tapados). Os campos de nome e de email e a mensagem pessoal não são enviados. Nada muda na entrevista sem clicar em «Adicionar», «Substituir» ou «Guardar dados».</p>`
-  : '<p class="hint">As sugestões por IA (novas perguntas, revisão das perguntas, título e objetivo) estão incluídas nos planos. <a href="/account">Ver os planos</a></p>'}
+<p class="hint">Sugestões geradas por IA (OpenAI) a partir do título, do objetivo, das funções e das perguntas deste rascunho, tal como estão guardados (os emails, os endereços de sites e os números de telefone são tapados). Os campos de nome e de email e a mensagem pessoal não são enviados. Nada muda na entrevista sem clicar em «Adicionar», «Substituir» ou «Guardar dados».</p>`
+  : '<p class="hint">As sugestões por IA (novas perguntas, revisão das perguntas, título e objetivo) estão disponíveis para contas com subscrição ativa. <a href="/account">Ver os planos</a></p>'}
 </aside>
 <button type="button" id="comporBtn" class="accent compose-fab" aria-controls="compor" aria-expanded="false" hidden>✦ Assistente</button>`;
 
@@ -149,12 +149,12 @@ ${objT && !iv.objective_text ? `<p class="hint">Transcrição do objetivo gravad
 <label class="check"><input type="checkbox" name="host_ai_video" value="1" ${iv.host_ai_video ? 'checked' : ''}> Autorizo que a minha fotografia e o texto aprovado das minhas falas sejam enviados à Google (Veo) para gerar um vídeo por IA em que apareço a dizer esse texto em inglês, com gestos e voz gerados pelo modelo (não é a minha voz), com o aviso visível «AI-generated video · AI voice»</label>
 <p><button class="accent">Guardar dados</button></p></form>
 
-<div class="card"><h2 style="margin-top:0">A minha fotografia</h2>
+<div class="card" id="fotografia"><h2 style="margin-top:0">A minha fotografia</h2>
 ${iv.host_photo_asset_id ? `<p><img alt="Fotografia do entrevistador" src="/media/${iv.host_photo_asset_id}" style="width:120px;height:120px;object-fit:cover;border-radius:12px"></p>` : '<p class="hint">Sem fotografia.</p>'}
 <input type="file" id="photo" accept="image/jpeg,image/png"> <button type="button" id="photoBtn" class="ghost">Carregar</button> <span id="photoSt" class="hint"></span></div>
 ${await introCard(db, iv, req.user)}
 
-<div class="card"><h2 style="margin-top:0">Objetivo por áudio (opcional)</h2>
+<div class="card" id="objetivo-audio"><h2 style="margin-top:0">Objetivo por áudio (opcional)</h2>
 ${iv.objective_asset_id ? `<audio controls preload="none" src="/media/${iv.objective_asset_id}"></audio>` : ''}
 <div class="rec" data-rec data-target="/api/entrevistas/${iv.id}/objetivo-audio" data-max="${recMax(req, config.limits.maxObjectiveAudioSec)}"></div>
 <p class="hint">${req.user!.role === 'admin' ? '' : `Até ${mmss(config.limits.maxObjectiveAudioSec)} min. `}O áudio é mantido como original e transcrito para edição. ${aiAvailable() ? '' : 'Transcrição indisponível: configure OPENAI_API_KEY.'} Não é acrescentado ao podcast automaticamente.</p></div>
@@ -167,7 +167,7 @@ ${locked ? '' : `<div class="rec" data-rec data-target="/api/entrevistas/${iv.id
 <div class="row"><form method="post" action="/entrevistas/${iv.id}/perguntas/${x.id}/mover?d=-1"><button class="ghost">↑</button></form><form method="post" action="/entrevistas/${iv.id}/perguntas/${x.id}/mover?d=1"><button class="ghost">↓</button></form>
 <form method="post" action="/entrevistas/${iv.id}/perguntas/${x.id}/duplicar"><button class="ghost">Duplicar</button></form><form method="post" action="/entrevistas/${iv.id}/perguntas/${x.id}/eliminar"><button class="danger">Eliminar</button></form></div>`}</div>`).join('') || '<p class="hint">Sem perguntas.</p>'}
 ${locked && q.qe === fu!.reason ? '' : flash(q.qe, 'bad')}${locked ? `${fu!.info ? `<p class="hint sans">${esc(fu!.info)}</p>` : ''}${fu!.reason ? `<div class="flash bad">${esc(fu!.reason)}</div>` : ''}<form id="adicional" method="post" action="/entrevistas/${iv.id}/adicional"><label for="fq">Pedido adicional (nova pergunta identificada como adicional)</label><textarea id="fq" name="text" required ${fu!.reason ? 'disabled' : ''}></textarea><button class="accent" ${fu!.reason ? 'disabled' : ''}>Acrescentar e reenviar convite</button></form>`
-  : `<form id="nova" method="post" action="/entrevistas/${iv.id}/perguntas"><label for="nq">Nova pergunta</label><textarea id="nq" name="text" maxlength="1000"></textarea><div class="row"><button class="accent">Adicionar pergunta</button><button class="ghost" name="audio" value="1">Pergunta só em áudio</button></div><p class="hint">«Pergunta só em áudio» cria a pergunta sem texto para a gravar; o texto é transcrito da gravação.</p></form>`}</div>
+  : `<form id="nova" method="post" action="/entrevistas/${iv.id}/perguntas"><label for="nq">Nova pergunta</label><textarea id="nq" name="text" maxlength="1000"></textarea><div class="row"><button class="accent">Adicionar pergunta</button><button class="ghost" name="audio" value="1">Adicionar e gravar áudio</button></div><p class="hint">«Adicionar e gravar áudio» cria a pergunta (com o texto escrito, se houver) e leva-o ao gravador dela${aiAvailable() ? '; sem texto, o texto vem da transcrição da gravação' : ''}.</p></form>`}</div>
 <p><a class="btn" href="/entrevistas/${iv.id}${locked ? '' : '/convidar'}">${locked ? 'Ver entrevista' : 'Rever e convidar →'}</a></p></div>
 ${locked ? '' : composePanel(iv, quota!, await assistantAiFor(db, req.user))}`;
     return view(req, reply, 'Editar entrevista', body, '/static/edit.js');
@@ -219,11 +219,16 @@ ${locked ? '' : composePanel(iv, quota!, await assistantAiFor(db, req.user))}`;
     await db.query(`UPDATE questions q SET position=r.n FROM (SELECT id, row_number() OVER (ORDER BY position, id) AS n FROM questions WHERE interview_id=$1) r WHERE q.id=r.id`, [id]);
   };
 
-  // Máximo de perguntas no rascunho: o do plano de quem edita (o convite fixa-o depois na entrevista).
-  const draftFull = async (req: any, iv: any) => {
-    const n = Number((await db.one('SELECT count(*)::int AS n FROM questions WHERE interview_id=$1', [iv.id]))?.n);
+  // Máximo de perguntas no rascunho: o do plano de quem edita (o convite fixa-o depois na entrevista). A contagem e a
+  // inserção correm com a entrevista bloqueada, para dois pedidos em simultâneo não passarem o máximo.
+  const withSlot = async <T>(req: any, iv: any, fn: (tx: any, n: number) => Promise<T>) => {
     const max = draftQuestionMax(await quotaFor(db, req.user));
-    return { n, max, full: n >= max };
+    const r = await db.tx(async (tx: any) => {
+      await tx.one('SELECT id FROM interviews WHERE id=$1 FOR UPDATE', [iv.id]);
+      const n = Number((await tx.one('SELECT count(*)::int AS n FROM questions WHERE interview_id=$1', [iv.id]))?.n);
+      return n >= max ? { full: true, value: null } : { full: false, value: await fn(tx, n) };
+    });
+    return { max, ...r };
   };
   const fullMsg = (max: number) => `Limite de ${max} perguntas por entrevista atingido.`;
 
@@ -235,17 +240,18 @@ ${locked ? '' : composePanel(iv, quota!, await assistantAiFor(db, req.user))}`;
   app.post('/entrevistas/:id/perguntas', async (req, reply) => {
     const iv = await qGuard(req, reply); if (!iv) return;
     const b = req.body as any;
-    // Sem texto (ou com «Pergunta só em áudio»): a pergunta fica para gravar e a página vai para ela (o texto vem da
-    // transcrição). Vinda do assistente, a página mostra a pergunta acrescentada; senão, volta à caixa para a seguinte.
-    const text = b?.audio === '1' ? '' : String(b?.text ?? '').trim().slice(0, 1000);
-    const { n, max, full } = await draftFull(req, iv);
+    // Para gravar (botão «Adicionar e gravar áudio» ou sem texto): a página vai para a pergunta, onde está o gravador
+    // (sem texto, o texto vem da transcrição). Vinda do assistente, a página mostra a pergunta acrescentada; senão,
+    // volta à caixa para a seguinte.
+    const text = String(b?.text ?? '').trim().slice(0, 1000);
+    const { max, full, value: r } = await withSlot(req, iv, (tx, n) => tx.one('INSERT INTO questions(interview_id, position, text) VALUES ($1,$2,$3) RETURNING id', [iv.id, n + 1, text]));
     if (full) return reply.redirect(back(iv, 'nq', fullMsg(max)));
-    const r = await db.one('INSERT INTO questions(interview_id, position, text) VALUES ($1,$2,$3) RETURNING id', [iv.id, n + 1, text]);
-    return reply.redirect(back(iv, !text || b?.origem === 'assistente' ? qAnchor(r.id) : 'nq'));
+    return reply.redirect(back(iv, !text || b?.audio === '1' || b?.origem === 'assistente' ? qAnchor((r as any).id) : 'nq'));
   });
   app.post('/entrevistas/:id/perguntas/:qid', async (req, reply) => {
     const iv = await qGuard(req, reply); if (!iv) return;
-    const r = await db.one('UPDATE questions SET text=$3 WHERE id=$2 AND interview_id=$1 RETURNING id', [iv.id, (req.params as any).qid, String((req.body as any)?.text ?? '').slice(0, 1000)]);
+    // só espaços conta como sem texto (a transcrição de uma gravação pode então preenchê-lo)
+    const r = await db.one('UPDATE questions SET text=$3 WHERE id=$2 AND interview_id=$1 RETURNING id', [iv.id, (req.params as any).qid, String((req.body as any)?.text ?? '').trim().slice(0, 1000)]);
     return reply.redirect(back(iv, qAnchor(r?.id)));
   });
   app.post('/entrevistas/:id/perguntas/:qid/eliminar', async (req, reply) => {
@@ -256,15 +262,14 @@ ${locked ? '' : composePanel(iv, quota!, await assistantAiFor(db, req.user))}`;
   });
   app.post('/entrevistas/:id/perguntas/:qid/duplicar', async (req, reply) => {
     const iv = await qGuard(req, reply); if (!iv) return;
-    const q = await db.one('SELECT * FROM questions WHERE id=$2 AND interview_id=$1', [iv.id, (req.params as any).qid]);
-    const { max, full } = await draftFull(req, iv);
+    const { max, full, value: copy } = await withSlot(req, iv, async (tx) => {
+      const q = await tx.one('SELECT * FROM questions WHERE id=$2 AND interview_id=$1', [iv.id, (req.params as any).qid]);
+      if (!q) return null;
+      await tx.query('UPDATE questions SET position=position+1 WHERE interview_id=$1 AND position>$2', [iv.id, q.position]);
+      return tx.one('INSERT INTO questions(interview_id, position, text, audio_asset_id) VALUES ($1,$2,$3,$4) RETURNING id', [iv.id, q.position + 1, q.text, q.audio_asset_id]);
+    });
     if (full) return reply.redirect(back(iv, 'nq', fullMsg(max)));
-    let copy: any = null;
-    if (q) {
-      await db.query('UPDATE questions SET position=position+1 WHERE interview_id=$1 AND position>$2', [iv.id, q.position]);
-      copy = await db.one('INSERT INTO questions(interview_id, position, text, audio_asset_id) VALUES ($1,$2,$3,$4) RETURNING id', [iv.id, q.position + 1, q.text, q.audio_asset_id]);
-    }
-    return reply.redirect(back(iv, qAnchor(copy?.id)));
+    return reply.redirect(back(iv, qAnchor((copy as any)?.id)));
   });
   app.post('/entrevistas/:id/perguntas/:qid/mover', async (req, reply) => {
     const iv = await qGuard(req, reply); if (!iv) return;
@@ -286,11 +291,12 @@ ${locked ? '' : composePanel(iv, quota!, await assistantAiFor(db, req.user))}`;
     if (iv.collection_status !== 'draft') return reply.code(409).send({ ok: false, error: 'Depois do convite, as perguntas e o objetivo ficam bloqueados.' });
     const acao = composeAction((req.body as any)?.acao);
     if (!acao) return reply.code(400).send({ ok: false, error: 'Pedido inválido.' });
-    if (!(await assistantAiFor(db, req.user))) return reply.code(403).send({ ok: false, error: 'As sugestões por IA estão incluídas nos planos.' });
-    const quota = await quotaFor(db, req.user);
-    const qs = await db.query('SELECT id, text, audio_asset_id FROM questions WHERE interview_id=$1 ORDER BY position', [iv.id]);
-    const draft = composeDraft(iv, qs, { maxQuestions: draftQuestionMax(quota), answerLimitSec: inviteLimits(quota).answerLimitSec });
-    const r = await composeAssist(db, req.user.id, acao, draft, (req.body as any)?.pedido);
+    if (!(await assistantAiFor(db, req.user))) return reply.code(403).send({ ok: false, error: 'As sugestões por IA estão disponíveis para contas com subscrição ativa.' });
+    const quota = await quotaFor(db, req.user), max = draftQuestionMax(quota);
+    const qs = (await db.query('SELECT id, text, audio_asset_id FROM questions WHERE interview_id=$1 ORDER BY position LIMIT $2', [iv.id, max])) as any[];
+    const draft = composeDraft(iv, qs, { maxQuestions: max, answerLimitSec: inviteLimits(quota).answerLimitSec });
+    // com a chave OpenAI da entidade da entrevista, se tiver (como o resto do trabalho da entrevista); senão, a do portal
+    const r = await inEntity(await entityOfInterview(db, iv.id), () => composeAssist(db, req.user!.id, acao, draft, (req.body as any)?.pedido));
     if (!r.ok) return reply.code(r.status).send({ ok: false, error: r.error });
     // A revisão aponta para as perguntas pelo id (o número pode mudar entretanto), com o texto revisto (a página avisa
     // se mudou depois) e se tem áudio gravado (o texto novo não muda o áudio).

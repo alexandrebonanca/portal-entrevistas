@@ -35,15 +35,19 @@ export type ComposeResult =
 
 export const composeAction = (a: unknown): ComposeAction | null => (COMPOSE_ACTIONS.includes(a as ComposeAction) ? a as ComposeAction : null);
 
+/** Endereços de sites escritos sem http nem www (empresa.pt/contactos), pelos domínios de topo mais comuns. */
+const SITE = /\b[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.(pt|com|org|net|eu|io|co|uk|br|es|fr|de|it|nl|be|ch|info|biz|app|dev|ai|me|tv|online|site|store|shop)\b(\/[^\s,;)]*)?/gi;
 /**
- * Tapa contactos e links (o resto do rascunho segue como está: é o texto que o entrevistador quer melhorar).
+ * Tapa emails, endereços de sites e números de telefone (9 ou mais algarismos, com ou sem indicativo, espaços,
+ * hífenes, pontos ou parênteses); o resto do rascunho segue como está: é o texto que o entrevistador quer melhorar.
  * Corta antes das expressões regulares (que ficam lentas em textos enormes) e outra vez no fim.
  */
 export const scrub = (s: unknown, max: number) => String(s ?? '').slice(0, max + 200)
   .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '')
-  .replace(/https?:\/\/\S+|www\.\S+/gi, '[link]')
   .replace(/[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}/g, '[email]')
-  .replace(/\+\d[\d\s]{7,}\d|\b\d{9}\b/g, '[número]')
+  .replace(/https?:\/\/[^\s,;)]+|www\.[^\s,;)]+/gi, '[link]')
+  .replace(SITE, '[link]')
+  .replace(/(\+|\b00)?\(?\+?\d[\d\s().-]{6,}\d/g, m => ((m.match(/\d/g) ?? []).length >= 9 ? '[número]' : m))
   .trim().slice(0, max);
 
 export function composeDraft(iv: any, questions: { text: string; audio_asset_id?: string | null }[], limits: { maxQuestions: number; answerLimitSec: number | null }): ComposeDraft {
@@ -51,7 +55,8 @@ export function composeDraft(iv: any, questions: { text: string; audio_asset_id?
     title: scrub(iv.title, 140), objective: scrub(iv.objective_text, 1500),
     hostTitle: scrub(iv.host_title, 60), guestTitle: scrub(iv.guest_title, 60),
     lang: iv.interaction_lang === 'en' ? 'en' : 'pt-PT',
-    questions: questions.map(q => ({ text: scrub(q.text, 1000), audio: !!q.audio_asset_id })),
+    // só as que cabem no máximo da entrevista: um rascunho que o passe (pedidos em simultâneo) não faz crescer o pedido
+    questions: questions.slice(0, limits.maxQuestions).map(q => ({ text: scrub(q.text, 1000), audio: !!q.audio_asset_id })),
     maxQuestions: limits.maxQuestions, answerLimitSec: limits.answerLimitSec,
   };
 }
@@ -77,7 +82,7 @@ JSON: {"questions":[{"text":string,"why":string}],"note":string}`
     : acao === 'rever'
       ? `Review the existing numbered questions that have text. List at most ${COMPOSE_MAX_REVIEW} questions that would clearly improve (leading, closed yes/no, two questions in one, too long, vague, jargon), the most important first, each with the problem and a rewritten version in ${langName(d.lang)} that keeps the interviewer's intent. In "note", comment briefly on order, coverage of the objective and the number of questions. ${time}
 JSON: {"items":[{"n":number,"issue":string,"rewrite":string}],"note":string}`
-      : `Propose a clearer title (at most 80 characters) and objective (2 to 4 sentences, at most 600 characters: the theme, who it is for, what the guest is invited to share and the tone). Keep the language the interviewer used in the title and objective; if they are empty, use ${langName(d.lang)}. Base them on the draft and the questions; if the draft is almost empty, propose a neutral version and say in "note" what is missing.
+      : `Propose a clearer title (at most 80 characters) and objective (2 to 4 sentences, at most 600 characters: the theme, what the guest is invited to share and the tone). Use only what the draft and the questions say: do not invent the audience, dates, numbers or other facts. Keep the language the interviewer used in the title and objective (Portuguese always as European Portuguese, never Brazilian); if they are empty, use ${langName(d.lang)}. If the draft is almost empty, propose a neutral version and say in "note" what is missing.
 JSON: {"title":string,"objective":string,"note":string}`;
   const draft = {
     title: d.title, objective: d.objective, interviewer_role: d.hostTitle, guest_role: d.guestTitle, questions_language: d.lang,
@@ -143,24 +148,29 @@ export function composeMock(acao: ComposeAction, d: ComposeDraft): any {
 export type ComposeAi = (system: string, user: string) => Promise<any>;
 export interface ComposeDeps { ai: ComposeAi; aiEnabled: () => boolean; budget: () => boolean }
 const defaultAi: ComposeAi = async (system, user) => (await import('./ai/openai.ts')).composeHelp(system, user);
-const defaultAiEnabled = () => config.openai.mock || !!S('OPENAI_API_KEY');
+/** Com chave (a da entidade da entrevista, se tiver, senão a do portal) e sem um teto global posto a 0 (desligado). */
+const defaultAiEnabled = () => (config.openai.mock || !!S('OPENAI_API_KEY')) && config.openai.composeAiPerHour > 0 && config.openai.composeAiPerDay > 0;
 /** Teto global de pedidos por hora (todas as contas juntas, em memória). */
 const defaultBudget = () => rateLimit('compose-ai:global', config.openai.composeAiPerHour, 3600_000);
 
 export type ComposeOutcome = { ok: true; result: ComposeResult } | { ok: false; error: string; status: number };
 
 /**
- * Conta um pedido à IA no dia de hoje (da pessoa e do portal) e diz se cabe nos tetos diário e mensal da pessoa e no
- * diário do portal. Um pedido recusado aqui fica contado (nunca chega à OpenAI, mas evita tentativas sem fim).
+ * Conta um pedido à IA no dia de hoje (da pessoa e do portal) só se couber nos tetos: mensal e diário da pessoa e
+ * diário do portal. Cada contador diário só sobe abaixo do teto (atómico, mesmo com pedidos em simultâneo) e um
+ * pedido recusado não gasta quota. Dias e meses em UTC (current_date da base de dados).
  */
 async function usageAllowed(db: Db, userId: string): Promise<'ok' | 'day' | 'month' | 'global'> {
-  const bump = async (who: string) => Number((await db.one(`INSERT INTO compose_usage(who, day, n) VALUES ($1, current_date, 1)
-    ON CONFLICT (who, day) DO UPDATE SET n = compose_usage.n + 1 RETURNING n`, [who])).n);
-  const today = await bump(userId);
-  if (today > COMPOSE_RATE.perDay) return 'day';
   const month = Number((await db.one(`SELECT COALESCE(sum(n),0)::int AS n FROM compose_usage WHERE who=$1 AND day >= date_trunc('month', current_date)::date`, [userId])).n);
-  if (month > COMPOSE_RATE.perMonth) return 'month';
-  if (await bump('global') > config.openai.composeAiPerDay) return 'global';
+  if (month >= COMPOSE_RATE.perMonth) return 'month';
+  const bump = async (who: string, max: number) => (await db.one(`INSERT INTO compose_usage(who, day, n) VALUES ($1, current_date, 1)
+    ON CONFLICT (who, day) DO UPDATE SET n = compose_usage.n + 1 WHERE compose_usage.n < $2 RETURNING n`, [who, max]))?.n as number | undefined;
+  const today = await bump(userId, COMPOSE_RATE.perDay);
+  if (today == null) return 'day';
+  if (await bump('global', config.openai.composeAiPerDay) == null) {
+    await db.query(`UPDATE compose_usage SET n = n - 1 WHERE who=$1 AND day=current_date AND n > 0`, [userId]); // não chegou a ser feito
+    return 'global';
+  }
   if (today === 1) await db.query(`DELETE FROM compose_usage WHERE day < current_date - 62`); // limpeza ocasional
   return 'ok';
 }
@@ -177,11 +187,13 @@ export async function composeAssist(db: Db, userId: string, acao: ComposeAction,
   if (acao === 'sugerir' && d.questions.length >= d.maxQuestions) return { ok: false, status: 409, error: `Já tem ${d.maxQuestions} perguntas, o máximo desta entrevista. Use «Rever as perguntas» para as melhorar.` };
   if (acao === 'rever' && !d.questions.some(q => q.text)) return { ok: true, result: { acao, items: [], note: 'Ainda não há perguntas escritas para rever: escreva a primeira ou use «Sugerir perguntas».' } };
   if (!aiEnabled()) return { ok: false, status: 503, error: 'O assistente de composição está indisponível de momento.' };
+  const busy = { ok: false as const, status: 429, error: 'O assistente está muito solicitado neste momento. Tente mais tarde.' };
+  if (!budget()) return busy;
   if (!rateLimit(`compose:${userId}`, COMPOSE_RATE.perHour, 3600_000)) return { ok: false, status: 429, error: `Atingiu o limite de ${COMPOSE_RATE.perHour} pedidos por hora ao assistente. Tente mais tarde.` };
   const use = await usageAllowed(db, userId);
   if (use === 'day') return { ok: false, status: 429, error: `Atingiu o limite de ${COMPOSE_RATE.perDay} pedidos por dia ao assistente. Volte amanhã.` };
   if (use === 'month') return { ok: false, status: 429, error: `Atingiu o limite de ${COMPOSE_RATE.perMonth} pedidos por mês ao assistente.` };
-  if (use === 'global' || !budget()) return { ok: false, status: 429, error: 'O assistente está muito solicitado neste momento. Tente mais tarde.' };
+  if (use === 'global') return busy;
   try {
     const p = composePrompt(acao, d, request);
     const out = config.openai.mock && !deps.ai ? composeMock(acao, d) : await ai(p.system, p.user);
