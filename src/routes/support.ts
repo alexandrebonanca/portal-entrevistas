@@ -10,7 +10,8 @@ import {
   SUPPORT_CSS, SUPPORT_MAX_BODY, cleanBody, cleanSubject, supportAllowed, openThread, addMessage, setThreadStatus, threadMessages, isUuid,
   guestHelpNav,
 } from '../support.ts';
-import { cleanQuestion, assistantAllowed, answerQuestion, assistantSig, assistantSigOk, loadAnswer, assistantTranscript, faqLang, ASSISTANT_MAX_QUESTION, type Audience } from '../assistant.ts';
+import { cleanQuestion, assistantAllowed, answerQuestion, assistantSig, assistantSigOk, loadAnswer, assistantTranscript, assistantAiFor, faqLang, ASSISTANT_MAX_QUESTION, type Audience } from '../assistant.ts';
+import { config } from '../config.ts';
 import { assistantSection, assistantResult, asStateFrom, ASSISTANT_CSS, type AsCtx, type AsState, type Escalation } from './assistant.ts';
 
 type Dict = ReturnType<typeof t>;
@@ -83,7 +84,7 @@ export async function supportRoutes(app: FastifyInstance) {
     const fail = async (err: string, code: number) => (wantsJson(req) ? reply.code(code).send({ error: err, html: (await assistantResult(db, c, { err })).html }) : render({ q: raw.slice(0, ASSISTANT_MAX_QUESTION * 2), err }, code));
     if (!q.ok) return fail(q.error === 'empty' ? d.asEmpty : d.asTooLong(ASSISTANT_MAX_QUESTION), 422);
     if (!assistantAllowed(c.asker, req.ip)) return fail(d.asRate, 429);
-    const id = await answerQuestion(db, { question: q.text, pageLang: faqLang(c.lang), audience: c.audience });
+    const id = await answerQuestion(db, { question: q.text, pageLang: faqLang(c.lang), audience: c.audience, ai: c.ai === true });
     const s = assistantSig(id, c.asker), url = `${c.base}?r=${id}&s=${encodeURIComponent(s)}`;
     if (wantsJson(req)) return reply.headers({ 'Cache-Control': 'no-store' }).send({ html: (await assistantResult(db, c, { r: id, s })).html, url });
     return reply.redirect(`${url}#as-resposta`, 303);
@@ -117,6 +118,8 @@ export async function supportRoutes(app: FastifyInstance) {
   const userPage = (req: FastifyRequest, reply: FastifyReply, title: string, body: string, code = 200) =>
     reply.code(code).headers(HTML).send(page({ title, body: `<div class="narrow" style="padding-top:32px">${body}</div>`, nav: interviewerNav(req.user), noindex: true, styles: HELP_CSS }));
   const userAs = (req: FastifyRequest): AsCtx => ({ audience: 'interviewer' as Audience, lang: 'pt-PT', base: '/ajuda', asker: `user:${req.user!.id}`, canEscalate: req.user!.role !== 'admin' });
+  /** Com a indicação de a resposta poder ser redigida pela IA (administrador e contas com subscrição ativa). */
+  const userAsAi = async (req: FastifyRequest): Promise<AsCtx> => ({ ...userAs(req), ai: await assistantAiFor(db, req.user!) });
   const myThreads = (userId: string) => db.query('SELECT * FROM support_threads WHERE user_id=$1 ORDER BY updated_at DESC LIMIT 100', [userId]);
   const myThread = async (req: FastifyRequest) => {
     const id = (req.params as any).id;
@@ -126,7 +129,7 @@ export async function supportRoutes(app: FastifyInstance) {
   const userHelp = async (req: FastifyRequest, reply: FastifyReply, o: { e?: string; form?: { subject?: string; message?: string }; as?: AsState } = {}, code = 200) => {
     const u = req.user!, q = req.query as any;
     const admin = u.role === 'admin';
-    const as = await assistantSection(db, userAs(req), o.as ?? asStateFrom(q));
+    const as = await assistantSection(db, await userAsAi(req), o.as ?? asStateFrom(q));
     return userPage(req, reply, PT.helpTitle, helpBody({
       d: PT, lang: 'pt-PT', intro: USER_INTRO, assistant: as.html, base: '/ajuda', rows: admin ? [] : await myThreads(u.id),
       ok: okMsg(PT, q.ok), e: o.e ?? errMsg(PT, q.e), form: o.form, escalate: as.escalate,
@@ -141,7 +144,7 @@ export async function supportRoutes(app: FastifyInstance) {
 
   app.post('/ajuda/assistente', async (req, reply) => {
     if (!requireUser(req, reply)) return;
-    return ask(req, reply, userAs(req), (st, code) => userHelp(req, reply, { as: st }, code));
+    return ask(req, reply, await userAsAi(req), (st, code) => userHelp(req, reply, { as: st }, code));
   });
 
   app.post('/ajuda/assistente/:id/ajudou', async (req, reply) => {
@@ -158,9 +161,10 @@ export async function supportRoutes(app: FastifyInstance) {
     if (!x) return userHelp(req, reply, { as: { err: PT.asExpired } }, 404);
     const form = { subject: String(b.subject ?? '').slice(0, 300), message: String(b.message ?? '').slice(0, SUPPORT_MAX_BODY * 2) };
     const body = cleanBody(b.message);
+    if (x.a.log.escalated) return reply.redirect('/ajuda#pedidos'); // já enviado (por exemplo, clique duplo): não gasta o limite
     if (!body.ok) return userHelp(req, reply, { e: errMsg(PT, body.error), form, as: x.st }, 422);
     if (!supportAllowed(`user:${u.id}`, req.ip)) return userHelp(req, reply, { e: PT.supportRate, form, as: x.st }, 429);
-    if (!(await claimEscalation(x.a.log.id))) return reply.redirect('/ajuda#pedidos'); // já enviado (por exemplo, clique duplo)
+    if (!(await claimEscalation(x.a.log.id))) return reply.redirect('/ajuda#pedidos'); // enviado entretanto por outro pedido
     const id = await openThread(db, { userId: u.id, entityId: u.entity_id, subject: cleanSubject(b.subject, body.text), body: body.text, origin: 'assistant', author: 'user', authorUserId: u.id,
       lang: x.a.log.lang === 'en' ? 'en' : 'pt-PT', assistantBody: assistantTranscript(x.a, faqLang(x.a.log.lang)) });
     await audit(db, u.email, 'support.thread_opened', null, { threadId: id, via: 'assistant' });
@@ -268,6 +272,7 @@ export async function supportRoutes(app: FastifyInstance) {
     const b = (req.body ?? {}) as any;
     const x = await escalation(req, guestAs(c));
     if (!x) return guestHelp(req, reply, c, { as: { err: c.d.asExpired } }, 404);
+    if (x.a.log.escalated) return reply.redirect('/entrevista/ajuda#pedidos'); // já enviado: não gasta o limite
     const form = { subject: String(b.subject ?? '').slice(0, 300), message: String(b.message ?? '').slice(0, SUPPORT_MAX_BODY * 2) };
     const body = cleanBody(b.message);
     if (!body.ok) return guestHelp(req, reply, c, { e: errMsg(c.d, body.error), form, as: x.st }, 422);

@@ -1,5 +1,5 @@
 import type { Db } from './db.ts';
-import { esc, rateLimit } from './lib.ts';
+import { esc, rateLimitAll } from './lib.ts';
 import { t, type Lang } from './i18n.ts';
 
 /** Suporte interno (in-mail): pedidos ao administrador dentro do portal. Nenhum email é enviado por aqui. */
@@ -29,9 +29,9 @@ export function cleanSubject(raw: unknown, body: string): string {
   return cut(one(String(raw ?? '')), SUPPORT_MAX_SUBJECT) || cut(one(body.split('\n')[0]), 80) || '—';
 }
 
-/** Limite de envio: o remetente (utilizador ou convidado) e o IP têm de estar dentro do limite. */
+/** Limite de envio: o remetente (utilizador ou convidado) e o IP têm de estar dentro do limite; um envio recusado não gasta nenhum dos dois. */
 export const supportAllowed = (sender: string, ip: string) =>
-  rateLimit(`support:${sender}`, SUPPORT_RATE.perSender, SUPPORT_RATE.windowMs) && rateLimit(`support-ip:${ip}`, SUPPORT_RATE.perIp, SUPPORT_RATE.windowMs);
+  rateLimitAll([[`support:${sender}`, SUPPORT_RATE.perSender, SUPPORT_RATE.windowMs], [`support-ip:${ip}`, SUPPORT_RATE.perIp, SUPPORT_RATE.windowMs]]);
 
 export interface OpenThread {
   userId?: string | null; interviewId?: string | null; entityId?: string | null;

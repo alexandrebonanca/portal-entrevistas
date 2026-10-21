@@ -36,6 +36,8 @@ export const config = {
     mock: bool(env.AI_MOCK, false),
     // Assistente da página de ajuda (fora de `models`, que entra na chave de deduplicação da geração dos episódios).
     assistantModel: env.OPENAI_MODEL_ASSISTANT ?? env.OPENAI_MODEL_TEXT ?? 'gpt-4.1',
+    // Teto global de respostas do assistente redigidas pela IA por hora (todas as contas juntas); acima disto, só a pesquisa local.
+    assistantAiPerHour: Number(env.ASSISTANT_AI_PER_HOUR ?? 120),
     models: {
       transcribe: env.OPENAI_MODEL_TRANSCRIBE ?? 'gpt-4o-transcribe',
       transcribeTimestamps: env.OPENAI_MODEL_TIMESTAMPS ?? 'whisper-1',

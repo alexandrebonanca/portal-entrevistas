@@ -1,7 +1,8 @@
 import { timingSafeEqual } from 'node:crypto';
 import type { Db } from './db.ts';
 import { config } from './config.ts';
-import { rateLimit, sign } from './lib.ts';
+import { rateLimit, rateLimitAll, sign } from './lib.ts';
+import { quotaFor } from './billing.ts';
 import { S } from './settings.ts';
 
 /**
@@ -249,9 +250,18 @@ export function assistantSigOk(logId: unknown, asker: string, s: unknown) {
   return e.length === g.length && timingSafeEqual(e, g);
 }
 
-/** Limite de perguntas: quem pergunta e o IP têm de estar dentro do limite. */
+/** Limite de perguntas: quem pergunta e o IP têm de estar dentro do limite; uma pergunta recusada não gasta nenhum dos dois. */
 export const assistantAllowed = (asker: string, ip: string) =>
-  rateLimit(`assistant:${asker}`, ASSISTANT_RATE.perAsker, ASSISTANT_RATE.windowMs) && rateLimit(`assistant-ip:${ip}`, ASSISTANT_RATE.perIp, ASSISTANT_RATE.windowMs);
+  rateLimitAll([[`assistant:${asker}`, ASSISTANT_RATE.perAsker, ASSISTANT_RATE.windowMs], [`assistant-ip:${ip}`, ASSISTANT_RATE.perIp, ASSISTANT_RATE.windowMs]]);
+
+/**
+ * Quem pode ter a resposta redigida pela IA (paga pelo portal): o administrador e as contas com subscrição ativa
+ * (mesmo com a quota do mês gasta). Os convidados e as contas sem subscrição ficam sempre na pesquisa local.
+ */
+export async function assistantAiFor(db: Db, user: { id: string; role: string }) {
+  const q = await quotaFor(db, user);
+  return q.unlimited || q.reason === '' || q.reason === 'quota';
+}
 
 // ---------------- resposta (local ou redigida pela OpenAI) ----------------
 
@@ -277,17 +287,21 @@ export function assistantPrompt(question: string, entries: FaqEntry[], lang: Faq
 }
 
 export type AiFn = (system: string, user: string) => Promise<{ answer: string; answered: boolean }>;
-export interface AnswerDeps { aiEnabled: () => boolean; ai: AiFn }
+export interface AnswerDeps { aiEnabled: () => boolean; ai: AiFn; aiBudget: () => boolean }
 /** Com chave da OpenAI global (a do portal) e fora do modo simulado. */
 export const defaultAiEnabled = () => !config.openai.mock && !!S('OPENAI_API_KEY');
 const defaultAi: AiFn = async (system, user) => (await import('./ai/openai.ts')).answerHelp(system, user);
+/** Teto global de chamadas pagas por hora (todas as contas juntas), que não depende do IP de quem pergunta. */
+const defaultAiBudget = () => rateLimit('assistant-ai:global', config.openai.assistantAiPerHour, 3600_000);
 
 /**
  * Responde a uma pergunta e regista-a (sem dados de quem perguntou). A língua é a da pergunta quando se percebe
- * (senão, a da página); sem nada na língua da pergunta, tenta a da página. Devolve o id do registo.
+ * (senão, a da página); sem nada na língua da pergunta, tenta a da página. A IA só redige com `ai` (ver assistantAiFor),
+ * nunca para convidados, com chave configurada e dentro do teto global; senão, ficam as entradas da pesquisa local.
+ * Devolve o id do registo.
  */
-export async function answerQuestion(db: Db, o: { question: string; pageLang: FaqLang; audience: Audience }, deps: Partial<AnswerDeps> = {}) {
-  const aiEnabled = deps.aiEnabled ?? defaultAiEnabled, ai = deps.ai ?? defaultAi;
+export async function answerQuestion(db: Db, o: { question: string; pageLang: FaqLang; audience: Audience; ai?: boolean }, deps: Partial<AnswerDeps> = {}) {
+  const aiEnabled = deps.aiEnabled ?? defaultAiEnabled, ai = deps.ai ?? defaultAi, aiBudget = deps.aiBudget ?? defaultAiBudget;
   const question = redact(o.question).slice(0, ASSISTANT_MAX_QUESTION);
   const text = question.replace(/\[(email|link|número|código)\]/g, ' '); // o que foi tapado não conta para a pesquisa
   let lang = detectLang(text) ?? o.pageLang;
@@ -297,7 +311,7 @@ export async function answerQuestion(db: Db, o: { question: string; pageLang: Fa
     if (other.length) { hits = other; lang = o.pageLang; }
   }
   let mode: 'local' | 'ai' = 'local', answer: string | null = null, answered = hits.length > 0;
-  if (hits.length && aiEnabled()) {
+  if (hits.length && o.ai === true && o.audience !== 'guest' && aiEnabled() && aiBudget()) {
     try {
       const p = assistantPrompt(question, hits.map(h => h.entry), lang);
       const r = await ai(p.system, p.user);

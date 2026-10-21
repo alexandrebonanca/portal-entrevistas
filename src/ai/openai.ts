@@ -122,15 +122,24 @@ export function validateScript(raw: any, input?: ScriptInput) {
 
 /**
  * Assistente da página de ajuda: resposta curta redigida só a partir das entradas da base de conhecimento (o prompt
- * e as entradas vêm de src/assistant.ts). Pedido curto (20 s no máximo), para a página não ficar à espera.
+ * e as entradas vêm de src/assistant.ts). Pedido curto (20 s e HELP_MAX_TOKENS no máximo), para a página não ficar à espera.
  */
 export async function answerHelp(system: string, user: string): Promise<{ answer: string; answered: boolean }> {
   const c = await openai();
-  const r = await c.chat.completions.create({
-    model: config.openai.assistantModel, temperature: 0.2, response_format: { type: 'json_object' },
-    messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
-  }, { timeout: 20_000 });
-  const j = JSON.parse(r.choices[0].message.content ?? '{}');
+  return parseHelp(await c.chat.completions.create(helpRequest(system, user), { timeout: 20_000 }));
+}
+/** Teto de tokens da resposta do assistente (cerca de 120 palavras em JSON cabem com folga): nunca se paga uma resposta longa. */
+export const HELP_MAX_TOKENS = 400;
+/** Pedido do assistente à OpenAI (separado para os testes verificarem o teto sem chamar a API). */
+export const helpRequest = (system: string, user: string) => ({
+  model: config.openai.assistantModel, temperature: 0.2, response_format: { type: 'json_object' as const }, max_completion_tokens: HELP_MAX_TOKENS,
+  messages: [{ role: 'system' as const, content: system }, { role: 'user' as const, content: user }],
+});
+/** Resposta do modelo; uma resposta cortada pelo teto de tokens conta como falha (ficam as entradas da pesquisa local). */
+export function parseHelp(r: any): { answer: string; answered: boolean } {
+  const ch = r?.choices?.[0];
+  if (ch?.finish_reason === 'length') throw new Error('resposta do assistente cortada pelo teto de tokens');
+  const j = JSON.parse(ch?.message?.content ?? '{}');
   return { answer: String(j.answer ?? '').trim(), answered: j.answered !== false };
 }
 

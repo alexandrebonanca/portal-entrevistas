@@ -71,7 +71,9 @@ const D = {
     supportBack: 'Voltar à ajuda', supportBackInterview: 'Voltar à entrevista', supportNotFound: 'Pedido não encontrado.',
     // assistente virtual (perguntas e respostas)
     asTitle: 'Assistente virtual', asIntro: 'Escreva a sua dúvida: o assistente responde com as perguntas frequentes do portal. Se não resolver, fale com o suporte.',
-    asLabel: 'A sua pergunta', asAsk: 'Perguntar', asPrivacy: 'Não escreva dados pessoais, palavras-passe nem dados de pagamento.',
+    asLabel: 'A sua pergunta', asAsk: 'Perguntar',
+    asPrivacy: (days: number) => `Não escreva dados pessoais, palavras-passe nem dados de pagamento. A pergunta é respondida só com as perguntas frequentes (não é enviada a serviços de IA) e fica registada sem identificação durante ${days} dias, para melhorar as respostas.`,
+    asPrivacyAi: (days: number) => `Não escreva dados pessoais, palavras-passe nem dados de pagamento. Para redigir a resposta, o texto da pergunta (sem os dados da sua conta) pode ser enviado a um fornecedor de IA externo (OpenAI); fica registado sem identificação durante ${days} dias, para melhorar as respostas.`,
     asYouAsked: 'Perguntou', asAiLabel: 'Resposta do assistente', asAiNote: 'Escrita automaticamente a partir destas perguntas frequentes; confirme nelas os pormenores:',
     asRelated: 'Perguntas relacionadas', asNone: 'Não encontrei resposta a isto nas perguntas frequentes.', asNoneHint: 'Pode reformular a pergunta ou falar com o suporte: a equipa do portal responde nesta página.',
     asHelped: 'Isto ajudou?', asYes: 'Sim', asNo: 'Não', asThanks: 'Obrigado pela resposta.', asSorry: 'Lamentamos. Envie a pergunta ao suporte: a equipa do portal responde nesta página.',
@@ -149,7 +151,9 @@ const D = {
     supportBack: 'Back to help', supportBackInterview: 'Back to the interview', supportNotFound: 'Request not found.',
     // virtual assistant (questions and answers)
     asTitle: 'Virtual assistant', asIntro: 'Type your question: the assistant answers from the portal’s frequently asked questions. If that does not solve it, contact support.',
-    asLabel: 'Your question', asAsk: 'Ask', asPrivacy: 'Do not include personal data, passwords or payment details.',
+    asLabel: 'Your question', asAsk: 'Ask',
+    asPrivacy: (days: number) => `Do not include personal data, passwords or payment details. Your question is answered only from the frequently asked questions (it is not sent to AI services) and is stored without identification for ${days} days, to improve the answers.`,
+    asPrivacyAi: (days: number) => `Do not include personal data, passwords or payment details. To draft the answer, the text of your question (without your account details) may be sent to an external AI provider (OpenAI); it is stored without identification for ${days} days, to improve the answers.`,
     asYouAsked: 'You asked', asAiLabel: 'Assistant’s answer', asAiNote: 'Written automatically from these frequently asked questions; check the details there:',
     asRelated: 'Related questions', asNone: 'I could not find an answer to this in the frequently asked questions.', asNoneHint: 'You can rephrase the question or contact support: the portal team replies on this page.',
     asHelped: 'Did this help?', asYes: 'Yes', asNo: 'No', asThanks: 'Thank you for your feedback.', asSorry: 'Sorry about that. Send your question to support: the portal team replies on this page.',

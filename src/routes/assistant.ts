@@ -7,7 +7,7 @@ import { t, type Lang } from '../i18n.ts';
 import { adminNav } from './admin.ts';
 import { SUPPORT_CSS, isUuid } from '../support.ts';
 import {
-  activeFaq, loadAnswer, assistantSig, assistantSigOk, fillVars, faqVars, faqLang, purgeAssistantLog,
+  activeFaq, loadAnswer, assistantSig, assistantSigOk, fillVars, faqVars, faqLang, purgeAssistantLog, defaultAiEnabled,
   FAQ_LANGS, FAQ_AUDIENCES, FAQ_LIMITS, FAQ_VAR_HELP, ASSISTANT_MAX_QUESTION, ASSISTANT_LOG_DAYS, type Audience, type FaqEntry,
 } from '../assistant.ts';
 
@@ -23,7 +23,8 @@ export const ASSISTANT_CSS = `.as-res{border-top:1px solid var(--line);margin-to
 export interface AsState { q?: string; err?: string; r?: string; s?: string; apoio?: boolean }
 export const asStateFrom = (q: any): AsState => ({ r: typeof q?.r === 'string' ? q.r : undefined, s: typeof q?.s === 'string' ? q.s : undefined, apoio: q?.apoio === '1' });
 
-export interface AsCtx { audience: Audience; lang: Lang; base: string; asker: string; canEscalate: boolean }
+/** `ai`: a resposta pode ser redigida pela IA (contas com subscrição e administrador; nunca convidados). */
+export interface AsCtx { audience: Audience; lang: Lang; base: string; asker: string; canEscalate: boolean; ai?: boolean }
 /** Pedido ao suporte a partir do assistente: formulário já preenchido, com a referência da resposta. */
 export interface Escalation { action: string; hidden: Record<string, string>; subject: string; message: string; note: string }
 
@@ -69,7 +70,7 @@ export async function assistantSection(db: Db, c: AsCtx, st: AsState): Promise<{
   const res = await assistantResult(db, c, st);
   const html = `<section id="assistente" class="card" aria-labelledby="h-as"><h2 id="h-as" style="margin-top:0">${esc(d.asTitle)}</h2><p>${esc(d.asIntro)}</p>
 <form method="post" action="${esc(c.base)}/assistente" data-as><label for="as-q">${esc(d.asLabel)}</label><textarea id="as-q" name="q" rows="2" required maxlength="${ASSISTANT_MAX_QUESTION}" aria-describedby="as-priv">${esc(st.q ?? '')}</textarea>
-<p class="hint" id="as-priv">${esc(d.asPrivacy)}</p><p><button class="accent">${esc(d.asAsk)}</button></p></form>
+<p class="hint" id="as-priv">${esc(c.ai && defaultAiEnabled() ? d.asPrivacyAi(ASSISTANT_LOG_DAYS) : d.asPrivacy(ASSISTANT_LOG_DAYS))}</p><p><button class="accent">${esc(d.asAsk)}</button></p></form>
 <div id="as-out">${res.html}</div>
 ${faq.length ? `<details class="as-all"><summary>${esc(d.asAllFaq(faq.length))}</summary><h3 class="vh">${esc(d.asFaq)}</h3>${faqList(faq)}</details>` : ''}
 <script src="/static/assistant.js" defer></script></section>`;

@@ -5,6 +5,7 @@ import { page, flash } from '../views.ts';
 import { setSessionCookie, audit } from '../app.ts';
 import { landing } from '../landing.ts';
 import { S } from '../settings.ts';
+import { ASSISTANT_LOG_DAYS } from '../assistant.ts';
 
 export async function siteRoutes(app: FastifyInstance) {
   const db = app.db;
@@ -20,6 +21,7 @@ export async function siteRoutes(app: FastifyInstance) {
 <h2>What we store</h2><ul><li>Your name and email (to send the invitation).</li><li>Your recorded answers and any photos you choose to add.</li><li>Your consent choices, with the exact text shown and the time.</li></ul>
 <h2>External services</h2><p>If you allow it, audio is sent to an AI provider for transcription, translation and synthetic narration. Photos are never sent to AI services by default. Subscription payments are handled by Stripe; we never see card numbers.</p>
 <h2>Publication</h2><p>Nothing is published without the interviewer’s decision and, by default, your approval of the final version. Originals and unselected photos stay private.</p>
+<h2>Help assistant and support</h2><p>Questions typed into the help assistant are stored for ${ASSISTANT_LOG_DAYS} days without any link to the person who asked (emails, links and long numbers are masked), to improve the answers. Guests’ questions are answered only from the portal’s frequently asked questions and are never sent to AI services. For interviewers with an active subscription, the text of the question alone may be sent to an AI provider (OpenAI) to draft a short answer from those entries. Messages to support stay inside the portal (no email is sent) and are deleted together with the interview or the account.</p>
 <h2>Your rights</h2><p>Ask for access, correction, withdrawal of consent or deletion at <a href="mailto:${esc(config.supportEmail)}">${esc(config.supportEmail)}</a>. Copies already downloaded or distributed elsewhere may not be recoverable.</p>
 <p class="hint">The processor list, retention periods and legal bases are maintained in the operator’s documentation and must be completed before production use.</p></div>`,
   })));

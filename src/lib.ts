@@ -41,6 +41,14 @@ export function rateLimit(key: string, max: number, windowMs: number) {
   hits.push(now); buckets.set(key, hits);
   return true;
 }
+/** Vários limites de uma vez (por exemplo, a pessoa e o IP): só conta, em todos, quando todos estão dentro do limite. */
+export function rateLimitAll(limits: [key: string, max: number, windowMs: number][]) {
+  const now = Date.now();
+  const lists = limits.map(([key, max, windowMs]) => { const hits = (buckets.get(key) ?? []).filter(t => now - t < windowMs); buckets.set(key, hits); return { hits, max }; });
+  if (lists.some(l => l.hits.length >= l.max)) return false;
+  for (const l of lists) l.hits.push(now);
+  return true;
+}
 
 export const fmtDuration = (ms: number | null | undefined) => {
   if (!ms) return '—';
