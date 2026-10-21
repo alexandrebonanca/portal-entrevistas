@@ -56,7 +56,7 @@ const helpBody = (o: { d: Dict; lang: string; intro: string; assistant: string; 
   return `${o.top ?? ''}<h1>${esc(o.d.helpTitle)}</h1>${flash(o.ok)}${unread ? `<div class="flash"><a href="#pedidos">${esc(o.d.supportUnreadSr(unread))}</a></div>` : ''}
 ${o.assistant}
 <section id="suporte" class="card" aria-labelledby="h-suporte"><h2 id="h-suporte" style="margin-top:0">${esc(o.d.supportTitle)}</h2>${flash(o.e, 'bad')}
-${o.noForm ?? (x ? `<p>${esc(x.note)}</p>${supportForm(x.action, o.d, o.form ?? { subject: x.subject, message: x.message }, x.hidden)}` : `<p>${esc(o.intro)}</p>${supportForm(o.base, o.d, o.form)}`)}</section>
+${o.noForm ?? (x ? `<p>${esc(x.note)}</p>${supportForm(`${x.action}#suporte`, o.d, o.form ?? { subject: x.subject, message: x.message }, x.hidden)}` : `<p>${esc(o.intro)}</p>${supportForm(`${o.base}#suporte`, o.d, o.form)}`)}</section>
 <section id="pedidos" aria-labelledby="h-pedidos"><h2 id="h-pedidos">${esc(o.d.supportMine)}</h2>${threadList(o.rows, o.base, o.d, o.lang)}</section>`;
 };
 

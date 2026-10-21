@@ -54,7 +54,8 @@ export async function assistantResult(db: Db, c: AsCtx, st: AsState): Promise<{ 
   if (found) {
     body += log.helped === true ? `<div class="flash ok" role="status">${esc(d.asThanks)}</div>`
       : log.helped === false ? `<div class="flash" role="status">${esc(d.asSorry)}</div>`
-      : `<form method="post" action="${esc(c.base)}/assistente/${log.id}/ajudou" class="as-fb" data-as><input type="hidden" name="s" value="${esc(sig)}"><span>${esc(d.asHelped)}</span><button name="v" value="sim" class="ghost">${esc(d.asYes)}</button><button name="v" value="nao" class="ghost">${esc(d.asNo)}</button></form>`;
+      // Grupo com nome: o leitor de ecrã anuncia «Isto ajudou?» com cada botão.
+      : `<form method="post" action="${esc(c.base)}/assistente/${log.id}/ajudou" data-as><div class="as-fb" role="group" aria-labelledby="as-fb-q"><input type="hidden" name="s" value="${esc(sig)}"><span id="as-fb-q">${esc(d.asHelped)}</span><button name="v" value="sim" class="ghost">${esc(d.asYes)}</button><button name="v" value="nao" class="ghost">${esc(d.asNo)}</button></div></form>`;
   }
   if (c.canEscalate) body += log.escalated ? `<p class="hint">${esc(d.supportSent)}</p>` : `<p class="sans"><a href="${esc(url)}&amp;apoio=1#suporte">${esc(d.asTalk)}</a></p>`;
   html += `<div id="as-resposta" class="as-res" tabindex="-1">${body}</div>`;
