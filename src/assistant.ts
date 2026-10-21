@@ -1,13 +1,14 @@
 import { timingSafeEqual } from 'node:crypto';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import type { Db } from './db.ts';
 import { config } from './config.ts';
 import { rateLimit, rateLimitAll, sign } from './lib.ts';
 import { quotaFor } from './billing.ts';
-import { S } from './settings.ts';
+import { S, inEntity, entityOfInterview } from './settings.ts';
 import { seller, WITHDRAWAL_DAYS } from './legal.ts';
 import { cr, EXTRA_INTERVIEW_CENTS, EXTRA_REGEN_CENTS, TOPUP_MIN_CENTS, TOPUP_MAX_CENTS, CREDIT_VALID_MONTHS, REFUND_WINDOW_DAYS } from './wallet.ts';
 import { QUOTE_VALID_DAYS, START_DEADLINE_HOURS } from './quotes.ts';
-import { FOLLOWUP_MIN_LEFT_SEC } from './limits.ts';
+import { FOLLOWUP_MIN_LEFT_SEC, inviteLimits } from './limits.ts';
 
 /**
  * Assistente virtual da página de ajuda (perguntas e respostas). A resposta vem SEMPRE da base de conhecimento
@@ -260,8 +261,39 @@ export function cleanQuestion(raw: unknown): { ok: true; text: string } | { ok: 
 // ---------------- marcadores nas respostas (valores atuais da configuração) ----------------
 
 const num = (n: number) => String(Number(n.toFixed(1)));
+/**
+ * Valores de quem pergunta, por cima dos da configuração: os limites de cada entrevista do plano dele (ou, para um
+ * convidado, os fixados no convite da entrevista dele) e a vendedora da conta Stripe dele (uma entidade com Stripe
+ * própria vende com os dados dela). Sem contexto (pré-visualização do administrador, testes), os da configuração.
+ */
+const askerVars = new AsyncLocalStorage<Record<string, string>>();
+export const withAskerVars = <T>(vars: Record<string, string>, fn: () => T): T => askerVars.run(vars, fn);
+const sellerNameIn = (entityId: string | null | undefined) => inEntity(entityId ?? null, () => { const s = seller(); return s.name || s.tradeName || ''; });
+/** Utilizador: limites do plano dele (inviteLimits, os mesmos do convite; o administrador fica com os gerais) e a vendedora. */
+export async function userAskerVars(db: Db, user: { id: string; role: string; entity_id?: string | null }): Promise<Record<string, string>> {
+  const out: Record<string, string> = {};
+  if (user.role !== 'admin') {
+    const lim = inviteLimits(await quotaFor(db, user));
+    if (lim.questionLimit != null) out.maxQuestions = String(lim.questionLimit);
+    if (lim.answerLimitSec != null) out.maxAnswerTotalMin = num(lim.answerLimitSec / 60);
+  }
+  const name = sellerNameIn(user.entity_id);
+  if (name) out.sellerName = name;
+  return out;
+}
+/** Convidado: os limites fixados no convite da entrevista dele (sem limite: os gerais) e a vendedora de quem convidou. */
+export async function guestAskerVars(db: Db, interviewId: string): Promise<Record<string, string>> {
+  const out: Record<string, string> = {};
+  const iv = await db.one('SELECT question_limit, answer_limit_sec FROM interviews WHERE id=$1', [interviewId]);
+  if (iv?.question_limit != null) out.maxQuestions = String(iv.question_limit);
+  if (iv?.answer_limit_sec != null) out.maxAnswerTotalMin = num(Number(iv.answer_limit_sec) / 60);
+  const name = sellerNameIn(await entityOfInterview(db, interviewId));
+  if (name) out.sellerName = name;
+  return out;
+}
 /** Marcadores que a base pode usar: são substituídos pelos valores em vigor, para as respostas não ficarem desatualizadas. */
-export const faqVars = (): Record<string, string> => ({
+export const faqVars = (): Record<string, string> => ({ ...baseFaqVars(), ...(askerVars.getStore() ?? {}) });
+const baseFaqVars = (): Record<string, string> => ({
   brand: config.brand,
   brandSite: config.brandSite,
   maxAnswerMin: num(config.limits.maxAnswerSeconds / 60),

@@ -10,7 +10,7 @@ import {
   SUPPORT_CSS, SUPPORT_MAX_BODY, cleanBody, cleanSubject, supportAllowed, openThread, addMessage, setThreadStatus, threadMessages, isUuid,
   guestHelpNav,
 } from '../support.ts';
-import { cleanQuestion, assistantAllowed, answerQuestion, assistantSig, assistantSigOk, loadAnswer, assistantTranscript, assistantAiFor, faqLang, ASSISTANT_MAX_QUESTION, type Audience } from '../assistant.ts';
+import { cleanQuestion, assistantAllowed, answerQuestion, assistantSig, assistantSigOk, loadAnswer, assistantTranscript, assistantAiFor, faqLang, withAskerVars, userAskerVars, guestAskerVars, ASSISTANT_MAX_QUESTION, type Audience } from '../assistant.ts';
 import { config } from '../config.ts';
 import { assistantSection, assistantResult, asStateFrom, ASSISTANT_CSS, type AsCtx, type AsState, type Escalation } from './assistant.ts';
 
@@ -126,7 +126,9 @@ export async function supportRoutes(app: FastifyInstance) {
     return isUuid(id) ? db.one('SELECT * FROM support_threads WHERE id=$1 AND user_id=$2', [id, req.user!.id]) : undefined;
   };
 
-  const userHelp = async (req: FastifyRequest, reply: FastifyReply, o: { e?: string; form?: { subject?: string; message?: string }; as?: AsState } = {}, code = 200) => {
+  /** O assistente responde com os valores de quem pergunta (limites do plano dele e a vendedora da conta Stripe dele). */
+  const asUser = async <T>(req: FastifyRequest, fn: () => Promise<T>): Promise<T> => withAskerVars(await userAskerVars(db, req.user!), fn);
+  const userHelp = async (req: FastifyRequest, reply: FastifyReply, o: { e?: string; form?: { subject?: string; message?: string }; as?: AsState } = {}, code = 200) => asUser(req, async () => {
     const u = req.user!, q = req.query as any;
     const admin = u.role === 'admin';
     const as = await assistantSection(db, await userAsAi(req), o.as ?? asStateFrom(q));
@@ -135,7 +137,7 @@ export async function supportRoutes(app: FastifyInstance) {
       ok: okMsg(PT, q.ok), e: o.e ?? errMsg(PT, q.e), form: o.form, escalate: as.escalate,
       noForm: admin ? '<p>Os pedidos dos utilizadores e dos convidados chegam à caixa de entrada do administrador: <a href="/admin/suporte">Suporte</a>. A base do assistente edita-se em <a href="/admin/assistente">Assistente</a>.</p>' : undefined,
     }), code);
-  };
+  });
 
   app.get('/ajuda', async (req, reply) => {
     if (!requireUser(req, reply)) return;
@@ -144,12 +146,13 @@ export async function supportRoutes(app: FastifyInstance) {
 
   app.post('/ajuda/assistente', async (req, reply) => {
     if (!requireUser(req, reply)) return;
-    return ask(req, reply, await userAsAi(req), (st, code) => userHelp(req, reply, { as: st }, code));
+    const c = await userAsAi(req);
+    return asUser(req, () => ask(req, reply, c, (st, code) => userHelp(req, reply, { as: st }, code)));
   });
 
   app.post('/ajuda/assistente/:id/ajudou', async (req, reply) => {
     if (!requireUser(req, reply)) return;
-    return feedback(req, reply, userAs(req));
+    return asUser(req, () => feedback(req, reply, userAs(req)));
   });
 
   // Pedido ao suporte a partir do assistente: a pergunta (editável) e, a seguir, a resposta que o assistente deu.
@@ -165,8 +168,9 @@ export async function supportRoutes(app: FastifyInstance) {
     if (!body.ok) return userHelp(req, reply, { e: errMsg(PT, body.error), form, as: x.st }, 422);
     if (!supportAllowed(`user:${u.id}`, req.ip)) return userHelp(req, reply, { e: PT.supportRate, form, as: x.st }, 429);
     if (!(await claimEscalation(x.a.log.id))) return reply.redirect('/ajuda#pedidos'); // enviado entretanto por outro pedido
+    const transcript = await asUser(req, async () => assistantTranscript(x.a, faqLang(x.a.log.lang)));
     const id = await openThread(db, { userId: u.id, entityId: u.entity_id, subject: cleanSubject(b.subject, body.text), body: body.text, origin: 'assistant', author: 'user', authorUserId: u.id,
-      lang: x.a.log.lang === 'en' ? 'en' : 'pt-PT', assistantBody: assistantTranscript(x.a, faqLang(x.a.log.lang)) });
+      lang: x.a.log.lang === 'en' ? 'en' : 'pt-PT', assistantBody: transcript });
     await audit(db, u.email, 'support.thread_opened', null, { threadId: id, via: 'assistant' });
     return reply.redirect(`/ajuda/${id}?ok=sent`);
   });
@@ -249,7 +253,9 @@ export async function supportRoutes(app: FastifyInstance) {
     return isUuid(id) ? db.one('SELECT * FROM support_threads WHERE id=$1 AND interview_id=$2', [id, interviewId]) : undefined;
   };
 
-  const guestHelp = async (req: FastifyRequest, reply: FastifyReply, c: GuestC, o: { e?: string; form?: { subject?: string; message?: string }; as?: AsState } = {}, code = 200) => {
+  /** O assistente do convidado responde com os limites fixados no convite da entrevista dele. */
+  const asGuest = async <T>(c: { iv: any }, fn: () => Promise<T>): Promise<T> => withAskerVars(await guestAskerVars(db, c.iv.id), fn);
+  const guestHelp = async (req: FastifyRequest, reply: FastifyReply, c: GuestC, o: { e?: string; form?: { subject?: string; message?: string }; as?: AsState } = {}, code = 200) => asGuest(c, async () => {
     const q = req.query as any;
     const rows = await db.query('SELECT * FROM support_threads WHERE interview_id=$1 ORDER BY updated_at DESC LIMIT 100', [c.iv.id]);
     if (c.readOnly) return guestPage(req, reply, c.lang, c.d.helpTitle, helpBody({
@@ -262,7 +268,7 @@ export async function supportRoutes(app: FastifyInstance) {
       // Depois de submeter, a entrevista continua no comprovativo (com a pré-visualização do episódio, quando houver).
       top: `<p class="sans"><a href="${c.iv.collection_status === 'submitted' ? '/entrevista/obrigado' : '/entrevista'}">← ${esc(c.d.supportBackInterview)}</a></p>`,
     }), code);
-  };
+  });
 
   app.get('/entrevista/ajuda', async (req, reply) => {
     const c = await guestCtx(req, reply); if (!c) return;
@@ -271,12 +277,12 @@ export async function supportRoutes(app: FastifyInstance) {
 
   app.post('/entrevista/ajuda/assistente', async (req, reply) => {
     const c = await guestCtx(req, reply, true); if (!c) return;
-    return ask(req, reply, guestAs(c), (st, code) => guestHelp(req, reply, c, { as: st }, code));
+    return asGuest(c, () => ask(req, reply, guestAs(c), (st, code) => guestHelp(req, reply, c, { as: st }, code)));
   });
 
   app.post('/entrevista/ajuda/assistente/:id/ajudou', async (req, reply) => {
     const c = await guestCtx(req, reply, true); if (!c) return;
-    return feedback(req, reply, guestAs(c));
+    return asGuest(c, () => feedback(req, reply, guestAs(c)));
   });
 
   app.post('/entrevista/ajuda/assistente/:id/suporte', async (req, reply) => {
@@ -290,8 +296,9 @@ export async function supportRoutes(app: FastifyInstance) {
     if (!body.ok) return guestHelp(req, reply, c, { e: errMsg(c.d, body.error), form, as: x.st }, 422);
     if (!supportAllowed(`guest:${c.iv.id}`, req.ip)) return guestHelp(req, reply, c, { e: c.d.supportRate, form, as: x.st }, 429);
     if (!(await claimEscalation(x.a.log.id))) return reply.redirect('/entrevista/ajuda#pedidos');
+    const transcript = await asGuest(c, async () => assistantTranscript(x.a, faqLang(x.a.log.lang)));
     const id = await openThread(db, { interviewId: c.iv.id, entityId: (await entityOfInterview(db, c.iv.id)) ?? null, subject: cleanSubject(b.subject, body.text), body: body.text,
-      origin: 'assistant', author: 'guest', lang: c.lang, assistantBody: assistantTranscript(x.a, faqLang(x.a.log.lang)) });
+      origin: 'assistant', author: 'guest', lang: c.lang, assistantBody: transcript });
     await audit(db, 'guest', 'support.thread_opened', c.iv.id, { threadId: id, via: 'assistant' });
     return reply.redirect(`/entrevista/ajuda/${id}?ok=sent`);
   });

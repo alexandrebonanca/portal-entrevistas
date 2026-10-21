@@ -813,3 +813,44 @@ test('registo: apagado ao fim de 180 dias (trabalho periódico e consulta do adm
   await get('/admin/assistente', admin);
   assert.equal(await db.one('SELECT 1 FROM assistant_questions WHERE id=$1', [older.id]), undefined, 'a página do administrador limpa antes de mostrar');
 });
+
+test('marcadores com os valores de quem pergunta: limites do plano dele, os do convite do convidado e a vendedora da conta Stripe dele', async () => {
+  const { saveEntitySetting } = await import('../src/settings.ts');
+  const limits = (await import('../src/assistant-faq.ts')).FAQ_SEED.find(e => e.key === 'limites-entrevista')!;
+  // o administrador mudou os limites do plano Start: a cliente com esse plano vê os do plano dela, não os gerais
+  const u = await newUser('Plano Start', 'plano-start@example.com');
+  const uid = (await db.one(`SELECT id FROM users WHERE email='plano-start@example.com'`)).id;
+  await db.query(`INSERT INTO subscriptions(user_id, plan_id, status, source) VALUES ($1,'start','active','manual')`, [uid]);
+  await db.query(`UPDATE plans SET max_questions=10, max_answer_total_sec=600 WHERE id='start'`);
+  try {
+    const loc = (await post('/ajuda/assistente', { q: 'Que limites tem cada entrevista?' }, u, '10.91.0.1')).headers.location as string;
+    const pg = (await get(loc, u)).body;
+    assert.match(pg, /até 10 perguntas \(as adicionais incluídas\) e até 10 minutos de respostas no total/);
+    assert.doesNotMatch(pg, /até 15 perguntas \(as adicionais incluídas\)/);
+    const vars = await A.userAskerVars(db, { id: uid, role: 'interviewer', entity_id: null });
+    assert.deepEqual([vars.maxQuestions, vars.maxAnswerTotalMin], ['10', '10']);
+    assert.match(A.withAskerVars(vars, () => A.fillVars(limits.en[1])), /up to 10 questions \(additional ones included\) and up to 10 minutes of answers in total/);
+    // fora do contexto de quem pergunta (pré-visualização do administrador), os valores gerais
+    assert.match(A.fillVars(limits.pt[1]), new RegExp(`até ${config.limits.maxQuestions} perguntas`));
+  } finally { await db.query(`UPDATE plans SET max_questions=15, max_answer_total_sec=900 WHERE id='start'`); }
+  // convidado: os limites fixados no convite da entrevista dele
+  await db.query(`UPDATE interviews SET question_limit=7, answer_limit_sec=480 WHERE id=$1`, [ivEn]);
+  try {
+    assert.deepEqual(Object.entries(await A.guestAskerVars(db, ivEn)).filter(([k]) => k !== 'sellerName'), [['maxQuestions', '7'], ['maxAnswerTotalMin', '8']]);
+  } finally { await db.query(`UPDATE interviews SET question_limit=NULL, answer_limit_sec=NULL WHERE id=$1`, [ivEn]); }
+  // entidade com Stripe própria: as faturas são da vendedora dela, como na Conta e nos termos
+  const ent = (await db.one(`INSERT INTO entities(slug, name) VALUES ('entidade-x','Entidade X') RETURNING id`)).id;
+  const ux = await newUser('Xavier', 'xavier@example.com', { entity_id: ent });
+  await saveEntitySetting(db, ent, 'STRIPE_SECRET_KEY', ('sk_' + 'test_' + 'X'.repeat(23)));
+  await saveEntitySetting(db, ent, 'SELLER_NAME', 'Entidade X Formação, Lda.');
+  try {
+    const loc = (await post('/ajuda/assistente', { q: 'Quem emite a fatura-recibo?' }, ux, '10.91.0.2')).headers.location as string;
+    const pg = (await get(loc, ux)).body;
+    assert.match(pg, /emitida pela Entidade X Formação, Lda\./);
+    assert.doesNotMatch(pg, /Telecert/);
+    assert.ok(A.fillVars('{sellerName}') !== 'Entidade X Formação, Lda.', 'sem contexto, a vendedora global');
+  } finally {
+    await saveEntitySetting(db, ent, 'STRIPE_SECRET_KEY', '');
+    await saveEntitySetting(db, ent, 'SELLER_NAME', '');
+  }
+});
