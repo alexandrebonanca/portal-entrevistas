@@ -246,10 +246,12 @@ export const faqVars = (): Record<string, string> => ({
   inviteDays: String(config.limits.inviteDays),
   ownerName: config.owner.name,
   sellerName: config.seller.name || config.owner.name,
+  logDays: String(ASSISTANT_LOG_DAYS),
 });
 export const FAQ_VAR_HELP: Record<string, string> = {
   brand: 'nome do portal', maxAnswerMin: 'minutos máximos por resposta', maxQuestions: 'número máximo de perguntas',
   inviteDays: 'dias de validade do link do convite', ownerName: 'entidade gestora', sellerName: 'quem comercializa',
+  logDays: 'dias de conservação do registo das perguntas ao assistente',
 };
 export const fillVars = (s: string) => { const v = faqVars(); return String(s ?? '').replace(/\{(\w+)\}/g, (m, k) => (k in v ? v[k] : m)); };
 
@@ -307,7 +309,7 @@ export const ASSISTANT_PROMPT_VERSION = 'assistant-v1';
 
 /** Mensagem para o modelo: só a pergunta (já tapada) e as entradas encontradas; nenhum dado de quem pergunta. */
 export function assistantPrompt(question: string, entries: FaqEntry[], lang: FaqLang) {
-  const faq = entries.map(e => ({ question: e.question, answer: fillVars(e.answer) }));
+  const faq = entries.map(e => ({ question: fillVars(e.question), answer: fillVars(e.answer) }));
   return {
     system: ASSISTANT_SYSTEM,
     user: `<faq>\n${JSON.stringify(faq)}\n</faq>\n<question>\n${question}\n</question>\nPage language: ${lang === 'en' ? 'English' : 'European Portuguese'}`,
@@ -369,7 +371,7 @@ export function assistantTranscript(a: { log: any; entries: FaqEntry[] }, lang: 
   if (a.log.answer) parts.push(a.log.answer);
   if (a.entries.length) {
     parts.push(a.log.answer ? (pt ? 'Com base em:' : 'Based on:') : (pt ? 'Respostas mostradas pelo assistente:' : 'Answers shown by the assistant:'));
-    for (const e of a.entries) parts.push(`— ${e.question}\n${fillVars(e.answer)}`);
+    for (const e of a.entries) parts.push(`— ${fillVars(e.question)}\n${fillVars(e.answer)}`);
   }
   if (!parts.length) parts.push(pt ? 'O assistente não encontrou resposta nas perguntas frequentes.' : 'The assistant found no answer in the frequently asked questions.');
   const text = parts.join('\n\n');

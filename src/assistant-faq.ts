@@ -31,10 +31,10 @@ export const FAQ_SEED: SeedEntry[] = [
 
   { key: 'objetivo', audience: 'interviewer',
     pt: ['Para que serve o objetivo da entrevista e quem o vê?',
-      `O objetivo explica o tema e o propósito da entrevista. Pode escrevê-lo ou gravá-lo em áudio (o áudio é transcrito para poder copiar o texto, quando o serviço de IA está configurado). Só é mostrado ao entrevistado se marcar «Mostrar o objetivo ao entrevistado»; caso contrário fica interno. É preciso ter objetivo, em texto ou em áudio, para enviar o convite.`,
+      `O objetivo explica o tema e o propósito da entrevista. Pode escrevê-lo ou gravá-lo em áudio (o áudio é transcrito para poder copiar o texto, quando o serviço de IA está configurado). Só o texto é mostrado ao entrevistado, e só se marcar «Mostrar o objetivo ao entrevistado»; o áudio fica sempre interno, por isso copie a transcrição para o texto se quiser que ele o veja. É preciso ter objetivo, em texto ou em áudio, para enviar o convite.`,
       'objetivo, propósito, tema, mostrar objetivo, interno, finalidade, assunto'],
     en: ['What is the interview goal for, and who sees it?',
-      `The goal explains the topic and purpose of the interview. You can type it or record it as audio (the audio is transcribed so you can copy the text, when the AI service is configured). It is only shown to the guest if you tick «Mostrar o objetivo ao entrevistado» (Show the goal to the guest); otherwise it stays internal. A goal, as text or audio, is required to send the invitation.`,
+      `The goal explains the topic and purpose of the interview. You can type it or record it as audio (the audio is transcribed so you can copy the text, when the AI service is configured). Only the text is shown to the guest, and only if you tick «Mostrar o objetivo ao entrevistado» (Show the goal to the guest); the audio always stays internal, so copy the transcript into the text if you want the guest to see it. A goal, as text or audio, is required to send the invitation.`,
       'goal, objective, purpose, topic, show goal, internal, subject'] },
 
   { key: 'enviar-convite', audience: 'interviewer',
@@ -103,10 +103,10 @@ export const FAQ_SEED: SeedEntry[] = [
 
   { key: 'estados', audience: 'interviewer',
     pt: ['O que querem dizer os estados da entrevista?',
-      `Recolha: «Rascunho» (ainda não enviada), «Convidada» (convite enviado), «Iniciada» (o entrevistado abriu o link), «Submetida» (respostas entregues), «Reaberta» (perguntas adicionais, ou um link novo depois de expirar) e «Cancelada». Produção: «Produção não pedida», «Em fila», «Transcrição», «Revisão editorial», «Geração», «Pronta», «Controlo de qualidade» (há alertas a corrigir), «Falhou» e «Desatualizada» (as respostas mudaram depois do guião). Publicação: «Privada», «Aguarda aprovação», «Publicada» e «Retirada».`,
+      `Recolha: «Rascunho» (ainda não enviada), «Convidada» (convite enviado), «Iniciada» (o entrevistado abriu o link), «Submetida» (respostas entregues), «Reaberta» (perguntas adicionais depois de submeter) e «Cancelada». Produção: «Produção não pedida», «Em fila», «Transcrição», «Revisão editorial», «Geração», «Pronta», «Controlo de qualidade» (há alertas a corrigir), «Falhou» e «Desatualizada» (as respostas mudaram depois do guião). Publicação: «Privada», «Aguarda aprovação», «Publicada» e «Retirada».`,
       'estado, estados, rascunho, convidada, iniciada, submetida, reaberta, pronta, falhou, desatualizada, significado'],
     en: ['What do the interview statuses mean?',
-      `Collection: «Rascunho» (draft, not sent), «Convidada» (invited), «Iniciada» (the guest opened the link), «Submetida» (answers submitted), «Reaberta» (additional questions, or a new link after expiry) and «Cancelada» (cancelled). Production: «Produção não pedida» (not requested), «Em fila» (queued), «Transcrição» (transcribing), «Revisão editorial» (editorial review), «Geração» (generating), «Pronta» (ready), «Controlo de qualidade» (quality alerts to fix), «Falhou» (failed) and «Desatualizada» (outdated: the answers changed after the script). Publication: «Privada» (private), «Aguarda aprovação» (awaiting approval), «Publicada» (published) and «Retirada» (withdrawn).`,
+      `Collection: «Rascunho» (draft, not sent), «Convidada» (invited), «Iniciada» (the guest opened the link), «Submetida» (answers submitted), «Reaberta» (reopened: additional questions after submitting) and «Cancelada» (cancelled). Production: «Produção não pedida» (not requested), «Em fila» (queued), «Transcrição» (transcribing), «Revisão editorial» (editorial review), «Geração» (generating), «Pronta» (ready), «Controlo de qualidade» (quality alerts to fix), «Falhou» (failed) and «Desatualizada» (outdated: the answers changed after the script). Publication: «Privada» (private), «Aguarda aprovação» (awaiting approval), «Publicada» (published) and «Retirada» (withdrawn).`,
       'status, statuses, draft, invited, started, submitted, reopened, ready, failed, outdated, meaning'] },
 
   { key: 'autorizacoes', audience: 'interviewer',
@@ -175,10 +175,10 @@ export const FAQ_SEED: SeedEntry[] = [
 
   { key: 'validacao-entrevistado', audience: 'interviewer',
     pt: ['Como peço ao entrevistado para validar o episódio?',
-      `Na secção «Episódio» da produção, carregue em «Enviar pré-visualização»: o entrevistado recebe um email com um link pessoal para ver o episódio (e o vídeo, se houver) e escolher «Aprovo esta versão» ou «Quero pedir alterações», com uma nota. A sua própria aprovação é o botão «Aprovar esta versão». O silêncio nunca conta como aprovação, e uma aprovação só vale para a versão vista: um vídeo novo ou respostas alteradas exigem nova aprovação.`,
+      `Na secção «Episódio» da produção, carregue em «Enviar pré-visualização»: o entrevistado recebe um email com um link pessoal para ver o episódio (e o vídeo, se houver) e escolher «Aprovo esta versão» ou «Quero pedir alterações», com uma nota. Isto só existe com a política «O entrevistado vê e aprova a versão final antes de publicar», ou quando ele aparece animado por IA no vídeo; com «Só o entrevistador aprova», a aprovação é só sua. A sua própria aprovação é o botão «Aprovar esta versão». O silêncio nunca conta como aprovação, e uma aprovação só vale para a versão vista: um vídeo novo ou respostas alteradas exigem nova aprovação.`,
       'validar, validação, pré-visualização, aprovar episódio, aprovação do entrevistado, pedir alterações, enviar pré-visualização'],
     en: ['How do I ask the guest to validate the episode?',
-      `In the «Episódio» (Episode) section of the production page, press «Enviar pré-visualização» (Send preview): the guest receives an email with a personal link to watch the episode (and the video, if any) and choose «I approve this version» or «I want to request changes», with a note. Your own approval is the «Aprovar esta versão» (Approve this version) button. Silence never counts as approval, and an approval only covers the version seen: a new video or changed answers require a new approval.`,
+      `In the «Episódio» (Episode) section of the production page, press «Enviar pré-visualização» (Send preview): the guest receives an email with a personal link to watch the episode (and the video, if any) and choose «I approve this version» or «I want to request changes», with a note. This only exists with the «O entrevistado vê e aprova a versão final antes de publicar» policy (the guest sees and approves the final version), or when the guest appears animated by AI in the video; with «Só o entrevistador aprova» (only the interviewer approves), the approval is yours alone. Your own approval is the «Aprovar esta versão» (Approve this version) button. Silence never counts as approval, and an approval only covers the version seen: a new video or changed answers require a new approval.`,
       'validate, validation, preview, approve episode, guest approval, request changes, send preview'] },
 
   { key: 'publicar', audience: 'interviewer',
@@ -191,11 +191,11 @@ export const FAQ_SEED: SeedEntry[] = [
 
   { key: 'galeria', audience: 'interviewer',
     pt: ['O que é a galeria pública «Podcasts gerados»?',
-      `É a página pública do portal com episódios publicados como «Público», organizados por temas. Um episódio só entra se marcar «Permito que este episódio fique na galeria pública do portal» ao publicar (ou depois, na página de produção) e indicar um tema. Pode tirá-lo da galeria a qualquer momento; retirar o episódio também o tira da galeria.`,
-      'galeria, podcasts gerados, tema, temas, lista pública, montra'],
+      `É a página pública do portal com episódios publicados como «Público», organizados por temas. Um episódio só entra se marcar «Permito que este episódio fique na galeria pública do portal» ao publicar (ou depois, na página de produção); se quiser, indique um tema (sem tema, fica no grupo «Other»). Pode tirá-lo da galeria a qualquer momento; retirar o episódio também o tira da galeria.`,
+      'galeria, podcasts gerados, tema, temas, lista, montra'],
     en: ['What is the public gallery?',
-      `It is the portal's public page with episodes published as «Público» (public), organised by theme. An episode only appears there if you tick the gallery permission when publishing (or later, on the production page) and give it a theme. You can take it out of the gallery at any time; withdrawing the episode also removes it from the gallery.`,
-      'gallery, generated podcasts, theme, themes, public list, showcase'] },
+      `It is the portal's public page with episodes published as «Público» (public), organised by theme. An episode only appears there if you tick the gallery permission when publishing (or later, on the production page); you can also give it a theme (without one, it is listed under «Other»). You can take it out of the gallery at any time; withdrawing the episode also removes it from the gallery.`,
+      'gallery, generated podcasts, theme, themes, list, showcase'] },
 
   { key: 'retirar', audience: 'interviewer',
     pt: ['Como retiro um episódio publicado ou recomeço a produção?',
@@ -223,10 +223,10 @@ export const FAQ_SEED: SeedEntry[] = [
 
   { key: 'video-ia', audience: 'interviewer',
     pt: ['Posso ter um vídeo com animação por IA (Google Veo ou retratos animados)?',
-      `Por agora, a animação por IA só é pedida pelo administrador do portal, porque cada geração é paga ao fornecedor. Vai chegar em breve por orçamento, aceite antes de gerar e pago com créditos. Até lá, o vídeo sai com as fotografias e a voz do episódio. Mesmo então, cada pessoa que aparece animada tem de dar uma autorização própria, o vídeo leva um aviso visível e o entrevistado vê-o e aprova-o antes de ser publicado.`,
+      `Na secção «Vídeo do podcast», os retratos com sincronização labial e o Google Veo só ficam disponíveis quando o administrador do portal os abre a todos os entrevistadores; por omissão, só o administrador os pede, porque cada geração é paga ao fornecedor. Quando não estão disponíveis, a secção avisa e o vídeo sai com as fotografias e a voz do episódio. A animação por IA vai chegar em breve por orçamento, aceite antes de gerar e pago com créditos. Quem aparece animado tem de dar uma autorização própria e o vídeo leva sempre um aviso visível; se for o entrevistado, ele vê e aprova o vídeo antes de ser publicado.`,
       'animação, IA, vídeo IA, Veo, Google Veo, retrato animado, avatar, lipsync, créditos, orçamento, animar fotografia'],
     en: ['Can I have a video with AI animation (Google Veo or animated portraits)?',
-      `For now, AI animation can only be requested by the portal administrator, because each generation is paid to the provider. It is coming soon on a quote basis, accepted before generating and paid with credits. Until then, the video is made with the photos and the episode voice. Even then, each person shown animated must give their own permission, the video carries a visible notice and the guest sees and approves it before it is published.`,
+      `In the «Vídeo do podcast» (Podcast video) section, lip-synced portraits and Google Veo are only available when the portal administrator opens them to all interviewers; by default, only the administrator requests them, because each generation is paid to the provider. When they are not available, the section says so and the video is made with the photos and the episode voice. AI animation is coming soon on a quote basis, accepted before generating and paid with credits. Whoever appears animated must give their own permission and the video always carries a visible notice; if it is the guest, they see and approve the video before it is published.`,
       'animation, AI, AI video, Veo, Google Veo, animated portrait, avatar, lipsync, credits, quote, animate photo'] },
 
   { key: 'custos', audience: 'interviewer',
@@ -247,10 +247,10 @@ export const FAQ_SEED: SeedEntry[] = [
 
   { key: 'palavra-passe', audience: 'interviewer',
     pt: ['Como altero a minha palavra-passe?',
-      `Ainda não há alteração nem recuperação automática da palavra-passe na conta. Peça ao suporte: o administrador define uma palavra-passe nova (com pelo menos 12 caracteres) e as sessões abertas terminam. Nunca escreva a sua palavra-passe nas mensagens.`,
+      `Ainda não há alteração nem recuperação automática da palavra-passe na conta. Peça ao suporte nesta página: o administrador define uma palavra-passe nova (com pelo menos 12 caracteres) e todas as sessões abertas terminam, incluindo esta. A palavra-passe nova nunca é escrita nas mensagens do suporte: a entrega é combinada consigo por outro canal (o email da conta ou o telefone). Nunca escreva a sua palavra-passe nas mensagens.`,
       'palavra-passe, password, senha, esqueci, recuperar, alterar, mudar, entrar, iniciar sessão'],
     en: ['How do I change my password?',
-      `There is no self-service password change or recovery yet. Ask support: the administrator sets a new password (at least 12 characters) and your open sessions are ended. Never write your password in messages.`,
+      `There is no self-service password change or recovery yet. Ask support on this page: the administrator sets a new password (at least 12 characters) and all your open sessions end, including this one. The new password is never written in support messages: its delivery is arranged with you through another channel (your account email or phone). Never write your password in messages.`,
       'password, forgot, recover, reset, change, sign in, log in'] },
 
   { key: 'entidade', audience: 'interviewer',
@@ -260,6 +260,14 @@ export const FAQ_SEED: SeedEntry[] = [
     en: ['What does an entity manager do?',
       `An entity manager looks after the «Entidade» (Entity) page, with the entity's own service keys (OpenAI, Stripe, MailerSend, Moloni ON, Replicate, fal.ai, WaveSpeed and Google). The entity's keys take priority over the portal's; without its own key, the portal's is used. Keys are stored encrypted and never shown in full again: leave a field blank to keep it, type «-» to delete it and use «Guardar e testar» (Save and test) to check.`,
       'entity, entity manager, keys, API, company, organisation, credentials, own keys'] },
+
+  { key: 'assistente-privacidade', audience: 'interviewer',
+    pt: ['O que acontece às perguntas que faço ao assistente?',
+      `Ficam registadas durante {logDays} dias sem ligação a si (sem conta, entidade nem endereço IP; emails, links e números longos são tapados), para a equipa do portal melhorar as respostas. A resposta vem sempre destas perguntas frequentes. Com uma subscrição ativa, e se o portal tiver a IA ligada, o texto da pergunta (só ele) pode ser enviado a um fornecedor de IA externo (OpenAI) para redigir uma resposta curta a partir delas. Não escreva dados pessoais nem palavras-passe.`,
+      'assistente, perguntas ao assistente, registo, privacidade, dados, IA, OpenAI, inteligência artificial, quem vê as perguntas'],
+    en: ['What happens to the questions I ask the assistant?',
+      `They are stored for {logDays} days with no link to you (no account, entity or IP address; emails, links and long numbers are masked), so the portal team can improve the answers. The answer always comes from these frequently asked questions. With an active subscription, and if the portal has AI switched on, the text of the question alone may be sent to an external AI provider (OpenAI) to draft a short answer from them. Do not write personal data or passwords.`,
+      'assistant, questions to the assistant, log, privacy, data, AI, OpenAI, artificial intelligence, who sees my questions'] },
 
   { key: 'suporte-portal', audience: 'interviewer',
     pt: ['Como falo com o suporte?',
@@ -408,10 +416,10 @@ export const FAQ_SEED: SeedEntry[] = [
 
   { key: 'convidado-privacidade', audience: 'guest',
     pt: ['Quem tem acesso às minhas respostas? Posso pedir que apaguem os meus dados?',
-      `As gravações originais e as fotografias não usadas ficam privadas: só o entrevistador e a equipa do portal (para suporte) lhes têm acesso. Com a sua autorização, o áudio é enviado a um fornecedor de IA para transcrição, tradução e narração. Pode pedir acesso, correção, retirada de autorização ou eliminação ao suporte, nesta página. Cópias já descarregadas ou distribuídas fora do portal podem não ser recuperáveis.`,
+      `As gravações originais e as fotografias não usadas ficam privadas: só o entrevistador e a equipa do portal (para suporte) lhes têm acesso. Com a sua autorização, o áudio é enviado a um fornecedor de IA para transcrição, tradução e narração. Pode pedir acesso, correção, retirada de autorização ou eliminação ao suporte, nesta página. As perguntas que escreve no assistente desta página são respondidas só com as perguntas frequentes (não seguem para serviços de IA) e ficam registadas sem identificação durante {logDays} dias. Cópias já descarregadas ou distribuídas fora do portal podem não ser recuperáveis.`,
       'privacidade, dados, apagar, eliminar, quem vê, acesso, RGPD, retirar autorização, dados pessoais'],
     en: ['Who can access my answers? Can I ask for my data to be deleted?',
-      `The original recordings and unused photos stay private: only the interviewer and the portal team (for support) can access them. With your permission, the audio is sent to an AI provider for transcription, translation and narration. You can ask support, on this page, for access, correction, withdrawal of consent or deletion. Copies already downloaded or distributed outside the portal may not be recoverable.`,
+      `The original recordings and unused photos stay private: only the interviewer and the portal team (for support) can access them. With your permission, the audio is sent to an AI provider for transcription, translation and narration. You can ask support, on this page, for access, correction, withdrawal of consent or deletion. Questions you type into the assistant on this page are answered only from the frequently asked questions (they are not sent to AI services) and are stored without identification for {logDays} days. Copies already downloaded or distributed outside the portal may not be recoverable.`,
       'privacy, data, delete, erase, who sees, access, GDPR, withdraw consent, personal data'] },
 
   { key: 'convidado-lingua', audience: 'guest',
