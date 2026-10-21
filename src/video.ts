@@ -68,6 +68,12 @@ const initialsCard = (name: string, color: string) => {
 };
 
 /**
+ * Composição de estúdio: fotografias de P×P a partir de `top`; por baixo, o nome e a função de cada um e só depois o
+ * microfone desenhado (a função ficava por cima do microfone claro e não se lia).
+ */
+export const STUDIO = { P: 300, gap: 140, top: 96, nameY: 96 + 300 + 34, roleY: 96 + 300 + 58, roleSize: 18, micTop: 464 };
+
+/**
  * Fundos de cada plano (sem legendas). As fotografias usadas são apenas as autorizadas; nunca se gera a aparência de ninguém.
  * Nos grandes planos o nome já não fica fixo: aparece no rodapé animado quando a pessoa fala pela primeira vez (graphics.ts).
  */
@@ -87,13 +93,13 @@ export async function renderBases(opts: {
   };
 
   // Composição de estúdio: cenário desenhado + as duas fotografias reais em molduras, identificada como montagem.
-  const P = 300, gap = 140, left = (W - (P * 2 + gap)) / 2, top = 96;
+  const { P, gap, top } = STUDIO, left = (W - (P * 2 + gap)) / 2;
   const studioSvg = Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}">
 <defs><linearGradient id="d" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#3a2a1e"/><stop offset="1" stop-color="#1c140e"/></linearGradient></defs>
 <rect x="0" y="492" width="${W}" height="228" fill="url(#d)"/><rect x="0" y="486" width="${W}" height="8" fill="#c8803c" opacity=".7"/>
-${[left + P / 2, left + P + gap + P / 2].map(cx => `<g fill="#e8e0d4"><rect x="${cx - 14}" y="446" width="28" height="48" rx="14"/><rect x="${cx - 3}" y="492" width="6" height="16"/><rect x="${cx - 26}" y="506" width="52" height="7" rx="3"/></g>`).join('')}
-${([[opts.host, left + P / 2, 'Host'], [opts.guest, left + P + gap + P / 2, 'Guest']] as const).map(([p, cx, r]) => `<text x="${cx}" y="${top + P + 40}" text-anchor="middle" font-family="${FONT}" font-weight="700" font-size="28" fill="#fff">${esc(p.name)}</text>
-<text x="${cx}" y="${top + P + 66}" text-anchor="middle" font-family="${FONT}" font-size="18" fill="#fff" opacity=".8">${esc((p.role || r).slice(0, 40))}</text>`).join('')}
+${[left + P / 2, left + P + gap + P / 2].map(cx => `<g fill="#e8e0d4"><rect x="${cx - 12}" y="${STUDIO.micTop}" width="24" height="${494 - STUDIO.micTop}" rx="12"/><rect x="${cx - 3}" y="492" width="6" height="16"/><rect x="${cx - 26}" y="506" width="52" height="7" rx="3"/></g>`).join('')}
+${([[opts.host, left + P / 2, 'Host'], [opts.guest, left + P + gap + P / 2, 'Guest']] as const).map(([p, cx, r]) => `<text x="${cx}" y="${STUDIO.nameY}" text-anchor="middle" font-family="${FONT}" font-weight="700" font-size="28" fill="#fff">${esc(p.name)}</text>
+<text x="${cx}" y="${STUDIO.roleY}" text-anchor="middle" font-family="${FONT}" font-size="${STUDIO.roleSize}" fill="#fff" opacity=".85">${esc((p.role || r).slice(0, 40))}</text>`).join('')}
 <text x="${W / 2}" y="58" text-anchor="middle" font-family="${FONT}" font-size="26" letter-spacing="4" fill="#fff" opacity=".85">${esc(opts.title.toUpperCase().slice(0, 60))}</text>
 <text x="${W - 24}" y="${H - 18}" text-anchor="end" font-family="${FONT}" font-size="16" fill="#fff" opacity=".7">Composite image · asynchronous interview</text></svg>`);
   const studio = await sharp(bg).composite([
@@ -305,8 +311,12 @@ export async function encodeComposite(ffmpeg: string, parts: Part[], frameFor: (
       const ins: string[] = [], g: string[] = [];
       let cur = from;
       for (const [k, o] of act.entries()) {
-        ins.push('-ss', ((absA - o.startMs) / 1000).toFixed(3), '-i', await bakedOf(o));
-        g.push(`[${cur}][${first + k}:v]overlay=${o.x}:${o.y}:eof_action=pass[g${k}]`);
+        // O pedaço começa no fotograma fr(absA): usa-se o fotograma j do grafismo que lhe corresponde (o -ss fica meio
+        // fotograma antes dele) e os tempos do grafismo recomeçam em 0. Antes, um início fora da grelha de 40 ms (cortes
+        // por legenda nos retratos animados) dava ao grafismo um primeiro fotograma com pts > 0 e ele faltava 1 fotograma.
+        const j = Math.max(0, Math.round((fr(absA) * 40 - o.startMs) / 40));
+        ins.push('-ss', (Math.max(0, j * 40 - 20) / 1000).toFixed(3), '-i', await bakedOf(o));
+        g.push(`[${first + k}:v]setpts=PTS-STARTPTS[s${k}]`, `[${cur}][s${k}]overlay=${o.x}:${o.y}:eof_action=pass[g${k}]`);
         cur = `g${k}`;
       }
       return { ins, g, cur };
@@ -344,7 +354,8 @@ export async function encodeComposite(ffmpeg: string, parts: Part[], frameFor: (
           await writeFile(list, lines.join('\n'));
           const act = activeIn(a, b);
           const c = await gfx('b', a, act, 1);
-          const filter = act.length ? ['-filter_complex', ['[0:v]fps=25[b]', ...c.g, `[${c.cur}]format=yuv420p[out]`].join(';'), '-map', '[out]'] : ['-vf', 'fps=25,format=yuv420p'];
+          // O concat de JPEG dá yuvj420p (gama completa): sem o converter antes, o grafismo saía com o branco a 235 e o preto a 16.
+          const filter = act.length ? ['-filter_complex', ['[0:v]fps=25,format=yuv420p[b]', ...c.g, `[${c.cur}]format=yuv420p[out]`].join(';'), '-map', '[out]'] : ['-vf', 'fps=25,format=yuv420p'];
           const r = await run(ffmpeg, ['-y', '-v', 'error', '-threads', '2', '-f', 'concat', '-safe', '0', '-i', list, ...c.ins, ...filter, ...enc, '-threads', '2', '-frames:v', String(n), '-an', piece], 900_000);
           if (r.code !== 0) throw new Error('Falha a codificar parte fixa: ' + r.stderr.slice(-300));
           pieces.push(piece);

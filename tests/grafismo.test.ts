@@ -161,3 +161,94 @@ test('vídeo com cartões e grafismo (FFmpeg real): duração, texto no cartão,
     assert.ok(lBox(gray(ffmpeg, f, (gl.startMs + 1500) / 1000)) > 300, 'rodapé do convidado sobre a parte animada');
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+/** Fotograma RGB no instante t (os testes da gama de cor e do grafismo por fotograma). */
+function rgb(ffmpeg: string, f: string, t: number): Buffer {
+  const r = spawnSync(ffmpeg, ['-v', 'error', '-ss', t.toFixed(3), '-i', f, '-frames:v', '1', '-f', 'rawvideo', '-pix_fmt', 'rgb24', 'pipe:1'], { maxBuffer: 1e8 });
+  assert.equal(r.stdout.length, W * H * 3, `fotograma em ${t}`);
+  return r.stdout;
+}
+const meanRgb = (img: Buffer, x0: number, y0: number, x1: number, y1: number) => {
+  const s = [0, 0, 0]; let n = 0;
+  for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) { for (let c = 0; c < 3; c++) s[c] += img[(y * W + x) * 3 + c]; n++; }
+  return s.map(v => v / n);
+};
+
+test('composição de estúdio: o nome e a função ficam por cima do microfone e leem-se', async () => {
+  const sharp = (await import('sharp')).default;
+  const S = V.STUDIO;
+  assert.ok(S.nameY - 28 * 0.8 > S.top + S.P, 'o nome começa abaixo das fotografias');
+  assert.ok(S.roleY + S.roleSize * 0.3 < S.micTop, 'a função acaba antes do microfone');
+  const cover = await sharp({ create: { width: 800, height: 800, channels: 3, background: '#2a3a4a' } }).jpeg().toBuffer();
+  const bases = await V.renderBases({ cover, title: 'Estúdio', brand: 'quietinterview', host: { name: 'Rui Matos', role: 'Editor-in-chief, Lisbon Radio', photo: null }, guest: { name: 'Ana Costa', role: '', photo: null } });
+  const { data } = await sharp(bases.studio).raw().toBuffer({ resolveWithObject: true });
+  const left = (W - (S.P * 2 + S.gap)) / 2;
+  for (const cx of [left + S.P / 2, left + S.P + S.gap + S.P / 2]) {
+    // na faixa da função, ao centro (onde estava o microfone claro), há texto claro e nenhum píxel cor de microfone
+    let mic = 0, light = 0;
+    for (let y = S.roleY - 14; y < S.roleY + 4; y++) for (let x = Math.round(cx) - 12; x < Math.round(cx) + 12; x++) {
+      const i = (y * W + x) * 3, [r, g, b] = [data[i], data[i + 1], data[i + 2]];
+      if (Math.abs(r - 232) < 16 && Math.abs(g - 224) < 16 && Math.abs(b - 212) < 16 && r - b >= 10) mic++;
+      if (r > 150 && g > 150 && b > 150) light++;
+    }
+    assert.ok(mic < 5, `sem microfone por baixo da função (${mic} píxeis)`);
+    assert.ok(light > 10, `a função lê-se ao centro (${light} píxeis claros)`);
+  }
+});
+
+test('grafismo sobre partes fixas: branco 255 e preto 0 (gama de cor certa) e sem falhar um fotograma num corte fora da grelha', async () => {
+  const sharp = (await import('sharp')).default;
+  const ffmpeg = (await import('@ffmpeg-installer/ffmpeg')).default.path;
+  const gray = await sharp({ create: { width: W, height: H, channels: 3, background: { r: 128, g: 128, b: 128 } } }).jpeg({ quality: 95 }).toBuffer();
+  // grafismo opaco: metade branca, metade preta, e uma faixa vermelha
+  const png = await sharp(Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="300" height="150"><rect width="150" height="100" fill="#fff"/><rect x="150" width="150" height="100" fill="#000"/><rect y="100" width="300" height="50" fill="#f00"/></svg>`)).png().toBuffer();
+  const overlays: V.Overlay[] = [{ startMs: 400, endMs: 2400, x: 100, y: 100, png }];
+  const shots = (a: number, b: number): V.Shot[] => [{ startMs: a, endMs: b, scene: 'cover', text: '' }];
+  // duas partes fixas cortadas fora da grelha de 40 ms (como os cortes por legenda dos retratos animados)
+  const parts: V.Part[] = [{ kind: 'still', startMs: 0, endMs: 1010, shots: shots(0, 1010) }, { kind: 'still', startMs: 1010, endMs: 3000, shots: shots(1010, 3000) }];
+  const audio = spawnSync(ffmpeg, ['-v', 'error', '-f', 'lavfi', '-i', 'anullsrc=r=44100:cl=stereo', '-t', '3', '-f', 'mp3', 'pipe:1'], { maxBuffer: 1e8 }).stdout;
+  const mp4 = await V.encodeComposite(ffmpeg, parts, async () => gray, audio, undefined, 'mp3', overlays);
+  const dir = mkdtempSync(join(tmpdir(), 'pe-gfx2-'));
+  try {
+    const f = join(dir, 'v.mp4'); writeFileSync(f, mp4);
+    const img = rgb(ffmpeg, f, 1.5);
+    const white = meanRgb(img, 120, 130, 230, 190), black = meanRgb(img, 280, 130, 390, 190), bg = meanRgb(img, 700, 400, 900, 600);
+    assert.ok(white.every(v => v >= 248), `branco do grafismo: ${white.map(Math.round)}`);
+    assert.ok(black.every(v => v <= 8), `preto do grafismo: ${black.map(Math.round)}`);
+    assert.ok(bg.every(v => Math.abs(v - 128) <= 4), `fundo: ${bg.map(Math.round)}`);
+    // o 1.º fotograma da 2.ª parte (fotograma 25, 1,00 s) tem o grafismo, como o anterior e o seguinte
+    for (const t of [0.98, 1.02, 1.06]) {
+      const red = meanRgb(rgb(ffmpeg, f, t), 120, 210, 380, 240);
+      assert.ok(red[0] > 200 && red[1] < 60, `grafismo presente em ${t} s: ${red.map(Math.round)}`);
+    }
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('rodapé e capítulo: a caixa mede o texto desenhado (maiúsculas e siglas não ficam cortadas na margem direita)', async () => {
+  const sharp = (await import('sharp')).default;
+  /** Coluna mais à direita com texto claro (o fundo da caixa é escuro); -1 se não houver. */
+  const lastTextCol = async (png: Buffer, y0: number) => {
+    const { data, info } = await sharp(png).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+    let last = -1;
+    for (let y = y0; y < info.height; y++) for (let x = 0; x < info.width; x++) {
+      const i = (y * info.width + x) * 4;
+      if (data[i] > 170 && data[i + 1] > 140 && data[i + 3] > 200) last = Math.max(last, x);
+    }
+    return { last, width: info.width };
+  };
+  for (const text of ['WHAT CHANGED MOST IN YOUR WORK AND', 'How did the new EU CSRD and ESG rules change your job?']) {
+    const png = await G.chapterPng(3, text);
+    const { last, width } = await lastTextCol(png, 52);
+    assert.ok(last > 0 && last <= width - 20, `«${text}»: texto até ${last} numa caixa de ${width} px`);
+  }
+  for (const [name, role] of [['MARGARIDA MONTEIRO WAGNER', 'CEO, EDP RENOVÁVEIS'], ['Ana', 'Host']]) {
+    const png = await G.lowerThirdPng(name, role);
+    const { last, width } = await lastTextCol(png, 10);
+    assert.ok(last > 0 && last <= width - 20, `«${name}»: texto até ${last} numa caixa de ${width} px`);
+    assert.ok(width <= 760);
+  }
+  // texto que não cabe na largura máxima: cortado com reticências, nunca a meio de uma letra
+  const long = await G.lowerThirdPng('WWWWWWWWWWWWWWWWWWWWWWWWWWWWWW', 'Role');
+  const m = await lastTextCol(long, 10);
+  assert.ok(m.width <= 760 && m.last <= m.width - 20, `nome muito largo: texto até ${m.last} em ${m.width} px`);
+});

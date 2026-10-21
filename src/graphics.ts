@@ -76,22 +76,54 @@ export function planGraphics(spans: GfxSpan[], chapterOf: (id: string) => string
 
 // ---- imagens do grafismo (sharp) ----
 
-/** Rodapé: nome e função numa caixa escura com a barra cobre da marca. */
+/**
+ * Largura real (px) de uma linha de texto desenhada com as fontes do servidor (as mesmas do grafismo): desenha-a numa tela
+ * larga e mede o que ficou desenhado. A estimativa por carácter cortava o texto em maiúsculas ou com siglas.
+ */
+export async function textWidth(text: string, size: number, weight: number | 'normal' = 'normal', letterSpacing = 0): Promise<number> {
+  if (!text.trim()) return 0;
+  const { default: sharp } = await import('sharp');
+  const pad = 10, cw = Math.ceil(text.length * size * (1 + letterSpacing / size) * 1.1) + pad * 2 + 20, ch = Math.ceil(size * 1.8);
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${cw}" height="${ch}"><text x="${pad}" y="${Math.round(size * 1.25)}" font-family="${FONT}" font-weight="${weight}" font-size="${size}"${letterSpacing ? ` letter-spacing="${letterSpacing}"` : ''} fill="#fff">${esc(text)}</text></svg>`;
+  try {
+    const png = await sharp(Buffer.from(svg)).png().toBuffer();
+    const { info } = await sharp(png).trim({ threshold: 1 }).png().toBuffer({ resolveWithObject: true });
+    return Math.max(0, Math.abs(info.trimOffsetLeft ?? 0) + info.width - pad);
+  } catch { return Math.ceil(text.length * size * 0.62); } // nada desenhado: estimativa larga
+}
+/** Texto que cabe em `max` px (medido): o original, ou cortado numa palavra com reticências até caber. */
+async function fitText(text: string, max: number, size: number, weight: number | 'normal' = 'normal'): Promise<{ text: string; w: number }> {
+  let t = text, w = await textWidth(t, size, weight);
+  for (let len = text.length; w > max && len > 4;) {
+    len = Math.max(4, len - Math.max(1, Math.ceil(len * 0.08)));
+    t = shortText(text, len);
+    w = await textWidth(t, size, weight);
+  }
+  return { text: t, w };
+}
+/** Margem à direita do texto, dentro da caixa do grafismo. */
+const GFX_RIGHT_PAD = 36;
+
+/** Rodapé: nome e função numa caixa escura com a barra cobre da marca (largura medida no texto desenhado). */
 export async function lowerThirdPng(name: string, role: string): Promise<Buffer> {
   const { default: sharp } = await import('sharp');
   // Letra próxima da das legendas (36 px): legível num telemóvel.
-  const n = shortText(name, 30), r = shortText(role, 44);
-  const w = Math.round(Math.min(760, Math.max(320, Math.max(n.length * 22.5, r.length * 14) + 68)));
+  const MAX_W = 760, X = 32, room = MAX_W - X - GFX_RIGHT_PAD;
+  const n = await fitText(shortText(name, 30), room, 36, 700), r = await fitText(shortText(role, 44), room, 24);
+  const w = Math.round(Math.min(MAX_W, Math.max(320, Math.max(n.w, r.w) + X + GFX_RIGHT_PAD)));
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${LOWER_H}"><rect width="${w}" height="${LOWER_H}" rx="10" fill="${INK}" fill-opacity=".86"/><rect width="8" height="${LOWER_H}" rx="4" fill="${COPPER}"/>
-<text x="32" y="48" font-family="${FONT}" font-weight="700" font-size="36" fill="#fff">${esc(n)}</text><text x="32" y="86" font-family="${FONT}" font-size="24" fill="${COPPER_LIGHT}">${esc(r)}</text></svg>`;
+<text x="${X}" y="48" font-family="${FONT}" font-weight="700" font-size="36" fill="#fff">${esc(n.text)}</text><text x="${X}" y="86" font-family="${FONT}" font-size="24" fill="${COPPER_LIGHT}">${esc(r.text)}</text></svg>`;
   return sharp(Buffer.from(svg)).png().toBuffer();
 }
 
 /** Título de capítulo: «QUESTION n» e o texto curto da pergunta (até 2 linhas), no canto superior esquerdo. */
 export async function chapterPng(n: number, text: string): Promise<Buffer> {
   const { default: sharp } = await import('sharp');
-  const lines = wrapLines(text, 34, 2);
-  const w = Math.round(Math.min(780, Math.max(320, Math.max(...lines.map(l => l.length)) * 17.3 + 60)));
+  const MAX_W = 780, X = 30, room = MAX_W - X - GFX_RIGHT_PAD;
+  const lines: string[] = [];
+  let widest = await textWidth(`QUESTION ${n}`, 18, 700, 2);
+  for (const l of wrapLines(text, 34, 2)) { const f = await fitText(l, room, 30, 600); lines.push(f.text); widest = Math.max(widest, f.w); }
+  const w = Math.round(Math.min(MAX_W, Math.max(320, widest + X + GFX_RIGHT_PAD)));
   const h = 66 + lines.length * 38;
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}"><rect width="${w}" height="${h}" rx="10" fill="${INK}" fill-opacity=".8"/><rect width="${w}" height="6" rx="3" fill="${COPPER}"/>
 <text x="30" y="42" font-family="${FONT}" font-weight="700" font-size="18" letter-spacing="2" fill="${COPPER_LIGHT}">QUESTION ${n}</text>
