@@ -220,6 +220,8 @@ export const scopedS = (keys: readonly string[], key: string): string => {
   const e = als.getStore();
   return ownsAny(e, keys) ? (entityCache.get(e!)!.get(key) ?? '') : (cache.get(key) ?? process.env[key] ?? '');
 };
+/** Definição de um âmbito fixo ('global' ou o id de uma entidade), sem recorrer ao outro: o de uma operação já criada. */
+export const scopeS = (scope: string, key: string): string => (scope === 'global' ? (cache.get(key) ?? process.env[key] ?? '') : entityValue(scope, key));
 
 export async function saveSetting(db: Db, key: string, value: string) {
   if (!SETTING_DEFS.some(d => d.key === key) && !INTERNAL_KEYS.includes(key)) throw new Error('Definição desconhecida');

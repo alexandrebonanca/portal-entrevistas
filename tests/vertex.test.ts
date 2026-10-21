@@ -85,7 +85,7 @@ test('Vertex: pedido do clipe (Fast) com imagem em base64, 720p, áudio e negati
   assert.deepEqual(b.instances, [{ prompt: 'Diz olá', image: { bytesBase64Encoded: img.toString('base64'), mimeType: 'image/jpeg' } }]);
   assert.deepEqual(b.parameters, { aspectRatio: '9:16', durationSeconds: 6, personGeneration: 'allow_adult', negativePrompt: t.VEO_NEGATIVE_PROMPT, generateAudio: true, sampleCount: 1, resolution: '720p' });
   assert.match(t.VEO_NEGATIVE_PROMPT, /on-screen text/);
-  assert.deepEqual(s, { opName: OP, dur: 6, model: 'veo-3.1-fast-generate-001', tier: 'fast', usdPerSec: 0.10, backend: 'vertex' });
+  assert.deepEqual(s, { opName: OP, dur: 6, model: 'veo-3.1-fast-generate-001', tier: 'fast', usdPerSec: 0.10, backend: 'vertex', scope: 'global', project: 'projeto-teste-123' });
   // região própria
   calls = []; process.env.VERTEX_LOCATION = 'europe-west4';
   await t.veoSubmit({ image: img, prompt: 'p', durationSeconds: 4 });
@@ -175,13 +175,37 @@ test('Veo: operação pendente retomada no serviço que a criou', async () => {
   fake(() => json({ name: OP, done: true, response: { videos: [{ bytesBase64Encoded: Buffer.from('mp4-vertex').toString('base64'), mimeType: 'video/mp4' }] } }));
   assert.equal((await t.veoAwait(OP, 8, undefined, 60_000, 1)).video.toString(), 'mp4-vertex');
   assert.match(calls.at(-1)!.url, /^https:\/\/us-central1-aiplatform\.googleapis\.com\/.+\/models\/veo-3\.1-fast-generate-001:fetchPredictOperation$/);
-  // credenciais desse serviço retiradas: não se consegue consultar (não é uma recusa de credenciais)
+  // credenciais desse serviço retiradas: não se consegue consultar (não é uma recusa de credenciais); a operação fica pendente
   delete process.env.GEMINI_API_KEY; calls = [];
-  await assert.rejects(t.veoAwait(gemOp, 4, undefined, 60_000, 1), (e: any) => e instanceof t.VeoPollError && /chave Gemini foi retirada/.test(e.message) && !t.isKeyRejected(e.message));
+  await assert.rejects(t.veoAwait(gemOp, 4, undefined, 60_000, 1), (e: any) => e instanceof t.VeoCredsMissing && /chave Gemini com que foi criada foi retirada/.test(e.message) && /nada é pago de novo/.test(e.message) && !t.isKeyRejected(e.message));
   delete process.env.VERTEX_SA_JSON;
-  await assert.rejects(t.veoAwait(OP, 4, undefined, 60_000, 1), (e: any) => e instanceof t.VeoPollError && /conta de serviço foi retirada/.test(e.message));
+  await assert.rejects(t.veoAwait(OP, 4, undefined, 60_000, 1), (e: any) => e instanceof t.VeoCredsMissing && /conta de serviço com que foi criada foi retirada/.test(e.message));
   assert.equal(calls.length, 0);
   await assert.rejects(t.veoAwait('projects/x/locations/us-central1/publishers/google/models/m/operations/1?x=y', 4, undefined, 60_000, 1), (e: any) => e instanceof t.VeoPollError);
+});
+
+test('Veo: a operação consulta-se com as credenciais do âmbito que a criou; uma recusa só acusa as credenciais em vigor', async () => {
+  // operação criada com as credenciais globais (âmbito 'global'): consulta-se com a conta de serviço global
+  fake(() => json({ name: OP, done: true, response: { videos: [{ bytesBase64Encoded: Buffer.from('mp4').toString('base64') }] } }));
+  assert.equal((await t.veoAwait(OP, 8, undefined, 60_000, 1, 'global')).video.toString(), 'mp4');
+  assert.equal(JSON.parse(Buffer.from(new URLSearchParams(calls[0].body).get('assertion')!.split('.')[1], 'base64url').toString()).iss, SA.client_email);
+  // criada com as credenciais de uma entidade que já não as tem: fica pendente, sem nenhum pedido (nada se paga de novo)
+  calls = [];
+  const ent = '00000000-0000-0000-0000-0000000000e1';
+  await assert.rejects(t.veoAwait(OP, 8, undefined, 60_000, 1, ent), (e: any) => e instanceof t.VeoCredsMissing && /\(credenciais da entidade\)/.test(e.message) && !t.isKeyRejected(e.message));
+  await assert.rejects(t.veoAwait('models/veo-3.1-fast-generate-preview/operations/z', 8, undefined, 60_000, 1, 'global'), (e: any) => e instanceof t.VeoCredsMissing && /chave Gemini com que foi criada \(credenciais globais do portal\)/.test(e.message));
+  assert.equal(calls.length, 0);
+  // de quem é a operação: mesmo âmbito, mesmo serviço e, no Vertex, o mesmo projeto da conta de serviço em vigor
+  assert.equal(t.veoScopeId(), 'global');
+  assert.equal(t.opOfCurrentCreds(OP, 'global', 'projeto-teste-123'), true);
+  assert.equal(t.opOfCurrentCreds(OP.replace('projeto-teste-123', '123456789012'), 'global', 'projeto-teste-123'), true, 'o nome pode trazer o número do projeto');
+  assert.equal(t.opOfCurrentCreds(OP, 'global', 'outro-projeto'), false, 'conta de serviço de outro projeto');
+  assert.equal(t.opOfCurrentCreds(OP, ent, 'projeto-teste-123'), false, 'criada com as credenciais de uma entidade');
+  assert.equal(t.opOfCurrentCreds('models/veo-3.1-fast-generate-preview/operations/z', 'global', null), false, 'da Gemini API com o Vertex em vigor');
+  assert.equal(t.opOfCurrentCreds(OP, null, null), true, 'operação antiga (sem âmbito): as credenciais em vigor');
+  delete process.env.VERTEX_SA_JSON; process.env.GEMINI_API_KEY = 'AIza-falsa';
+  assert.equal(t.opOfCurrentCreds('models/veo-3.1-fast-generate-preview/operations/z', 'global', null), true);
+  assert.equal(t.opOfCurrentCreds(OP, 'global', 'projeto-teste-123'), false, 'do Vertex com a Gemini API em vigor');
 });
 
 test('Gemini API (reserva): negativePrompt enviado e retirado se for recusado', async () => {

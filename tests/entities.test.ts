@@ -253,3 +253,47 @@ test('Veo por entidade: sem credenciais próprias, o nível e a região são os 
     await saveSetting(db, 'VERTEX_SA_JSON', ''); await saveSetting(db, 'VEO_TIER', '');
   }
 });
+
+test('Veo por entidade: uma operação pendente consulta-se com as credenciais que a criaram, mesmo que as da entidade mudem', async () => {
+  const { generateKeyPairSync } = await import('node:crypto');
+  const t = await import('../src/talking.ts');
+  const key = () => generateKeyPairSync('rsa', { modulusLength: 2048, privateKeyEncoding: { type: 'pkcs8', format: 'pem' }, publicKeyEncoding: { type: 'spki', format: 'pem' } }).privateKey;
+  // chaves falsas, geradas aqui
+  const saTc = JSON.stringify({ type: 'service_account', project_id: 'telecert-veo', private_key: key(), client_email: 'veo@telecert-veo.iam.gserviceaccount.com' });
+  const gemOp = 'models/veo-3.1-fast-generate-preview/operations/pendente';
+  const calls: { url: string; key: string }[] = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async (u: any, init: any = {}) => {
+    calls.push({ url: String(u), key: String(init.headers?.['x-goog-api-key'] ?? '') });
+    if (String(u).includes('/files/')) return new Response(Buffer.from('mp4-pendente'));
+    const ok = (b: any) => new Response(JSON.stringify(b), { status: 200, headers: { 'content-type': 'application/json' } });
+    if (String(u) === 'https://oauth2.googleapis.com/token') return ok({ access_token: 'ya29.teste', expires_in: 3600 });
+    return ok({ name: gemOp, done: true, response: { generateVideoResponse: { generatedSamples: [{ video: { uri: 'https://generativelanguage.googleapis.com/v1beta/files/a:download' } }] } } });
+  }) as any;
+  try {
+    // a operação foi criada com a chave Gemini global, quando a entidade não tinha credenciais; depois a entidade cola a
+    // conta de serviço dela: a operação já paga conclui-se com a chave global (não se paga de novo no projeto da entidade)
+    await saveSetting(db, 'GEMINI_API_KEY', ('AIza' + 'Glob' + 'X'.repeat(28)));
+    assert.equal(inEntity(otherId, () => t.veoScopeId()), 'global');
+    await post(`/entidades/${otherId}/chaves`, { VERTEX_SA_JSON: saTc }, other);
+    assert.equal(inEntity(otherId, () => t.veoScopeId()), otherId);
+    assert.equal(inEntity(otherId, () => t.opOfCurrentCreds(gemOp, 'global', null)), false, 'já não é das credenciais em vigor');
+    const r = await inEntity(otherId, () => t.veoAwait(gemOp, 8, undefined, 60_000, 1, 'global'));
+    assert.equal(r.video.toString(), 'mp4-pendente');
+    assert.ok(calls.every(c => !c.url.includes('oauth2') && c.key === ('AIza' + 'Glob' + 'X'.repeat(28))), 'só a chave global, nenhum token da conta de serviço da entidade');
+    // sem a chave global, a operação fica pendente com uma mensagem clara (sem acusar a conta de serviço da entidade)
+    await saveSetting(db, 'GEMINI_API_KEY', '');
+    calls.length = 0;
+    await assert.rejects(inEntity(otherId, () => t.veoAwait(gemOp, 8, undefined, 60_000, 1, 'global')), (e: any) => e instanceof t.VeoCredsMissing && /credenciais globais do portal/.test(e.message) && !t.isKeyRejected(e.message));
+    assert.equal(calls.length, 0);
+    // criada com as credenciais da entidade, que entretanto as retirou: pendente, sem cair nas globais
+    await post(`/entidades/${otherId}/chaves`, { VERTEX_SA_JSON: '-' }, other);
+    await saveSetting(db, 'GEMINI_API_KEY', ('AIza' + 'Glob' + 'X'.repeat(28)));
+    await assert.rejects(inEntity(otherId, () => t.veoAwait(gemOp, 8, undefined, 60_000, 1, otherId)), (e: any) => e instanceof t.VeoCredsMissing && /credenciais da entidade/.test(e.message));
+    assert.equal(calls.length, 0);
+  } finally {
+    globalThis.fetch = realFetch;
+    await post(`/entidades/${otherId}/chaves`, { VERTEX_SA_JSON: '-' }, other);
+    await saveSetting(db, 'GEMINI_API_KEY', '');
+  }
+});

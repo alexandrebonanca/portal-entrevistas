@@ -1,6 +1,6 @@
 import { createHash, createHmac, sign, timingSafeEqual } from 'node:crypto';
 import { config } from './config.ts';
-import { S, parseServiceAccount, isVertexLocation, scopedS, ownsAny, currentEntity, inEntity, VEO_CRED_KEYS, type ServiceAccount } from './settings.ts';
+import { S, parseServiceAccount, isVertexLocation, scopedS, scopeS, ownsAny, currentEntity, inEntity, VEO_CRED_KEYS, type ServiceAccount } from './settings.ts';
 import { PermanentError } from './jobs.ts';
 
 /**
@@ -142,6 +142,10 @@ export const veoTier = (): VeoTier => (veoOpt('VEO_TIER') === 'lite' ? 'lite' : 
 const veoS = (key: typeof VEO_CRED_KEYS[number]) => scopedS(VEO_CRED_KEYS, key);
 /** De onde vêm as credenciais do Veo em vigor: da entidade em contexto ou globais. */
 export const veoCredsScope = (): 'entity' | 'global' => (ownsAny(currentEntity(), VEO_CRED_KEYS) ? 'entity' : 'global');
+/** O mesmo âmbito como se guarda em cada operação (veo_ops.cred_scope): 'global' ou o id da entidade. */
+export const veoScopeId = (): string => (veoCredsScope() === 'entity' ? currentEntity()! : 'global');
+/** Credencial do Veo num âmbito fixo (o da operação que se consulta) ou, sem âmbito, a das credenciais em vigor. */
+const credOf = (key: typeof VEO_CRED_KEYS[number], scope?: string | null) => (scope ? scopeS(scope, key) : veoS(key));
 /** Vertex AI se houver conta de serviço (no âmbito das credenciais em vigor); senão a Gemini API. */
 export const veoBackend = (): VeoBackend => (veoS('VERTEX_SA_JSON') ? 'vertex' : 'gemini');
 export const veoConfigured = () => !!veoS('VERTEX_SA_JSON') || !!veoS('GEMINI_API_KEY');
@@ -174,13 +178,13 @@ export function serviceAccountJwt(sa: ServiceAccount, nowSec = Math.floor(Date.n
 }
 
 /**
- * Token de acesso da conta de serviço em vigor (Definições → Google, da entidade ou global). Uma recusa da Google
- * (chave apagada, conta desativada) dá «Veo 401: …» (isKeyRejected); a indisponibilidade dá «Veo 5xx: …» (passageira).
- * As mensagens nunca incluem a chave nem a asserção.
+ * Token de acesso da conta de serviço em vigor (Definições → Google, da entidade ou global), ou da de um âmbito fixo (o de
+ * uma operação já criada). Uma recusa da Google (chave apagada, conta desativada) dá «Veo 401: …» (isKeyRejected); a
+ * indisponibilidade dá «Veo 5xx: …» (passageira). As mensagens nunca incluem a chave nem a asserção.
  */
-export async function vertexToken(): Promise<{ token: string; sa: ServiceAccount }> {
+export async function vertexToken(scope?: string | null): Promise<{ token: string; sa: ServiceAccount }> {
   let sa: ServiceAccount;
-  try { sa = parseServiceAccount(veoS('VERTEX_SA_JSON')); }
+  try { sa = parseServiceAccount(credOf('VERTEX_SA_JSON', scope)); }
   catch (e: any) { throw new PermanentError(`Veo 401: conta de serviço do Vertex AI inválida em Definições (${String(e?.message ?? e).slice(0, 160)})`); }
   const id = createHash('sha256').update(`${sa.client_email}|${sa.private_key_id ?? ''}|${sa.private_key}`).digest('hex');
   const hit = tokens.get(id);
@@ -217,6 +221,8 @@ export class VeoOpError extends PermanentError {}
 export class VeoFiltered extends VeoOpError {}
 /** A CONSULTA de uma operação foi recusada (4xx): nada se sabe da operação, que pode ter sido feita e cobrada. */
 export class VeoPollError extends PermanentError {}
+/** A credencial com que a operação foi criada já não está em Definições: a operação (paga) fica pendente e o trabalho pára. */
+export class VeoCredsMissing extends VeoPollError {}
 /** O modelo escolhido recusou o próprio pedido (ex.: o Lite sem imagem inicial no Vertex): nada foi cobrado e o trabalho pára. */
 export class VeoUnsupported extends PermanentError {}
 // Passageiro só o que a Google diz que é passageiro (procura elevada, serviço indisponível).
@@ -239,8 +245,8 @@ let geminiNegativeOk = true; // a Gemini API pode não aceitar negativePrompt: d
  * Pedidos recusados (400/429) não são cobrados: o 429 espera e repete (até ~5 min), depois desiste com VeoQuotaError;
  * uma duração não aceite neste modo passa a 8 s. `model` só vale se for um modelo do serviço em vigor.
  */
-export async function veoSubmit(o: { image: Buffer; prompt: string; aspectRatio?: '16:9' | '9:16'; durationSeconds?: 4 | 6 | 8; onStatus?: (s: string) => Promise<void>; canSend?: () => Promise<boolean>; waitMs?: (attempt: number) => number; model?: string; tier?: VeoTier }): Promise<{ opName: string; dur: 4 | 6 | 8; model: string; tier: VeoTier; usdPerSec: number; backend: VeoBackend }> {
-  const backend = veoBackend();
+export async function veoSubmit(o: { image: Buffer; prompt: string; aspectRatio?: '16:9' | '9:16'; durationSeconds?: 4 | 6 | 8; onStatus?: (s: string) => Promise<void>; canSend?: () => Promise<boolean>; waitMs?: (attempt: number) => number; model?: string; tier?: VeoTier }): Promise<{ opName: string; dur: 4 | 6 | 8; model: string; tier: VeoTier; usdPerSec: number; backend: VeoBackend; scope: string; project: string | null }> {
+  const backend = veoBackend(), scope = veoScopeId();
   const tier = o.tier ?? (o.model ? tierOfModel(o.model) : veoTier());
   const model = o.model && Object.values(VEO_MODELS[backend]).includes(o.model) ? o.model : veoModel(tier, backend);
   let dur: 4 | 6 | 8 = o.durationSeconds ?? 8;
@@ -251,9 +257,10 @@ export async function veoSubmit(o: { image: Buffer; prompt: string; aspectRatio?
     const instances = [{ prompt: o.prompt, image: { bytesBase64Encoded: o.image.toString('base64'), mimeType: 'image/jpeg' } }];
     const parameters = { aspectRatio: o.aspectRatio ?? '16:9', durationSeconds: dur, personGeneration: 'allow_adult', ...(negative ? { negativePrompt: VEO_NEGATIVE_PROMPT } : {}) };
     try {
-      let op: any;
+      let op: any, project: string | null = null;
       if (backend === 'vertex') {
         const { token, sa } = await vertexToken();
+        project = sa.project_id;
         op = await jsonFetch(`${vertexModelUrl(sa.project_id, vertexLocation(), model)}:predictLongRunning`, {
           method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
           body: JSON.stringify({ instances, parameters: { ...parameters, generateAudio: true, sampleCount: 1, resolution: '720p' } }),
@@ -265,7 +272,8 @@ export async function veoSubmit(o: { image: Buffer; prompt: string; aspectRatio?
         }, 'Veo');
       }
       if (!op?.name) throw new PermanentError('Veo não devolveu o identificador da operação');
-      return { opName: String(op.name), dur, model, tier, usdPerSec: VEO_PRICES[tier], backend };
+      // O âmbito e o projeto das credenciais ficam com a operação: consulta-se sempre com elas, mesmo que mudem entretanto.
+      return { opName: String(op.name), dur, model, tier, usdPerSec: VEO_PRICES[tier], backend, scope, project };
     } catch (e: any) {
       const m = String(e?.message ?? e);
       if (dur !== 8 && /^Veo 400/.test(m) && /duration/i.test(m)) { dur = 8; continue; }
@@ -286,21 +294,40 @@ export async function veoSubmit(o: { image: Buffer; prompt: string; aspectRatio?
   }
 }
 
-/** Uma consulta da operação no serviço que a criou (o nome diz qual: 'projects/…' = Vertex AI, 'models/…' = Gemini API). */
-async function veoPoll(opName: string) {
+/**
+ * Uma consulta da operação no serviço que a criou (o nome diz qual: 'projects/…' = Vertex AI, 'models/…' = Gemini API),
+ * com as credenciais do âmbito em que foi criada (sem âmbito, as em vigor: operações anteriores à migração 018).
+ */
+async function veoPoll(opName: string, scope?: string | null) {
+  const whose = scope === 'global' ? ' (credenciais globais do portal)' : scope ? ' (credenciais da entidade)' : '';
+  const gone = (what: string) => `Veo: há uma operação ${isVertexOp(opName) ? 'do Vertex AI' : 'da Gemini API'} já paga por concluir, mas ${what} com que foi criada${whose} foi retirada de Definições: não é possível consultá-la. A operação fica pendente e nada é pago de novo: reponha essa credencial para a concluir (ou ela expira 36 h depois de criada).`;
   if (isVertexOp(opName)) {
     const m = VERTEX_OP.exec(opName);
     if (!m) throw new VeoPollError('Veo: nome de operação do Vertex AI inesperado');
-    if (!veoS('VERTEX_SA_JSON')) throw new VeoPollError('Veo: há uma operação do Vertex AI por concluir, mas a conta de serviço foi retirada de Definições: não é possível consultá-la.');
-    const { token } = await vertexToken();
+    if (!credOf('VERTEX_SA_JSON', scope)) throw new VeoCredsMissing(gone('a conta de serviço'));
+    const { token } = await vertexToken(scope);
     return jsonFetch(`${vertexModelUrl(m[1], m[2], m[3])}:fetchPredictOperation`, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ operationName: opName }) }, 'Veo');
   }
-  if (opName.startsWith('models/') && !veoS('GEMINI_API_KEY')) throw new VeoPollError('Veo: há uma operação da Gemini API por concluir, mas a chave Gemini foi retirada de Definições: não é possível consultá-la.');
-  return jsonFetch(`https://generativelanguage.googleapis.com/v1beta/${opName}`, { headers: { 'x-goog-api-key': veoS('GEMINI_API_KEY') } }, 'Veo');
+  if (opName.startsWith('models/') && !credOf('GEMINI_API_KEY', scope)) throw new VeoCredsMissing(gone('a chave Gemini'));
+  return jsonFetch(`https://generativelanguage.googleapis.com/v1beta/${opName}`, { headers: { 'x-goog-api-key': credOf('GEMINI_API_KEY', scope) } }, 'Veo');
+}
+
+/**
+ * A operação é das credenciais em vigor? Mesmo âmbito (global ou a entidade), mesmo serviço e, no Vertex AI, o mesmo
+ * projeto da conta de serviço (o nome da operação pode trazer o número do projeto, por isso guarda-se o projeto à parte).
+ * Uma recusa (401/403) só acusa as credenciais em vigor quando a operação é delas. Sem âmbito nem projeto guardados
+ * (operações antigas), conta-se como das credenciais em vigor, como até aqui.
+ */
+export function opOfCurrentCreds(opName: string, scope?: string | null, project?: string | null): boolean {
+  if (scope && scope !== veoScopeId()) return false;
+  if (!isVertexOp(opName)) return veoBackend() === 'gemini';
+  if (veoBackend() !== 'vertex') return false;
+  if (!project) return true;
+  try { return parseServiceAccount(veoS('VERTEX_SA_JSON')).project_id === project; } catch { return false; }
 }
 
 /** Vídeo de uma operação concluída do Vertex: em base64 (sem storageUri) ou, se a Google o guardar, no Cloud Storage. */
-async function vertexVideo(resp: any): Promise<Buffer> {
+async function vertexVideo(resp: any, scope?: string | null): Promise<Buffer> {
   const v = resp?.videos?.[0];
   if (!v?.bytesBase64Encoded && !v?.gcsUri) {
     if (resp?.raiMediaFilteredCount || resp?.raiMediaFilteredReasons?.length) throw new VeoFiltered(`Veo: clipe bloqueado pelos filtros da Google: ${String(resp.raiMediaFilteredReasons?.[0] ?? '').slice(0, 200)}`);
@@ -309,31 +336,31 @@ async function vertexVideo(resp: any): Promise<Buffer> {
   if (v.bytesBase64Encoded) return Buffer.from(String(v.bytesBase64Encoded), 'base64');
   const g = /^gs:\/\/([a-z0-9._-]+)\/(.+)$/.exec(String(v.gcsUri));
   if (!g) throw new VeoOpError('Veo devolveu um endereço de vídeo inesperado');
-  const { token } = await vertexToken();
+  const { token } = await vertexToken(scope);
   return download(`https://storage.googleapis.com/storage/v1/b/${g[1]}/o/${encodeURIComponent(g[2])}?alt=media`, { Authorization: `Bearer ${token}` });
 }
 
 /** Vídeo de uma operação concluída da Gemini API (descarregado com a chave). */
-async function geminiVideo(resp: any): Promise<Buffer> {
+async function geminiVideo(resp: any, scope?: string | null): Promise<Buffer> {
   const gen = resp?.generateVideoResponse;
   const uri = gen?.generatedSamples?.[0]?.video?.uri;
   if (!uri && (gen?.raiMediaFilteredCount || gen?.raiMediaFilteredReasons?.length)) throw new VeoFiltered(`Veo: clipe bloqueado pelos filtros da Google: ${String(gen.raiMediaFilteredReasons?.[0] ?? '').slice(0, 200)}`);
   if (!uri) throw new VeoOpError(`Veo não devolveu vídeo: ${JSON.stringify(resp ?? {}).slice(0, 200)}`);
-  return download(uri, { 'x-goog-api-key': veoS('GEMINI_API_KEY') });
+  return download(uri, { 'x-goog-api-key': credOf('GEMINI_API_KEY', scope) });
 }
 
 /**
- * Espera pela operação (no serviço que a criou) e obtém o vídeo. Erros passageiros (rede, 5xx, 429) repetem a consulta,
- * nunca a submissão.
+ * Espera pela operação (no serviço e com as credenciais do âmbito que a criaram) e obtém o vídeo. Erros passageiros (rede,
+ * 5xx, 429) repetem a consulta, nunca a submissão.
  */
-export async function veoAwait(opName: string, dur: number, onStatus?: (s: string) => Promise<void>, deadlineMs = 20 * 60_000, pollMs = 10_000) {
+export async function veoAwait(opName: string, dur: number, onStatus?: (s: string) => Promise<void>, deadlineMs = 20 * 60_000, pollMs = 10_000, scope?: string | null) {
   const t0 = Date.now();
   let fails = 0;
   for (;;) {
     if (Date.now() - t0 > deadlineMs) throw new Error('Veo: tempo excedido (a operação fica pendente e é retomada na próxima tentativa)');
     await sleep(pollMs);
     let st: any;
-    try { st = await veoPoll(opName); fails = 0; }
+    try { st = await veoPoll(opName, scope); fails = 0; }
     catch (e: any) { if (e instanceof VeoPollError) throw e; if (e instanceof PermanentError) throw new VeoPollError(String(e.message)); if (++fails > 8) throw e; continue; }
     if (st.error) {
       const msg = String(st.error.message ?? JSON.stringify(st.error)).slice(0, 300);
@@ -342,7 +369,7 @@ export async function veoAwait(opName: string, dur: number, onStatus?: (s: strin
     }
     if (st.done) {
       for (let k = 0; ; k++) {
-        try { return { video: isVertexOp(opName) ? await vertexVideo(st.response) : await geminiVideo(st.response), billedSec: dur }; }
+        try { return { video: isVertexOp(opName) ? await vertexVideo(st.response, scope) : await geminiVideo(st.response, scope), billedSec: dur }; }
         catch (e) { if (e instanceof VeoOpError || k >= 3) throw e; await sleep(5000 * (k + 1)); }
       }
     }

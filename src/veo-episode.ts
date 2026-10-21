@@ -5,7 +5,7 @@ import { saveAsset, hasAudioStream } from './media.ts';
 import { transcribeClip, translateSubtitleCues, aiAvailable, type Word } from './ai/openai.ts';
 import { renderBases, subtitleFrame, encodeComposite, buildAudioTrack, mockTalkingClip, type Part, type Shot, type Scene, type AudioPiece } from './video.ts';
 import { cuesFromWords } from './subtitles.ts';
-import { veoSubmit, veoAwait, veoEpisodePrompt, VeoQuotaError, VeoCancelled, VeoBusy, VeoFiltered, VeoOpError, VeoUnsupported, isKeyRejected, veoTier, veoModel, veoBackend, veoConfigured, veoCredsScope, veoPricePerSec, veoPriceOfModel, veoKeyModel, veoLabel, tierOfModel, type VeoTier } from './talking.ts';
+import { veoSubmit, veoAwait, veoEpisodePrompt, VeoQuotaError, VeoCancelled, VeoBusy, VeoFiltered, VeoOpError, VeoUnsupported, VeoCredsMissing, isKeyRejected, opOfCurrentCreds, veoTier, veoModel, veoBackend, veoConfigured, veoCredsScope, veoScopeId, veoPricePerSec, veoPriceOfModel, veoKeyModel, veoLabel, tierOfModel, type VeoTier } from './talking.ts';
 import { ownsAny, entityOfInterview, VEO_CRED_KEYS } from './settings.ts';
 import { PermanentError, JobPaused, type Handler } from './jobs.ts';
 import type { Db } from './db.ts';
@@ -348,7 +348,9 @@ const unitProblem = (chosen: boolean, hasChecked: boolean, anyUnchecked: boolean
   !chosen && (why === 'capped_budget' || why === 'breaker') ? why : chunkProblem(chosen, hasChecked, anyUnchecked, why ?? undefined);
 
 /** Só para os testes (AI_MOCK): resultado simulado de cada clipe — aprovado, texto diferente, filtrado ou quota esgotada. */
-export const veoMock: { outcome: null | ((c: { segmentId: string; role: string; text: string; attempt: number }) => 'ok' | 'mismatch' | 'filtered' | 'quota') } = { outcome: null };
+export const veoMock: { outcome: null | ((c: { segmentId: string; role: string; text: string; attempt: number }) => 'ok' | 'mismatch' | 'filtered' | 'quota');
+  /** Consulta simulada de uma operação (pode lançar os erros da consulta real, ex.: credenciais recusadas ou retiradas). */
+  poll?: null | ((o: { opName: string; scope: string | null; project: string | null }) => Promise<void> | void) } = { outcome: null, poll: null };
 
 /** Perfil e entidade de quem pediu o trabalho (lidos no momento: um perfil retirado entretanto deixa de valer). */
 const requesterOf = async (db: Db, userId: unknown): Promise<{ role: string; entity_id: string | null } | null> =>
@@ -634,15 +636,18 @@ export async function renderVeoVideo(job: any, { db, progress }: Parameters<Hand
     if (r.capped) { u.problem = 'capped_budget'; return null; }
     return r.id!;
   };
-  /** A Google aceitou (e cobra): a intenção passa a operação pendente, com o custo real, numa só transação (com novas tentativas). */
-  const registerOp = async (opId: string, opName: string, dur: number, model: string, price: number) => {
+  /**
+   * A Google aceitou (e cobra): a intenção passa a operação pendente, com o custo real e o âmbito e o projeto das credenciais
+   * que a criaram (consulta-se sempre com elas), numa só transação (com novas tentativas).
+   */
+  const registerOp = async (opId: string, opName: string, dur: number, model: string, price: number, scope: string, project: string | null) => {
     const usd = dur * price;
     if (!mock) spentUsd += usd;
     submittedThisRun.add(opName);
     for (let k = 0; ; k++) {
       try {
         await db.tx(async tx => {
-          await tx.query(`UPDATE veo_ops SET op_name=$2, duration_sec=$3, model=$4, usd_per_sec=$5, cost_usd=$6, state='pending' WHERE id=$1`, [opId, opName, dur, model, price, usd]);
+          await tx.query(`UPDATE veo_ops SET op_name=$2, duration_sec=$3, model=$4, usd_per_sec=$5, cost_usd=$6, cred_scope=$7, project=$8, state='pending' WHERE id=$1`, [opId, opName, dur, model, price, usd, scope, project]);
           if (!mock) await tx.query('INSERT INTO usage_ledger(interview_id, kind, quantity, cost_usd, estimated, quote_id) VALUES ($1,$2,$3,$4,true,$5)', [iv.id, 'veo_usd', dur, usd, quote?.id ?? null]);
         });
         return;
@@ -705,6 +710,8 @@ export async function renderVeoVideo(job: any, { db, progress }: Parameters<Hand
       const onStatus = async (s: string) => progress(pct(), 100, `${label} — ${s}`);
       let opId: string | null = null, reservedId: string | null = null, opName = '';
       let opModel = tierModel, opPrice = tierPrice; // modelo e preço da operação (os de uma pendente são os dela)
+      let opScope: string | null = null, opProject: string | null = null; // credenciais que a criaram (null: operação antiga)
+      let foreign = false; // consulta recusada às credenciais de outra operação (não às em vigor)
       let outcome: 'ok' | 'mismatch' | 'filtered' | 'quota' = 'ok';
       // Antes de CADA envio (também nas repetições após 429): trabalho não parado e autorizações em vigor.
       const canSend = async () => {
@@ -718,10 +725,11 @@ export async function renderVeoVideo(job: any, { db, progress }: Parameters<Hand
       try {
         let video: Buffer;
         // Uma operação já paga e por concluir (trabalho interrompido, erro de rede) é retomada, não submetida de novo.
-        const pending = await db.one(`SELECT id, op_name, duration_sec, model, usd_per_sec FROM veo_ops WHERE interview_id=$1 AND chunk_key=$2 AND state='pending' ORDER BY created_at LIMIT 1`, [iv.id, c.key]);
+        const pending = await db.one(`SELECT id, op_name, duration_sec, model, usd_per_sec, cred_scope, project FROM veo_ops WHERE interview_id=$1 AND chunk_key=$2 AND state='pending' ORDER BY created_at LIMIT 1`, [iv.id, c.key]);
         if (pending) {
           opId = pending.id; opName = pending.op_name; dur = Number(pending.duration_sec) as 4 | 6 | 8;
           opModel = pending.model ?? opModel; opPrice = pending.usd_per_sec != null ? Number(pending.usd_per_sec) : veoPriceOfModel(pending.model);
+          opScope = pending.cred_scope ?? null; opProject = pending.project ?? null;
         } else {
           if (!(await canSend())) return 'stop';
           reservedId = await reserveOp(u, fala, retry);
@@ -729,32 +737,35 @@ export async function renderVeoVideo(job: any, { db, progress }: Parameters<Hand
           if (mock) {
             outcome = veoMock.outcome?.({ segmentId: c.seg.id, role: c.seg.role, text: c.text, attempt: u.atts.length + u.failures + 1 }) ?? 'ok';
             if (outcome === 'quota') throw new VeoQuotaError('Limite de pedidos (quota) da Google esgotado (simulado).');
-            opName = `mock/${reservedId}`;
+            opName = `mock/${reservedId}`; opScope = veoScopeId();
           } else {
             const s = await veoSubmit({ image: st.image, prompt: c.prompt, aspectRatio: st.vertical ? '9:16' : '16:9', durationSeconds: dur, onStatus, canSend, tier });
-            opName = s.opName; dur = s.dur; opModel = s.model; opPrice = s.usdPerSec;
+            opName = s.opName; dur = s.dur; opModel = s.model; opPrice = s.usdPerSec; opScope = s.scope; opProject = s.project;
           }
           // A Google aceitou: a partir daqui a operação está paga (já não se anula a intenção).
           opId = reservedId; reservedId = null;
-          await registerOp(opId, opName, dur, opModel, opPrice);
+          await registerOp(opId, opName, dur, opModel, opPrice, opScope!, opProject);
         }
-        if (mock) {
-          if (outcome === 'filtered') { const m = 'Veo: clipe bloqueado pelos filtros da Google (simulado)'; await moveToFailed(opId, dur, 'failed', m); throw new VeoFiltered(m); }
-          video = await mockTalkingClip(ffmpeg, st.image, dur * 1000, st.vertical);
-        } else {
-          try { video = (await veoAwait(opName, dur, onStatus)).video; }
-          catch (e: any) {
-            const m = String(e?.message ?? e);
-            // Só uma operação que a própria Google deu como falhada (passageira, bloqueada ou sem vídeo) passa a «normalmente não cobrada».
-            // Chave recusada na consulta: a operação fica pendente (retoma-se com a chave certa) e o custo continua como pago.
-            // Outra recusa da CONSULTA (ex.: 404): não se sabe o que aconteceu à operação; fica 'failed' e o custo continua como pago.
-            if (isKeyRejected(m)) { /* fica 'pending' */ }
-            else if (e instanceof VeoBusy) await moveToFailed(opId, dur, 'busy', m);
-            else if (e instanceof VeoOpError) await moveToFailed(opId, dur, 'failed', m);
-            else if (e instanceof PermanentError) await db.query(`UPDATE veo_ops SET state='failed', error=$2 WHERE id=$1 AND state='pending'`, [opId, m.slice(0, 300)]);
-            if (/tempo excedido/.test(m) && ++timeouts >= 2) stop(new PermanentError('O Google Veo não está a concluir os clipes (duas esperas de 20 min esgotadas): tente mais tarde. As operações pagas ficam pendentes e são retomadas.'));
-            throw e;
-          }
+        if (mock && outcome === 'filtered') { const m = 'Veo: clipe bloqueado pelos filtros da Google (simulado)'; await moveToFailed(opId, dur, 'failed', m); throw new VeoFiltered(m); }
+        try {
+          if (mock) { await veoMock.poll?.({ opName, scope: opScope, project: opProject }); video = await mockTalkingClip(ffmpeg, st.image, dur * 1000, st.vertical); }
+          else video = (await veoAwait(opName, dur, onStatus, undefined, undefined, opScope)).video;
+        } catch (e: any) {
+          const m = String(e?.message ?? e);
+          // Só uma operação que a própria Google deu como falhada (passageira, bloqueada ou sem vídeo) passa a «normalmente não cobrada».
+          // Credencial que a criou retirada de Definições: fica pendente (retoma-se quando for reposta) e nada se paga de novo.
+          // Credenciais em vigor recusadas na consulta: a operação fica pendente (retoma-se com a chave certa) e o custo continua como pago.
+          // Recusa às credenciais de outra operação (de antes de uma mudança de credenciais): não acusa as em vigor; a operação
+          // fica 'failed' (inacessível, o custo continua como pago) e o pedaço segue para uma nova tentativa.
+          // Outra recusa da CONSULTA (ex.: 404): não se sabe o que aconteceu à operação; fica 'failed' e o custo continua como pago.
+          if (e instanceof VeoCredsMissing) { /* fica 'pending' */ }
+          else if (isKeyRejected(m) && opOfCurrentCreds(opName, opScope, opProject)) { /* fica 'pending' */ }
+          else if (isKeyRejected(m)) { foreign = true; await db.query(`UPDATE veo_ops SET state='failed', error=$2 WHERE id=$1 AND state='pending'`, [opId, `consulta recusada às credenciais que criaram a operação, não às em vigor: ${m}`.slice(0, 300)]); }
+          else if (e instanceof VeoBusy) await moveToFailed(opId, dur, 'busy', m);
+          else if (e instanceof VeoOpError) await moveToFailed(opId, dur, 'failed', m);
+          else if (e instanceof PermanentError) await db.query(`UPDATE veo_ops SET state='failed', error=$2 WHERE id=$1 AND state='pending'`, [opId, m.slice(0, 300)]);
+          if (/tempo excedido/.test(m) && ++timeouts >= 2) stop(new PermanentError('O Google Veo não está a concluir os clipes (duas esperas de 20 min esgotadas): tente mais tarde. As operações pagas ficam pendentes e são retomadas.'));
+          throw e;
         }
         generated++; busyStreak = 0;
         if (u.problem === 'busy') u.problem = null; // a procura elevada passou: o que contar é o resultado deste clipe
@@ -774,7 +785,8 @@ export async function renderVeoVideo(job: any, { db, progress }: Parameters<Hand
         if (reservedId) await db.query(`UPDATE veo_ops SET state='void', cost_usd=0 WHERE id=$1 AND state='reserved'`, [reservedId]);
         const m = String(e?.message ?? e);
         if (e instanceof VeoCancelled || abort) return 'stop';
-        if (isKeyRejected(m)) { stop(new PermanentError(`A Google recusou as credenciais do Veo (conta de serviço do Vertex AI ou chave da Gemini API, em Definições → Google): ${m.slice(0, 200)}`)); return 'stop'; }
+        if (e instanceof VeoCredsMissing) { stop(new PermanentError(m)); return 'stop'; }
+        if (isKeyRejected(m) && !foreign) { stop(new PermanentError(`A Google recusou as credenciais do Veo (conta de serviço do Vertex AI ou chave da Gemini API, em Definições → Google): ${m.slice(0, 200)}`)); return 'stop'; }
         // Quota esgotada: não é uma falha da produção; o trabalho volta à fila mais tarde e o orçamento continua em curso.
         if (e instanceof VeoQuotaError) { stop(new JobPaused(VEO_QUOTA_PAUSED, QUOTA_PAUSE_MS)); return 'stop'; }
         if (e instanceof VeoUnsupported) { stop(new PermanentError(m)); return 'stop'; } // o modelo escolhido recusa o pedido: não adianta insistir

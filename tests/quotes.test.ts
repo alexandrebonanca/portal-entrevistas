@@ -580,3 +580,46 @@ test('gestor de entidade: o Veo sem créditos só com credenciais Google própri
   }
   await check();
 });
+
+test('operação pendente na geração: credencial retirada fica pendente e pára; recusa às credenciais de outra operação segue; às em vigor pára', async () => {
+  const { VeoCredsMissing, VeoPollError } = await import('../src/talking.ts');
+  const iv = await db.one('SELECT * FROM interviews WHERE id=$1', [ivId]);
+  const ep = await db.one('SELECT * FROM episodes WHERE id=$1', [epId]);
+  /** Chave do 1.º pedaço da 1.ª fala do entrevistador (o primeiro a ser tentado), com os clipes atuais rejeitados. */
+  const firstKey = async () => { await rejectAll(); const plan = await V.veoPlan(db, iv, ep, { tier: 'fast' }); return plan.segs.find(s => s.role === 'host' && s.chunks.length)!.chunks[0].key; };
+  const pendingOp = async (key: string, name: string, scope: string, project: string | null) => (await db.one(`INSERT INTO veo_ops(interview_id, chunk_key, op_name, duration_sec, state, model, usd_per_sec, cost_usd, cred_scope, project)
+    VALUES ($1,$2,$3,8,'pending','veo-3.1-fast-generate-001',0.10,0.8,$4,$5) RETURNING id`, [ivId, key, name, scope, project])).id;
+  const opsOf = async (key: string) => db.query(`SELECT id, state, error, cred_scope FROM veo_ops WHERE interview_id=$1 AND chunk_key=$2 ORDER BY created_at`, [ivId, key]);
+  const run = async () => { assert.match(msg(await post(`/entrevistas/${ivId}/episodio/${epId}/video`, { engine: 'veo', lang: 'en' }, admin)), /Geração do vídeo iniciada/); await drain(); return lastJob(); };
+  try {
+    // 1. a credencial que criou a operação (já paga) foi retirada: fica pendente, o trabalho pára e nada se envia de novo
+    let key = await firstKey();
+    const a = await pendingOp(key, 'models/veo-3.1-fast-generate-preview/operations/p1', 'global', null);
+    V.veoMock.poll = ({ opName }) => { if (opName.endsWith('/p1')) throw new VeoCredsMissing('Veo: há uma operação da Gemini API já paga por concluir, mas a chave Gemini com que foi criada (credenciais globais do portal) foi retirada de Definições (simulado): nada é pago de novo.'); };
+    let j = await run();
+    assert.equal(j.state, 'failed'); assert.match(j.error, /chave Gemini com que foi criada[\s\S]*nada é pago de novo/);
+    assert.deepEqual((await opsOf(key)).map((o: any) => [o.id, o.state]), [[a, 'pending']], 'continua pendente e nenhum envio novo deste pedaço');
+
+    // 2. recusa (403) às credenciais de outra operação (criada com as de uma entidade, noutro projeto): não acusa as em vigor
+    //    nem pára; a operação dá-se como perdida e o pedaço gera-se de novo com as credenciais em vigor
+    await db.query('DELETE FROM veo_ops WHERE id=$1', [a]);
+    const b = await pendingOp(key, 'projects/outro-projeto/locations/us-central1/publishers/google/models/veo-3.1-fast-generate-001/operations/p2', '11111111-1111-1111-1111-111111111111', 'outro-projeto');
+    V.veoMock.poll = ({ opName }) => { if (opName.endsWith('/p2')) throw new VeoPollError('Veo 403: Permission denied (simulado)'); };
+    j = await run();
+    assert.equal(j.state, 'done', j.error);
+    const ops = await opsOf(key);
+    assert.deepEqual([ops[0].id, ops[0].state], [b, 'failed']); assert.match(ops[0].error, /não às em vigor/);
+    assert.deepEqual(ops.slice(1).map((o: any) => [o.state, o.cred_scope]), [['done', 'global']], 'gerado de novo, com o âmbito guardado');
+
+    // 3. recusa às credenciais em vigor (a operação é delas): fica pendente e o trabalho pára a acusar as credenciais
+    key = await firstKey();
+    const c = await pendingOp(key, 'models/veo-3.1-fast-generate-preview/operations/p3', 'global', null);
+    V.veoMock.poll = ({ opName }) => { if (opName.endsWith('/p3')) throw new VeoPollError('Veo 403: Permission denied (simulado)'); };
+    j = await run();
+    assert.equal(j.state, 'failed'); assert.match(j.error, /A Google recusou as credenciais do Veo/);
+    assert.deepEqual((await opsOf(key)).map((o: any) => [o.id, o.state]), [[c, 'pending']]);
+  } finally {
+    V.veoMock.poll = null;
+    await db.query(`UPDATE veo_ops SET state='expired' WHERE interview_id=$1 AND state='pending'`, [ivId]);
+  }
+});
