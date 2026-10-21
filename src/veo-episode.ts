@@ -5,8 +5,7 @@ import { saveAsset, hasAudioStream } from './media.ts';
 import { transcribeClip, translateSubtitleCues, aiAvailable, type Word } from './ai/openai.ts';
 import { renderBases, subtitleFrame, encodeComposite, buildAudioTrack, mockTalkingClip, type Part, type Shot, type Scene, type AudioPiece } from './video.ts';
 import { cuesFromWords } from './subtitles.ts';
-import { veoSubmit, veoAwait, veoEpisodePrompt, VeoQuotaError, VeoCancelled, VeoBusy, VeoFiltered, VeoOpError, isKeyRejected, VEO_MODEL, VEO_PRICE_PER_SEC } from './talking.ts';
-import { S } from './settings.ts';
+import { veoSubmit, veoAwait, veoEpisodePrompt, VeoQuotaError, VeoCancelled, VeoBusy, VeoFiltered, VeoOpError, VeoUnsupported, isKeyRejected, veoTier, veoModel, veoBackend, veoConfigured, veoPricePerSec, veoPriceOfModel, veoKeyModel, type VeoTier } from './talking.ts';
 import { PermanentError, type Handler } from './jobs.ts';
 
 /**
@@ -194,20 +193,21 @@ export function trimWindow(words: Word[], clipMs: number, expected: string): { a
   return b - a >= 400 ? { a, b } : full;
 }
 
-/** Clipes e custo previstos (sem e com uma nova tentativa por clipe). */
-export function veoEstimate(timing: any[], segments: any[], hostOk: boolean, guestOk: boolean) {
+/** Clipes e custo previstos (sem e com uma nova tentativa por clipe) ao preço do nível escolhido (Fast ou Lite). */
+export function veoEstimate(timing: any[], segments: any[], hostOk: boolean, guestOk: boolean, tier: VeoTier = veoTier()) {
+  const usdPerSec = veoPricePerSec(tier);
   const textOf = new Map<string, string>(segments.map((s: any) => [s.id, s.textEnglish]));
   let clips = 0, sec = 0;
   for (const t of timing) {
     if (t.kind === 'disclosure' || !(t.role === 'host' ? hostOk : guestOk)) continue;
     for (const c of chunkText(textOf.get(t.id) ?? '')) { clips++; sec += veoDuration(c); }
   }
-  return { clips, sec, usd: sec * VEO_PRICE_PER_SEC, usdMax: clips * 8 * VEO_PRICE_PER_SEC * 2, minutes: Math.ceil(clips / 2) * 1.5 + 2 };
+  return { clips, sec, usd: sec * usdPerSec, usdMax: clips * 8 * usdPerSec * 2, minutes: Math.ceil(clips / 2) * 1.5 + 2, tier, usdPerSec };
 }
 
 type Seg = { id: string; role: 'host' | 'guest'; kind: string; startMs: number; durationMs: number; endMs: number; text: string };
 type Chunk = { seg: Seg; k: number; text: string; dur: 4 | 6 | 8; key: string; prompt: string };
-type Attempt = { assetId: string; storageKey: string; words: Word[]; heard: string; checked: boolean; edits: number | null; hard: number | null; dur: number };
+type Attempt = { assetId: string; storageKey: string; words: Word[]; heard: string; checked: boolean; edits: number | null; hard: number | null; dur: number; usdPerSec: number };
 
 const passes = (a: Attempt) => a.checked && a.words.length > 0 && a.hard === 0;
 
@@ -219,7 +219,9 @@ export async function renderVeoVideo(job: any, { db, progress }: Parameters<Hand
   const timing = ep.technical?.timing as any[] | undefined;
   if (!timing?.length) throw new PermanentError('Este episódio foi gerado antes do vídeo existir: gere o episódio de novo');
   const mock = config.openai.mock;
-  if (!mock && !S('GEMINI_API_KEY')) throw new PermanentError('Falta a chave da Google (Gemini API) em Definições');
+  if (!mock && !veoConfigured()) throw new PermanentError(VEO_NO_CREDENTIALS);
+  // Nível escolhido em Definições (o da entidade, se tiver): modelo e preço por segundo de todos os clipes novos.
+  const tier = veoTier(), tierPrice = veoPricePerSec(tier), tierModel = veoModel(tier);
   // Sem transcrição não há verificação: não se paga nenhum clipe que depois não se possa verificar.
   if (!mock && !aiAvailable()) throw new PermanentError('Falta a chave da OpenAI (transcrição para verificar os clipes) em Definições');
   const script = await db.one('SELECT segments, status FROM scripts WHERE id=$1', [ep.script_id]);
@@ -282,7 +284,7 @@ export async function renderVeoVideo(job: any, { db, progress }: Parameters<Hand
   for (const s of segs) if (s.kind !== 'disclosure' && start[s.role]) chunkText(s.text).forEach((text, k) => {
     const st = start[s.role]!, prompt = veoEpisodePrompt({ role: s.role, text, voice: voice[s.role] });
     // A chave não inclui a duração: as tentativas com outra duração contam para o mesmo pedaço.
-    chunks.push({ seg: s, k, text, dur: veoDuration(text), prompt, key: sha256(`${st.hash}|${prompt}|${st.vertical ? '9:16' : '16:9'}|${VEO_MODEL}|${mock}`) });
+    chunks.push({ seg: s, k, text, dur: veoDuration(text), prompt, key: sha256(`${st.hash}|${prompt}|${st.vertical ? '9:16' : '16:9'}|${veoKeyModel(tier)}|${mock}`) });
   });
 
   // ---- transcrição de um clipe (repete a transcrição, nunca a geração paga) ----
@@ -324,10 +326,10 @@ export async function renderVeoVideo(job: any, { db, progress }: Parameters<Hand
   // Operação que acabou sem vídeo: a estimativa passa de «pago» para «falhado na Google (normalmente não cobrado)».
   const moveToFailed = async (opId: string | null, dur: number, state: 'busy' | 'failed', error: string) => {
     if (!opId) return;
-    const usd = dur * VEO_PRICE_PER_SEC;
     await db.tx(async tx => {
-      const r = await tx.one(`UPDATE veo_ops SET state=$2, error=$3 WHERE id=$1 AND state='pending' RETURNING id, op_name`, [opId, state, error.slice(0, 300)]);
+      const r = await tx.one(`UPDATE veo_ops SET state=$2, error=$3 WHERE id=$1 AND state='pending' RETURNING id, op_name, model, usd_per_sec`, [opId, state, error.slice(0, 300)]);
       if (!r) return;
+      const usd = dur * (r.usd_per_sec != null ? Number(r.usd_per_sec) : veoPriceOfModel(r.model)); // o preço com que foi submetida
       await tx.query('INSERT INTO usage_ledger(interview_id, kind, quantity, cost_usd, estimated) VALUES ($1,$2,$3,$4,true)', [iv.id, 'veo_usd', -dur, -usd]);
       await tx.query('INSERT INTO usage_ledger(interview_id, kind, quantity, cost_usd, estimated) VALUES ($1,$2,$3,$4,true)', [iv.id, 'veo_usd_failed', dur, usd]);
       if (submittedThisRun.has(String(r.op_name))) failedUsd += usd; // só as desta geração entram no «pago nesta geração»
@@ -348,7 +350,7 @@ export async function renderVeoVideo(job: any, { db, progress }: Parameters<Hand
         await db.query('UPDATE assets SET meta=$2 WHERE id=$1', [a.id, JSON.stringify(m)]);
       }
       if (m.checked) { const j = judge(c, m.words ?? [], true, m.heard); m = { ...m, edits: j.edits, hard: j.hard, diffs: j.diffs }; } // regra atual
-      atts.push({ assetId: a.id, storageKey: a.storage_key, words: m.words ?? [], heard: m.heard ?? '', checked: !!m.checked, edits: m.edits ?? null, hard: m.hard ?? null, dur: Number(m.dur ?? m.billedSec ?? 8) });
+      atts.push({ assetId: a.id, storageKey: a.storage_key, words: m.words ?? [], heard: m.heard ?? '', checked: !!m.checked, edits: m.edits ?? null, hard: m.hard ?? null, dur: Number(m.dur ?? m.billedSec ?? 8), usdPerSec: Number(m.usdPerSec ?? veoPriceOfModel(m.model)) });
     }
     // Operações que falharam (ou expiraram) em execuções anteriores contam para o limite (o teto vale entre execuções).
     if (!mock) await db.query(`UPDATE veo_ops SET state='expired' WHERE interview_id=$1 AND chunk_key=$2 AND state='pending' AND created_at < now() - interval '36 hours'`, [iv.id, c.key]);
@@ -379,6 +381,7 @@ export async function renderVeoVideo(job: any, { db, progress }: Parameters<Hand
       await progress(pct(), 100, label);
       const onStatus = async (s: string) => progress(pct(), 100, `${label} — ${s}`);
       let opId: string | null = null;
+      let opModel = tierModel, opPrice = tierPrice; // modelo e preço da operação (os de uma pendente são os dela)
       // Antes de CADA envio (também nas repetições após 429): trabalho não parado e autorizações em vigor.
       const canSend = async () => {
         if (abort) return false;
@@ -393,20 +396,22 @@ export async function renderVeoVideo(job: any, { db, progress }: Parameters<Hand
           video = await mockTalkingClip(ffmpeg, st.image, dur * 1000, st.vertical);
         } else {
           // Uma operação já paga e por concluir (trabalho interrompido, erro de rede) é retomada, não submetida de novo.
-          const pending = await db.one(`SELECT id, op_name, duration_sec FROM veo_ops WHERE interview_id=$1 AND chunk_key=$2 AND state='pending' ORDER BY created_at LIMIT 1`, [iv.id, c.key]);
+          const pending = await db.one(`SELECT id, op_name, duration_sec, model, usd_per_sec FROM veo_ops WHERE interview_id=$1 AND chunk_key=$2 AND state='pending' ORDER BY created_at LIMIT 1`, [iv.id, c.key]);
           let opName: string;
-          if (pending) { opId = pending.id; opName = pending.op_name; dur = Number(pending.duration_sec) as 4 | 6 | 8; }
-          else {
-            const s = await veoSubmit({ image: st.image, prompt: c.prompt, aspectRatio: st.vertical ? '9:16' : '16:9', durationSeconds: dur, onStatus, canSend });
-            opName = s.opName; dur = s.dur;
-            const usd = dur * VEO_PRICE_PER_SEC; spentUsd += usd;
+          if (pending) {
+            opId = pending.id; opName = pending.op_name; dur = Number(pending.duration_sec) as 4 | 6 | 8;
+            opModel = pending.model ?? opModel; opPrice = pending.usd_per_sec != null ? Number(pending.usd_per_sec) : veoPriceOfModel(pending.model);
+          } else {
+            const s = await veoSubmit({ image: st.image, prompt: c.prompt, aspectRatio: st.vertical ? '9:16' : '16:9', durationSeconds: dur, onStatus, canSend, tier });
+            opName = s.opName; dur = s.dur; opModel = s.model; opPrice = s.usdPerSec;
+            const usd = dur * opPrice; spentUsd += usd;
             submittedThisRun.add(opName);
             // A Google já aceitou (e cobra): registo da operação e do custo numa só transação, com novas tentativas.
             // Se não for possível registar, o trabalho pára em vez de voltar a submeter (o que pagaria duas vezes).
             for (let k = 0; ; k++) {
               try {
                 opId = await db.tx(async tx => {
-                  const id = (await tx.one(`INSERT INTO veo_ops(interview_id, chunk_key, op_name, duration_sec) VALUES ($1,$2,$3,$4) RETURNING id`, [iv.id, c.key, opName, dur])).id;
+                  const id = (await tx.one(`INSERT INTO veo_ops(interview_id, chunk_key, op_name, duration_sec, model, usd_per_sec) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`, [iv.id, c.key, opName, dur, opModel, opPrice])).id;
                   await tx.query('INSERT INTO usage_ledger(interview_id, kind, quantity, cost_usd, estimated) VALUES ($1,$2,$3,$4,true)', [iv.id, 'veo_usd', dur, usd]);
                   return id as string;
                 });
@@ -436,17 +441,18 @@ export async function renderVeoVideo(job: any, { db, progress }: Parameters<Hand
         const tr = await transcribe(video, c.text, dur);
         if (!tr.checked) abort ??= new PermanentError('A verificação dos clipes (transcrição) falhou: o trabalho parou para não pagar clipes que não se podem verificar. Os clipes pagos ficam guardados e são verificados na próxima geração.');
         const j = judge(c, tr.words, tr.checked, tr.text);
-        const meta = { chunkKey: c.key, segmentId: c.seg.id, role: c.seg.role, text: c.text, attempt: atts.length + 1, dur, billedSec: mock ? 0 : dur, words: tr.words, checked: tr.checked, ...j, model: VEO_MODEL, mock };
+        const meta = { chunkKey: c.key, segmentId: c.seg.id, role: c.seg.role, text: c.text, attempt: atts.length + 1, dur, billedSec: mock ? 0 : dur, words: tr.words, checked: tr.checked, ...j, model: opModel, usdPerSec: opPrice, mock };
         const assetId = await saveAsset(db, { interviewId: iv.id, kind: 'veo_clip', mime: 'video/mp4', ext: 'mp4', data: video, durationMs: dur * 1000, meta });
         if (opId) await db.query(`UPDATE veo_ops SET state='done' WHERE id=$1`, [opId]);
         const a = await db.one('SELECT storage_key FROM assets WHERE id=$1', [assetId]);
-        atts.push({ assetId, storageKey: a.storage_key, words: tr.words, heard: j.heard, checked: tr.checked, edits: j.edits, hard: j.hard, dur });
+        atts.push({ assetId, storageKey: a.storage_key, words: tr.words, heard: j.heard, checked: tr.checked, edits: j.edits, hard: j.hard, dur, usdPerSec: opPrice });
         lastReason = 'mismatch';
       } catch (e: any) {
         const m = String(e?.message ?? e);
         if (e instanceof VeoCancelled || abort) break;
-        if (isKeyRejected(m)) { abort = new PermanentError(`A Google recusou a chave: ${m.slice(0, 200)}`); break; }
+        if (isKeyRejected(m)) { abort = new PermanentError(`A Google recusou as credenciais do Veo (conta de serviço do Vertex AI ou chave da Gemini API, em Definições → Google): ${m.slice(0, 200)}`); break; }
         if (e instanceof VeoQuotaError) { abort = new PermanentError(`${m} Os clipes já pagos ficam guardados e são reaproveitados.`); break; }
+        if (e instanceof VeoUnsupported) { abort = new PermanentError(m); break; } // o modelo escolhido recusa o pedido: não adianta insistir
         console.error(`[veo] pedaço ${c.seg.id}/${c.k} falhou: ${m.slice(0, 300)}`);
         lastReason = 'google';
         if (e instanceof VeoBusy) {
@@ -553,10 +559,10 @@ export async function renderVeoVideo(job: any, { db, progress }: Parameters<Hand
     return { segmentId: c.seg.id, role: c.seg.role, expected: c.text, heard: best?.heard ?? '', checked: !!best?.checked, edits: best?.edits ?? null, ok: !!chosen[i], attempts: attemptsOf[i].length, used: veoSegs.has(c.seg.id), problem, cause: capCause.get(c.key) ?? null };
   });
   const uniq = new Map<string, Attempt[]>(chunks.map((c, i) => [c.key, attemptsOf[i]]));
-  const costUsd = mock ? 0 : [...uniq.values()].flat().reduce((x, a) => x + a.dur * VEO_PRICE_PER_SEC, 0);
+  const costUsd = mock ? 0 : [...uniq.values()].flat().reduce((x, a) => x + a.dur * a.usdPerSec, 0);
   await progress(94, 100, 'A guardar o vídeo');
   const usedRoles = new Set(segs.filter(s => veoSegs.has(s.id)).map(s => s.role));
-  const meta = { engine: 'veo', model: VEO_MODEL, lang, guestPhoto: !!guestPhoto, hostPhoto: !!hostPhoto, guestAiVideo: usedRoles.has('guest'), hostAiVideo: usedRoles.has('host'),
+  const meta = { engine: 'veo', model: tierModel, tier, usdPerSec: tierPrice, backend: veoBackend(), lang, guestPhoto: !!guestPhoto, hostPhoto: !!hostPhoto, guestAiVideo: usedRoles.has('guest'), hostAiVideo: usedRoles.has('host'),
     veoClips: chunks.length, veoSegments: veoSegs.size, fallbackSegments: fallbackSegs, generatedClips: generated, spentUsd: Math.max(0, spentUsd - failedUsd), failedUsd, veoUsd: costUsd,
     googleBusy: fidelity.some(f => f.problem === 'busy' || f.problem === 'busycap'),
     fidelityIssues: fidelity.filter(f => !f.ok).length, fidelity, mock };
@@ -603,4 +609,5 @@ export const chunkProblem = (chosen: boolean, hasChecked: boolean, anyUnchecked:
 export const VEO_ONLY_PREVIEW = 'O vídeo do Google Veo só se gera para um episódio em pré-visualização (antes da primeira publicação), para ser visto e aprovado. Para uma nova versão, regenere o guião ou recomece a produção.';
 export const VEO_CHANGES = 'O convidado pediu alterações a esta versão: reveja o guião, aprove-o e gere um episódio novo antes do vídeo do Google Veo.';
 export const VEO_BUSY = 'O Google Veo está com procura elevada e recusou vários clipes seguidos: tente gerar de novo mais tarde. Os clipes já obtidos ficam guardados e são reaproveitados; as operações que falharam normalmente não são cobradas.';
+export const VEO_NO_CREDENTIALS = 'Falta a conta de serviço do Vertex AI (ou a chave da Gemini API) em Definições → Google.';
 export const VEO_SCRIPT_REPLACED = 'O guião deste episódio foi substituído: aprove o guião revisto e gere o episódio de novo antes do vídeo do Google Veo.';
