@@ -8,8 +8,8 @@
   };
   PE.fmt = (s) => Math.floor(s / 60) + ':' + String(Math.floor(s % 60)).padStart(2, '0');
 
-  /** Pede o microfone SÓ quando chamado a partir de um gesto do utilizador. */
-  PE.startRecording = async function (onTick, maxSec) {
+  /** Pede o microfone SÓ quando chamado a partir de um gesto do utilizador. Ao chegar a maxSec pára e avisa (onLimit). */
+  PE.startRecording = async function (onTick, maxSec, onLimit) {
     if (!navigator.mediaDevices || !window.MediaRecorder) throw Object.assign(new Error('unsupported'), { code: 'none' });
     let stream;
     try {
@@ -37,7 +37,7 @@
     timer = setInterval(() => {
       const s = (Date.now() - t0) / 1000;
       onTick && onTick(s);
-      if (maxSec && s >= maxSec && mr.state !== 'inactive') mr.stop();
+      if (maxSec && s >= maxSec && mr.state !== 'inactive') { mr.stop(); if (onLimit) setTimeout(onLimit, 0); }
     }, 250);
     return { stop: () => { if (mr.state !== 'inactive') mr.stop(); return done; }, wasInterrupted: () => interrupted, seconds: () => (Date.now() - t0) / 1000 };
   };
@@ -51,7 +51,7 @@
         const r = await fetch(url, { method: 'POST', credentials: 'same-origin', headers: Object.assign({ 'Content-Type': (blob.type || 'application/octet-stream').split(';')[0], 'X-Upload-Id': id }, extra || {}), body: blob });
         const j = await r.json().catch(() => ({}));
         if (r.ok && j.ok) return j;
-        if (r.status >= 400 && r.status < 500 && r.status !== 429) throw Object.assign(new Error(j.error || 'rejected'), { permanent: true, code: j.error });
+        if (r.status >= 400 && r.status < 500 && r.status !== 429) throw Object.assign(new Error(j.error || 'rejected'), { permanent: true, code: j.error, remainingSec: j.remainingSec, serverMessage: j.message });
         last = new Error('http ' + r.status);
       } catch (e) { if (e.permanent) throw e; last = e; }
       await new Promise((res) => setTimeout(res, 800 * 2 ** i));

@@ -11,6 +11,7 @@ import { createInvitation } from '../invites.ts';
 import { aiAvailable, readQuestion, READING_VOICES } from '../ai/openai.ts';
 import { storage } from '../storage.ts';
 import { inEntity, entityOfInterview } from '../settings.ts';
+import { answeredMs, secondsLeft, mmss, LIMIT_SLACK_MS } from '../limits.ts';
 
 const H = { 'Content-Type': 'text/html; charset=utf-8' };
 
@@ -130,8 +131,10 @@ ${iv.objective_shared && iv.objective_text ? `<h2>${esc(d.objective)}</h2><p>${e
     }
     const qs = await db.query(`SELECT q.*, a.status FROM questions q LEFT JOIN answers a ON a.question_id=q.id WHERE q.interview_id=$1 ORDER BY q.position`, [iv.id]);
     const next = qs.find((q: any) => !q.status) ?? qs[0];
+    const left = iv.answer_limit_sec == null ? null : secondsLeft(iv.answer_limit_sec, await answeredMs(db, iv.id));
     return gpage(reply, lang, iv.title, `<h1>${esc(iv.title)}</h1>
 ${iv.objective_shared && iv.objective_text ? `<p>${esc(iv.objective_text)}</p>` : ''}
+${left != null ? `<p class="hint sans">${esc(d.answerTime(mmss(iv.answer_limit_sec), mmss(left)))}</p>` : ''}
 <ol class="sans" style="padding-left:20px">${qs.map((q: any) => `<li style="margin:8px 0"><a href="/entrevista/p/${q.position}">${esc(q.text) || '…'}</a> ${q.status === 'answered' ? pill(d.answered, 'ok') : q.status === 'refused' ? pill('—', 'warn') : ''}</li>`).join('')}</ol>
 <p><a class="btn accent" style="width:100%;text-align:center" href="/entrevista/p/${next.position}">${esc(d.continue)}</a></p>
 <p><a href="/entrevista/fotos">${esc(d.photos)}</a> · <a href="/entrevista/rever">${esc(d.review)}</a></p>`);
@@ -156,19 +159,26 @@ ${iv.objective_shared && iv.objective_text ? `<p>${esc(iv.objective_text)}</p>` 
     const n = Math.max(1, Math.min(total, parseInt((req.params as any).n) || 1));
     const q = await db.one('SELECT * FROM questions WHERE interview_id=$1 AND position=$2', [iv.id, n]);
     if (!q) return reply.redirect('/entrevista');
-    const ans = await db.one(`SELECT a.*, t.asset_id FROM answers a LEFT JOIN answer_takes t ON t.id=a.selected_take_id WHERE a.question_id=$1`, [q.id]);
+    const ans = await db.one(`SELECT a.*, t.asset_id, ast.duration_ms AS take_ms FROM answers a LEFT JOIN answer_takes t ON t.id=a.selected_take_id LEFT JOIN assets ast ON ast.id=t.asset_id WHERE a.question_id=$1`, [q.id]);
     const nextHref = n < total ? `/entrevista/p/${n + 1}` : '/entrevista/fotos';
-    const msg = JSON.stringify({ micDenied: d.micDenied, micNone: d.micNone, empty: d.empty, silent: d.silent, tooLong: d.tooLong, stLocal: d.stLocal, stUp: d.stUp, stSaved: d.stSaved, stFail: d.stFail, retry: d.retry, record: d.record, stop: d.stop, redo: d.redo, maxSec: config.limits.maxAnswerSeconds });
+    // Tempo total da entrevista: «base» é o que esta resposta pode usar (uma nova gravação substitui a atual); null = sem limite.
+    const others = iv.answer_limit_sec == null ? 0 : await answeredMs(db, iv.id, q.id);
+    const base = secondsLeft(iv.answer_limit_sec, others);
+    const savedMs = ans?.asset_id ? Number(ans.take_ms ?? 0) : 0;
+    const left = secondsLeft(iv.answer_limit_sec, others + savedMs);
+    const noTime = base != null && base < 1;
+    const msg = JSON.stringify({ micDenied: d.micDenied, micNone: d.micNone, empty: d.empty, silent: d.silent, tooLong: d.tooLong, stLocal: d.stLocal, stUp: d.stUp, stSaved: d.stSaved, stFail: d.stFail, retry: d.retry, record: d.record, stop: d.stop, redo: d.redo,
+      overTotal: d.overTotal, noTimeLeft: d.noTimeLeft, limitReached: d.limitReached, maxSec: base == null ? config.limits.maxAnswerSeconds : Math.min(config.limits.maxAnswerSeconds, base), base, saved: Math.round(savedMs / 1000) });
     return gpage(reply, lang, `${d.question} ${n}`, `<p class="qnum">${esc(d.question)} ${n} ${esc(d.of)} ${total}${q.followup ? ' · +' : ''}</p>
 <h1 style="font-size:1.6rem">${esc(q.text) || ''}</h1>
 ${q.audio_asset_id ? `<p><audio controls preload="none" src="/api/g/media/${q.audio_asset_id}"></audio></p>` : ''}
 <p><button type="button" class="ghost" id="listen" data-q="${q.id}" data-text="${esc(q.text)}" data-lang="${lang}">🔊 ${esc(d.listen)}</button>${q.audio_asset_id ? '' : `<br><span class="hint">${esc(d.listenSynth)}</span>`}</p>
 <div class="card"><div class="rec" id="guestrec" data-upload="/api/g/respostas/${q.id}" data-msg='${esc(msg)}'>
-<div class="timer" id="timer" aria-live="off">0:00</div><button type="button" id="recBtn" class="recbtn" aria-label="${esc(d.record)}">${esc(d.record)}</button>
+<div class="timer" id="timer" aria-live="off">0:00</div>${left != null ? `<p class="sans" id="left" style="margin:0">${esc(d.timeLeft)} <strong>${mmss(left)}</strong> <span class="hint">${esc(d.timeLeftNote)}</span></p>` : ''}<button type="button" id="recBtn" class="recbtn" aria-label="${esc(d.record)}" ${noTime ? 'disabled' : ''}>${esc(d.record)}</button>
 <div id="review" ${ans?.asset_id ? '' : 'hidden'} style="width:100%"><audio controls id="player" preload="none" style="width:100%" ${ans?.asset_id ? `src="/api/g/media/${ans.asset_id}"` : ''}></audio></div>
-<div class="status" id="st" role="status" aria-live="polite">${ans?.asset_id ? esc(d.stSaved) : ans?.status === 'refused' ? esc(d.refused) : ''}</div>
-<div class="row"><button type="button" class="ghost" id="redoBtn" ${ans?.asset_id ? '' : 'hidden'}>${esc(d.redo)}</button></div>
-<details><summary class="sans">${esc(d.uploadOwn)}</summary><input type="file" id="fileIn" accept="audio/*"></details></div></div>
+<div class="status" id="st" role="status" aria-live="polite">${noTime ? esc(d.noTimeLeft) : ans?.asset_id ? esc(d.stSaved) : ans?.status === 'refused' ? esc(d.refused) : ''}</div>
+<div class="row"><button type="button" class="ghost" id="redoBtn" ${ans?.asset_id && !noTime ? '' : 'hidden'}>${esc(d.redo)}</button></div>
+<details><summary class="sans">${esc(d.uploadOwn)}</summary><input type="file" id="fileIn" accept="audio/*" ${noTime ? 'disabled' : ''}></details></div></div>
 <p class="hint">${esc(d.otherAudio)}</p>
 <p><a id="next" class="btn accent" style="width:100%;text-align:center;${ans ? '' : 'pointer-events:none;opacity:.5'}" href="${nextHref}" aria-disabled="${ans ? 'false' : 'true'}">${esc(d.confirm)}</a></p>
 <form method="post" action="/api/g/respostas/${q.id}/recusar-form"><p><button class="ghost" style="width:100%">${esc(d.refuse)}</button></p></form>
@@ -185,24 +195,43 @@ ${q.audio_asset_id ? `<p><audio controls preload="none" src="/api/g/media/${q.au
     const upId = String(req.headers['x-upload-id'] ?? '').slice(0, 64);
     if (upId) {
       const dup = await db.one(`SELECT t.id, a.duration_ms FROM answer_takes t JOIN assets a ON a.id=t.asset_id JOIN answers an ON an.id=t.answer_id WHERE an.question_id=$1 AND a.meta->>'uploadId'=$2`, [q.id, upId]);
-      if (dup) return { ok: true, takeId: dup.id, durationMs: dup.duration_ms, duplicate: true };
+      if (dup) return { ok: true, takeId: dup.id, durationMs: dup.duration_ms, duplicate: true, remainingSec: iv.answer_limit_sec == null ? null : secondsLeft(iv.answer_limit_sec, await answeredMs(db, iv.id)) };
     }
     const data = req.body as Buffer;
     const kind = Buffer.isBuffer(data) ? sniff(data) : null;
     if (!kind || kind.kind !== 'audio') return reply.code(415).send({ error: 'format' });
     const p = await probeAudio(data, kind.ext).catch((e: any) => { req.log.error({ err: String(e?.message ?? e) }, 'probe de áudio falhou'); return { ok: false, durationMs: 0, silent: true }; });
     if (!p.ok || p.durationMs < 400) { req.log.warn({ bytes: data.length, mime: kind.mime, ok: p.ok, durationMs: p.durationMs }, 'resposta recusada: áudio vazio ou ilegível'); return reply.code(422).send({ error: 'empty' }); }
-    if (p.durationMs > config.limits.maxAnswerSeconds * 1000 + 2000) return reply.code(422).send({ error: 'tooLong' });
+    if (p.durationMs > config.limits.maxAnswerSeconds * 1000 + LIMIT_SLACK_MS) return reply.code(422).send({ error: 'tooLong' });
+    // Tempo total das respostas (fixado no convite): a nova gravação substitui a resposta atual desta pergunta.
+    const over = (limitSec: number | null, othersMs: number) => limitSec != null && othersMs + p.durationMs > limitSec * 1000 + LIMIT_SLACK_MS;
+    const overTotal = (limitSec: number, othersMs: number) => {
+      const remainingSec = secondsLeft(limitSec, othersMs)!;
+      return reply.code(422).send({ error: 'overTotal', remainingSec, message: t(normLang(iv.interaction_lang)).overTotal.replace('{t}', mmss(remainingSec)) });
+    };
+    if (iv.answer_limit_sec != null) { // verificação prévia, para não guardar um ficheiro que seria recusado
+      const othersMs = await answeredMs(db, iv.id, q.id);
+      if (over(iv.answer_limit_sec, othersMs)) return overTotal(iv.answer_limit_sec, othersMs);
+    }
     const assetId = await saveAsset(db, { interviewId: iv.id, kind: 'answer_audio', mime: kind.mime, ext: kind.ext, data, durationMs: p.durationMs, meta: { uploadId: upId || null, via: String(req.headers['x-upload-via'] ?? 'recording') } });
-    const take = await db.tx(async tx => {
+    const r = await db.tx(async tx => {
+      // Soma de todas as respostas com a entrevista bloqueada: gravações em paralelo (ou uma pergunta adicional) não passam o limite.
+      const cur = await tx.one('SELECT answer_limit_sec FROM interviews WHERE id=$1 FOR UPDATE', [iv.id]);
+      const othersMs = cur.answer_limit_sec == null ? 0 : await answeredMs(tx, iv.id, q.id);
+      if (over(cur.answer_limit_sec, othersMs)) return { refused: { limitSec: cur.answer_limit_sec as number, othersMs } };
       const ans = await tx.one(`INSERT INTO answers(interview_id, question_id, status) VALUES ($1,$2,'answered') ON CONFLICT (question_id) DO UPDATE SET status='answered', updated_at=now() RETURNING id`, [iv.id, q.id]);
       const tk = await tx.one(`INSERT INTO answer_takes(answer_id, asset_id, uploaded_via) VALUES ($1,$2,$3) RETURNING id`, [ans.id, assetId, String(req.headers['x-upload-via'] ?? 'recording') === 'upload' ? 'upload' : 'recording']);
       await tx.query('UPDATE answers SET selected_take_id=$2 WHERE id=$1', [ans.id, tk.id]);
-      return tk;
+      return { take: tk, remainingSec: secondsLeft(cur.answer_limit_sec, othersMs + p.durationMs) };
     });
+    if (r.refused) { // o ficheiro não chega a ser usado: sai do armazenamento
+      const a = await db.one('UPDATE assets SET deleted_at=now() WHERE id=$1 RETURNING storage_key', [assetId]);
+      if (a) await storage.remove(a.storage_key).catch(() => {});
+      return overTotal(r.refused.limitSec, r.refused.othersMs);
+    }
     // Resposta alterada depois de guião/episódio aprovado: invalida derivados (sem apagar versões).
     await invalidateDerived(db, iv.id);
-    return { ok: true, takeId: take.id, assetId, durationMs: p.durationMs, silent: p.silent };
+    return { ok: true, takeId: r.take.id, assetId, durationMs: p.durationMs, silent: p.silent, remainingSec: r.remainingSec };
   });
 
   const refuse = async (iv: any, qid: string) => {
