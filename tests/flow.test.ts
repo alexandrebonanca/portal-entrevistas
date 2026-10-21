@@ -66,7 +66,9 @@ test('criar entrevista, perguntas e convite', async () => {
   const bad = await post(`/entrevistas/${ivId}/convidar`, {}, owner);
   assert.match(bad.headers.location as string, /convidar$/);
   assert.equal((await db.one('SELECT collection_status s FROM interviews WHERE id=$1', [ivId])).s, 'draft');
-  await post(`/entrevistas/${ivId}/guardar`, { title: 'Fibra ótica em Portugal', objective_text: 'Perceber o mercado', objective_shared: '1', host_name: 'Ana', guest_name: 'Rui', guest_email: 'rui@example.com', interaction_lang: 'en', answer_lang: 'auto', planned_visibility: 'unlisted', subtitle_langs: ['en', 'pt-PT'], review_policy: 'guest_preview' }, owner);
+  await post(`/entrevistas/${ivId}/guardar`, { title: 'Fibra ótica em Portugal', objective_text: 'Perceber o mercado', objective_shared: '1', host_name: 'Ana', guest_name: 'Rui', host_title: '  Editor,   Lisbon ', guest_title: 'Network engineer', guest_email: 'rui@example.com', interaction_lang: 'en', answer_lang: 'auto', planned_visibility: 'unlisted', subtitle_langs: ['en', 'pt-PT'], review_policy: 'guest_preview' }, owner);
+  assert.deepEqual({ ...(await db.one('SELECT host_title, guest_title FROM interviews WHERE id=$1', [ivId])) }, { host_title: 'Editor, Lisbon', guest_title: 'Network engineer' }, 'funções do rodapé do vídeo');
+  assert.match((await get(`/entrevistas/${ivId}/editar`, owner)).body, /name="guest_title"[^>]*value="Network engineer"/);
   const ok = await post(`/entrevistas/${ivId}/convidar`, {}, owner);
   assert.match(ok.headers.location as string, /ok=/);
   // clique duplo: não cria segundo convite
@@ -312,8 +314,12 @@ test('vozes escolhidas, agradecimento final, vídeo MP4 e galeria', async () => 
   assert.match(String(dl.headers['content-disposition']), /attachment; filename=".+\.mp4"/);
   assert.equal(dl.rawPayload.subarray(4, 8).toString('latin1'), 'ftyp', 'MP4 válido');
   assert.equal((await get(`/entrevistas/${ivId}/episodio/${ep.id}/video.mp4`)).statusCode, 302, 'sem sessão não descarrega');
-  const meta = (await db.one('SELECT meta FROM assets WHERE id=$1', [ep2.video_asset_id])).meta;
+  const vrow = await db.one('SELECT meta, duration_ms FROM assets WHERE id=$1', [ep2.video_asset_id]), meta = vrow.meta;
   assert.equal(meta.guestPhoto, false, 'sem autorização de publicação de fotografias, a do convidado não entra');
+  // grafismo em todos os planos (sem IA): cartões de título e final, rodapés dos dois e um capítulo por pergunta
+  assert.deepEqual(meta.graphics, { titleCard: true, endCard: true, lowerThirds: 2, chapters: ep.chapters.length });
+  assert.ok(ep.chapters.length > 0);
+  assert.equal(vrow.duration_ms, Math.round(ep.duration_ms / 40) * 40 + 8000, 'episódio + 4 s do cartão de título + 4 s do cartão final');
 
   // galeria: só episódios públicos e com autorização do entrevistador
   await db.query(`UPDATE episodes SET status='published', visibility='unlisted', withdrawn_at=NULL WHERE id=$1`, [ep.id]);
@@ -461,6 +467,7 @@ test('vídeo com o Google Veo: autorização própria, som dos clipes, verifica�
   let ep2 = await db.one('SELECT video_asset_id, video_lang FROM episodes WHERE id=$1', [ep.id]);
   const meta = (await db.one('SELECT meta, duration_ms FROM assets WHERE id=$1', [ep2.video_asset_id])).meta;
   assert.equal(meta.engine, 'veo'); assert.ok(meta.veoClips > 0); assert.equal(meta.generatedClips, meta.veoClips);
+  assert.deepEqual(meta.graphics, { titleCard: true, endCard: true, lowerThirds: 2, chapters: ep.chapters.length }, 'o mesmo grafismo no vídeo animado');
   assert.equal(meta.hostAiVideo, true); assert.equal(meta.guestAiVideo, true); assert.deepEqual(meta.fallbackSegments, []);
   assert.equal(meta.fidelity.length, meta.veoClips);
   assert.equal((await db.one(`SELECT count(*)::int n FROM assets WHERE interview_id=$1 AND kind='veo_clip'`, [ivId])).n, meta.veoClips);

@@ -5,6 +5,7 @@ import { saveAsset, hasAudioStream } from './media.ts';
 import { transcribeClip, translateSubtitleCues, aiAvailable, type Word } from './ai/openai.ts';
 import { renderBases, subtitleFrame, encodeComposite, buildAudioTrack, mockTalkingClip, type Part, type Shot, type Scene, type AudioPiece } from './video.ts';
 import { cuesFromWords } from './subtitles.ts';
+import { peopleOf, cardBackground, titleCard, endCard, chapterTitles, planGraphics, graphicsOverlays, graphicsMeta, TITLE_CARD_MS, END_CARD_MS, type GfxSpan } from './graphics.ts';
 import { veoSubmit, veoAwait, veoEpisodePrompt, VeoQuotaError, VeoCancelled, VeoBusy, VeoFiltered, VeoOpError, VeoUnsupported, VeoCredsMissing, isKeyRejected, opOfCurrentCreds, veoTier, veoModel, veoBackend, veoConfigured, veoCredsScope, veoScopeId, veoPricePerSec, veoPriceOfModel, veoKeyModel, veoLabel, tierOfModel, type VeoTier } from './talking.ts';
 import { ownsAny, entityOfInterview, VEO_CRED_KEYS } from './settings.ts';
 import { PermanentError, JobPaused, type Handler } from './jobs.ts';
@@ -518,8 +519,8 @@ export async function renderVeoVideo(job: any, { db, progress }: Parameters<Hand
   if (!cover || !audio) throw new PermanentError('Capa ou áudio do episódio em falta');
   const wantLang = quote ? quote.lang : job.input.lang;
   const lang: string | null = wantLang && ep.subtitles?.[wantLang] ? wantLang : null;
-  const names = { host: iv.host_name || 'Host', guest: iv.guest_name || 'Guest' };
-  const bases = await renderBases({ cover, title: ep.title, brand: config.brand, host: { name: names.host, photo: plan.hostPhoto }, guest: { name: names.guest, photo: plan.guestPhoto } });
+  const people = peopleOf(iv);
+  const bases = await renderBases({ cover, title: ep.title, brand: config.brand, host: { name: people.host.name || 'Host', role: people.host.role, photo: plan.hostPhoto }, guest: { name: people.guest.name || 'Guest', role: people.guest.role, photo: plan.guestPhoto } });
   const { default: ff } = await import('@ffmpeg-installer/ffmpeg');
   const ffmpeg = process.env.FFMPEG_PATH || ff.path;
   const personNameSet = personNames([iv.host_name ?? '', iv.guest_name ?? '']);
@@ -929,7 +930,8 @@ export async function renderVeoVideo(job: any, { db, progress }: Parameters<Hand
     throw new PermanentError(`Nenhuma fala ficou animada e a Google não devolveu nenhum clipe (${why || 'sem falas a animar'}): o vídeo não foi ligado ao episódio e as aprovações mantêm-se.${quote ? ' Os créditos cativos voltam todos ao saldo.' : ''}`);
   }
 
-  // 4. Linha temporal: aviso inicial (capa + voz do episódio), falas do Veo, reserva em imagem fixa, cartão final.
+  // 4. Linha temporal: aviso inicial (capa + voz do episódio), cartão de título, falas do Veo, reserva em imagem fixa e
+  // cartão final. Os cartões têm silêncio; o grafismo (rodapés e capítulos) segue as falas no tempo do vídeo.
   const parts: Part[] = [], audioPieces: AudioPiece[] = [];
   const sceneOf = new Map<Part, Scene>();
   type C = { id: string; startMs: number; endMs: number; text: string };
@@ -937,38 +939,48 @@ export async function renderVeoVideo(job: any, { db, progress }: Parameters<Hand
   const epCues: any[] = lang ? ep.subtitles[lang] : [];
   const stillScene = (s: Seg): Scene => (s.kind === 'disclosure' || s.kind === 'editorial_outro' ? 'cover' : s.kind === 'editorial_intro' ? 'studio' : s.role);
   const veoSegs = new Set<string>(), fallbackSegs: string[] = [];
+  const bgs = await cardBackground(cover);
+  const cards = { title: await titleCard(bgs, ep.title, people.guest.name), end: await endCard(bgs) };
+  const spans: GfxSpan[] = [];
   let t = 0;
+  // O cartão de título entra logo a seguir ao aviso inicial (a introdução animada, quando existir, fica entre os dois).
+  const addCard = (card: typeof cards.title, ms: number) => { parts.push({ kind: 'card', startMs: t, endMs: t + ms, card }); audioPieces.push({ durMs: ms }); t += ms; };
+  if (!plan.segs.some(s => s.kind === 'disclosure')) addCard(cards.title, TITLE_CARD_MS);
   for (const s of plan.segs) {
-    const o = falaOut.get(s.id);
+    const o = falaOut.get(s.id), t0 = t;
     if (!o?.clips) {
       if (o) fallbackSegs.push(s.id);
       const from = s === plan.segs[0] ? 0 : s.startMs, dur = snap(s.endMs - from);
-      if (dur < 40) continue;
-      for (const c of epCues) if (c.endMs > from && c.startMs < from + dur) fixedCues.push({ id: c.id, startMs: Math.max(t, t + c.startMs - from), endMs: Math.min(t + dur, t + c.endMs - from), text: c.text });
-      const still: Part = { kind: 'still', startMs: t, endMs: t + dur, shots: [] };
-      parts.push(still); sceneOf.set(still, stillScene(s));
-      audioPieces.push({ durMs: dur, src: audio, ext: 'mp3', offsetMs: from });
-      t += dur;
-      continue;
+      if (dur >= 40) {
+        for (const c of epCues) if (c.endMs > from && c.startMs < from + dur) fixedCues.push({ id: c.id, startMs: Math.max(t, t + c.startMs - from), endMs: Math.min(t + dur, t + c.endMs - from), text: c.text });
+        const still: Part = { kind: 'still', startMs: t, endMs: t + dur, shots: [] };
+        parts.push(still); sceneOf.set(still, stillScene(s));
+        audioPieces.push({ durMs: dur, src: audio, ext: 'mp3', offsetMs: from });
+        t += dur;
+      }
+    } else {
+      veoSegs.add(s.id);
+      for (const { c, at } of o.clips) {
+        const clipMs = at.dur * 1000, w = at.words;
+        const { a, b } = trimWindow(w, clipMs, c.text);
+        const dur = b - a;
+        const cues = cuesFromWords(w, { id: `${s.id}-${c.k}`, role: s.role, text: at.heard, startMs: t - a, durationMs: clipMs }, 'en');
+        for (const q of cues) if (q.endMs > t && q.startMs < t + dur) veoCues.push({ id: q.id, startMs: Math.max(t, q.startMs), endMs: Math.min(t + dur, q.endMs), text: q.text });
+        const load = () => storage.get(at.storageKey);
+        parts.push({ kind: 'anim', startMs: t, endMs: t + dur, base: s.role === 'host' ? bases.animHost : bases.animGuest, clip: load, clipOffsetMs: a, notice: VEO_NOTICE, cues: [] });
+        audioPieces.push({ durMs: dur, src: load, ext: 'mp4', offsetMs: a });
+        t += dur;
+      }
     }
-    veoSegs.add(s.id);
-    for (const { c, at } of o.clips) {
-      const clipMs = at.dur * 1000, w = at.words;
-      const { a, b } = trimWindow(w, clipMs, c.text);
-      const dur = b - a;
-      const cues = cuesFromWords(w, { id: `${s.id}-${c.k}`, role: s.role, text: at.heard, startMs: t - a, durationMs: clipMs }, 'en');
-      for (const q of cues) if (q.endMs > t && q.startMs < t + dur) veoCues.push({ id: q.id, startMs: Math.max(t, q.startMs), endMs: Math.min(t + dur, q.endMs), text: q.text });
-      const load = () => storage.get(at.storageKey);
-      parts.push({ kind: 'anim', startMs: t, endMs: t + dur, base: s.role === 'host' ? bases.animHost : bases.animGuest, clip: load, clipOffsetMs: a, notice: VEO_NOTICE, who: { name: names[s.role], role: s.role === 'host' ? 'Host' : 'Guest' }, cues: [] });
-      audioPieces.push({ durMs: dur, src: load, ext: 'mp4', offsetMs: a });
-      t += dur;
-    }
+    if (t > t0) spans.push({ id: s.id, role: s.role, kind: s.kind, startMs: t0, endMs: t, personShot: !!o?.clips || stillScene(s) === s.role });
+    if (s.kind === 'disclosure') addCard(cards.title, TITLE_CARD_MS);
   }
-  if (parts[parts.length - 1]?.kind === 'anim') { // fecho na capa
-    const end: Part = { kind: 'still', startMs: t, endMs: t + 1600, shots: [] };
-    parts.push(end); sceneOf.set(end, 'cover');
-    audioPieces.push({ durMs: 1600 }); t += 1600;
-  }
+  // Cartão final (entra pelo preto, também depois de uma fala animada: substitui o fecho de 1,6 s na capa).
+  const speechEnd = t;
+  addCard(cards.end, END_CARD_MS);
+  const chap = chapterTitles(plan.segs, ep.chapters);
+  const gplan = planGraphics(spans, id => chap.get(id), speechEnd);
+  const overlays = await graphicsOverlays(gplan, people, !!lang);
 
   // 5. Legendas na língua escolhida: as do Veo seguem o que foi dito (traduzidas se preciso); as fixas vêm do episódio.
   if (lang && lang !== 'en' && veoCues.length) {
@@ -981,7 +993,7 @@ export async function renderVeoVideo(job: any, { db, progress }: Parameters<Hand
   for (const p of parts) {
     const inside = allCues.filter(c => c.endMs > p.startMs && c.startMs < p.endMs).map(c => ({ startMs: snap(Math.max(c.startMs, p.startMs)) - p.startMs, endMs: snap(Math.min(c.endMs, p.endMs)) - p.startMs, text: c.text })).filter(c => c.endMs > c.startMs);
     if (p.kind === 'anim') p.cues = inside;
-    else p.shots = stillShots(sceneOf.get(p) ?? 'cover', p.startMs, p.endMs, inside.map(c => ({ ...c, startMs: c.startMs + p.startMs, endMs: c.endMs + p.startMs })));
+    else if (p.kind === 'still') p.shots = stillShots(sceneOf.get(p) ?? 'cover', p.startMs, p.endMs, inside.map(c => ({ ...c, startMs: c.startMs + p.startMs, endMs: c.endMs + p.startMs })));
   }
 
   // 6. Som (dos clipes, codificado uma só vez em AAC) e montagem.
@@ -989,7 +1001,7 @@ export async function renderVeoVideo(job: any, { db, progress }: Parameters<Hand
   let track: Buffer | null = await buildAudioTrack(ffmpeg, audioPieces);
   await progress(80, 100, 'A montar o vídeo');
   const frameFor = (sh: Shot) => subtitleFrame((bases as any)[sh.scene], sh.text);
-  const mp4 = await encodeComposite(ffmpeg, parts, frameFor, track, async (i, n) => progress(80 + Math.round((i / n) * 12), 100, `A montar o vídeo (${i} de ${n} partes)`), 'm4a');
+  const mp4 = await encodeComposite(ffmpeg, parts, frameFor, track, async (i, n) => progress(80 + Math.round((i / n) * 12), 100, `A montar o vídeo (${i} de ${n} partes)`), 'm4a', overlays);
   track = null;
 
   const fidelity: any[] = [];
@@ -1017,7 +1029,7 @@ export async function renderVeoVideo(job: any, { db, progress }: Parameters<Hand
   const meta = { engine: 'veo', model: tierModel, tier, usdPerSec: tierPrice, backend: veoBackend(), lang, guestPhoto: !!plan.guestPhoto, hostPhoto: !!plan.hostPhoto, guestAiVideo: usedRoles.has('guest'), hostAiVideo: usedRoles.has('host'),
     veoClips: want.reduce((n, s) => n + (reused.get(s.id)?.length ?? s.chunks.length), 0), veoSegments: veoSegs.size, fallbackSegments: fallbackSegs, generatedClips: generated, spentUsd: Math.max(0, spentUsd - failedUsd), failedUsd, veoUsd: costUsd, clipModels,
     googleBusy: fidelity.some(f => f.problem === 'busy' || f.problem === 'busycap'), quoteId: quote?.id ?? null, rebuildOf, paidBy: quote ? 'credits' : entityPays ? 'entity' : rebuildOf ? 'rebuild' : 'internal',
-    fidelityIssues: fidelity.filter(f => !f.ok).length, fidelity, mock };
+    fidelityIssues: fidelity.filter(f => !f.ok).length, fidelity, mock, graphics: graphicsMeta(overlays, gplan) };
   const id = await saveAsset(db, { interviewId: iv.id, kind: 'episode_video', mime: 'video/mp4', ext: 'mp4', data: mp4, durationMs: t, meta });
   // Ligação ao episódio, fim das aprovações anteriores e liquidação do orçamento numa só transação, com as autorizações
   // lidas no próprio momento. As aprovações ficam presas ao vídeo que foi visto (approvals.video_asset_id).

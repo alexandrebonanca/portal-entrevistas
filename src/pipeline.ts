@@ -5,7 +5,8 @@ import { storage } from './storage.ts';
 import { sha256, slugify } from './lib.ts';
 import { saveAsset, assembleEpisode, probeAudio } from './media.ts';
 import { transcribeAudio, transcribeWords, prepareEnglishScript, translateSubtitleCues, synthesizeSpeech, coverBriefing, generateCoverBackground, episodeVoice, type ScriptSegment } from './ai/openai.ts';
-import { planShots, renderBases, subtitleFrame, encodeVideo, encodeComposite, splitParts, shotsWithin, sliceAudio, stillClip, type Part } from './video.ts';
+import { planShots, renderBases, subtitleFrame, encodeVideo, encodeComposite, splitParts, shotsWithin, sliceAudio, stillClip, buildAudioTrack, type Part } from './video.ts';
+import { photoTimeline, peopleOf } from './graphics.ts';
 import { lipsync, lipsyncMock, estimateLipsyncUsd } from './lipsync.ts';
 import { PROVIDERS, runProvider, signedAssetUrl } from './talking.ts';
 import { readQuestion, generateFictionalPortrait } from './ai/openai.ts';
@@ -247,7 +248,8 @@ export const handlers: Record<string, Handler> = {
     if (!cover || !audio) throw new PermanentError('Capa ou áudio do episódio em falta');
     const lang: string | null = job.input.lang && ep.subtitles?.[job.input.lang] ? job.input.lang : null;
     const shots = planShots(timing, ep.duration_ms, lang ? ep.subtitles[lang] : null);
-    const bases = await renderBases({ cover, title: ep.title, brand: config.brand, host: { name: iv.host_name || 'Host', photo: hostPhoto }, guest: { name: iv.guest_name || 'Guest', photo: guestPhoto } });
+    const people = peopleOf(iv);
+    const bases = await renderBases({ cover, title: ep.title, brand: config.brand, host: { name: people.host.name || 'Host', role: people.host.role, photo: hostPhoto }, guest: { name: people.guest.name || 'Guest', role: people.guest.role, photo: guestPhoto } });
     const { default: ff } = await import('@ffmpeg-installer/ffmpeg');
     const ffmpeg = process.env.FFMPEG_PATH || ff.path;
     const frameFor = (sh: any) => subtitleFrame((bases as any)[sh.scene], sh.text);
@@ -258,7 +260,8 @@ export const handlers: Record<string, Handler> = {
     const animGuest = !!job.input.animate && !!guestPhoto && ep.status === 'preview' && (await consent('animate_portrait'));
     const segs = timing.map((t: any, i: number) => ({ ...t, endMs: i + 1 < timing.length ? timing[i + 1].startMs : ep.duration_ms }))
       .filter((t: any) => !['disclosure', 'editorial_intro', 'editorial_outro'].includes(t.kind) && ((t.role === 'host' && animHost) || (t.role === 'guest' && animGuest)) && t.durationMs >= 800);
-    let mp4: Buffer, animated = 0, failed = 0, gpuUsd = 0, guestAnimN = 0;
+    let animated = 0, failed = 0, gpuUsd = 0, guestAnimN = 0;
+    let ok: { sg: any; clip: Buffer }[] = [];
     if (segs.length) {
       const clips: (Buffer | null)[] = new Array(segs.length).fill(null);
       let doneN = 0, next = 0;
@@ -288,29 +291,30 @@ export const handlers: Record<string, Handler> = {
         }
       };
       await Promise.all([worker(), worker(), worker()]);
-      const ok = segs.map((sg: any, k: number) => ({ sg, clip: clips[k] })).filter((x: any) => x.clip);
+      ok = segs.map((sg: any, k: number) => ({ sg, clip: clips[k]! })).filter((x: any) => x.clip);
       animated = ok.length; guestAnimN = ok.filter((x: any) => x.sg.role === 'guest').length;
-      const layout = splitParts(ok.map((x: any) => ({ startMs: x.sg.startMs, endMs: x.sg.endMs })), ep.duration_ms);
-      const cues = lang ? ep.subtitles[lang] as any[] : [];
-      const parts: Part[] = layout.map(l => {
-        if (l.kind === 'still') return { kind: 'still', startMs: l.startMs, endMs: l.endMs, shots: shotsWithin(shots, l.startMs, l.endMs) };
-        const x = ok[l.animIndex!];
-        return { kind: 'anim', startMs: l.startMs, endMs: l.endMs, base: x.sg.role === 'host' ? bases.animHost : bases.animGuest, clip: x.clip, who: x.sg.role === 'host' ? { name: iv.host_name || 'Host', role: 'Host' } : { name: iv.guest_name || 'Guest', role: 'Guest' },
-          cues: cues.filter(c => c.endMs > l.startMs && c.startMs < l.endMs).map(c => ({ startMs: c.startMs - l.startMs, endMs: Math.min(c.endMs, l.endMs) - l.startMs, text: c.text })) };
-      });
-      await progress(72, 100, 'A montar o vídeo');
-      mp4 = await encodeComposite(ffmpeg, parts, frameFor, audio, async (i, n) => progress(72 + Math.round((i / n) * 18), 100, `A montar o vídeo (${i} de ${n} partes)`));
       if (gpuUsd) await usage(db, iv.id, 'lipsync_usd', gpuUsd, gpuUsd);
-    } else {
-      await progress(10, 100, 'A desenhar os fotogramas com legendas');
-      mp4 = await encodeVideo(ffmpeg, shots, frameFor, audio,
-        async (i, n) => progress(10 + Math.round((i / n) * 60), 100, `A desenhar os fotogramas (${i} de ${n})`));
     }
+    // Partes no tempo do episódio (fixas e, com retratos animados, as falas animadas); depois os cartões (título a seguir
+    // ao aviso inicial e final), o som do episódio com silêncio nos cartões e o grafismo (rodapés e capítulos).
+    const layout = splitParts(ok.map(x => ({ startMs: x.sg.startMs, endMs: x.sg.endMs })), ep.duration_ms);
+    const cues = lang ? ep.subtitles[lang] as any[] : [];
+    const epParts: Part[] = layout.map(l => {
+      if (l.kind === 'still') return { kind: 'still', startMs: l.startMs, endMs: l.endMs, shots: shotsWithin(shots, l.startMs, l.endMs) };
+      const x = ok[l.animIndex!];
+      return { kind: 'anim', startMs: l.startMs, endMs: l.endMs, base: x.sg.role === 'host' ? bases.animHost : bases.animGuest, clip: x.clip,
+        cues: cues.filter(c => c.endMs > l.startMs && c.startMs < l.endMs).map(c => ({ startMs: c.startMs - l.startMs, endMs: Math.min(c.endMs, l.endMs) - l.startMs, text: c.text })) };
+    });
+    await progress(segs.length ? 72 : 10, 100, 'A preparar os cartões e o grafismo');
+    const tl = await photoTimeline({ parts: epParts, timing, durationMs: ep.duration_ms, audio, cover, title: ep.title, people, chapters: ep.chapters, animated: new Set(ok.map(x => x.sg.id)), subtitles: !!lang });
+    const track = await buildAudioTrack(ffmpeg, tl.audio);
+    const p0 = segs.length ? 74 : 14, span = segs.length ? 16 : 76;
+    const mp4 = await encodeComposite(ffmpeg, tl.parts, frameFor, track, async (i, n) => progress(p0 + Math.round((i / n) * span), 100, `A montar o vídeo (${i} de ${n} partes)`), 'm4a', tl.overlays);
     await progress(92, 100, 'A guardar o vídeo');
     // Por papel: quem tem de aprovar depende de quem aparece de facto animado.
     const guestAnimated = guestAnimN > 0, hostAnimated = animated - guestAnimN > 0;
-    const id = await saveAsset(db, { interviewId: iv.id, kind: 'episode_video', mime: 'video/mp4', ext: 'mp4', data: mp4, durationMs: ep.duration_ms,
-      meta: { lang, shots: shots.length, guestPhoto: !!guestPhoto, hostPhoto: !!hostPhoto, animatedSegments: animated, failedAnimations: failed, guestAnimated, hostAnimated, lipsyncUsd: gpuUsd } });
+    const id = await saveAsset(db, { interviewId: iv.id, kind: 'episode_video', mime: 'video/mp4', ext: 'mp4', data: mp4, durationMs: tl.totalMs,
+      meta: { lang, shots: shots.length, guestPhoto: !!guestPhoto, hostPhoto: !!hostPhoto, animatedSegments: animated, failedAnimations: failed, guestAnimated, hostAnimated, lipsyncUsd: gpuUsd, graphics: tl.meta } });
     // Ligação com as autorizações lidas no próprio momento: uma retirada durante a geração não volta a pôr o vídeo no ar,
     // e o vídeo só se liga a um episódio ainda em pré-visualização: publicado a meio da geração, o vídeo novo não entra
     // no ar sem nova aprovação (as aprovações ficam presas ao vídeo que foi visto).
