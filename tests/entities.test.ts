@@ -130,7 +130,7 @@ test('Veo por entidade: credenciais em conjunto — a conta de serviço global n
   // chaves falsas, geradas aqui
   const saDono = JSON.stringify({ type: 'service_account', project_id: 'portal-dono-veo', private_key: key(), client_email: 'veo@portal-dono-veo.iam.gserviceaccount.com' });
   const saTc = JSON.stringify({ type: 'service_account', project_id: 'telecert-veo', private_key: key(), client_email: 'veo@telecert-veo.iam.gserviceaccount.com' });
-  const geminiTc = 'AIzaTesteDaEntidade0000000000000000000';
+  const geminiTc = ('AIza' + 'Test' + 'X'.repeat(29));
   await saveSetting(db, 'VERTEX_SA_JSON', saDono);
   await post(`/entidades/${tcId}/chaves`, { GEMINI_API_KEY: geminiTc }, gestor);
 

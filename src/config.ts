@@ -33,6 +33,13 @@ export const config = {
     maxUploadMb: Number(env.MAX_UPLOAD_MB ?? 60),
     maxAnswerSeconds: Number(env.MAX_ANSWER_SECONDS ?? 300),
     maxQuestions: Number(env.MAX_QUESTIONS ?? 15),
+    // Por entrevista, quando o plano não o indica (o plano manda; o administrador não tem limite).
+    maxAnswerTotalSec: Number(env.MAX_ANSWER_TOTAL_SEC ?? 900),
+    // Áudio do entrevistador: cada pergunta gravada e o objetivo.
+    maxQuestionAudioSec: Number(env.MAX_QUESTION_AUDIO_SEC ?? 120),
+    maxObjectiveAudioSec: Number(env.MAX_OBJECTIVE_AUDIO_SEC ?? 300),
+    // Regenerações do guião e do episódio incluídas por entrevista; as seguintes custam 1 crédito.
+    includedRegenerations: Number(env.INCLUDED_REGENERATIONS ?? 3),
     inviteDays: Number(env.INVITE_DAYS ?? 14),
     resendCooldownSec: Number(env.RESEND_COOLDOWN_SEC ?? 120),
   },

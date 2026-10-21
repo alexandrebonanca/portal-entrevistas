@@ -8,7 +8,7 @@ export const ACTIVE_STATUSES = ['active', 'trialing', 'comped'];
 /** Estado da subscrição e quota de entrevistas do período corrente. Administradores não têm limite. */
 export async function quotaFor(db: Db, user: { id: string; role: string }) {
   if (user.role === 'admin') return { allowed: true, unlimited: true, used: 0, limit: Infinity, plan: null as any, sub: null as any, reason: '' };
-  const sub = await db.one(`SELECT s.*, p.name AS plan_name, p.interviews_per_month, p.price_cents FROM subscriptions s LEFT JOIN plans p ON p.id=s.plan_id WHERE s.user_id=$1`, [user.id]);
+  const sub = await db.one(`SELECT s.*, p.name AS plan_name, p.interviews_per_month, p.price_cents, p.max_answer_total_sec, p.max_questions FROM subscriptions s LEFT JOIN plans p ON p.id=s.plan_id WHERE s.user_id=$1`, [user.id]);
   if (!sub || !ACTIVE_STATUSES.includes(sub.status)) return { allowed: false, unlimited: false, used: 0, limit: 0, plan: null, sub, reason: 'no_subscription' };
   if (sub.current_period_end && new Date(sub.current_period_end) < new Date(Date.now() - 3 * 86400_000)) return { allowed: false, unlimited: false, used: 0, limit: 0, plan: sub, sub, reason: 'expired' };
   const now = new Date();

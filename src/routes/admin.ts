@@ -216,8 +216,8 @@ ${settingInput(d, S(d.key), d.options?.[0]?.[0] ?? '')}`).join('')}</div>`).join
 <div class="card"><h2 style="margin-top:0">Registo de utilizadores</h2><label class="check"><input type="checkbox" name="signups_open" value="1" ${signups ? 'checked' : ''}> Permitir que novos utilizadores se registem (e subscrevam um plano)</label>
 <label class="check"><input type="checkbox" name="ai_video_open" value="1" ${S('AI_VIDEO_OPEN') === '1' ? 'checked' : ''}> Permitir vídeo IA (Google Veo e retratos animados) a todos os entrevistadores, sem orçamento — pago pelas chaves do portal ou da entidade. Desligado: só o administrador o pede.</label></div>
 <p><button class="accent">Guardar definições</button></p></form>
-<div class="card"><h2 style="margin-top:0">Planos</h2><p class="hint sans">Alterar o preço afeta apenas novas subscrições; as existentes mantêm o preço contratado no Stripe.</p>
-${plans.map((p: any) => `<form method="post" action="/admin/planos/${esc(p.id)}" class="row" style="margin:8px 0"><strong style="min-width:90px">${esc(p.id)}</strong><input name="name" value="${esc(p.name)}" aria-label="Nome" style="width:140px"><input name="price" type="number" step="0.01" min="0" value="${(p.price_cents / 100).toFixed(2)}" aria-label="Preço mensal (EUR)" style="width:110px">€/mês<input name="limit" type="number" min="0" value="${p.interviews_per_month}" aria-label="Entrevistas por mês" style="width:90px">entrevistas/mês<label class="check" style="margin:0"><input type="checkbox" name="active" value="1" ${p.active ? 'checked' : ''}> ativo</label><button class="ghost">Guardar</button></form>`).join('')}</div>`);
+<div class="card"><h2 style="margin-top:0">Planos</h2><p class="hint sans">Alterar o preço afeta apenas novas subscrições; as existentes mantêm o preço contratado no Stripe. Os limites por entrevista (perguntas, incluindo as adicionais, e minutos de respostas do entrevistado) ficam fixos em cada entrevista no convite.</p>
+${plans.map((p: any) => `<form method="post" action="/admin/planos/${esc(p.id)}" class="row" style="margin:8px 0"><strong style="min-width:90px">${esc(p.id)}</strong><input name="name" value="${esc(p.name)}" aria-label="Nome" style="width:140px"><input name="price" type="number" step="0.01" min="0" value="${(p.price_cents / 100).toFixed(2)}" aria-label="Preço mensal (EUR)" style="width:110px">€/mês<input name="limit" type="number" min="0" value="${p.interviews_per_month}" aria-label="Entrevistas por mês" style="width:90px">entrevistas/mês<input name="max_questions" type="number" min="1" value="${p.max_questions}" aria-label="Perguntas por entrevista" style="width:80px">perguntas<input name="answer_min" type="number" min="1" step="1" value="${Math.round(p.max_answer_total_sec / 60)}" aria-label="Minutos de respostas por entrevista" style="width:80px">min de respostas<label class="check" style="margin:0"><input type="checkbox" name="active" value="1" ${p.active ? 'checked' : ''}> ativo</label><button class="ghost">Guardar</button></form>`).join('')}</div>`);
   });
 
   app.post('/admin/definicoes', async (req, reply) => {
@@ -257,8 +257,12 @@ ${plans.map((p: any) => `<form method="post" action="/admin/planos/${esc(p.id)}"
     if (!guard(req, reply)) return;
     const b = req.body as any;
     const cents = Math.round(parseFloat(String(b.price).replace(',', '.')) * 100), lim = parseInt(b.limit);
-    if (!Number.isFinite(cents) || cents < 0 || !Number.isFinite(lim) || lim < 0) return back(reply, '/admin/definicoes', undefined, 'Valores do plano inválidos.');
-    await db.query('UPDATE plans SET name=$2, price_cents=$3, interviews_per_month=$4, active=$5 WHERE id=$1', [(req.params as any).id, String(b.name ?? '').slice(0, 60) || 'Plano', cents, lim, !!b.active]);
+    // Limites por entrevista: em branco (ou ausentes) mantêm-se os atuais.
+    const maxQ = b.max_questions === undefined || b.max_questions === '' ? null : parseInt(b.max_questions);
+    const ansMin = b.answer_min === undefined || b.answer_min === '' ? null : parseInt(b.answer_min);
+    if (!Number.isFinite(cents) || cents < 0 || !Number.isFinite(lim) || lim < 0 || (maxQ !== null && !(maxQ >= 1)) || (ansMin !== null && !(ansMin >= 1))) return back(reply, '/admin/definicoes', undefined, 'Valores do plano inválidos.');
+    await db.query('UPDATE plans SET name=$2, price_cents=$3, interviews_per_month=$4, active=$5, max_questions=COALESCE($6, max_questions), max_answer_total_sec=COALESCE($7, max_answer_total_sec) WHERE id=$1',
+      [(req.params as any).id, String(b.name ?? '').slice(0, 60) || 'Plano', cents, lim, !!b.active, maxQ, ansMin === null ? null : ansMin * 60]);
     await audit(db, req.user!.email, 'admin.plan_updated', null, { plan: (req.params as any).id });
     return back(reply, '/admin/definicoes', 'Plano guardado.');
   });
