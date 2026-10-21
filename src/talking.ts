@@ -360,24 +360,31 @@ export async function veoCheck(): Promise<string> {
   const whose = !currentEntity() ? '' : veoCredsScope() === 'entity'
     ? ' Usa as credenciais Google desta entidade (as globais não se aplicam a ela).'
     : ' A entidade não tem credenciais Google próprias: o Veo usa as globais do portal.';
+  // Numa entidade sem credenciais próprias, o teste usa a conta de serviço global: o gestor da entidade fica a saber se
+  // funciona, mas não vê o email da conta nem o projeto do portal (nem nas mensagens da Google, que os podem repetir).
+  const shared = !!currentEntity() && veoCredsScope() === 'global';
   if (veoS('VERTEX_SA_JSON')) {
+    let cfg: ServiceAccount | null = null;
+    try { cfg = parseServiceAccount(veoS('VERTEX_SA_JSON')); } catch { /* o erro sai no pedido do token */ }
+    const scrub = (s: string) => (!shared ? s : [cfg?.client_email, cfg?.project_id].filter(Boolean).reduce((x, v) => x.split(v!).join('(portal)'), s).replace(/\b\d{6,}\b/g, '(portal)'));
     let tk: { token: string; sa: ServiceAccount };
-    try { tk = await vertexToken(); } catch (e: any) { throw new Error(String(e?.message ?? e).replace(/^Veo \d+:\s*/, '')); }
+    try { tk = await vertexToken(); } catch (e: any) { throw new Error(scrub(String(e?.message ?? e).replace(/^Veo \d+:\s*/, ''))); }
     const { token, sa } = tk, loc = vertexLocation(), model = veoModel(tier, 'vertex');
+    const who = shared ? 'global do portal' : sa.client_email, proj = shared ? 'Google do portal' : sa.project_id;
     const opName = `projects/${sa.project_id}/locations/${loc}/publishers/google/models/${model}/operations/00000000-0000-0000-0000-000000000000`;
     const r = await fetch(`${vertexModelUrl(sa.project_id, loc, model)}:fetchPredictOperation`, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ operationName: opName }) });
     const text = await r.text();
     let j: any = {};
     try { j = text ? JSON.parse(text) : {}; } catch { /* corpo não-JSON */ }
-    const gm = String(j?.error?.message ?? text).replace(/\s+/g, ' ').slice(0, 140);
-    if (r.status === 401) throw new Error(`a Google recusou o token da conta de serviço ${sa.client_email}: ${gm}`);
+    const gm = scrub(String(j?.error?.message ?? text).replace(/\s+/g, ' ').slice(0, 140));
+    if (r.status === 401) throw new Error(`a Google recusou o token da conta de serviço ${who}: ${gm}`);
     if (r.status === 403) throw new Error(/SERVICE_DISABLED|has not been used|is disabled/i.test(text)
-      ? `a Vertex AI API não está ativa no projeto ${sa.project_id}: ative-a na consola da Google Cloud e teste de novo.`
-      : `a conta de serviço ${sa.client_email} não tem acesso ao ${label} no projeto ${sa.project_id} (precisa da função «Vertex AI User»): ${gm}`);
-    if (r.status === 404 && /publisher model/i.test(gm) && !/operations\//.test(gm)) throw new Error(`o modelo ${model} não está disponível em ${loc} para o projeto ${sa.project_id}: ${gm}`);
+      ? `a Vertex AI API não está ativa no projeto ${proj}: ${shared ? 'avise o administrador do portal.' : 'ative-a na consola da Google Cloud e teste de novo.'}`
+      : `a conta de serviço ${who} não tem acesso ao ${label} no projeto ${proj} (precisa da função «Vertex AI User»): ${gm}`);
+    if (r.status === 404 && /publisher model/i.test(gm) && !/operations\//.test(gm)) throw new Error(`o modelo ${model} não está disponível em ${loc} para o projeto ${proj}: ${gm}`);
     if (r.status === 429 || r.status >= 500) throw new Error(`a Google respondeu ${r.status}; tente de novo daqui a pouco: ${gm}`);
     if (!r.ok && r.status !== 404 && r.status !== 400) throw new Error(`resposta inesperada da Google (${r.status}): ${gm}`);
-    return `Google (Vertex AI): conta de serviço aceite (${sa.client_email}, projeto ${sa.project_id}, ${loc}) e acesso ao ${label} (${model}) confirmado, sem gerar vídeo.`
+    return `Google (Vertex AI): conta de serviço ${shared ? `global do portal aceite (${loc})` : `aceite (${sa.client_email}, projeto ${sa.project_id}, ${loc})`} e acesso ao ${label} (${model}) confirmado, sem gerar vídeo.`
       + (tier === 'lite' ? ' O Lite está em pré-visualização e a ficha da Google contradiz-se sobre a imagem inicial: se o Vertex a recusar, a geração pára com uma mensagem clara e pode escolher o Fast.' : '')
       + (veoS('GEMINI_API_KEY') ? ' A chave Gemini fica guardada, mas o Veo usa o Vertex AI.' : '') + whose;
   }

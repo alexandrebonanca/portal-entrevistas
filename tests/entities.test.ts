@@ -178,6 +178,21 @@ test('Veo por entidade: credenciais em conjunto — a conta de serviço global n
     r = await post(`/entidades/${otherId}/testar/Google`, { VEO_TIER: '' }, other);
     msg = decodeURIComponent(r.headers.location as string);
     assert.match(msg, /Vertex AI/); assert.match(msg, /não tem credenciais Google próprias/);
+    // o gestor da entidade não vê a identidade da conta de serviço global (email e projeto do portal)
+    assert.match(msg, /conta de serviço global do portal aceite \(us-central1\)/);
+    assert.doesNotMatch(msg, /portal-dono-veo/);
+    // nem quando a Google recusa (as mensagens dela repetem o projeto e o número dele)
+    const okFetch = globalThis.fetch;
+    globalThis.fetch = (async (u: any, init: any) => String(u).includes(':fetchPredictOperation')
+      ? new Response(JSON.stringify({ error: { code: 403, message: "Permission 'aiplatform.endpoints.predict' denied on resource '//aiplatform.googleapis.com/projects/portal-dono-veo/locations/us-central1' (project 123456789012)", status: 'PERMISSION_DENIED' } }), { status: 403 })
+      : okFetch(u, init)) as any;
+    try {
+      msg = decodeURIComponent((await post(`/entidades/${otherId}/testar/Google`, { VEO_TIER: '' }, other)).headers.location as string);
+      assert.match(msg, /Teste falhou: a conta de serviço global do portal não tem acesso .* no projeto Google do portal/);
+      assert.doesNotMatch(msg, /portal-dono-veo|123456789012/);
+    } finally { globalThis.fetch = okFetch; }
+    // fora de uma entidade (Definições do administrador), o teste continua a mostrar a conta e o projeto globais
+    assert.match(await t.veoCheck(), /aceite \(veo@portal-dono-veo\.iam\.gserviceaccount\.com, projeto portal-dono-veo, us-central1\)/);
     pg = await get(`/entidades/${otherId}/chaves`, other);
     assert.match(pg.body, /Conta de serviço do Vertex AI \(JSON\) <span class="hint">· global \(reserva\)/);
 
