@@ -297,3 +297,19 @@ test('gestor de entidade: convida sem subscrição nem limite mensal, com os lim
   assert.equal((await db.one('SELECT collection_status s FROM interviews WHERE id=$1', [s])).s, 'draft');
   assert.match((await get('/admin/utilizadores', admin)).body, /semsub@example\.com<\/td><td>interviewer<\/td>[\s\S]*?<span class="pill ">nenhuma<\/span>/);
 });
+
+test('dois convites ao mesmo tempo na última vaga do plano: só um passa; o outro fica em rascunho, sem envio nem cobrança', async () => {
+  const u = `sid=${cookies(await post('/registar', { name: 'Vaga', email: 'vaga@example.com', password: PW, terms: 1 })).sid}`;
+  const id = (await db.one(`SELECT id FROM users WHERE email='vaga@example.com'`)).id;
+  await db.query(`INSERT INTO subscriptions(user_id, plan_id, status, source, interviews_override) VALUES ($1,'starter','active','manual',1)`, [id]);
+  const a = await draft(u, 'Vaga A', ['A?']), b = await draft(u, 'Vaga B', ['B?']);
+  // dois separadores: os dois pedidos contam a quota antes de qualquer um enviar
+  const [ra, rb] = await Promise.all([post(`/entrevistas/${a}/convidar`, {}, u), post(`/entrevistas/${b}/convidar`, {}, u)]);
+  const st = await db.query(`SELECT id, collection_status FROM interviews WHERE id IN ($1,$2)`, [a, b]);
+  assert.equal(st.filter((r: any) => r.collection_status === 'invited').length, 1, 'só um convite na última vaga');
+  const lost = st.find((r: any) => r.collection_status === 'draft').id;
+  assert.match(msgOf(lost === a ? ra : rb), /limite de 1 entrevistas deste período/);
+  assert.equal(Number((await db.one(`SELECT count(*)::int n FROM invitations WHERE interview_id=$1`, [lost])).n), 0, 'nada enviado');
+  const iv = await db.one('SELECT invited_at, extra_cents FROM interviews WHERE id=$1', [lost]);
+  assert.deepEqual([iv.invited_at, iv.extra_cents], [null, null]);
+});

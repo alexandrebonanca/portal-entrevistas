@@ -380,9 +380,28 @@ ${iv.objective_shared && iv.objective_text ? `<p class="hint">O entrevistado vê
       await audit(db, req.user!.email, 'invitation.sent', iv.id, { extraCredits: EXTRA_INTERVIEW_CENTS / 100, consumer: offer.consumer, startNow: offer.consumer, waiver: offer.consumer, ip: req.ip });
       return reply.redirect(`/entrevistas/${iv.id}?ok=` + encodeURIComponent(`Convite enviado como entrevista extra (${cr(EXTRA_INTERVIEW_CENTS)} créditos).`));
     }
-    await createInvitation(db, iv, { name: req.user!.name });
-    // Os limites do plano ficam fixos na entrevista: mudar de plano depois não altera o que foi prometido ao convidado.
-    await db.query(`UPDATE interviews SET collection_status='invited', invited_at=now(), answer_limit_sec=$2, question_limit=$3 WHERE id=$1`, [iv.id, lim.answerLimitSec, lim.questionLimit]);
+    // Convites do mesmo titular em série: com o titular bloqueado, a quota conta-se de novo e a entrevista fica com o
+    // convite na mesma transação (dois convites em simultâneo nunca passam os dois na última vaga do plano). Os limites
+    // do plano ficam fixos na entrevista: mudar de plano depois não altera o que foi prometido ao convidado.
+    const claim = await db.tx(async tx => {
+      await tx.query('SELECT id FROM users WHERE id=$1 FOR UPDATE', [req.user!.id]);
+      const cur = await tx.one('SELECT collection_status FROM interviews WHERE id=$1 FOR UPDATE', [iv.id]);
+      if (cur?.collection_status !== 'draft') return 'done';
+      const q2 = await quotaFor(tx, req.user!);
+      if (!q2.allowed) return q2.reason === 'quota' ? 'quota' : 'no_subscription';
+      const l2 = inviteLimits(q2);
+      await tx.query(`UPDATE interviews SET collection_status='invited', invited_at=now(), answer_limit_sec=$2, question_limit=$3 WHERE id=$1`, [iv.id, l2.answerLimitSec, l2.questionLimit]);
+      return 'ok';
+    });
+    if (claim === 'done') return reply.redirect(`/entrevistas/${iv.id}`);
+    if (claim === 'quota') return again(`Entretanto foi enviado outro convite e atingiu o limite de ${quota.limit} entrevistas deste período: nada foi enviado nem cobrado. Mude de plano em Conta, ou envie como entrevista extra por ${cr(EXTRA_INTERVIEW_CENTS)} créditos.`);
+    if (claim !== 'ok') return again('Precisa de uma subscrição ativa para enviar convites (Conta).');
+    try { await createInvitation(db, iv, { name: req.user!.name }); }
+    catch (e) {
+      // Sem convite, a entrevista volta a rascunho (e a vaga do plano fica livre).
+      await db.query(`UPDATE interviews SET collection_status='draft', invited_at=NULL, answer_limit_sec=NULL, question_limit=NULL WHERE id=$1 AND collection_status='invited'`, [iv.id]);
+      throw e;
+    }
     await audit(db, req.user!.email, 'invitation.sent', iv.id);
     return reply.redirect(`/entrevistas/${iv.id}?ok=` + encodeURIComponent('Convite enviado.'));
   });
