@@ -14,6 +14,7 @@ import { cuesFromWords, fixOverlaps, checkCues, type Cue } from './subtitles.ts'
 import { composeCover } from './cover.ts';
 import { PermanentError, type Handler } from './jobs.ts';
 import { renderVeoVideo, releaseQuoteOfJob, VIDEO_ONLY_PREVIEW } from './veo-episode.ts';
+import { renderHostIntro, failIntro } from './veo-intro.ts';
 import { reverseDebit } from './wallet.ts';
 
 const usage = (db: Db, interviewId: string, kind: string, quantity: number, cost: number) =>
@@ -331,6 +332,9 @@ export const handlers: Record<string, Handler> = {
     return { videoAssetId: id, shots: shots.length, animated, failed, lipsyncUsd: gpuUsd };
   },
 
+  // Introdução animada do entrevistador (oferecida, custo interno; veo-intro.ts).
+  render_intro: renderHostIntro,
+
   async talking_compare(job, { db, progress }) {
     // Retrato e voz uma única vez (reaproveitados numa nova tentativa), depois cada modelo à vez.
     const prevP = await db.one(`SELECT id, storage_key FROM assets WHERE kind='lab_portrait' AND meta->>'jobId'=$1 LIMIT 1`, [job.id]);
@@ -416,6 +420,11 @@ export const handlers: Record<string, Handler> = {
     if (job.input?.paidCents) await db.tx(t => reverseDebit(t, `regen:${job.id}`, 'a regeneração falhou: crédito devolvido'));
     // Vídeo de um orçamento que falhou de vez: os créditos cativos voltam todos ao saldo.
     if (job.kind === 'render_video' && job.input?.quoteId) await releaseQuoteOfJob(db, job);
+    // Introdução que falhou de vez (passageiros esgotados ou interrupções): o motivo fica à vista do entrevistador.
+    if (job.kind === 'render_intro' && typeof job.input?.introId === 'string') {
+      const err = (await db.one('SELECT error FROM jobs WHERE id=$1', [job.id]))?.error;
+      await failIntro(db, job.input.introId, `A introdução não ficou pronta: ${String(err || 'a geração foi interrompida').slice(0, 600)} Os vídeos seguem sem introdução animada.`);
+    }
   },
 };
 

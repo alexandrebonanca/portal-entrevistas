@@ -27,12 +27,12 @@ export class JobPaused extends Error {
 }
 
 /**
- * Vias da fila: os vídeos (Veo, retratos animados, laboratório) levam de minutos a horas e correm numa via própria, para
- * nunca atrasarem a transcrição, o guião e o episódio dos outros clientes (via curta). 'all' é a via única (testes e
- * WORKER_LANES=1), com os curtos primeiro.
+ * Vias da fila: os vídeos (Veo, introdução animada, retratos animados, laboratório) levam de minutos a horas e correm
+ * numa via própria, para nunca atrasarem a transcrição, o guião e o episódio dos outros clientes (via curta). 'all' é a
+ * via única (testes e WORKER_LANES=1), com os curtos primeiro.
  */
 export type Lane = 'short' | 'video';
-export const VIDEO_KINDS = ['render_video', 'talking_compare', 'lipsync_experiment'];
+export const VIDEO_KINDS = ['render_video', 'render_intro', 'talking_compare', 'lipsync_experiment'];
 export const laneOf = (kind: string): Lane => (VIDEO_KINDS.includes(kind) ? 'video' : 'short');
 const VIDEO_IN = `(${VIDEO_KINDS.map(k => `'${k}'`).join(',')})`; // constantes do código, nunca dados de quem pede
 const laneWhere = (lane: Lane | 'all') => (lane === 'video' ? `kind IN ${VIDEO_IN}` : lane === 'short' ? `kind NOT IN ${VIDEO_IN}` : 'true');

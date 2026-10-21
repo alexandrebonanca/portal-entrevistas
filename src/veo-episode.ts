@@ -12,6 +12,7 @@ import { PermanentError, JobPaused, type Handler } from './jobs.ts';
 import type { Db } from './db.ts';
 import { flushOutbox, queueEmail, emailShell } from './mail.ts';
 import { release, settle, cr } from './wallet.ts';
+import { introPhrase, introKeyOf, readyIntro, INTRO_SPAN_ID } from './intro.ts';
 
 /**
  * Vídeo do episódio inteiramente com o Google Veo: cada fala autorizada é dividida em pedaços que cabem num clipe
@@ -209,6 +210,25 @@ export function trimWindow(words: Word[], clipMs: number, expected: string): { a
   return b - a >= 400 ? { a, b } : full;
 }
 
+/**
+ * Transcrição de um clipe do Veo para a verificação palavra a palavra (repete a transcrição, nunca a geração paga).
+ * `checked: false` = não se sabe (verifica-se outra vez mais tarde, sem pagar); sem som = falha verificada.
+ */
+export async function transcribeVeoClip(video: Buffer, text: string, durSec: number): Promise<{ words: Word[]; checked: boolean; text?: string }> {
+  if (config.openai.mock) { // palavras sintéticas e coerentes com o texto, para exercitar cortes e legendas nos testes
+    const w = text.split(/\s+/).filter(Boolean), step = Math.min(0.35, (durSec - 1) / Math.max(1, w.length));
+    return { words: w.map((x, k) => ({ word: x, start: 0.4 + k * step, end: 0.4 + (k + 0.9) * step })), checked: true, text };
+  }
+  const audioState = await hasAudioStream(video, 'mp4');
+  if (audioState === 'no') return { words: [], checked: true };     // sem som: falha verificada, gera-se de novo
+  if (audioState === 'error') return { words: [], checked: false }; // não se sabe: verifica-se outra vez mais tarde, sem pagar
+  for (let k = 0; k < 3; k++) {
+    try { const r = await transcribeClip(video, 'mp4'); return { words: r.words, text: r.text, checked: true }; }
+    catch (e: any) { console.error(`[veo] transcrição falhou (tentativa ${k + 1}): ${String(e?.message ?? e).slice(0, 200)}`); await sleep(3000 * (k + 1)); }
+  }
+  return { words: [], checked: false };
+}
+
 /** Clipes e custo previstos (sem e com uma nova tentativa por clipe) ao preço do nível escolhido (Fast ou Lite). */
 export function veoEstimate(timing: any[], segments: any[], hostOk: boolean, guestOk: boolean, tier: VeoTier = veoTier()) {
   const usdPerSec = veoPricePerSec(tier);
@@ -236,7 +256,7 @@ export interface VeoPlan {
 const passes = (a: Attempt) => a.checked && a.words.length > 0 && a.hard === 0;
 
 /** Imagem inicial: a fotografia rodada (EXIF) e recortada a 16:9, ou a 9:16 se for vertical (mostrada ao centro como os grandes planos). */
-async function startImage(photo: Buffer): Promise<StartImage> {
+export async function startImage(photo: Buffer): Promise<StartImage> {
   const { default: sharp } = await import('sharp');
   const upright = await sharp(photo).rotate().toBuffer();
   const m = await sharp(upright).metadata();
@@ -555,21 +575,7 @@ export async function renderVeoVideo(job: any, { db, progress }: Parameters<Hand
   const want = plan.segs.filter(s => reused.has(s.id) || gen.includes(s));
   if (rebuildOf && !reused.size) throw new PermanentError('Não há falas do entrevistador já pagas com clipes guardados para reconstruir o vídeo.');
 
-  // ---- transcrição de um clipe (repete a transcrição, nunca a geração paga) ----
-  const transcribe = async (video: Buffer, text: string, durSec: number): Promise<{ words: Word[]; checked: boolean; text?: string }> => {
-    if (mock) { // palavras sintéticas e coerentes com o texto, para exercitar cortes e legendas nos testes
-      const w = text.split(/\s+/).filter(Boolean), step = Math.min(0.35, (durSec - 1) / Math.max(1, w.length));
-      return { words: w.map((x, k) => ({ word: x, start: 0.4 + k * step, end: 0.4 + (k + 0.9) * step })), checked: true, text };
-    }
-    const audioState = await hasAudioStream(video, 'mp4');
-    if (audioState === 'no') return { words: [], checked: true };     // sem som: falha verificada, gera-se de novo
-    if (audioState === 'error') return { words: [], checked: false }; // não se sabe: verifica-se outra vez mais tarde, sem pagar
-    for (let k = 0; k < 3; k++) {
-      try { const r = await transcribeClip(video, 'mp4'); return { words: r.words, text: r.text, checked: true }; }
-      catch (e: any) { console.error(`[veo] transcrição falhou (tentativa ${k + 1}): ${String(e?.message ?? e).slice(0, 200)}`); await sleep(3000 * (k + 1)); }
-    }
-    return { words: [], checked: false };
-  };
+  const transcribe = transcribeVeoClip;
   const judge = (c: Chunk, words: Word[], checked: boolean, fullText?: string) => {
     // O texto completo da transcrição guarda os símbolos (%, €, <…) que as palavras com tempos podem perder.
     const heard = (fullText?.trim() || words.map(w => w.word.trim()).join(' ')).replace(/\s+([,.;:!?])/g, '$1');
@@ -930,8 +936,12 @@ export async function renderVeoVideo(job: any, { db, progress }: Parameters<Hand
     throw new PermanentError(`Nenhuma fala ficou animada e a Google não devolveu nenhum clipe (${why || 'sem falas a animar'}): o vídeo não foi ligado ao episódio e as aprovações mantêm-se.${quote ? ' Os créditos cativos voltam todos ao saldo.' : ''}`);
   }
 
-  // 4. Linha temporal: aviso inicial (capa + voz do episódio), cartão de título, falas do Veo, reserva em imagem fixa e
-  // cartão final. Os cartões têm silêncio; o grafismo (rodapés e capítulos) segue as falas no tempo do vídeo.
+  // Introdução animada do entrevistador (oferecida, fora do orçamento): a já gerada e verificada para esta fotografia,
+  // frase, voz, nível e formato, só com as autorizações do entrevistador para o Veo nesta entrevista (nada vai à Google).
+  const intro = await introClipOf(db, iv, plan, tier);
+
+  // 4. Linha temporal: aviso inicial (capa + voz do episódio), introdução animada, cartão de título, falas do Veo, reserva
+  // em imagem fixa e cartão final. Os cartões têm silêncio; o grafismo (rodapés e capítulos) segue as falas no tempo do vídeo.
   const parts: Part[] = [], audioPieces: AudioPiece[] = [];
   const sceneOf = new Map<Part, Scene>();
   type C = { id: string; startMs: number; endMs: number; text: string };
@@ -945,7 +955,21 @@ export async function renderVeoVideo(job: any, { db, progress }: Parameters<Hand
   let t = 0;
   // O cartão de título entra logo a seguir ao aviso inicial (a introdução animada, quando existir, fica entre os dois).
   const addCard = (card: typeof cards.title, ms: number) => { parts.push({ kind: 'card', startMs: t, endMs: t + ms, card }); audioPieces.push({ durMs: ms }); t += ms; };
-  if (!plan.segs.some(s => s.kind === 'disclosure')) addCard(cards.title, TITLE_CARD_MS);
+  // Introdução: o clipe cortado à frase (som e imagem dele), com o aviso «AI-generated video · AI voice» e as legendas do que foi dito.
+  let introMs = 0;
+  const addIntro = () => {
+    if (!intro) return;
+    const clipMs = intro.dur * 1000, { a, b } = trimWindow(intro.words, clipMs, intro.text), dur = b - a, t0 = t;
+    const cues = cuesFromWords(intro.words, { id: INTRO_SPAN_ID, role: 'host', text: intro.heard, startMs: t - a, durationMs: clipMs }, 'en');
+    for (const q of cues) if (q.endMs > t && q.startMs < t + dur) veoCues.push({ id: q.id, startMs: Math.max(t, q.startMs), endMs: Math.min(t + dur, q.endMs), text: q.text });
+    const load = () => storage.get(intro.storageKey);
+    parts.push({ kind: 'anim', startMs: t, endMs: t + dur, base: bases.animHost, clip: load, clipOffsetMs: a, notice: VEO_NOTICE, cues: [] });
+    audioPieces.push({ durMs: dur, src: load, ext: 'mp4', offsetMs: a });
+    t += dur; introMs = dur;
+    // É a primeira vez que o entrevistador fala no seu plano: o rodapé com o nome e a função entra aqui.
+    spans.push({ id: INTRO_SPAN_ID, role: 'host', kind: INTRO_SPAN_ID, startMs: t0, endMs: t, personShot: true });
+  };
+  if (!plan.segs.some(s => s.kind === 'disclosure')) { addIntro(); addCard(cards.title, TITLE_CARD_MS); }
   for (const s of plan.segs) {
     const o = falaOut.get(s.id), t0 = t;
     if (!o?.clips) {
@@ -973,7 +997,7 @@ export async function renderVeoVideo(job: any, { db, progress }: Parameters<Hand
       }
     }
     if (t > t0) spans.push({ id: s.id, role: s.role, kind: s.kind, startMs: t0, endMs: t, personShot: !!o?.clips || stillScene(s) === s.role });
-    if (s.kind === 'disclosure') addCard(cards.title, TITLE_CARD_MS);
+    if (s.kind === 'disclosure') { addIntro(); addCard(cards.title, TITLE_CARD_MS); }
   }
   // Cartão final (entra pelo preto, também depois de uma fala animada: substitui o fecho de 1,6 s na capa).
   const speechEnd = t;
@@ -1026,7 +1050,9 @@ export async function renderVeoVideo(job: any, { db, progress }: Parameters<Hand
   // ser de outro nível ou serviço, por exemplo do Lite num vídeo pedido no Fast.
   const clipModels: Record<string, number> = {};
   for (const s of plan.segs) for (const { at } of falaOut.get(s.id)?.clips ?? []) { const k = at.model ?? UNKNOWN_MODEL; clipModels[k] = (clipModels[k] ?? 0) + 1; }
-  const meta = { engine: 'veo', model: tierModel, tier, usdPerSec: tierPrice, backend: veoBackend(), lang, guestPhoto: !!plan.guestPhoto, hostPhoto: !!plan.hostPhoto, guestAiVideo: usedRoles.has('guest'), hostAiVideo: usedRoles.has('host'),
+  // (a introdução mostra o entrevistador gerado pelo Veo: conta como vídeo IA dele, com a autorização verificada ao ligar)
+  const meta = { engine: 'veo', model: tierModel, tier, usdPerSec: tierPrice, backend: veoBackend(), lang, guestPhoto: !!plan.guestPhoto, hostPhoto: !!plan.hostPhoto, guestAiVideo: usedRoles.has('guest'), hostAiVideo: usedRoles.has('host') || !!intro,
+    intro: intro ? { id: intro.id, phrase: intro.phrase, model: intro.model, durMs: introMs, paidBy: 'internal' } : null,
     veoClips: want.reduce((n, s) => n + (reused.get(s.id)?.length ?? s.chunks.length), 0), veoSegments: veoSegs.size, fallbackSegments: fallbackSegs, generatedClips: generated, spentUsd: Math.max(0, spentUsd - failedUsd), failedUsd, veoUsd: costUsd, clipModels,
     googleBusy: fidelity.some(f => f.problem === 'busy' || f.problem === 'busycap'), quoteId: quote?.id ?? null, rebuildOf, paidBy: quote ? 'credits' : entityPays ? 'entity' : rebuildOf ? 'rebuild' : 'internal',
     fidelityIssues: fidelity.filter(f => !f.ok).length, fidelity, mock, graphics: graphicsMeta(overlays, gplan) };
@@ -1055,6 +1081,22 @@ export async function renderVeoVideo(job: any, { db, progress }: Parameters<Hand
   if (quote && settled) await quoteSettledEmail(db, quote, settled, iv);
   await progress(100, 100, 'Concluído');
   return { videoAssetId: id, veoClips: meta.veoClips, generatedClips: generated, spentUsd, veoUsd: costUsd, fallbackSegments: fallbackSegs, fidelityIssues: meta.fidelityIssues, ...(settled ? { chargedCents: (settled as any).charged, releasedCents: (settled as any).released } : {}) };
+}
+
+/**
+ * Clipe da introdução animada do entrevistador para este vídeo: a frase escolhida por ele, já gerada e verificada para a
+ * fotografia autorizada, a voz, o nível do Veo e o formato desta produção (a chave da introdução). Sem autorização do
+ * entrevistador para o Veo nesta entrevista, sem frase ou sem introdução pronta, o vídeo segue sem ela.
+ */
+async function introClipOf(db: Db, iv: any, plan: VeoPlan, tier: VeoTier) {
+  const st = plan.start.host;
+  if (!plan.hostVeo || !st || !plan.photoSha.host) return null;
+  const phrase = introPhrase((await db.one('SELECT intro_phrase FROM users WHERE id=$1', [iv.owner_id]))?.intro_phrase);
+  if (!phrase) return null;
+  const r = await readyIntro(db, iv.owner_id, introKeyOf({ photoSha: plan.photoSha.host, phrase: phrase.text, voice: plan.voice.host, tier, vertical: st.vertical }));
+  if (!r) return null;
+  const m = r.clip_meta ?? {};
+  return { id: String(r.id), phrase: phrase.id, text: phrase.text, storageKey: String(r.storage_key), words: (m.words ?? []) as Word[], heard: String(m.heard || phrase.text), dur: Number(m.dur ?? 8), model: (m.model ?? r.model ?? null) as string | null };
 }
 
 /** Email com o resultado da produção: cobrado, libertado e o relatório por fala na página do orçamento. */
