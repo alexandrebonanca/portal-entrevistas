@@ -18,6 +18,25 @@ export const approvalScope = (iv: { review_policy?: string }, vmeta: any): Appro
 export const videoMeta = async (db: Db, videoAssetId: string | null | undefined) =>
   videoAssetId ? (await db.one('SELECT meta FROM assets WHERE id=$1', [videoAssetId]))?.meta ?? null : null;
 
+/**
+ * Capa feita com fotografias do convidado cuja autorização da capa (`cover_use`) foi retirada depois (RGPD, art. 7.º,
+ * n.º 3): essa versão não se publica (publishBlock) e, publicada, a capa, a miniatura e o vídeo (que mostra a capa no
+ * aviso inicial e no agradecimento) deixam de ser servidos e de aparecer na página e na galeria, até o convidado voltar a
+ * autorizar. `technical.coverPhotos` são as fotografias que entraram de facto na capa; nos episódios anteriores a esse
+ * campo conta, por prudência, a escolha do entrevistador (`coverPhotoIds`) se a autorização chegou a ser dada.
+ * Expressão SQL sobre o episódio com o alias `e`.
+ */
+export const coverWithdrawnSql = (e = 'e') => `((CASE
+    WHEN jsonb_typeof(${e}.technical->'coverPhotos') = 'array' THEN jsonb_array_length(${e}.technical->'coverPhotos') > 0
+    WHEN jsonb_typeof(${e}.technical->'coverPhotoIds') = 'array' THEN jsonb_array_length(${e}.technical->'coverPhotoIds') > 0
+      AND EXISTS (SELECT 1 FROM consents c WHERE c.interview_id=${e}.interview_id AND c.purpose='cover_use' AND c.granted)
+    ELSE false END)
+  AND NOT COALESCE((SELECT c.granted FROM consents c WHERE c.interview_id=${e}.interview_id AND c.purpose='cover_use' ORDER BY c.created_at DESC LIMIT 1), false))`;
+
+/** A capa deste episódio tem fotografias do convidado e a autorização da capa foi retirada (ver coverWithdrawnSql). */
+export const coverWithdrawn = async (db: Db, episodeId: string) =>
+  !!(await db.one(`SELECT ${coverWithdrawnSql('e')} AS w FROM episodes e WHERE e.id=$1`, [episodeId]))?.w;
+
 /** O que o convidado veria agora: alcance da aprovação e se o episódio já foi publicado. */
 export interface GuestReview { scope: ApprovalScope; published: boolean }
 

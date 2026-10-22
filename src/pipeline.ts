@@ -189,7 +189,7 @@ export const handlers: Record<string, Handler> = {
     if (bg) await usage(db, iv.id, 'image', 1, config.prices.imageEach);
     const coverOk = await consent('cover_use');
     const photoRows = coverOk && opts.coverPhotoIds?.length
-      ? await db.query(`SELECT a.* FROM photos p JOIN assets a ON a.id=p.asset_id WHERE p.interview_id=$1 AND p.id = ANY($2::uuid[]) LIMIT 2`, [iv.id, opts.coverPhotoIds]) : [];
+      ? await db.query(`SELECT a.*, p.id AS photo_id FROM photos p JOIN assets a ON a.id=p.asset_id WHERE p.interview_id=$1 AND p.id = ANY($2::uuid[]) LIMIT 2`, [iv.id, opts.coverPhotoIds]) : [];
     const photoBufs = await Promise.all(photoRows.map((a: any) => storage.get(a.storage_key)));
     const { cover, thumb } = await composeCover({ title: script.title_en, subtitle: iv.guest_name ? `with ${iv.guest_name}` : '', brand: config.brand, background: bg, photos: photoBufs, palette: brief?.palette });
     const coverId = await saveAsset(db, { interviewId: iv.id, kind: 'episode_cover', mime: 'image/jpeg', ext: 'jpg', data: cover });
@@ -211,11 +211,13 @@ export const handlers: Record<string, Handler> = {
     if (asm.durationMs < 1000) issues.push('Duração demasiado curta');
 
     const prev = await db.query(`UPDATE episodes SET status='superseded', stale=true WHERE interview_id=$1 AND status IN ('preview','ready') RETURNING id`, [iv.id]);
+    // coverPhotoIds: a escolha do entrevistador (também escolhe a fotografia do vídeo); coverPhotos: as que entraram de
+    // facto na capa, para a capa deixar de se publicar e de ser servida se o convidado retirar a autorização (approval.ts).
     const ep = await db.one(
       `INSERT INTO episodes(interview_id, script_id, slug, title, description, audio_asset_id, cover_asset_id, cover_thumb_asset_id, duration_ms, subtitles, chapters, technical, status, visibility)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'preview','private') RETURNING id`,
       [iv.id, script.id, `${slugify(script.title_en)}-${randomBytes(3).toString('hex')}`, script.title_en, iv.objective_shared ? iv.objective_text.slice(0, 500) : '', audioId, coverId, thumbId, asm.durationMs,
-        JSON.stringify(subtitles), JSON.stringify(chapters), JSON.stringify({ maxVolumeDb: asm.maxVolumeDb, clipping: asm.clipping, qcIssues: issues, supersedes: prev.map((p: any) => p.id), mock: config.openai.mock, voices: voiceOf, models: config.openai.models, coverPhotoIds: opts.coverPhotoIds ?? [], timing: timing.map(t => ({ id: t.id, role: t.role, kind: kinds.get(t.id) ?? '', startMs: t.startMs, durationMs: t.durationMs })) })]);
+        JSON.stringify(subtitles), JSON.stringify(chapters), JSON.stringify({ maxVolumeDb: asm.maxVolumeDb, clipping: asm.clipping, qcIssues: issues, supersedes: prev.map((p: any) => p.id), mock: config.openai.mock, voices: voiceOf, models: config.openai.models, coverPhotoIds: opts.coverPhotoIds ?? [], coverPhotos: photoRows.map((r: any) => r.photo_id), timing: timing.map(t => ({ id: t.id, role: t.role, kind: kinds.get(t.id) ?? '', startMs: t.startMs, durationMs: t.durationMs })) })]);
     await db.query(`UPDATE interviews SET production_status=$2, publication_status='awaiting_approval' WHERE id=$1`, [iv.id, issues.length ? 'qc' : 'ready']);
     await progress(total, total, 'Concluído');
     return { episodeId: ep.id, qcIssues: issues };

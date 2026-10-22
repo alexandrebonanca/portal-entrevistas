@@ -5,7 +5,7 @@ import { page, flash } from '../views.ts';
 import { sendAsset, audit } from '../app.ts';
 import { toVtt, toSrt, type Cue } from '../subtitles.ts';
 import { t, normLang } from '../i18n.ts';
-import { approvalScope, videoMeta, guestDecides, reviewCopy } from '../approval.ts';
+import { approvalScope, videoMeta, guestDecides, reviewCopy, coverWithdrawnSql } from '../approval.ts';
 import { guestHelpNav } from '../support.ts';
 import { carriedTags, campaignQuery, ownHosts, withCampaign, fromOwnSite, trackVisit } from '../metrics.ts';
 
@@ -17,7 +17,7 @@ export function playerHtml(ep: any, urls: PlayerUrls, opts: { host?: string; gue
   const langs = Object.keys(ep.subtitles ?? {});
   const json = JSON.stringify({ subtitles: ep.subtitles ?? {}, chapters: ep.chapters ?? [] }).replace(/</g, '\\u003c');
   return `<article class="player" aria-label="${esc(ep.title)}">
-<div class="row" style="align-items:flex-start"><img src="${esc(urls.cover)}" alt="Cover of ${esc(ep.title)}" width="220" height="220" style="width:min(220px,40vw);height:auto;border-radius:12px;aspect-ratio:1;object-fit:cover">
+<div class="row" style="align-items:flex-start">${urls.cover ? `<img src="${esc(urls.cover)}" alt="Cover of ${esc(ep.title)}" width="220" height="220" style="width:min(220px,40vw);height:auto;border-radius:12px;aspect-ratio:1;object-fit:cover">` : ''}
 <div class="grow" style="min-width:220px"><h1 style="margin:.2em 0">${esc(ep.title)}</h1>
 <p class="sans hint">${opts.host ? `Host: ${esc(opts.host)}` : ''}${opts.guest ? ` · Guest: ${esc(opts.guest)}` : ''} · ${fmtDuration(ep.duration_ms)}</p>
 <p class="sans hint" style="border-left:3px solid var(--accent);padding-left:10px">${esc(config.aiDisclosure)}</p></div></div>
@@ -36,8 +36,10 @@ export async function episodeRoutes(app: FastifyInstance) {
   const send = (reply: any, html: string) => reply.type('text/html; charset=utf-8').send(html);
 
   // ---- público ----
+  // cover_withdrawn: capa com fotografias do convidado que retirou a autorização da capa (approval.ts); a capa, a
+  // miniatura e o vídeo, que mostra a capa, deixam de ser servidos e de aparecer na página e na galeria.
   const live = (slug: string) => db.one(
-    `SELECT e.*, i.host_name, i.guest_name, i.id AS iid FROM episodes e JOIN interviews i ON i.id=e.interview_id
+    `SELECT e.*, i.host_name, i.guest_name, i.id AS iid, ${coverWithdrawnSql('e')} AS cover_withdrawn FROM episodes e JOIN interviews i ON i.id=e.interview_id
      WHERE e.slug=$1 AND e.status='published' AND e.visibility IN ('unlisted','public') AND e.withdrawn_at IS NULL`, [slug]);
 
   /**
@@ -55,16 +57,16 @@ export async function episodeRoutes(app: FastifyInstance) {
     const ep = await live((req.params as any).slug);
     if (!ep) return reply.code(404).send('Episódio não disponível');
     await trackTagged(req, '/e');
-    const s = ep.slug;
+    const s = ep.slug, showCover = !ep.cover_withdrawn;
     return send(reply, page({
       lang: 'en', title: ep.title, noindex: ep.visibility !== 'public', desc: ep.description || undefined,
-      body: `<div class="wrap" style="padding-top:28px">${ep.video_asset_id ? `<video controls preload="metadata" poster="/e/${s}/cover" src="/e/${s}/video" style="width:100%;border-radius:12px;background:#000;margin-bottom:18px"></video>` : ''}${playerHtml(ep, { audio: `/e/${s}/audio`, cover: `/e/${s}/cover`, subs: (l, x) => `/e/${s}/subs/${l}.${x}` }, { host: ep.host_name, guest: ep.guest_name })}</div>`,
+      body: `<div class="wrap" style="padding-top:28px">${ep.video_asset_id && showCover ? `<video controls preload="metadata" poster="/e/${s}/cover" src="/e/${s}/video" style="width:100%;border-radius:12px;background:#000;margin-bottom:18px"></video>` : ''}${playerHtml(ep, { audio: `/e/${s}/audio`, cover: showCover ? `/e/${s}/cover` : '', subs: (l, x) => `/e/${s}/subs/${l}.${x}` }, { host: ep.host_name, guest: ep.guest_name })}</div>`,
       script: '/static/player.js', nav: '',
     }));
   });
   const pubAsset = async (req: any, reply: any, which: 'audio' | 'cover' | 'thumb' | 'video') => {
     const ep = await live(req.params.slug);
-    if (!ep) return reply.code(404).send();
+    if (!ep || (which !== 'audio' && ep.cover_withdrawn)) return reply.code(404).send();
     const id = { audio: ep.audio_asset_id, cover: ep.cover_asset_id, thumb: ep.cover_thumb_asset_id, video: ep.video_asset_id }[which];
     const a = await db.one('SELECT * FROM assets WHERE id=$1 AND deleted_at IS NULL', [id]);
     if (!a) return reply.code(404).send();
@@ -82,7 +84,7 @@ export async function episodeRoutes(app: FastifyInstance) {
     await trackTagged(req, '/podcasts');
     const cq = campaignQuery(carriedTags(req.query, ownHosts(req.headers.host)));
     const L = (path: string) => esc(withCampaign(path, cq));
-    const rows = await db.query(`SELECT e.slug, e.title, e.theme, e.duration_ms, e.published_at, e.video_asset_id, i.host_name, i.guest_name FROM episodes e JOIN interviews i ON i.id=e.interview_id
+    const rows = await db.query(`SELECT e.slug, e.title, e.theme, e.duration_ms, e.published_at, e.video_asset_id, i.host_name, i.guest_name, ${coverWithdrawnSql('e')} AS cover_withdrawn FROM episodes e JOIN interviews i ON i.id=e.interview_id
       WHERE e.gallery AND e.status='published' AND e.visibility='public' AND e.withdrawn_at IS NULL ORDER BY e.theme, e.published_at DESC`);
     const q = String((req.query as any).theme ?? '');
     const groups = new Map<string, any[]>();
@@ -93,7 +95,7 @@ export async function episodeRoutes(app: FastifyInstance) {
       nav: `<a href="${L('/')}">Home</a><a href="${L('/podcasts')}">Gallery</a><a href="${L('/entrar')}">Sign in</a>`,
       body: `<div class="wrap" style="padding-top:32px"><h1>Podcast gallery</h1><p class="hint sans">Episodes published by their interviewers for public listening. Translation and narration are AI-generated.</p>
 ${themes.length > 1 ? `<p class="row sans"><a class="btn ${q ? 'ghost' : 'accent'}" href="${L('/podcasts')}">All</a>${themes.map(t => `<a class="btn ${q === t ? 'accent' : 'ghost'}" href="${L(`/podcasts?theme=${encodeURIComponent(t)}`)}">${esc(t)}</a>`).join('')}</p>` : ''}
-${groups.size ? [...groups].map(([t, eps]) => `<section style="margin-top:28px"><h2>${esc(t)}</h2><div class="grid3">${eps.map((e: any) => `<a class="card" href="${L(`/e/${encodeURIComponent(e.slug)}`)}" style="text-decoration:none;color:inherit;margin:0"><img src="/e/${esc(e.slug)}/thumb" alt="" width="300" height="300" loading="lazy" style="width:100%;height:auto;border-radius:8px"><h3 style="margin:.5em 0 .2em">${esc(e.title)}</h3><p class="hint sans" style="margin:0">${esc(e.host_name)} · ${esc(e.guest_name)} · ${fmtDuration(e.duration_ms)}${e.video_asset_id ? ' · video' : ''}</p></a>`).join('')}</div></section>`).join('') : '<div class="card"><p>No episodes yet.</p></div>'}</div>`,
+${groups.size ? [...groups].map(([t, eps]) => `<section style="margin-top:28px"><h2>${esc(t)}</h2><div class="grid3">${eps.map((e: any) => `<a class="card" href="${L(`/e/${encodeURIComponent(e.slug)}`)}" style="text-decoration:none;color:inherit;margin:0">${e.cover_withdrawn ? '' : `<img src="/e/${esc(e.slug)}/thumb" alt="" width="300" height="300" loading="lazy" style="width:100%;height:auto;border-radius:8px">`}<h3 style="margin:.5em 0 .2em">${esc(e.title)}</h3><p class="hint sans" style="margin:0">${esc(e.host_name)} · ${esc(e.guest_name)} · ${fmtDuration(e.duration_ms)}${e.video_asset_id && !e.cover_withdrawn ? ' · video' : ''}</p></a>`).join('')}</div></section>`).join('') : '<div class="card"><p>No episodes yet.</p></div>'}</div>`,
     }));
   });
   const subsReply = (cues: Cue[] | undefined, fmt: string, reply: any) => {

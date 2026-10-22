@@ -14,7 +14,7 @@ import { queueEmail, emailShell } from '../mail.ts';
 import { veoEstimate, clipModelsNote, veoWithoutQuote, VEO_ONLY_PREVIEW, VIDEO_ONLY_PREVIEW, VEO_CHANGES, VEO_SCRIPT_REPLACED, VEO_NO_CREDENTIALS, VEO_NEEDS_QUOTE } from '../veo-episode.ts';
 import { veoConfigured, veoTier, veoLabel } from '../talking.ts';
 import { inEntity, entityOfInterview } from '../settings.ts';
-import { guestMustApprove, videoMeta as loadVideoMeta } from '../approval.ts';
+import { guestMustApprove, videoMeta as loadVideoMeta, coverWithdrawn } from '../approval.ts';
 import { walletFor, findWallet, spend, spendBlock, cr, EXTRA_REGEN_CENTS, type Wallet } from '../wallet.ts';
 import { paidConsentHtml, paidConsentOk, isConsumer } from './credits.ts';
 import { vatForProfile } from '../billing.ts';
@@ -47,7 +47,7 @@ const previewBlock = (iv: any, ep: any, vmeta: any): string | null =>
  * Porque é que o episódio não se pode publicar agora (null = pode): o mesmo motivo na página e na recusa. Um episódio
  * retirado não volta a ser publicado; com um vídeo a ser gerado, espera-se por ele (só entra antes da publicação).
  */
-export function publishBlock(o: { ep: any; pubOk: boolean; videoBusy: boolean; hostAp: boolean; needGuest: boolean; guestAp: any }): string | null {
+export function publishBlock(o: { ep: any; pubOk: boolean; coverWithdrawn: boolean; videoBusy: boolean; hostAp: boolean; needGuest: boolean; guestAp: any }): string | null {
   const { ep, guestAp } = o;
   if (ep.status === 'published') return 'O episódio já está publicado.';
   if (ep.status === 'withdrawn') return 'Este episódio foi retirado e não volta a ser publicado. Para publicar uma nova versão, regenere o guião ou recomece a produção.';
@@ -55,6 +55,8 @@ export function publishBlock(o: { ep: any; pubOk: boolean; videoBusy: boolean; h
   if (ep.stale) return 'Versão desatualizada: as respostas ou as transcrições mudaram depois do episódio; regenere o guião e o episódio.';
   if ((ep.technical?.qcIssues ?? []).length) return 'Há alertas do controlo de qualidade: corrija e regenere o episódio antes de publicar.';
   if (!o.pubOk) return 'O entrevistado não autorizou a publicação.';
+  // A capa tem fotografias do convidado e ele retirou depois a autorização da capa (approval.ts, coverWithdrawnSql).
+  if (o.coverWithdrawn) return 'O entrevistado retirou a autorização da capa: regenere o episódio.';
   if (o.videoBusy) return 'Há um vídeo a ser gerado para este episódio: publique depois de ele terminar e de o rever.';
   if (!o.hostAp) return `Falta a sua aprovação desta versão${ep.video_asset_id ? ' (com o vídeo atual)' : ''}.`;
   if (o.needGuest) {
@@ -248,7 +250,8 @@ ${episodeBefore ? payFields : ''}<button class="accent" ${episodeBefore && !canR
       const guestSameVideo = !!guestAp && String(guestAp.video_asset_id ?? '') === String(ep.video_asset_id ?? '');
       const needGuest = guestMustApprove(iv, videoMeta);
       // O motivo concreto (retirado, vídeo a ser gerado, aprovação em falta…) aparece junto do botão e na recusa.
-      const pubBlock = publishBlock({ ep, pubOk, videoBusy: await videoBusy(iv.id, ep.id), hostAp: !!hostAp, needGuest, guestAp });
+      const coverW = await coverWithdrawn(db, ep.id);
+      const pubBlock = publishBlock({ ep, pubOk, coverWithdrawn: coverW, videoBusy: await videoBusy(iv.id, ep.id), hostAp: !!hostAp, needGuest, guestAp });
       const canPublish = !pubBlock;
       const isAdmin = req.user!.role === 'admin';
       // Veo sem orçamento: o administrador (custo interno) e o gestor da entidade com credenciais Google próprias (paga ela).
@@ -298,6 +301,7 @@ ${ep.status === 'withdrawn' ? `<p class="sans">Retirado em ${fmtDate(ep.withdraw
 <label for="th">Tema</label><input id="th" name="theme" type="text" list="themes" maxlength="60" placeholder="Ex.: Energia, Telecomunicações, Hotelaria"><datalist id="themes">${(await db.query(`SELECT DISTINCT theme FROM episodes WHERE theme<>'' ORDER BY theme`)).map((t: any) => `<option value="${esc(t.theme)}">`).join('')}</datalist></fieldset>
 <p><button class="accent" ${canPublish ? '' : 'disabled'}>Publicar</button></p>${canPublish ? '' : `<p class="hint">Ainda não é possível publicar: ${esc(pubBlock ?? '')} (Publicar exige a aprovação válida do entrevistador${needGuest ? ' e do entrevistado' : ''}, a autorização de publicação, a versão atual e nenhum alerta de qualidade.)</p>`}</form>`
   : `<p class="sans">Publicado (${esc(ep.visibility)}) em ${fmtDate(ep.published_at)}${ep.visibility !== 'private' ? ` · <a href="/e/${ep.slug}">/e/${esc(ep.slug)}</a>` : ''}</p>
+${coverW ? '<p class="hint">O entrevistado retirou a autorização da capa: a capa, a miniatura e o vídeo (que mostra a capa) deixaram de ser mostrados neste episódio publicado, até ele voltar a autorizar.</p>' : ''}
 ${ep.visibility === 'public' ? `<form method="post" action="/entrevistas/${iv.id}/episodio/${ep.id}/galeria" class="card"><strong class="sans">Galeria pública «Podcasts gerados»</strong>
 <label class="check"><input type="checkbox" name="gallery" value="1" ${ep.gallery ? 'checked' : ''}> Mostrar na galeria pública, organizada por temas</label>
 <label for="th2">Tema</label><input id="th2" name="theme" type="text" maxlength="60" value="${esc(ep.theme)}"><button class="ghost">Guardar</button></form>` : ''}
@@ -506,7 +510,7 @@ ${ep.visibility === 'public' ? `<form method="post" action="/entrevistas/${iv.id
     const vmeta = ep.video_asset_id ? (await db.one('SELECT meta FROM assets WHERE id=$1', [ep.video_asset_id]))?.meta : null;
     const needGuest = guestMustApprove(iv, vmeta);
     // O motivo é o mesmo da página (ex.: episódio retirado, e não «faltam aprovações»).
-    const blocked = publishBlock({ ep, pubOk: await consent(iv.id, 'publish'), videoBusy: await videoBusy(iv.id, ep.id), hostAp: !!hostAp, needGuest, guestAp });
+    const blocked = publishBlock({ ep, pubOk: await consent(iv.id, 'publish'), coverWithdrawn: await coverWithdrawn(db, ep.id), videoBusy: await videoBusy(iv.id, ep.id), hostAp: !!hostAp, needGuest, guestAp });
     if (blocked) { await audit(db, req.user!.email, 'episode.publish_blocked', iv.id, { reason: blocked }); return back(reply, iv.id, undefined, `Publicação bloqueada: ${blocked}`); }
     const b = req.body as any;
     const theme = String(b?.theme ?? '').trim().slice(0, 60);

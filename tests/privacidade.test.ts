@@ -57,6 +57,11 @@ test('privacidade: lista os terceiros integrados, as transferências e as bases 
   const rec = section('Who receives data');
   for (const p of ['Render', 'OpenAI', 'Google', 'Replicate', 'MailerSend', 'Stripe', 'Moloni']) assert.ok(rec.includes(`<strong>${p}</strong>`), `${p} na lista`);
   assert.match(rec, /Veo, through Vertex AI or the Gemini API/); assert.match(rec, /us-central1/); assert.match(rec, /We do not sell personal data/);
+  // Com a autorização só do entrevistador (veoPlan: hostVeo), as falas dele vão para o Veo com o texto literal, e as boas-vindas
+  // e o agradecimento nomeiam o convidado (prepareScript): a página diz que o nome do convidado pode chegar à Google sem ele autorizar.
+  assert.match(rec, /<strong>Google<\/strong> \(optional, only with the permission of the person shown\)[^<]*The interviewer’s lines can name the guest \(for example in the welcome and the thank-you\), so the guest’s name can reach Google with the interviewer’s permission alone\./);
+  assert.match(section('AI processing'), /when only the interviewer allows AI video, the guest’s name can still be sent to Google without the guest’s permission/);
+  assert.match(rec, /<strong>Replicate<\/strong>[^<]*the interviewer’s lines can mention the guest by name/);
   // O gestor de entidade só chega às chaves e aos dados de vendedora (canManage em routes/entities.ts); os utilizadores são do administrador.
   assert.ok(rec.includes('entity managers manage their organisation’s service accounts and seller details, but cannot see its members’ accounts or open their interviews'));
   assert.doesNotMatch(body, /settings and users/);
@@ -77,10 +82,13 @@ test('privacidade: aprovação «por omissão», IA, prazos e cookies conforme o
   const pub = section('Publication');
   assert.match(pub, /Nothing is published without the interviewer’s decision and, by default, your approval of the final version, and always with your approval when you appear animated by AI/);
   assert.doesNotMatch(body, /Nothing is published without your approval/);
-  // Retirar a autorização da capa não muda uma capa já feita (cover_use só se lê ao gerar a capa): a página não promete o contrário.
-  assert.match(pub, /with your photos only if you allowed it when the cover was made/);
-  assert.match(pub, /does not change a cover that has already been made/); assert.match(pub, /use the interview’s help page or write to us/);
-  assert.match(section('Your rights'), /withdrawing permission for the cover does not change a cover already made/);
+  // Retirar a autorização da capa bloqueia a publicação dessa versão e tira a capa, a miniatura e o vídeo do episódio publicado
+  // (approval.ts, coverWithdrawnSql; teste «retirar a autorização da capa» abaixo).
+  assert.match(pub, /with your photos only while you allow it/);
+  assert.match(pub, /If you withdraw permission to use your photos on the cover after a cover has been made with them, that version can no longer be published: the interviewer has to make a new version, whose cover leaves your photos out\. If it is already published, its cover, thumbnail and video \(the video shows the cover\) stop being shown on the episode page and in the gallery\./);
+  assert.doesNotMatch(body, /does not change a cover|existing cover stays with the episode|when the cover was made/);
+  assert.match(section('How long we keep data'), /a cover already made with their photos can no longer be published and, if it already is, it stops being shown together with its thumbnail and the video that shows it/);
+  assert.match(section('Your rights'), /withdrawing permission for the cover also takes a cover already made with their photos off the episode/);
   const ai = section('AI processing');
   assert.match(ai, /no voice is cloned/); assert.match(ai, /audible notice/); assert.match(ai, /AI-animated portrait/); assert.match(ai, /AI-generated video · AI voice/);
   assert.match(ai, /not used to take decisions about anyone that have legal or similarly significant effects/);
@@ -106,6 +114,96 @@ test('privacidade: o worker apaga as sessões expiradas (de quem tem conta e dos
   // A sessão que ficou continua a dar entrada.
   const r = await app.inject({ method: 'GET', url: '/account', cookies: { sid: 'sid-nova' } });
   assert.equal(r.statusCode, 200);
+});
+
+test('privacidade: retirar a autorização da capa antes e depois de publicar', async () => {
+  const { enqueue, runOne } = await import('../src/jobs.ts');
+  const { handlers } = await import('../src/pipeline.ts');
+  const { saveAsset } = await import('../src/media.ts');
+  const { coverWithdrawn } = await import('../src/approval.ts');
+  const sharp = (await import('sharp')).default;
+  const post = (url: string, body: Record<string, string>, cookies: Record<string, string>) =>
+    app.inject({ method: 'POST', url, payload: new URLSearchParams(body).toString(), headers: { 'content-type': 'application/x-www-form-urlencoded' }, cookies });
+  const get = (url: string, cookies: Record<string, string> = {}) => app.inject({ method: 'GET', url, cookies });
+  const owner = { sid: 'sid-capa' }, guest = { gs: 'gs-capa' };
+  const u = await db.one(`INSERT INTO users(email, name, password_hash) VALUES ('capa@example.com','Capa','x') RETURNING id`);
+  await db.query(`INSERT INTO sessions(id, user_id, expires_at) VALUES ($1,$2, now() + interval '1 day')`, [sha256(owner.sid), u.id]);
+  // «Só o entrevistador aprova»: era o caso em que a capa com as fotografias se publicava depois de retirada a autorização.
+  const iv = await db.one(`INSERT INTO interviews(owner_id, title, host_name, guest_name, review_policy, collection_status, subtitle_langs) VALUES ($1,'Capas','Ana','Rui','host_only','submitted', ARRAY['en']) RETURNING id`, [u.id]);
+  const inv = await db.one(`INSERT INTO invitations(interview_id, token_hash, question_version, expires_at, purpose) VALUES ($1,'h-capa',1, now() + interval '1 day','invite') RETURNING id`, [iv.id]);
+  await db.query(`INSERT INTO guest_sessions(id, interview_id, invitation_id, expires_at) VALUES ($1,$2,$3, now() + interval '1 day')`, [sha256(guest.gs), iv.id, inv.id]);
+  await db.query(`INSERT INTO consents(interview_id, purpose, granted, text_version, text_snapshot) VALUES ($1,'processing',true,'t','t'), ($1,'publish',true,'t','t')`, [iv.id]);
+  await post('/entrevista/fotos/autorizacoes', { photo_capture: '1', cover_use: '1' }, guest);
+  const jpg = await sharp({ create: { width: 64, height: 64, channels: 3, background: '#3a6' } }).jpeg().toBuffer();
+  const photo = await db.one('INSERT INTO photos(interview_id, asset_id) VALUES ($1,$2) RETURNING id', [iv.id, await saveAsset(db, { interviewId: iv.id, kind: 'guest_photo', mime: 'image/jpeg', ext: 'jpg', data: jpg })]);
+  const seg = (id: string, type: string, text: string) => ({ id, speakerRole: 'host', textEnglish: text, sourceQuestionId: null, transformationType: type });
+  const script = await db.one(`INSERT INTO scripts(interview_id, revision, title_en, segments, status, prompt_version, model) VALUES ($1,1,'Covers',$2,'approved','t','t') RETURNING id`,
+    [iv.id, JSON.stringify([seg('intro', 'editorial_intro', 'Welcome. Today Rui joins us to talk about covers.'), seg('outro', 'editorial_outro', 'Thank you, Rui, for sharing your time and experience with us.')])]);
+  const generate = async () => {
+    await enqueue(db, { kind: 'generate_episode', interviewId: iv.id, input: { scriptId: script.id, subtitleLangs: ['en'], coverPhotoIds: [photo.id] } });
+    while (await runOne(db, handlers)) { /* */ }
+    const ep = await db.one(`SELECT * FROM episodes WHERE interview_id=$1 ORDER BY created_at DESC LIMIT 1`, [iv.id]);
+    assert.ok(ep, JSON.stringify(await db.query(`SELECT state, error FROM jobs WHERE interview_id=$1`, [iv.id])));
+    return ep;
+  };
+
+  // 1. Capa feita com a fotografia: o episódio guarda as fotografias que entraram de facto na capa (e a escolha, como antes).
+  const ep = await generate();
+  assert.deepEqual(ep.technical.coverPhotos, [photo.id]); assert.deepEqual(ep.technical.coverPhotoIds, [photo.id]);
+  assert.deepEqual(ep.technical.qcIssues, []);
+  assert.equal(await coverWithdrawn(db, ep.id), false);
+  await post(`/entrevistas/${iv.id}/episodio/${ep.id}/aprovar`, {}, owner);
+
+  // 2. Retirada antes de publicar: a publicação fica bloqueada, com o motivo na recusa e na página.
+  await post('/entrevista/fotos/autorizacoes', { photo_capture: '1' }, guest);
+  assert.equal(await coverWithdrawn(db, ep.id), true);
+  const blocked = await post(`/entrevistas/${iv.id}/episodio/${ep.id}/publicar`, { visibility: 'public', gallery: '1' }, owner);
+  assert.match(decodeURIComponent(String(blocked.headers.location)), /Publicação bloqueada: O entrevistado retirou a autorização da capa: regenere o episódio\./);
+  assert.equal((await db.one('SELECT status FROM episodes WHERE id=$1', [ep.id])).status, 'preview');
+  assert.match((await get(`/entrevistas/${iv.id}/producao`, owner)).body, /Ainda não é possível publicar: O entrevistado retirou a autorização da capa: regenere o episódio\./);
+
+  // 3. Com a autorização dada de novo, publica-se; a capa, a miniatura e o vídeo (semeado) são servidos e aparecem.
+  await post('/entrevista/fotos/autorizacoes', { photo_capture: '1', cover_use: '1' }, guest);
+  assert.match(String((await post(`/entrevistas/${iv.id}/episodio/${ep.id}/publicar`, { visibility: 'public', gallery: '1' }, owner)).headers.location), /ok=/);
+  const vid = await saveAsset(db, { interviewId: iv.id, kind: 'episode_video', mime: 'video/mp4', ext: 'mp4', data: Buffer.from('mp4') });
+  await db.query('UPDATE episodes SET video_asset_id=$2 WHERE id=$1', [ep.id, vid]);
+  const s = ep.slug;
+  for (const p of ['cover', 'thumb', 'video', 'audio']) assert.equal((await get(`/e/${s}/${p}`)).statusCode, 200, p);
+  assert.match((await get(`/e/${s}`)).body, new RegExp(`<video[^>]*poster="/e/${s}/cover"[\\s\\S]*<img src="/e/${s}/cover"`));
+  assert.ok((await get('/podcasts')).body.includes(`src="/e/${s}/thumb"`));
+
+  // 4. Retirada depois de publicar: a capa, a miniatura e o vídeo (que mostra a capa) deixam de ser servidos e saem da página e
+  // da galeria; o episódio continua no ar com o áudio, e os ficheiros ficam com o entrevistador.
+  await post('/entrevista/fotos/autorizacoes', { photo_capture: '1' }, guest);
+  for (const p of ['cover', 'thumb', 'video']) assert.equal((await get(`/e/${s}/${p}`)).statusCode, 404, p);
+  assert.equal((await get(`/e/${s}/audio`)).statusCode, 200);
+  const pg = await get(`/e/${s}`);
+  assert.equal(pg.statusCode, 200); assert.ok(!pg.body.includes(`/e/${s}/cover`)); assert.doesNotMatch(pg.body, /<video/);
+  const gal = (await get('/podcasts')).body;
+  assert.ok(gal.includes(`/e/${encodeURIComponent(s)}`)); assert.ok(!gal.includes(`/e/${s}/thumb`)); assert.doesNotMatch(gal, / · video/);
+  assert.match((await get(`/entrevistas/${iv.id}/producao`, owner)).body, /O entrevistado retirou a autorização da capa: a capa, a miniatura e o vídeo \(que mostra a capa\) deixaram de ser mostrados/);
+  assert.equal((await get(`/media/${ep.cover_asset_id}`, owner)).statusCode, 200, 'o ficheiro fica guardado em privado');
+
+  // 5. Uma capa feita depois da retirada já não leva a fotografia, mesmo escolhida: não conta como retirada.
+  const ep2 = await generate();
+  assert.notEqual(ep2.id, ep.id);
+  assert.deepEqual(ep2.technical.coverPhotoIds, [photo.id]); assert.deepEqual(ep2.technical.coverPhotos, []);
+  assert.equal(await coverWithdrawn(db, ep2.id), false);
+
+  // 6. Com a autorização dada de novo, o episódio publicado volta a mostrar a capa.
+  await post('/entrevista/fotos/autorizacoes', { photo_capture: '1', cover_use: '1' }, guest);
+  assert.equal((await get(`/e/${s}/cover`)).statusCode, 200);
+
+  // 7. Episódios anteriores ao campo coverPhotos: por prudência, conta a escolha do entrevistador se a autorização chegou a ser
+  // dada e a última foi retirada; sem nenhuma autorização da capa, a capa não podia ter fotografias.
+  const old = await db.one(`INSERT INTO episodes(interview_id, script_id, slug, title, technical) VALUES ($1,$2,'capa-antiga','Old',$3) RETURNING id`, [iv.id, script.id, JSON.stringify({ coverPhotoIds: [photo.id] })]);
+  assert.equal(await coverWithdrawn(db, old.id), false, 'autorização em vigor');
+  await post('/entrevista/fotos/autorizacoes', { photo_capture: '1' }, guest);
+  assert.equal(await coverWithdrawn(db, old.id), true, 'autorização retirada');
+  const iv2 = await db.one(`INSERT INTO interviews(owner_id, title) VALUES ($1,'Sem capa') RETURNING id`, [u.id]);
+  const sc2 = await db.one(`INSERT INTO scripts(interview_id, revision, title_en, segments, status, prompt_version, model) VALUES ($1,1,'X','[]','approved','t','t') RETURNING id`, [iv2.id]);
+  const old2 = await db.one(`INSERT INTO episodes(interview_id, script_id, slug, title, technical) VALUES ($1,$2,'capa-antiga-2','Old',$3) RETURNING id`, [iv2.id, sc2.id, JSON.stringify({ coverPhotoIds: [photo.id] })]);
+  assert.equal(await coverWithdrawn(db, old2.id), false, 'nunca autorizada');
 });
 
 test('privacidade: parágrafos já testados mantêm-se iguais', () => {
