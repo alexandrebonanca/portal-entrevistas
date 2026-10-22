@@ -230,6 +230,11 @@ export interface Metrics {
    */
   paid: Row;
   allRevenueCents: number; daily: { day: string; visits: number; signups: number }[]; spend: SpendEntry[];
+  /**
+   * Cobrado pela conta Stripe própria de uma entidade (outro vendedor), fora da receita: das contas novas (`entityRevenueCents`)
+   * e de todas as contas (`allEntityRevenueCents`), no período.
+   */
+  entityRevenueCents: number; allEntityRevenueCents: number;
   /** Dia (UTC) em que a contagem das visitas começou (null se desconhecido). */
   trackingSince: string | null;
 }
@@ -269,11 +274,13 @@ export function prorate(e: { period_from: string; period_to: string; amount_cent
  * convites, pagantes e receita contam o que essas contas fizeram até ao fim do período (as contas criadas pelo administrador
  * não entram).
  *
- * Receita (dinheiro efetivamente recebido, sem IVA, em euros): a lista «por faturar» (`invoice_queue`), que tem uma linha por
- * pagamento confirmado pela Stripe — faturas pagas das subscrições (`invoice.paid`, incluindo os acertos negativos da mudança
- * de plano) e carregamentos de créditos pagos — e as notas de crédito dos reembolsos dos carregamentos (valores negativos,
- * na data do reembolso, e a linha corretiva quando um reembolso falha depois de concluído). Soma-se `net_cents` pela data do
- * pagamento (`paid_at`). Cada pagamento e cada reembolso aparece lá uma só vez (`stripe_ref` único), por isso não há dupla
+ * Receita (faturada ou por faturar, sem IVA, líquida das notas de crédito, em euros): a lista «por faturar» (`invoice_queue`),
+ * que tem uma linha por pagamento confirmado pela Stripe — faturas pagas das subscrições (`invoice.paid`, incluindo os acertos
+ * negativos da mudança de plano) e carregamentos de créditos pagos — e as notas de crédito dos reembolsos dos carregamentos
+ * (valores negativos, na data do reembolso, e a linha corretiva quando um reembolso falha depois de concluído). Soma-se
+ * `net_cents` pela data do pagamento (`paid_at`). Só a conta Stripe do portal (`invoice_queue.entity_id` NULL: nas subscrições é
+ * a entidade do webhook, dona da conta Stripe, e nos carregamentos o `stripe_scope` do lote): o que uma entidade com Stripe
+ * própria cobra é de outro vendedor e fica à parte (`entityRevenueCents`), também nas disputas perdidas (pelo lote). Cada pagamento e cada reembolso aparece lá uma só vez (`stripe_ref` único), por isso não há dupla
  * contagem; `payment_events` (eventos em bruto), `subscriptions` (estado atual), `credit_topups` e `wallet_entries`
  * (créditos, que são a mesma receita vista pela carteira) não se somam. As disputas não passam pela lista: só uma disputa
  * perdida de um carregamento de créditos tira receita, o líquido debitado na carteira (`wallet_entries` 'dispute', fechada por
@@ -312,28 +319,34 @@ export async function campaignMetrics(db: Db, period: Period): Promise<Metrics> 
   for (const v of perDay) { allVisits += v.n; const d = daily.get(day(v.day)); if (d) d.visits += v.n; }
   if (allVisits > shown) rowFor(keyOf(OTHER, '', '', '')).visits += allVisits - shown;
 
-  // Disputas perdidas: o líquido debitado na abertura (disponível tirado + dívida criada), na data em que foi perdida.
-  const lostSql = `SELECT w.user_id, (d.debt_delta - d.available_delta) AS net FROM wallet_entries l
+  // Disputas perdidas: o líquido debitado na abertura (disponível tirado + dívida criada), na data em que foi perdida; da conta
+  // Stripe do portal (`own`, lote sem `stripe_scope`) ou da de uma entidade.
+  const lostSql = (own: boolean) => `SELECT w.user_id, (d.debt_delta - d.available_delta) AS net FROM wallet_entries l
       JOIN wallet_entries d ON d.kind='dispute' AND d.stripe_ref=l.stripe_ref JOIN wallets w ON w.id=d.wallet_id
-     WHERE l.kind='dispute_lost' AND l.created_at >= $1::timestamptz AND l.created_at < $2::timestamptz`;
+      LEFT JOIN credit_topups tp ON tp.id=d.topup_id
+     WHERE l.kind='dispute_lost' AND l.created_at >= $1::timestamptz AND l.created_at < $2::timestamptz AND tp.stripe_scope IS ${own ? '' : 'NOT '}NULL`;
+  // Receita de um conjunto de linhas da lista (`where`, sobre `q`) e das disputas perdidas (`lost`, sobre `x`), de uma conta Stripe.
+  const revenueSql = (own: boolean, where: string, lost: string) => `COALESCE((SELECT sum(q.net_cents) FROM invoice_queue q WHERE ${where} AND q.entity_id IS ${own ? '' : 'NOT '}NULL
+        AND q.currency='eur' AND q.paid_at >= $1::timestamptz AND q.paid_at < $2::timestamptz), 0)::int
+      - COALESCE((SELECT sum(x.net) FROM (${lostSql(own)}) x WHERE ${lost}), 0)::int`;
   const users = await db.query(`SELECT u.id, (u.created_at AT TIME ZONE 'UTC')::date::text AS day,
       COALESCE(u.utm_source,'') AS source, COALESCE(u.utm_medium,'') AS medium, COALESCE(u.utm_campaign,'') AS campaign, COALESCE(u.signup_referrer_host,'') AS ref,
       EXISTS (SELECT 1 FROM interviews i WHERE i.owner_id=u.id AND i.created_at < $2::timestamptz) AS activated,
       EXISTS (SELECT 1 FROM invitations v JOIN interviews i ON i.id=v.interview_id WHERE i.owner_id=u.id AND v.purpose='invite' AND v.created_at < $2::timestamptz) AS invited,
-      COALESCE((SELECT sum(q.net_cents) FROM invoice_queue q WHERE q.user_id=u.id AND q.currency='eur' AND q.paid_at >= $1::timestamptz AND q.paid_at < $2::timestamptz), 0)::int
-        - COALESCE((SELECT sum(x.net) FROM (${lostSql}) x WHERE x.user_id=u.id), 0)::int AS revenue
+      ${revenueSql(true, 'q.user_id=u.id', 'x.user_id=u.id')} AS revenue, ${revenueSql(false, 'q.user_id=u.id', 'x.user_id=u.id')} AS entity_revenue
     FROM users u WHERE u.self_signup AND u.created_at >= $1::timestamptz AND u.created_at < $2::timestamptz`, [start, end]);
+  let entityRevenueCents = 0;
   for (const u of users) {
     const r = rowFor(keyOf(u.source, u.medium, u.campaign, u.ref));
     r.signups++; if (!trackingSince || day(u.day) >= trackingSince) r.signupsTracked++;
     if (u.activated) r.activated++; if (u.invited) r.invited++;
     r.revenueCents += Number(u.revenue); if (Number(u.revenue) > 0) r.paying++;
+    entityRevenueCents += Number(u.entity_revenue);
     const d = daily.get(day(u.day)); if (d) d.signups++;
   }
 
-  // Receita do período de todas as contas (para comparar com a das contas novas).
-  const all = await db.one(`SELECT COALESCE((SELECT sum(net_cents) FROM invoice_queue WHERE currency='eur' AND paid_at >= $1::timestamptz AND paid_at < $2::timestamptz), 0)::int
-      - COALESCE((SELECT sum(x.net) FROM (${lostSql}) x), 0)::int AS n`, [start, end]);
+  // Receita do período de todas as contas (para comparar com a das contas novas), e o que as entidades cobraram.
+  const all = await db.one(`SELECT ${revenueSql(true, 'true', 'true')} AS n, ${revenueSql(false, 'true', 'true')} AS e`, [start, end]);
 
   const spendRows = await db.query(`SELECT id, period_from::text AS period_from, period_to::text AS period_to, source, campaign, amount_cents, note, created_at, created_by
     FROM campaign_spend WHERE period_to >= $1::date AND period_from <= $2::date ORDER BY period_from DESC, created_at DESC`, [period.from, period.to]);
@@ -367,7 +380,7 @@ export async function campaignMetrics(db: Db, period: Period): Promise<Metrics> 
     list = list.slice(0, MAX_TABLE_ROWS);
   }
   if (other) list.push(other);
-  return { period, rows: list, totals, paid, allRevenueCents: Number(all?.n ?? 0), daily: [...daily.values()], spend, trackingSince };
+  return { period, rows: list, totals, paid, allRevenueCents: Number(all?.n ?? 0), entityRevenueCents, allEntityRevenueCents: Number(all?.e ?? 0), daily: [...daily.values()], spend, trackingSince };
 }
 
 /** Indicadores derivados (null quando não há base para os calcular). */

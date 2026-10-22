@@ -462,6 +462,36 @@ test('datas impossíveis (mês 00 ou 13, dia 00 ou 32) recusadas com a mensagem,
   }
 });
 
+test('receita: o que uma entidade com Stripe própria cobra fica fora (cartão à parte), também numa disputa perdida', async () => {
+  const d = '2026-02-25';
+  const ent = (await db.one(`SELECT id FROM entities WHERE slug='telecert-formacao'`)).id;
+  const L = { source: 'linkedin', medium: 'paid_social', campaign: 'qi-ent' };
+  await db.query(`INSERT INTO campaign_visits(day, path, source, medium, campaign, n) VALUES ($1,'/','linkedin','paid_social','qi-ent',10)`, [d]);
+  await db.query(`INSERT INTO campaign_spend(period_from, period_to, source, campaign, amount_cents) VALUES ($1,$1,'linkedin','qi-ent',1000)`, [d]);
+  const own = await mkUser({ at: `${d}T09:00:00Z`, ...L });
+  await pay(own, `${d}T10:00:00Z`, 1900);
+  // Subscrição paga na conta Stripe da entidade (webhook /webhooks/stripe/:slug grava entity_id).
+  const other = await mkUser({ at: `${d}T09:30:00Z`, ...L });
+  await db.query(`INSERT INTO invoice_queue(kind, user_id, entity_id, stripe_ref, description, net_cents, vat_cents, total_cents, paid_at) VALUES ('subscription',$1,$2,$3,'entidade',4900,1127,6027,$4)`,
+    [other, ent, `ref_ent_${++n}`, `${d}T11:00:00Z`]);
+  // Disputa perdida de um carregamento pago na conta Stripe da entidade (stripe_scope do lote): não abate a receita do portal.
+  const w = (await db.one(`INSERT INTO wallets(user_id, entity_id) VALUES ($1,$2) RETURNING id`, [own, ent])).id;
+  const tp = (await db.one(`INSERT INTO credit_topups(wallet_id, user_id, entity_id, stripe_scope, net_cents, vat_cents, gross_cents, vat_rate, vat_regime, customer_kind, customer_country)
+    VALUES ($1,$2,$3,$3,2500,0,2500,0,'domestic','business','PT') RETURNING id`, [w, own, ent])).id;
+  await db.query(`INSERT INTO wallet_entries(wallet_id, kind, available_delta, debt_delta, topup_id, stripe_ref, created_at) VALUES ($1,'dispute',-2000,500,$2,'dp_ent',$3)`, [w, tp, `${d}T12:00:00Z`]);
+  await db.query(`INSERT INTO wallet_entries(wallet_id, kind, stripe_ref, created_at) VALUES ($1,'dispute_lost','dp_ent',$2)`, [w, `${d}T13:00:00Z`]);
+  const m = await M.campaignMetrics(db, { from: d, to: d, days: 1, preset: 'custom' });
+  assert.deepEqual([m.totals.signups, m.totals.revenueCents, m.totals.paying, m.allRevenueCents], [2, 1900, 1, 1900], 'só a conta Stripe do portal');
+  assert.deepEqual([m.entityRevenueCents, m.allEntityRevenueCents], [4900 - 2500, 4900 - 2500], 'a disputa perdida abate o que a entidade cobrou');
+  assert.equal(M.totalRatios(m).roas, 1.9);
+  const html = (await get(`/admin/metricas?p=custom&from=${d}&to=${d}`, admin)).body;
+  assert.match(html, /<p class="l">Receita das contas novas<\/p><p class="v">19,00 €<\/p>/);
+  assert.match(html, /<p class="l">Cobrado por entidades<\/p><p class="v">24,00 €<\/p><p class="s">contas novas, Stripe própria da entidade, fora da receita; todas as contas: 24,00 €<\/p>/);
+  assert.match(html, /faturada ou por faturar, sem IVA, líquida das notas de crédito/);
+  assert.doesNotMatch(html, /efetivamente recebido/);
+  assert.doesNotMatch((await get('/admin/metricas?p=custom&from=2026-02-20&to=2026-02-20', admin)).body, /<p class="l">Cobrado por entidades<\/p>/, 'sem cobranças de entidades: sem o cartão');
+});
+
 test('CSV: o dinheiro arredonda-se ao cêntimo como na página (100,5 cêntimos dão 1,01 nos dois)', async () => {
   const d = '2026-02-20';
   await db.query(`INSERT INTO campaign_visits(day, path, source, medium, campaign, n) VALUES ($1,'/','google','cpc','qi-r',10), ($1,'/','google','display','qi-r',10)`, [d]);
