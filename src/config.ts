@@ -39,6 +39,9 @@ export const config = {
     country: env.OWNER_COUNTRY ?? 'EE',
     site: env.OWNER_SITE ?? 'https://www.certifinternational.com',
     email: env.OWNER_EMAIL ?? 'certifinternational@gmail.com',
+    // Morada e número de IVA dados pelo dono (identificação na página de privacidade).
+    address: env.OWNER_ADDRESS ?? 'Järvevana tee 9, 11314 Tallinn',
+    vat: env.OWNER_VAT ?? 'EE103004149',
   },
   // Quem comercializa o serviço (vende ao cliente final): valores por omissão das Definições «Empresa vendedora»,
   // mostrados nas páginas de compra, nos termos e nos orçamentos (o rodapé fica só com a entidade gestora, acima).

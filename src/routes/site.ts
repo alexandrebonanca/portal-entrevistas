@@ -1,11 +1,11 @@
 import type { FastifyInstance } from 'fastify';
 import { config } from '../config.ts';
-import { esc, hashPassword, verifyPassword, isEmail, rateLimit, sha256, newToken } from '../lib.ts';
+import { esc, hashPassword, verifyPassword, isEmail, rateLimit, sha256, newToken, SESSION_DAYS } from '../lib.ts';
 import { page, flash } from '../views.ts';
 import { setSessionCookie, audit } from '../app.ts';
 import { landing } from '../landing.ts';
 import { S } from '../settings.ts';
-import { ASSISTANT_LOG_DAYS } from '../assistant.ts';
+import { privacyBody } from '../privacy.ts';
 import { tagsFrom, ownHosts, trackVisit, campaignQuery, campaignInputs, fromOwnSite, carriedTags, withCampaign, type Tags } from '../metrics.ts';
 
 export async function siteRoutes(app: FastifyInstance) {
@@ -24,26 +24,17 @@ export async function siteRoutes(app: FastifyInstance) {
   app.get('/healthz', async () => ({ ok: true }));
   app.get('/robots.txt', async (_req, reply) => reply.type('text/plain').send('User-agent: *\nAllow: /$\nAllow: /privacy\nAllow: /e/\nAllow: /podcasts\nDisallow: /i/\nDisallow: /entrevista\nDisallow: /painel\nDisallow: /entrevistas\nDisallow: /admin\nDisallow: /account\n'));
 
+  // Privacidade (RGPD, art. 13.º e 14.º): o texto está em src/privacy.ts.
   app.get('/privacy', async (_req, reply) => reply.type('text/html; charset=utf-8').send(page({
-    lang: 'en', title: 'Privacy',
-    body: `<div class="narrow" style="padding-top:40px"><h1>Privacy</h1>
-<p>${esc(config.brand)} processes interview recordings and optional photos on behalf of the interviewer who invited you. This page summarises how; the invitation and the consent screen you see before recording are the authoritative statements for your interview.</p>
-<h2>What we store</h2><ul><li>Your name and email (to send the invitation).</li><li>Your recorded answers and any photos you choose to add.</li><li>Your consent choices, with the exact text shown and the time.</li></ul>
-<h2>External services</h2><p>If you allow it, audio is sent to an AI provider for transcription, translation and synthetic narration. Photos are never sent to AI services by default. Subscription payments are handled by Stripe; we never see card numbers.</p>
-<h2>Publication</h2><p>Nothing is published without the interviewer’s decision and, by default, your approval of the final version. Originals and unselected photos stay private.</p>
-<h2>Help assistant and support</h2><p>Questions typed into the help assistant are stored for ${ASSISTANT_LOG_DAYS} days without any link to the person who asked (emails, links and long numbers are masked), to improve the answers. Guests’ questions are answered only from the portal’s frequently asked questions and are never sent to AI services. For interviewers with an active subscription and for entity managers, the text of the question alone may be sent to an AI provider (OpenAI) to draft a short answer from those entries. Messages to support stay inside the portal (no email is sent) and are deleted together with the interview or the account.</p>
-<h2>Composition assistant</h2><p>When an interviewer with access to it asks the composition assistant on the interview edit page for suggestions, the saved title, goal, roles and question texts of that draft, and the optional request typed in the panel, are sent to OpenAI to draft suggestions (emails, website addresses and phone numbers in the usual formats are masked first); the name and email fields and the personal message are not sent. The portal keeps only a daily count of requests per account, not the texts or the suggestions.</p>
-<h2>Campaign links</h2><p>Visits to the home page and the sign-up page, and to the gallery and episode pages when the link carries campaign tags, are counted as daily totals by page and by the campaign tags in the link (or the website you came from). These counters use no cookies and hold no IP address or anything else that identifies you; like any request, the visit also appears in the server’s technical logs, which record the IP address and the page address. When you create an account, the campaign tags you arrived with, or otherwise the website you came from, are kept with your account to measure campaign results.</p>
-<h2>Your rights</h2><p>Ask for access, correction, withdrawal of consent or deletion at <a href="mailto:${esc(config.supportEmail)}">${esc(config.supportEmail)}</a>. Copies already downloaded or distributed elsewhere may not be recoverable.</p>
-<p class="hint">The processor list, retention periods and legal bases are maintained in the operator’s documentation and must be completed before production use.</p></div>`,
+    lang: 'en', title: 'Privacy', desc: `How ${config.brand} handles personal data.`, body: privacyBody(),
   })));
 
   // ---- Autenticação ----
   const authPage = (title: string, body: string) => page({ lang: 'en', title, noindex: true, nav: '<a href="/">Home</a>', body: `<div class="narrow" style="padding-top:48px"><h1>${title}</h1>${body}</div>` });
   const startSession = async (reply: any, userId: string) => {
     const token = newToken();
-    await db.query(`INSERT INTO sessions(id, user_id, expires_at) VALUES ($1,$2, now() + interval '14 days')`, [sha256(token), userId]);
-    await setSessionCookie(reply, 'sid', token, 14 * 86400);
+    await db.query(`INSERT INTO sessions(id, user_id, expires_at) VALUES ($1,$2, now() + interval '${SESSION_DAYS} days')`, [sha256(token), userId]);
+    await setSessionCookie(reply, 'sid', token, SESSION_DAYS * 86400);
   };
   const userCount = async () => Number((await db.one('SELECT count(*)::int AS n FROM users'))?.n);
   const canSignup = async () => (await userCount()) === 0 || S('SIGNUPS_OPEN') !== '0';

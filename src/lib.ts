@@ -5,6 +5,9 @@ import { config } from './config.ts';
 const scrypt = promisify(scryptCb) as (pw: string, salt: Buffer, len: number, opts: object) => Promise<Buffer>;
 const SCRYPT = { N: 16384, r: 8, p: 1 };
 
+/** Duração da sessão de quem tem conta (cookie `sid` e linha em `sessions`), em dias; a página de privacidade mostra-a. */
+export const SESSION_DAYS = 14;
+
 export const sha256 = (v: string | Buffer) => createHash('sha256').update(v).digest('hex');
 export const newToken = (bytes = 32) => randomBytes(bytes).toString('base64url');
 export const slugify = (s: string) =>
