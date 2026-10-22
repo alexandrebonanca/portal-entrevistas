@@ -14,8 +14,11 @@ export const COMPOSE_ACTIONS: ComposeAction[] = ['sugerir', 'rever', 'objetivo']
 export const COMPOSE_MAX_REQUEST = 300;
 /** Corpo do pedido à rota (o pedido opcional cabe com folga): um corpo maior é recusado antes de ser lido. */
 export const COMPOSE_BODY_LIMIT = 8 * 1024;
-/** Pedidos à IA por pessoa: por hora (em memória) e por dia e por mês (na base de dados, resistem a reinícios). */
-export const COMPOSE_RATE = { perHour: 30, perDay: 50, perMonth: 300 };
+/**
+ * Pedidos à IA por pessoa: por hora (em memória) e por dia e por mês (na base de dados, resistem a reinícios); e um teto
+ * a todos os pedidos à rota por hora, também aos recusados sem chegar ao modelo (cada um prepara o rascunho).
+ */
+export const COMPOSE_RATE = { perHour: 30, perDay: 50, perMonth: 300, requestsPerHour: 90 };
 export const COMPOSE_MAX_SUGGESTIONS = 5;
 /** Pontos de uma revisão (os mais importantes primeiro): cabem com folga no teto de tokens da resposta. */
 export const COMPOSE_MAX_REVIEW = 8;
@@ -78,7 +81,8 @@ const NOT_SITE_UPPER = /^(asp|vb|ado|ml|ikvm|entity|dot)\.net$/i;
  * distingue de «fim.De» e fica. Os campos de origem têm tamanho limitado (no máximo 4000 caracteres), por isso o corte
  * antes das expressões regulares nunca separa um contacto; depois corta-se no tamanho. O email é o da versão
  * verificada, tal e qual (também apanha emails colados uns aos outros); o tempo dele cresce com o quadrado do texto,
- * mas os campos têm tamanho limitado e a rota só prepara o rascunho dentro do limite por hora (ver composeHourFull).
+ * mas os campos têm tamanho limitado e a rota só prepara o rascunho dentro dos tetos por hora da pessoa (todos os
+ * pedidos, requestsPerHour, e os que chegam ao modelo, composeHourFull).
  */
 export const scrub = (s: unknown, max: number) => String(s ?? '').slice(0, max + 4000)
   .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '')

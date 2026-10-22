@@ -227,6 +227,11 @@ test('pedido ao assistente: acesso, ações e respostas', async () => {
   const hour = await assist(cid2, 'sugerir', com);
   assert.equal(hour.statusCode, 429);
   assert.match(hour.json().error, new RegExp(`limite de ${C.COMPOSE_RATE.perHour} pedidos por hora`));
+  // um teto a todos os pedidos à rota, também aos recusados antes do modelo (cada um preparava o rascunho sem limite)
+  let lastReq: any;
+  for (let i = 0; i <= C.COMPOSE_RATE.requestsPerHour; i++) lastReq = await assist(cid2, 'sugerir', com);
+  assert.equal(lastReq.statusCode, 429);
+  assert.match(lastReq.json().error, /Demasiados pedidos ao assistente nesta hora/);
 
   // depois do convite: recusado
   await db.query(`UPDATE interviews SET collection_status='invited' WHERE id=$1`, [id]);
