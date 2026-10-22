@@ -12,9 +12,12 @@ export async function siteRoutes(app: FastifyInstance) {
   const db = app.db;
 
   // Landing: conta a visita (agregada, sem cookies nem IP) e passa as etiquetas da campanha aos links para o registo.
+  // Quem volta à landing a partir do próprio site (logótipo, sair da conta, /podcasts, /entrar) já foi contado ao chegar: não
+  // conta outra vez, e as etiquetas vêm do URL da página de onde veio, quando as tiver.
   app.get('/', async (req, reply) => {
-    const tags = tagsFrom(req.query, req.headers.referer, ownHosts(req.headers.host));
-    await trackVisit(req, db, '/', tags);
+    const own = ownHosts(req.headers.host);
+    const tags = tagsFrom(req.query, req.headers.referer, own);
+    if (!fromOwnSite(req.headers.referer, own)) await trackVisit(req, db, '/', tags);
     return reply.type('text/html; charset=utf-8').send(landing(await db.query('SELECT * FROM plans WHERE active ORDER BY sort'), campaignQuery(tags)));
   });
   app.get('/healthz', async () => ({ ok: true }));

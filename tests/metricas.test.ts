@@ -117,10 +117,84 @@ test('site de origem: outro site conta como referência; os domínios do portal 
   const direct = await count('/');
   for (const referer of ['https://quietinterview.com/podcasts', 'https://www.quietinterview.com/', 'https://portal-entrevistas.onrender.com/privacy', 'http://test.local/entrar'])
     await visit('/', { referer });
-  assert.equal(await count('/'), direct + 4, 'domínios do portal: contam sem site de origem');
+  assert.equal(await count('/'), direct, 'domínios do portal: navegação interna, não conta outra vez');
   assert.equal(Number((await db.one(`SELECT count(*)::int n FROM campaign_visits WHERE referrer_host LIKE '%quietinterview%' OR referrer_host LIKE '%onrender%' OR referrer_host='test.local'`)).n), 0);
   await visit('/?utm_source=linkedin&utm_campaign=qi-ref', { referer: 'https://www.linkedin.com/' });
   assert.equal(await count('/', { source: 'linkedin', campaign: 'qi-ref' }), 1, 'com utm_source, sem site de origem');
+});
+
+test('navegação interna de volta à landing (logótipo, sair, outras páginas) não conta e mantém as etiquetas', async () => {
+  const before0 = await total();
+  const landed = await visit('/?utm_source=linkedin&utm_medium=paid_social&utm_campaign=qi-nav');
+  assert.equal(await count('/', { source: 'linkedin', medium: 'paid_social', campaign: 'qi-nav' }), 1);
+  // Logótipo da própria landing com etiquetas: não conta, e os links para o registo continuam com as etiquetas.
+  const logo = await visit('/', { referer: 'http://test.local/?utm_source=linkedin&utm_medium=paid_social&utm_campaign=qi-nav' });
+  assert.match(logo.body, /href="\/registar\?utm_source=linkedin&amp;utm_medium=paid_social&amp;utm_campaign=qi-nav">Get started/);
+  assert.match(logo.body, /href="\/registar\?plan=start&amp;utm_source=linkedin&amp;utm_medium=paid_social&amp;utm_campaign=qi-nav">Choose Start/);
+  // /podcasts → / , /entrar → / e sair da conta (POST /sair redireciona para / com o Referer da página onde estava).
+  await visit('/', { referer: 'http://test.local/podcasts' });
+  await visit('/', { referer: 'http://test.local/entrar' });
+  const s = await post('/entrar', { email: 'ana@example.com', password: PW });
+  const out = await post('/sair', {}, `sid=${cookies(s).sid}`, { referer: 'http://test.local/account' });
+  assert.equal(out.headers.location, '/');
+  await visit('/', { referer: 'http://test.local/account' });
+  assert.equal(await total(), before0 + 1, 'só a chegada de fora conta');
+  assert.equal(await count('/', { source: 'linkedin', medium: 'paid_social', campaign: 'qi-nav' }), 1);
+  assert.ok(landed.statusCode === 200);
+  // Registo aberto a partir da landing com etiquetas, sem elas no link: os campos escondidos vêm do Referer interno.
+  const reg = (await visit('/registar', { referer: 'http://test.local/?utm_source=linkedin&utm_medium=paid_social&utm_campaign=qi-nav' })).body;
+  assert.match(reg, /<input type="hidden" name="utm_source" value="linkedin"><input type="hidden" name="utm_medium" value="paid_social"><input type="hidden" name="utm_campaign" value="qi-nav">/);
+  assert.equal(await total(), before0 + 1, 'nem o registo vindo do próprio site');
+  // Etiquetas hostis no Referer interno: normalizadas como as outras.
+  assert.deepEqual(M.tagsFrom({}, 'http://test.local/?utm_source=%3Cb%3EX&ref=evil', M.ownHosts('test.local')), { ...M.NO_TAGS, source: 'bx' });
+  assert.deepEqual(M.tagsFrom({}, 'http://test.local/?ref=news.example', M.ownHosts('test.local')), { ...M.NO_TAGS, ref: 'news.example' });
+  assert.deepEqual(M.tagsFrom({}, 'http://test.local/podcasts', M.ownHosts('test.local')), M.NO_TAGS);
+});
+
+test('normalização corta o texto em bruto antes de o tratar (valores enormes não bloqueiam o servidor)', () => {
+  assert.equal(M.normTag(' '.repeat(500) + 'abc'), '', 'só os primeiros 400 caracteres são lidos');
+  assert.equal(M.normTag('ab' + 'c'.repeat(398) + 'zzz').length, 100);
+  let t = Date.now();
+  assert.equal(M.normTag('Ã'.repeat(20_000_000)), 'a'.repeat(100));
+  assert.ok(Date.now() - t < 500, `normTag demorou ${Date.now() - t} ms`);
+  t = Date.now();
+  assert.equal(M.refHost('https://news.example/' + 'Ã'.repeat(20_000_000), M.ownHosts('test.local')), 'news.example');
+  assert.equal(M.refHost(' '.repeat(2000) + 'news.example', M.ownHosts('test.local')), '');
+  assert.ok(Date.now() - t < 500, `refHost demorou ${Date.now() - t} ms`);
+});
+
+test('teto de combinações por dia: as novas depois do teto contam em «(outros)»', async () => {
+  const d = '2026-08-01';
+  const t = (source: string) => ({ ...M.NO_TAGS, source });
+  for (const src of ['a1', 'a2', 'a3', 'a4', 'a5']) await M.countVisit(db, '/', t(src), d, 3);
+  await M.countVisit(db, '/', t('a1'), d, 3); // já existe: soma na própria linha
+  await M.countVisit(db, '/', { ...M.NO_TAGS, ref: 'x.example' }, d, 3);
+  const rows = (await db.query(`SELECT source, referrer_host, n FROM campaign_visits WHERE day=$1`, [d])).map((r: any) => [r.source, r.referrer_host, r.n]).sort((x: any, y: any) => (x[0] < y[0] ? -1 : 1));
+  assert.deepEqual(rows, [['(outros)', '', 3], ['a1', '', 2], ['a2', '', 1], ['a3', '', 1]]);
+  const m = await M.campaignMetrics(db, { from: d, to: d, days: 1, preset: 'custom' });
+  assert.deepEqual(m.rows.map(r => [M.rowLabel(r), r.visits]), [['a1 / — / —', 2], ['a2 / — / —', 1], ['a3 / — / —', 1], ['(outros)', 3]]);
+  assert.equal(M.normTag(M.OTHER), 'outros', 'nenhuma etiqueta normalizada é igual a «(outros)»');
+  // Pelo site, com o teto normal (500 por dia), a contagem continua a ser uma linha por combinação.
+  assert.equal(M.MAX_VISIT_ROWS_PER_DAY, 500);
+});
+
+test('a página e o CSV mostram no máximo MAX_TABLE_ROWS linhas; o resto junta-se em «(outros)»', async () => {
+  const d = '2026-08-10';
+  const vals = Array.from({ length: M.MAX_TABLE_ROWS + 49 }, (_, i) => `('${d}','/','flood${String(i).padStart(4, '0')}',1)`);
+  await db.query(`INSERT INTO campaign_visits(day, path, source, n) VALUES ${vals.join(',')}, ('${d}','/','big',100)`);
+  const P1 = { from: d, to: d, days: 1, preset: 'custom' as const };
+  const m = await M.campaignMetrics(db, P1);
+  assert.equal(m.rows.length, M.MAX_TABLE_ROWS + 1);
+  assert.equal(M.rowLabel(m.rows[0]), 'big / — / —');
+  assert.deepEqual([M.rowLabel(m.rows.at(-1)!), m.rows.at(-1)!.visits], ['(outros)', 50]);
+  assert.equal(m.totals.visits, 100 + M.MAX_TABLE_ROWS + 49, 'o total não perde nada');
+  assert.equal(m.daily[0].visits, m.totals.visits);
+  const csv = (await get(`/admin/metricas.csv?p=custom&from=${d}&to=${d}`, admin)).body.slice(1).split('\r\n');
+  assert.equal(csv.length, 1 + M.MAX_TABLE_ROWS + 1 + 1 + 1, 'cabeçalho, linhas, «(outros)», total e fim');
+  assert.ok(csv.includes('(outros);;;;50;0;0,0;0;0;0;0,00;0,00;;;'));
+  const html = (await get(`/admin/metricas?p=custom&from=${d}&to=${d}`, admin)).body;
+  assert.equal((html.match(/<tr><td>flood/g) ?? []).length, M.MAX_TABLE_ROWS - 1);
+  assert.match(html, /<tr><td>\(outros\)<\/td><td class="n">50<\/td>/);
 });
 
 test('a contagem nunca estraga a página', async () => {
@@ -204,6 +278,8 @@ const pay = (user: string, at: string, net: number, kind = 'subscription') =>
     [kind, user, `ref_${++n}`, net, Math.round(net * 0.23), net + Math.round(net * 0.23), at]);
 
 test('métricas de um conjunto semeado: visitas, registos, ativação, convites, pagantes, receita, custos, CPA e ROAS', async () => {
+  // Contagem das visitas desde antes dos dados semeados (a migração marca o dia em que corre).
+  await db.query(`UPDATE campaign_tracking SET started_on='2025-01-01'`);
   const v = (day: string, source: string, medium: string, campaign: string, ref: string, k: number, path = '/') =>
     db.query(`INSERT INTO campaign_visits(day, path, source, medium, campaign, referrer_host, n) VALUES ($1,$2,$3,$4,$5,$6,$7)`, [day, path, source, medium, campaign, ref, k]);
   await v('2026-01-02', 'linkedin', 'paid_social', 'qi-a', '', 40);
@@ -280,6 +356,62 @@ test('métricas de um conjunto semeado: visitas, registos, ativação, convites,
   assert.match(html, /Como se calcula/);
 });
 
+test('conversão: os registos anteriores ao início da contagem das visitas não entram (nunca passa dos 100 % por isso)', async () => {
+  await db.query(`UPDATE campaign_tracking SET started_on='2026-06-05'`);
+  try {
+    for (const at of ['2026-06-01T10:00:00Z', '2026-06-02T10:00:00Z', '2026-06-03T10:00:00Z', '2026-06-05T10:00:00Z']) await mkUser({ at });
+    await db.query(`INSERT INTO campaign_visits(day, path, n) VALUES ('2026-06-05','/',2)`);
+    const PP = { from: '2026-05-08', to: '2026-06-06', days: 30, preset: 'custom' as const };
+    const m = await M.campaignMetrics(db, PP);
+    assert.equal(m.trackingSince, '2026-06-05');
+    assert.deepEqual([m.totals.visits, m.totals.signups, m.totals.signupsTracked], [2, 4, 1]);
+    assert.equal(M.ratios(m.totals).conversion, 0.5);
+    assert.equal(M.ratios(m.rows.find(r => r.key === 'direct')!).conversion, 0.5);
+    const html = (await get('/admin/metricas?p=custom&from=2026-05-08&to=2026-06-06', admin)).body;
+    assert.match(html, /<p class="l">Conversão<\/p><p class="v">50,0 %<\/p><p class="s">visita → registo, desde 05\/06\/2026<\/p>/);
+    assert.match(html, /As visitas só se contam desde 05\/06\/2026\./);
+    assert.match(html, /início da contagem<\/text>/, 'marca no gráfico');
+    assert.match(html, /<p class="l">Registos<\/p><p class="v">4<\/p>/);
+    // Um período todo depois do início: sem aviso.
+    assert.doesNotMatch((await get('/admin/metricas?p=custom&from=2026-06-05&to=2026-06-06', admin)).body, /As visitas só se contam desde/);
+  } finally { await db.query(`UPDATE campaign_tracking SET started_on='2025-01-01'`); }
+});
+
+test('total: custo por registo, custo por pagante e ROAS só das linhas com custo (não se misturam com «(direto)»)', async () => {
+  const L = { source: 'linkedin', medium: 'paid_social', campaign: 'qi-d' };
+  await db.query(`INSERT INTO campaign_visits(day, path, source, medium, campaign, n) VALUES ('2026-07-02','/','linkedin','paid_social','qi-d',20), ('2026-07-02','/','','','',10)`);
+  await mkUser({ at: '2026-07-02T10:00:00Z', ...L });
+  const org = await mkUser({ at: '2026-07-03T10:00:00Z' });
+  await pay(org, '2026-07-03T12:00:00Z', 49000);
+  await db.query(`INSERT INTO campaign_spend(period_from, period_to, source, campaign, amount_cents) VALUES ('2026-07-01','2026-07-05','linkedin','qi-d',10000)`);
+  const m = await M.campaignMetrics(db, { from: '2026-07-01', to: '2026-07-05', days: 5, preset: 'custom' });
+  assert.deepEqual([m.totals.revenueCents, m.totals.signups, m.totals.paying], [49000, 2, 1]);
+  assert.deepEqual([m.paid.revenueCents, m.paid.signups, m.paid.paying, m.paid.spendCents], [0, 1, 0, 10000]);
+  assert.deepEqual(M.totalRatios(m), { conversion: 2 / 30, cpa: 10000, cpp: null, roas: 0 });
+  const html = (await get('/admin/metricas?p=custom&from=2026-07-01&to=2026-07-05', admin)).body;
+  assert.match(html, /<p class="l">ROAS<\/p><p class="v">0,00×<\/p><p class="s">receita ÷ custo, só campanhas com custo<\/p>/);
+  assert.match(html, /<p class="l">Custo por registo<\/p><p class="v">100,00 €<\/p>/);
+  assert.match(html, /<p class="l">Custo por pagante<\/p><p class="v">—<\/p>/);
+  assert.match(html, /<tfoot><tr><td>Total<\/td>[\s\S]*?<td class="n">490,00 €<\/td><td class="n">100,00 €<\/td><td class="n">100,00 €<\/td><td class="n">—<\/td><td class="n">0,00×<\/td><\/tr><\/tfoot>/);
+  const csv = (await get('/admin/metricas.csv?p=custom&from=2026-07-01&to=2026-07-05', admin)).body.slice(1).split('\r\n');
+  assert.equal(csv.at(-2), 'Total;;;;30;2;6,7;0;0;1;490,00;100,00;100,00;;0,00');
+});
+
+test('datas fora de 2000–2100 recusadas (o ano 9999 não bloqueia o servidor; 0000 não dá erro 500)', { timeout: 20_000 }, async () => {
+  for (const [from, to] of [['9999-12-31', '9999-12-31'], ['0000-01-01', '0000-01-02'], ['1999-12-31', '2000-01-01'], ['2026-01-01', '2101-01-01']]) {
+    assert.match(M.parsePeriod({ p: 'custom', from, to }, '2026-10-22').error!, /entre 2000 e 2100/, `${from}..${to}`);
+    const r = await get(`/admin/metricas?p=custom&from=${from}&to=${to}`, admin);
+    assert.equal(r.statusCode, 200); assert.match(r.body, /entre 2000 e 2100/); assert.match(r.body, /\(30 dias\)/);
+    assert.equal((await get(`/admin/metricas.csv?p=custom&from=${from}&to=${to}`, admin)).statusCode, 200);
+  }
+  assert.equal(M.validDay('2000-01-01'), true); assert.equal(M.validDay('2100-12-31'), true);
+  const r = await post('/admin/metricas/custos', { p: '7', period_from: '9999-12-31', period_to: '9999-12-31', source: 'linkedin', amount: '10' }, admin);
+  assert.match(decodeURIComponent(String(r.headers.location)), /e=Indique as datas de início e de fim do custo \(entre 2000 e 2100\)/);
+  // O ciclo dos dias percorre o número de dias do período.
+  const m = await M.campaignMetrics(db, { from: '2100-12-30', to: '2100-12-31', days: 2, preset: 'custom' });
+  assert.deepEqual(m.daily.map(d => d.day), ['2100-12-30', '2100-12-31']);
+});
+
 test('custos com vários meios na mesma origem e campanha: repartidos pelas visitas', async () => {
   await db.query(`INSERT INTO campaign_visits(day, path, source, medium, campaign, n) VALUES ('2026-02-01','/','linkedin','paid_social','qi-x',30), ('2026-02-01','/','linkedin','social','qi-x',10)`);
   await db.query(`INSERT INTO campaign_spend(period_from, period_to, source, campaign, amount_cents) VALUES ('2026-02-01','2026-02-01','linkedin','qi-x',4000)`);
@@ -300,7 +432,7 @@ test('CSV: valores, escapes e proteção contra fórmulas', async () => {
   assert.equal(lines[1], 'linkedin;paid_social;qi-a;;100;3;3,0;2;1;1;34,00;100,00;33,33;100,00;0,34');
   assert.ok(lines.includes('(referência);;;news.example;20;1;5,0;0;0;0;0,00;0,00;;;'));
   assert.ok(lines.includes('(direto);;;;30;1;3,3;0;0;0;0,00;0,00;;;'));
-  assert.equal(lines.at(-2), 'Total;;;;200;6;3,0;3;2;2;83,00;180,00;30,00;90,00;0,46');
+  assert.equal(lines.at(-2), 'Total;;;;200;6;3,0;3;2;2;83,00;180,00;45,00;90,00;0,46', 'custo por registo, por pagante e ROAS do total: só as linhas com custo');
   assert.equal(lines.at(-1), '');
   // Células de texto hostis (gravadas diretamente na base: o site já as normaliza).
   assert.equal(M.csvCell('=HYPERLINK("http://x")'), `"'=HYPERLINK(""http://x"")"`);
@@ -343,7 +475,7 @@ test('custos: validação, registo e apagar', async () => {
   for (const amount of ['', '0', '0,00', '-5', 'abc', '1e5', '12,345', '99999999']) await err({ ...ok, amount }, /Valor inválido/);
   assert.equal(Number((await db.one('SELECT count(*)::int n FROM campaign_spend')).n), before0, 'nada gravado');
   const r = await post('/admin/metricas/custos', { ...base, ...ok }, admin);
-  assert.match(decodeURIComponent(String(r.headers.location)), /ok=Custo de 250,50 € registado \(linkedin \/ qi-abril\)\.#custos$/);
+  assert.match(decodeURIComponent(String(r.headers.location)), /^\/admin\/metricas\?p=custom&from=2026-04-01&to=2026-04-30&ok=Custo de 250,50 € registado \(linkedin \/ qi-abril, de 01\/04\/2026 a 30\/04\/2026\)\.#custos$/);
   const e = await db.one(`SELECT * FROM campaign_spend WHERE campaign='qi-abril'`);
   assert.equal(e.source, 'linkedin'); assert.equal(e.amount_cents, 25050); assert.equal(e.note, 'Fatura LinkedIn'); assert.equal(e.created_by, 'admin@example.com');
   assert.ok(await db.one(`SELECT 1 FROM audit_events WHERE action='admin.campaign_spend_added' AND meta->>'id'=$1`, [e.id]));
@@ -362,6 +494,33 @@ test('custos: validação, registo e apagar', async () => {
   assert.ok(await db.one(`SELECT 1 FROM audit_events WHERE action='admin.campaign_spend_deleted' AND meta->>'id'=$1`, [e.id]));
   assert.match(decodeURIComponent(String((await post(`/admin/metricas/custos/${e.id}/apagar`, base, admin)).headers.location)), /e=Custo inexistente/);
   assert.match(decodeURIComponent(String((await post('/admin/metricas/custos/nao-e-um-id/apagar', base, admin)).headers.location)), /e=Custo inexistente/);
+});
+
+test('custos: a mensagem fica junto ao formulário, os valores voltam depois de um erro e um custo fora do período fica à vista', async () => {
+  const base = { p: '7' };
+  const bad = await post('/admin/metricas/custos', { ...base, period_from: '2026-09-01', period_to: '2026-09-30', source: 'LinkedIn', campaign: 'qi-setembro', amount: '0', note: '"><b>x' }, admin);
+  const loc = String(bad.headers.location);
+  assert.match(loc, /^\/admin\/metricas\?p=7&e=[^&]+&s_from=2026-09-01&s_to=2026-09-30&s_source=LinkedIn&s_campaign=qi-setembro&s_amount=0&s_note=%22%3E%3Cb%3Ex#custos$/);
+  const html = (await get(loc.replace(/#.*$/, ''), admin)).body;
+  const iCard = html.indexOf('id="custos"'), iMsg = html.indexOf('<div class="flash bad" role="status">Valor inválido'), iForm = html.indexOf('action="/admin/metricas/custos"');
+  assert.ok(iCard > 0 && iCard < iMsg && iMsg < iForm, 'mensagem dentro do cartão dos custos, antes do formulário');
+  assert.match(html, /id="sf" name="period_from" type="date" required value="2026-09-01"/);
+  assert.match(html, /id="st" name="period_to" type="date" required value="2026-09-30"/);
+  assert.match(html, /id="ss" name="source"[^>]*value="LinkedIn"/);
+  assert.match(html, /id="sc" name="campaign"[^>]*value="qi-setembro"/);
+  assert.match(html, /id="sa" name="amount"[^>]*value="0"/);
+  assert.match(html, /id="sn" name="note"[^>]*value="&quot;&gt;&lt;b&gt;x"/);
+  assert.ok(!html.includes('"><b>x'));
+  // Sucesso com o custo fora dos 7 dias em vista: volta-se ao período do custo, onde ele aparece.
+  const ok = await post('/admin/metricas/custos', { ...base, period_from: '2026-09-01', period_to: '2026-09-30', source: 'linkedin', campaign: 'qi-setembro', amount: '300' }, admin);
+  const okLoc = decodeURIComponent(String(ok.headers.location));
+  assert.match(okLoc, /^\/admin\/metricas\?p=custom&from=2026-09-01&to=2026-09-30&ok=Custo de 300,00 € registado \(linkedin \/ qi-setembro, de 01\/09\/2026 a 30\/09\/2026\)\. Fica fora do período que estava a ver: mostra-se agora o período do custo\.#custos$/);
+  const shown = (await get(String(ok.headers.location).replace(/#.*$/, ''), admin)).body;
+  assert.ok(shown.indexOf('<div class="flash ok" role="status">Custo de 300,00 €') > shown.indexOf('id="custos"'));
+  assert.match(shown, /linkedin \/ qi-setembro<\/td><td class="n">300,00 €<\/td><td class="n">300,00 €<\/td>/);
+  assert.match(shown, /id="sa" name="amount"[^>]*value=""/, 'depois do sucesso o formulário fica vazio');
+  // Telemóvel: a tabela dos custos rola dentro do seu invólucro, não a página.
+  assert.match(shown, /<div style="overflow-x:auto"><table class="mt-table"><thead><tr><th>Período<\/th>/);
 });
 
 test('filtros do período', async () => {

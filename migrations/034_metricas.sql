@@ -40,4 +40,7 @@ CREATE TABLE campaign_spend (
   CHECK (period_to >= period_from)
 );
 CREATE INDEX campaign_spend_period ON campaign_spend (period_from, period_to);
-CREATE INDEX users_self_signup ON users (created_at) WHERE self_signup
+CREATE INDEX users_self_signup ON users (created_at) WHERE self_signup;
+-- Dia (UTC) em que a contagem das visitas começou: os registos anteriores não têm visitas contadas e ficam fora da conversão.
+CREATE TABLE campaign_tracking (started_on date NOT NULL);
+INSERT INTO campaign_tracking(started_on) VALUES ((now() AT TIME ZONE 'UTC')::date)
