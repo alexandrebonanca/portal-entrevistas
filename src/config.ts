@@ -92,6 +92,11 @@ export const config = {
     introPerMonth: Number(env.INTRO_PER_MONTH ?? 3),
     inviteDays: Number(env.INVITE_DAYS ?? 14),
     resendCooldownSec: Number(env.RESEND_COOLDOWN_SEC ?? 120),
+    // Formulário público de contacto (/contact): teto de pedidos novos por hora e por dia, todos os visitantes juntos.
+    // Cada pedido manda um email ao endereço escrito, e os limites por IP e por email contornam-se (X-Forwarded-For
+    // forjável, endereços diferentes); 0 fecha o formulário a pedidos novos.
+    contactPerHour: positive(env.CONTACT_PER_HOUR, 30),
+    contactPerDay: positive(env.CONTACT_PER_DAY, 100),
   },
   // Fila de trabalhos: uma via por omissão; WORKER_LANES=2 separa a curta e a dos vídeos (dois FFmpeg ao mesmo tempo não
   // cabem com folga nos 512 MB do Render starter, com o servidor web no mesmo processo). Batimento de quem corre um trabalho,

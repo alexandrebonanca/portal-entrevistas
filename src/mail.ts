@@ -18,7 +18,10 @@ export async function flushOutbox(db: Db) {
     if (Date.now() - lastWarn > 300_000) { lastWarn = Date.now(); console.warn('[mail] MAILERSEND_API_KEY não configurada: emails pendentes na outbox'); }
     return;
   }
-  const rows = await db.query(`SELECT * FROM emails WHERE state IN ('pending','failed') AND attempts < 6 AND next_attempt_at <= now() ORDER BY created_at LIMIT 20`);
+  // Os emails do formulário público de contacto (chaves contact:… e contact-reply:…; não confundir com contract:…, o
+  // contrato da subscrição) vão depois dos outros: uma leva de pedidos de visitantes não atrasa convites nem recibos.
+  const rows = await db.query(`SELECT * FROM emails WHERE state IN ('pending','failed') AND attempts < 6 AND next_attempt_at <= now()
+    ORDER BY (starts_with(dedupe_key, 'contact:') OR starts_with(dedupe_key, 'contact-reply:')), created_at LIMIT 20`);
   for (const m of rows) {
     // Reserva a linha antes de enviar: dois processos não enviam a mesma mensagem.
     const claimed = await db.one(`UPDATE emails SET state='sending', attempts=attempts+1 WHERE id=$1 AND state IN ('pending','failed') AND attempts < 6 AND next_attempt_at <= now() RETURNING id`, [m.id]);

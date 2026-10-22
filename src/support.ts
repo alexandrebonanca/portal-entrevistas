@@ -1,7 +1,7 @@
 import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
 import type { Db } from './db.ts';
 import { config } from './config.ts';
-import { esc, rateLimitAll, sha256, newToken, sign } from './lib.ts';
+import { esc, rateLimitAll, rateRoom, sha256, newToken, sign } from './lib.ts';
 import { t, type Lang } from './i18n.ts';
 import { queueEmail, emailShell } from './mail.ts';
 
@@ -111,7 +111,8 @@ export function guestHelpNav(g: { supportUnread?: number } | undefined, lang: La
 // ================= visitantes sem conta: formulário público de contacto =================
 /**
  * Pedidos novos pelo formulário: por email (por hora e por dia, porque cada pedido manda um email a esse endereço) e por
- * IP. As respostas pelo link privado contam no limite geral do suporte (SUPPORT_RATE), por pedido.
+ * IP; acima destes, o teto global (config.limits.contactPerHour e contactPerDay). As respostas pelo link privado contam
+ * no limite geral do suporte (SUPPORT_RATE), por pedido.
  */
 export const CONTACT_RATE = { perEmailHour: 3, perEmailDay: 10, perIpHour: 10 };
 /** Tempo mínimo entre abrir o formulário e enviá-lo (um robô envia logo) e máximo (um formulário velho volta a ser mostrado). */
@@ -155,12 +156,23 @@ export function contactStampAge(raw: unknown, now = Date.now()): number | null {
   return e.length === g.length && timingSafeEqual(e, g) ? now - Number(m[1]) : null;
 }
 
-/** Limite de pedidos novos pelo formulário: o email (hora e dia) e o IP; um envio recusado não gasta nenhum. */
-export const contactAllowed = (email: string, ip: string) => rateLimitAll([
-  [`contact:${email.toLowerCase()}`, CONTACT_RATE.perEmailHour, 3600_000],
-  [`contact-day:${email.toLowerCase()}`, CONTACT_RATE.perEmailDay, 24 * 3600_000],
-  [`contact-ip:${ip}`, CONTACT_RATE.perIpHour, 3600_000],
-]);
+/**
+ * Limite de pedidos novos pelo formulário: o teto global (hora e dia, todos os visitantes juntos; config.limits), o email
+ * (hora e dia) e o IP. O teto global confere-se primeiro e sem gastar: cheio, recusa sem criar contadores novos em memória
+ * (um por email e por IP, que uma inundação com endereços e IP forjados multiplicaria). Um envio recusado não gasta
+ * nenhum limite. 'global' quando quem recusa é o teto global, 'sender' quando é o do email ou o do IP.
+ */
+export function contactAllowed(email: string, ip: string): 'ok' | 'sender' | 'global' {
+  const hour: [string, number, number] = ['contact-global:hour', config.limits.contactPerHour, 3600_000];
+  const day: [string, number, number] = ['contact-global:day', config.limits.contactPerDay, 24 * 3600_000];
+  if (!rateRoom(...hour) || !rateRoom(...day)) return 'global';
+  return rateLimitAll([
+    [`contact:${email.toLowerCase()}`, CONTACT_RATE.perEmailHour, 3600_000],
+    [`contact-day:${email.toLowerCase()}`, CONTACT_RATE.perEmailDay, 24 * 3600_000],
+    [`contact-ip:${ip}`, CONTACT_RATE.perIpHour, 3600_000],
+    hour, day,
+  ]) ? 'ok' : 'sender';
+}
 
 /**
  * Token do link privado de um visitante: HMAC-SHA256 (APP_SECRET) do pedido e de um valor aleatório de 128 bits, em

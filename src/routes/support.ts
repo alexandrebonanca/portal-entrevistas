@@ -371,6 +371,8 @@ export async function supportRoutes(app: FastifyInstance) {
   const publicPage = (reply: FastifyReply, title: string, body: string, code = 200, noindex = false) =>
     reply.code(code).headers(HTML).send(page({ lang: 'en', title, desc: noindex ? undefined : `Write to the ${config.brand} team.`, noindex, nav: publicNav, styles: CONTACT_CSS, body: `<div class="narrow" style="padding-top:40px">${body}</div>` }));
   type ContactForm = { name?: string; email?: string; topic?: string; episode?: string; message?: string };
+  /** Recusas pelo teto global desde o último aviso no registo, e quando foi esse aviso. */
+  let contactCapRefused = 0, contactCapWarned = 0;
 
   /**
    * Formulário de contacto; `v` traz o que já foi escrito (depois de um erro), sem a caixa de aceitação. Depois de um erro
@@ -425,7 +427,18 @@ ${signedInNote(req)}${flash(e, 'bad')}${contactForm(v, stamp)}`, code);
     if (!isEmail(email)) return again('Please write a valid email address, so that we can send you the link to the conversation.');
     if (!body.ok) return again(body.error === 'empty' ? EN.supportEmpty : EN.supportTooLong(SUPPORT_MAX_BODY));
     if (b.accept !== '1') return again('Please tick the box to agree that we use these details to answer your request.');
-    if (!contactAllowed(email, req.ip)) return again('Too many messages have been sent from this email address or this network recently. Please try again later.', 429);
+    const allowed = contactAllowed(email, req.ip);
+    if (allowed === 'global') {
+      // Teto global cheio (uma inundação, venha de onde vier): nada se grava nem se envia; aviso no registo, no máximo de
+      // 5 em 5 minutos, com o número de recusas desde o último (sem emails nem IP).
+      contactCapRefused++;
+      if (Date.now() - contactCapWarned > 300_000) {
+        req.log.warn({ refused: contactCapRefused, perHour: config.limits.contactPerHour, perDay: config.limits.contactPerDay }, 'formulário de contacto: teto global de pedidos novos atingido');
+        contactCapWarned = Date.now(); contactCapRefused = 0;
+      }
+      return again('We are receiving an unusually high number of messages right now. Please try again later.', 429);
+    }
+    if (allowed !== 'ok') return again('Too many messages have been sent from this email address or this network recently. Please try again later.', 429);
     const topic = (topicOf(b.topic) || 'other') as ContactTopic;
     const { id } = await openVisitorThread(db, { name, email, topic, episodeRef: v.episode || null, body: body.text });
     // Na auditoria, só o pedido e o tema (nem o nome, nem o email, nem o texto).

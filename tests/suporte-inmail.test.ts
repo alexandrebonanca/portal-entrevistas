@@ -8,6 +8,10 @@ import { join } from 'node:path';
 // e o email pessoal do dono (SUPPORT_EMAIL) fora de tudo o que se vê ou recebe. IA em modo simulado, sem rede.
 const SENTINEL = 'dono.pessoal.sentinela@pessoal-teste.pt';
 process.env.SUPPORT_EMAIL = SENTINEL;
+// Teto global do formulário bem acima do que este ficheiro envia (dezenas de pedidos, alguns com o relógio adiantado):
+// os tetos por omissão (30 por hora, 100 por dia) testam-se em contacto-teto.test.ts.
+process.env.CONTACT_PER_HOUR = '1000';
+process.env.CONTACT_PER_DAY = '1000';
 process.env.AI_MOCK = '1';
 process.env.PGLITE_MEMORY = '1';
 process.env.STORAGE_DIR = mkdtempSync(join(tmpdir(), 'pe-test-'));
