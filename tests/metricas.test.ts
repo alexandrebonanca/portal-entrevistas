@@ -12,6 +12,7 @@ process.env.BASE_URL = 'http://test.local';
 const { openDb, migrate } = await import('../src/db.ts');
 const { buildApp } = await import('../src/app.ts');
 const M = await import('../src/metrics.ts');
+const { dailyChart } = await import('../src/routes/metrics.ts');
 
 let db: any, app: any;
 before(async () => { db = await openDb(); await migrate(db); app = await buildApp(db); });
@@ -350,7 +351,7 @@ test('métricas de um conjunto semeado: visitas, registos, ativação, convites,
   assert.match(html, /<p class="l">Custo<\/p><p class="v">180,00 €<\/p>/);
   assert.match(html, /<p class="l">ROAS<\/p><p class="v">0,46×<\/p>/);
   assert.match(html, /<p class="l">Receita de todas as contas<\/p><p class="v">100,00 €<\/p>/);
-  assert.match(html, /<svg class="mt-chart"[^>]*aria-label="Visitas e registos por dia, de 01\/01\/2026 a 10\/01\/2026: 200 visitas e 6 registos"/);
+  assert.match(html, /<div class="mt-chart" role="img" aria-label="Visitas e registos por dia, de 01\/01\/2026 a 10\/01\/2026: 200 visitas e 6 registos"/);
   assert.match(html, /<title>05\/01\/2026: 60 visitas<\/title>/);
   assert.match(html, /style="fill:var\(--accent\)"/, 'cores do tema (modo escuro incluído)');
   assert.match(html, /Como se calcula/);
@@ -370,7 +371,7 @@ test('conversão: os registos anteriores ao início da contagem das visitas não
     const html = (await get('/admin/metricas?p=custom&from=2026-05-08&to=2026-06-06', admin)).body;
     assert.match(html, /<p class="l">Conversão<\/p><p class="v">50,0 %<\/p><p class="s">visita → registo, desde 05\/06\/2026<\/p>/);
     assert.match(html, /As visitas só se contam desde 05\/06\/2026\./);
-    assert.match(html, /início da contagem<\/text>/, 'marca no gráfico');
+    assert.match(html, /<p class="mt-ch-note"><i class="dash"><\/i>Início da contagem das visitas: 05\/06\/2026 \(antes, só registos\)\.<\/p>/, 'marca no gráfico');
     assert.match(html, /<p class="l">Registos<\/p><p class="v">4<\/p>/);
     // Um período todo depois do início: sem aviso.
     assert.doesNotMatch((await get('/admin/metricas?p=custom&from=2026-06-05&to=2026-06-06', admin)).body, /As visitas só se contam desde/);
@@ -756,6 +757,51 @@ test('galeria e episódios: a chegada de fora com etiquetas conta uma vez e o re
   assert.match(pg, /e, quando o link traz etiquetas da campanha, a galeria \(\/podcasts\) e as páginas dos episódios \(\/e\/…\)/);
   assert.match(pg, /<p class="l">Visitas<\/p><p class="v">[^<]+<\/p><p class="s">chegadas de fora ao site<\/p>/);
   assert.doesNotMatch(pg, /já contada à chegada/);
+});
+
+test('registo: a entidade só volta no endereço (Location) com a forma de um slug', async () => {
+  const again = async (entidade: string) => String((await post('/registar', { name: 'X', email: 'x-ent@example.com', password: 'curta', terms: 1, entidade })).headers.location);
+  assert.match(await again('telecert-formacao'), /&entidade=telecert-formacao$/);
+  assert.match(await again('x'.repeat(100)), new RegExp(`&entidade=${'x'.repeat(100)}$`));
+  for (const e of ['x'.repeat(5000), 'x'.repeat(101), 'a b', '<script>', 'Telecert', '../x', 'a%0d%0ab']) {
+    const loc = await again(e);
+    assert.doesNotMatch(loc, /entidade/, e); assert.ok(loc.length < 300, e);
+  }
+  // Na página de registo, só um slug válido procura a entidade.
+  assert.match((await visit('/registar?entidade=telecert-formacao')).body, /Registering with <strong>Telecert Formação<\/strong>/);
+  assert.doesNotMatch((await visit(`/registar?entidade=${'y'.repeat(200)}`)).body, /Registering with/);
+});
+
+test('página: apagar um custo pede confirmação, datas mudadas passam a personalizado e o gráfico tem os textos fora do SVG', async () => {
+  const d = '2026-05-10';
+  await db.query(`INSERT INTO campaign_spend(period_from, period_to, source, campaign, amount_cents) VALUES ($1,$1,'linkedin','qi-conf',12345)`, [d]);
+  const html = (await get(`/admin/metricas?p=custom&from=${d}&to=${d}`, admin)).body;
+  assert.match(html, /action="\/admin\/metricas\/custos\/[0-9a-f-]{36}\/apagar" onsubmit="return confirm\('Apagar o custo de 123,45 € \(10\/05\/2026 – 10\/05\/2026\)\?'\)">/);
+  // Datas: com o seletor num período fixo, datas mudadas passam a personalizado; iguais às mostradas (ou vazias) seguem o seletor.
+  const t = '2026-10-22', shown = { shown_from: '2026-09-23', shown_to: t };
+  assert.deepEqual(M.parsePeriod({ p: '30', from: '2026-01-01', to: '2026-01-31', ...shown }, t), { period: { from: '2026-01-01', to: '2026-01-31', days: 31, preset: 'custom' } });
+  assert.deepEqual(M.parsePeriod({ p: '30', from: '2026-09-23', to: '2026-10-01', ...shown }, t).period, { from: '2026-09-23', to: '2026-10-01', days: 9, preset: 'custom' }, 'só o fim mudou');
+  assert.equal(M.parsePeriod({ p: '7', from: '2026-09-23', to: t, ...shown }, t).period.preset, '7', 'só o seletor mudou');
+  assert.equal(M.parsePeriod({ p: '7', from: '', to: '', ...shown }, t).period.preset, '7');
+  assert.match(M.parsePeriod({ p: '30', from: '2026-13-01', to: t, ...shown }, t).error!, /Indique as duas datas/);
+  const pg = (await get('/admin/metricas?p=30&from=2026-01-01&to=2026-01-10&shown_from=2026-09-23&shown_to=2026-10-22', admin)).body;
+  assert.match(pg, /<option value="custom" selected>/); assert.match(pg, /De 01\/01\/2026 a 10\/01\/2026 \(10 dias\)/);
+  assert.match(pg, /<input type="hidden" name="shown_from" value="2026-01-01"><input type="hidden" name="shown_to" value="2026-01-10">/);
+  assert.match(pg, /Mudar as datas «De» ou «Até» passa o período a «Personalizado»\./);
+  assert.match(pg, /addEventListener\('change',\(\)=>\{s\.value='custom';\}\)/);
+  // Gráfico vazio: diz que não há nada, sem uma escala de 0 a 1.
+  const empty = dailyChart([{ day: '2026-05-01', visits: 0, signups: 0 }, { day: '2026-05-02', visits: 0, signups: 0 }]);
+  assert.match(empty, /<span>sem visitas no período<\/span>/); assert.match(empty, /<span>sem registos no período<\/span>/);
+  assert.doesNotMatch(empty, /máximo|<text|<rect/);
+  // Textos em HTML (legíveis no telemóvel e nunca cortados), mesmo com o início da contagem perto do fim do período.
+  const days = Array.from({ length: 30 }, (_, i) => ({ day: M.addDaysUtc('2026-05-01', i), visits: i, signups: i % 2 }));
+  const c = dailyChart(days, '2026-05-29');
+  assert.doesNotMatch(c, /<text/, 'nenhum texto dentro do SVG');
+  assert.match(c, /<span>máximo de 29 por dia<\/span>/); assert.match(c, /<span>máximo de 1 por dia<\/span>/);
+  assert.match(c, /<p class="mt-ch-x"><span>01\/05\/2026<\/span><span>30\/05\/2026<\/span><\/p>/);
+  assert.match(c, /Início da contagem das visitas: 29\/05\/2026/);
+  assert.equal((c.match(/<svg class="mt-ch" viewBox="0 0 1000 100" preserveAspectRatio="none" aria-hidden="true"/g) ?? []).length, 2);
+  assert.equal((c.match(/stroke-dasharray:3 4/g) ?? []).length, 2, 'a marca nos dois painéis');
 });
 
 test('teto diário por grupo: lixo com origens inventadas ou sites falsos não esconde as campanhas verdadeiras', async () => {

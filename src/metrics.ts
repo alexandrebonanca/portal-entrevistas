@@ -251,11 +251,17 @@ export const addDaysUtc = (day: string, n: number) => utcDay(Date.parse(`${day}T
 export const daysBetween = (a: string, b: string) => Math.round((Date.parse(`${b}T00:00:00Z`) - Date.parse(`${a}T00:00:00Z`)) / 86400_000) + 1;
 export const MAX_PERIOD_DAYS = 1100;
 
-/** Período escolhido: 7, 30 ou 90 dias até hoje (UTC), ou de/até. Uma escolha inválida volta aos 30 dias, com o motivo. */
+/**
+ * Período escolhido: 7, 30 ou 90 dias até hoje (UTC), ou de/até. Uma escolha inválida volta aos 30 dias, com o motivo.
+ * O formulário da página manda também as datas que mostrava (`shown_from`, `shown_to`): datas mudadas com o seletor num período
+ * fixo passam a «Personalizado» (antes eram ignoradas sem aviso); datas iguais às mostradas seguem o seletor.
+ */
 export function parsePeriod(q: any, today = utcDay()): { period: Period; error?: string } {
   const last = (n: 7 | 30 | 90): Period => ({ from: addDaysUtc(today, -(n - 1)), to: today, days: n, preset: String(n) as '7' });
   const from = String(q?.from ?? '').trim(), to = String(q?.to ?? '').trim();
-  if (q?.p === 'custom' || ((from || to) && !['7', '30', '90'].includes(q?.p))) {
+  const preset = ['7', '30', '90'].includes(q?.p);
+  const edited = preset && !!(from || to) && q?.shown_from !== undefined && (from !== String(q.shown_from).trim() || to !== String(q?.shown_to ?? '').trim());
+  if (q?.p === 'custom' || ((from || to) && !preset) || edited) {
     if (!validDay(from) || !validDay(to)) return { period: last(30), error: 'Indique as duas datas do período (de e até), entre 2000 e 2100.' };
     if (from > to) return { period: last(30), error: 'A data inicial é depois da data final.' };
     const days = daysBetween(from, to);

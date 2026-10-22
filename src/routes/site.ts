@@ -90,7 +90,7 @@ export async function siteRoutes(app: FastifyInstance) {
     // Só conta quem chega de fora (link de campanha, outro site ou direto): vindo da landing, a visita já foi contada lá.
     if (!fromOwnSite(req.headers.referer, own)) await trackVisit(req, db, '/registar', tags);
     const first = (await userCount()) === 0;
-    const ent = q.entidade ? await db.one('SELECT slug, name FROM entities WHERE slug=$1 AND active', [String(q.entidade)]) : null;
+    const ent = entitySlug(q.entidade) ? await db.one('SELECT slug, name FROM entities WHERE slug=$1 AND active', [entitySlug(q.entidade)]) : null;
     return reply.type('text/html; charset=utf-8').send(authPage(first ? 'Create the administrator account' : 'Create your account', `${flash(q.e, 'bad')}
 <form method="post" action="/registar" class="card">${campaignInputs(tags)}${ent ? `<input type="hidden" name="entidade" value="${esc(ent.slug)}"><p class="hint sans">Registering with <strong>${esc(ent.name)}</strong></p>` : ''}<label for="n">Name</label><input id="n" name="name" type="text" required>
 <label for="e">Email</label><input id="e" name="email" type="email" required autocomplete="username">
@@ -106,12 +106,14 @@ export async function siteRoutes(app: FastifyInstance) {
     // Etiquetas da campanha vindas do formulário: normalizadas de novo (nunca se confia no formulário).
     const tags = tagsFrom(b, undefined, ownHosts(req.headers.host));
     const cq = campaignQuery(tags);
-    const again = (msg: string) => reply.redirect('/registar?e=' + encodeURIComponent(msg) + (cq ? `&${cq}` : '') + (b?.entidade ? `&entidade=${encodeURIComponent(String(b.entidade))}` : ''));
+    // A entidade volta no endereço só se tiver a forma de um slug (nada de valores enormes ou estranhos no cabeçalho Location).
+    const slug = entitySlug(b?.entidade);
+    const again = (msg: string) => reply.redirect('/registar?e=' + encodeURIComponent(msg) + (cq ? `&${cq}` : '') + (slug ? `&entidade=${slug}` : ''));
     const name = String(b?.name ?? '').trim().slice(0, 100), email = String(b?.email ?? '').trim().toLowerCase(), pw = String(b?.password ?? '');
     if (!name || !isEmail(email) || pw.length < 12 || !b?.terms) return again('Please complete all fields (password with at least 12 characters).');
     if (await db.one('SELECT 1 FROM users WHERE email=$1', [email])) return again('That email is already registered.');
     const first = (await userCount()) === 0;
-    const ent = !first && b.entidade ? await db.one('SELECT id FROM entities WHERE slug=$1 AND active', [String(b.entidade)]) : null;
+    const ent = !first && slug ? await db.one('SELECT id FROM entities WHERE slug=$1 AND active', [slug]) : null;
     const u = await db.one(`INSERT INTO users(email, name, password_hash, role, entity_id, self_signup, utm_source, utm_medium, utm_campaign, utm_content, utm_term, signup_referrer_host)
       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id`, [email, name, await hashPassword(pw), first ? 'admin' : 'interviewer', ent?.id ?? null, !first, ...signupTags(tags)]);
     await audit(db, email, 'signup', null, { role: first ? 'admin' : 'interviewer' });
@@ -119,6 +121,9 @@ export async function siteRoutes(app: FastifyInstance) {
     return reply.redirect(first ? '/admin/definicoes' : '/account');
   });
 }
+
+/** Slug de uma entidade recebido no pedido (a forma de `slugify`: minúsculas, algarismos e «-», até 100 caracteres), ou ''. */
+const entitySlug = (v: unknown) => (typeof v === 'string' && /^[a-z0-9-]{1,100}$/.test(v) ? v : '');
 
 /** Colunas da conta com as etiquetas do registo (NULL quando não há). */
 const signupTags = (t: Tags) => [t.source || null, t.source ? t.medium || null : null, t.source ? t.campaign || null : null, t.source ? t.content || null : null, t.source ? t.term || null : null, t.source ? null : t.ref || null];

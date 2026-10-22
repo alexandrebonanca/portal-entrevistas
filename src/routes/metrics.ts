@@ -15,8 +15,11 @@ const STYLES = `
 .mt-tile{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px 14px;font-family:system-ui,-apple-system,'Segoe UI',sans-serif}
 .mt-tile .l{color:var(--mute);font-size:.8rem;margin:0}.mt-tile .v{font-size:1.45rem;font-weight:650;margin:2px 0 0;font-variant-numeric:tabular-nums}.mt-tile .s{color:var(--mute);font-size:.78rem;margin:2px 0 0}
 .mt-table td.n,.mt-table th.n{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}.mt-table td{font-size:.9rem}.mt-table tfoot td{font-weight:650;border-top:2px solid var(--line)}
-.mt-chart{width:100%;height:auto;display:block;font-family:system-ui,-apple-system,'Segoe UI',sans-serif}
-.mt-key{display:inline-flex;gap:16px;flex-wrap:wrap;font:.85rem system-ui;color:var(--mute)}.mt-key i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:6px;vertical-align:-1px}
+.mt-chart{font-family:system-ui,-apple-system,'Segoe UI',sans-serif;color:var(--mute);font-size:.85rem}.mt-chart p{margin:0}
+.mt-ch{display:block;width:100%;height:96px}
+.mt-ch-h{display:flex;justify-content:space-between;gap:4px 12px;flex-wrap:wrap;margin:14px 0 6px!important}.mt-ch-h span:first-child{color:var(--ink);font-weight:600}
+.mt-chart i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:6px;vertical-align:-1px}.mt-chart i.dash{width:0;height:12px;border-left:2px dashed var(--mute);border-radius:0;margin:0 8px 0 4px}
+.mt-ch-x{display:flex;justify-content:space-between;margin-top:6px!important;font-size:.8rem;font-variant-numeric:tabular-nums}.mt-ch-note{margin-top:6px!important;font-size:.8rem}
 .mt-form .row>div{min-width:150px}
 .mt-link{font:.9rem ui-monospace,monospace}
 `;
@@ -27,29 +30,31 @@ const money = (c: number | null) => (c === null ? '—' : eurPt(Math.round(c)));
 const roas = (x: number | null) => (x === null ? '—' : `${x.toFixed(2).replace('.', ',')}×`);
 const dayPt = (d: string) => `${d.slice(8, 10)}/${d.slice(5, 7)}/${d.slice(0, 4)}`;
 
-/** Gráfico diário (SVG em linha, sem bibliotecas): visitas e registos em dois painéis com o mesmo eixo dos dias. */
+/**
+ * Gráfico diário (SVG em linha, sem bibliotecas): visitas e registos em dois painéis com o mesmo eixo dos dias. Só as barras e as
+ * linhas ficam no SVG, esticado à largura com altura fixa; os textos (painel, máximo, datas, início da contagem) ficam fora dele,
+ * em HTML, para se lerem no telemóvel e nunca ficarem cortados. Um painel sem nada diz-o, em vez de uma escala de 0 a 1.
+ */
 export function dailyChart(daily: Metrics['daily'], since: string | null = null): string {
-  const W = 1000, H = 120, GAP = 48, L = 48, R = 8, T = 30, n = Math.max(1, daily.length);
-  const bw = (W - L - R) / n;
-  const panel = (y0: number, key: 'visits' | 'signups', color: string, label: string) => {
-    const max = Math.max(1, ...daily.map(d => d[key]));
-    const bars = daily.map((d, i) => {
-      const h = (d[key] / max) * H;
-      return d[key] ? `<rect x="${(L + i * bw + bw * 0.12).toFixed(1)}" y="${(y0 + H - h).toFixed(1)}" width="${Math.max(0.6, bw * 0.76).toFixed(1)}" height="${h.toFixed(1)}" rx="1.5" style="fill:var(${color})"><title>${dayPt(d.day)}: ${d[key]} ${label.toLowerCase()}</title></rect>` : '';
-    }).join('');
-    return `<text x="0" y="${y0 - 14}" style="fill:var(--ink);font-size:15px;font-weight:600">${label}</text>
-<text x="${L - 8}" y="${y0 + 5}" text-anchor="end" style="fill:var(--mute);font-size:13px">${max}</text><text x="${L - 8}" y="${y0 + H}" text-anchor="end" style="fill:var(--mute);font-size:13px">0</text>
-<line x1="${L}" x2="${W - R}" y1="${y0}" y2="${y0}" style="stroke:var(--line);stroke-dasharray:4 4"/><line x1="${L}" x2="${W - R}" y1="${y0 + H}" y2="${y0 + H}" style="stroke:var(--line)"/>${bars}`;
-  };
-  const y2 = T + H + GAP;
+  const W = 1000, H = 100, n = Math.max(1, daily.length), bw = W / n;
   const first = daily[0]?.day ?? '', last = daily[daily.length - 1]?.day ?? '';
   const tv = daily.reduce((s, d) => s + d.visits, 0), ts = daily.reduce((s, d) => s + d.signups, 0);
-  // Início da contagem das visitas dentro do período: linha tracejada (antes dela, só há registos).
+  // Início da contagem das visitas dentro do período: linha tracejada nos dois painéis (antes dela, só há registos).
   const si = since && since > first ? daily.findIndex(d => d.day === since) : -1;
-  const mark = si > 0 ? `<line x1="${(L + si * bw).toFixed(1)}" x2="${(L + si * bw).toFixed(1)}" y1="${T - 6}" y2="${y2 + H}" style="stroke:var(--mute);stroke-dasharray:3 4"><title>Início da contagem das visitas: ${dayPt(since!)}</title></line><text x="${(L + si * bw + 4).toFixed(1)}" y="${T - 10}" style="fill:var(--mute);font-size:13px">início da contagem</text>` : '';
-  return `<svg class="mt-chart" viewBox="0 0 ${W} ${y2 + H + 26}" role="img" aria-label="Visitas e registos por dia, de ${dayPt(first)} a ${dayPt(last)}: ${tv} visitas e ${ts} registos">
-${panel(T, 'visits', '--accent', 'Visitas')}${panel(y2, 'signups', '--ok', 'Registos')}${mark}
-<text x="${L}" y="${y2 + H + 20}" style="fill:var(--mute);font-size:13px">${dayPt(first)}</text><text x="${W - R}" y="${y2 + H + 20}" text-anchor="end" style="fill:var(--mute);font-size:13px">${dayPt(last)}</text></svg>`;
+  const mark = si > 0 ? `<line x1="${(si * bw).toFixed(1)}" x2="${(si * bw).toFixed(1)}" y1="0" y2="${H}" vector-effect="non-scaling-stroke" style="stroke:var(--mute);stroke-dasharray:3 4"/>` : '';
+  const panel = (key: 'visits' | 'signups', color: string, label: string, none: string) => {
+    const max = Math.max(0, ...daily.map(d => d[key]));
+    const bars = max ? daily.map((d, i) => {
+      const h = (d[key] / max) * H;
+      return d[key] ? `<rect x="${(i * bw + bw * 0.12).toFixed(1)}" y="${(H - h).toFixed(1)}" width="${Math.max(0.6, bw * 0.76).toFixed(1)}" height="${h.toFixed(1)}" style="fill:var(${color})"><title>${dayPt(d.day)}: ${d[key]} ${label.toLowerCase()}</title></rect>` : '';
+    }).join('') : '';
+    return `<p class="mt-ch-h"><span><i style="background:var(${color})"></i>${label}</span><span>${max ? `máximo de ${int(max)} por dia` : none}</span></p>
+<svg class="mt-ch" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" aria-hidden="true" focusable="false">${max ? `<line x1="0" x2="${W}" y1="0.5" y2="0.5" vector-effect="non-scaling-stroke" style="stroke:var(--line);stroke-dasharray:4 4"/>` : ''}<line x1="0" x2="${W}" y1="${H}" y2="${H}" vector-effect="non-scaling-stroke" style="stroke:var(--line)"/>${bars}${mark}</svg>`;
+  };
+  return `<div class="mt-chart" role="img" aria-label="Visitas e registos por dia, de ${dayPt(first)} a ${dayPt(last)}: ${tv} visitas e ${ts} registos">
+${panel('visits', '--accent', 'Visitas', 'sem visitas no período')}${panel('signups', '--ok', 'Registos', 'sem registos no período')}
+<p class="mt-ch-x"><span>${dayPt(first)}</span><span>${dayPt(last)}</span></p>${si > 0 ? `
+<p class="mt-ch-note"><i class="dash"></i>Início da contagem das visitas: ${dayPt(since!)} (antes, só registos).</p>` : ''}</div>`;
 }
 
 const tile = (label: string, value: string, sub = '') => `<div class="mt-tile"><p class="l">${esc(label)}</p><p class="v">${esc(value)}</p>${sub ? `<p class="s">${esc(sub)}</p>` : ''}</div>`;
@@ -77,9 +82,10 @@ export function metricsPage(m: Metrics, o: { ok?: string; e?: string; periodErro
   const body = `<h1>Métricas das campanhas</h1>${flash(o.periodError, 'bad')}
 <form method="get" action="/admin/metricas" class="card mt-form"><div class="row" style="align-items:flex-end">
 <div><label for="mp">Período</label><select id="mp" name="p"><option value="7" ${sel('7')}>Últimos 7 dias</option><option value="30" ${sel('30')}>Últimos 30 dias</option><option value="90" ${sel('90')}>Últimos 90 dias</option><option value="custom" ${sel('custom')}>Personalizado (de / até)</option></select></div>
-<div><label for="mf">De</label><input id="mf" name="from" type="date" value="${esc(p.from)}"></div><div><label for="mt">Até</label><input id="mt" name="to" type="date" value="${esc(p.to)}"></div>
+<div><label for="mf">De</label><input id="mf" name="from" type="date" value="${esc(p.from)}"></div><div><label for="mt">Até</label><input id="mt" name="to" type="date" value="${esc(p.to)}"></div><input type="hidden" name="shown_from" value="${esc(p.from)}"><input type="hidden" name="shown_to" value="${esc(p.to)}">
 <div><button class="accent">Ver</button></div><div class="right"><a class="btn ghost" href="/admin/metricas.csv?${esc(pq)}">Exportar CSV</a></div></div>
-<p class="hint">De ${dayPt(p.from)} a ${dayPt(p.to)} (${p.days} ${p.days === 1 ? 'dia' : 'dias'}), datas em UTC. Para usar as datas «De» e «Até», escolha «Personalizado».</p>
+<p class="hint">De ${dayPt(p.from)} a ${dayPt(p.to)} (${p.days} ${p.days === 1 ? 'dia' : 'dias'}), datas em UTC. Mudar as datas «De» ou «Até» passa o período a «Personalizado».</p>
+<script>(()=>{const s=document.getElementById('mp');for(const id of ['mf','mt'])document.getElementById(id).addEventListener('change',()=>{s.value='custom';});})();</script>
 ${p.from < compactedBefore ? `<p class="hint">Antes de ${dayPt(compactedBefore)}, as visitas ficam agregadas por mês, no dia 1 de cada mês (ver «Retenção» em «Como se calcula»): para esses meses, use períodos de meses inteiros.</p>` : ''}
 ${before ? `<p class="hint"><strong>As visitas só se contam desde ${dayPt(before)}.</strong> Os registos anteriores aparecem em «Registos», mas não entram na conversão (não há visitas contadas para eles).</p>` : ''}</form>
 
@@ -91,7 +97,7 @@ ${tile('Custo por pagante', money(x.cpp), 'só campanhas com custo')}${tile('ROA
 ${m.entityRevenueCents || m.allEntityRevenueCents ? tile('Cobrado por entidades', money(m.entityRevenueCents), `contas novas, Stripe própria da entidade, fora da receita; todas as contas: ${money(m.allEntityRevenueCents)}`) : ''}
 </div>
 
-<div class="card"><div class="row"><h2 style="margin:0" class="grow">Por dia</h2><span class="mt-key"><span><i style="background:var(--accent)"></i>Visitas</span><span><i style="background:var(--ok)"></i>Registos</span></span></div>
+<div class="card"><h2 style="margin:0">Por dia</h2>
 ${dailyChart(m.daily, m.trackingSince)}</div>
 
 <div class="card" style="overflow-x:auto"><h2 style="margin-top:0">Por campanha</h2>
@@ -117,7 +123,7 @@ ${flash(o.ok)}${flash(o.e, 'bad')}
 <div class="grow"><label for="sn">Nota (opcional)</label><input id="sn" name="note" type="text" maxlength="200" value="${sv(q, 's_note')}"></div></div>
 <p><button class="accent">Registar custo</button></p></form>
 ${m.spend.length ? `<div style="overflow-x:auto"><table class="mt-table"><thead><tr><th>Período</th><th>Origem / campanha</th><th class="n">Valor</th><th class="n">Neste período</th><th>Nota</th><th></th></tr></thead><tbody>${m.spend.map(e => `<tr><td>${dayPt(e.period_from)} – ${dayPt(e.period_to)}</td><td>${esc(e.source)} / ${esc(e.campaign || '—')}</td><td class="n">${eurPt(e.amount_cents)}</td><td class="n">${money(e.inPeriodCents)}</td><td>${esc(e.note)}<br><span class="hint">${esc(e.created_by ?? '')} · ${fmtDate(e.created_at)}</span></td>
-<td><form method="post" action="/admin/metricas/custos/${esc(e.id)}/apagar">${periodInputs(p)}<button class="danger" style="padding:6px 12px;min-height:0">Apagar</button></form></td></tr>`).join('')}</tbody></table></div>` : '<p class="hint">Nenhum custo registado que toque este período.</p>'}</div>
+<td><form method="post" action="/admin/metricas/custos/${esc(e.id)}/apagar" onsubmit="return confirm('Apagar o custo de ${esc(eurPt(e.amount_cents))} (${dayPt(e.period_from)} – ${dayPt(e.period_to)})?')">${periodInputs(p)}<button class="danger" style="padding:6px 12px;min-height:0">Apagar</button></form></td></tr>`).join('')}</tbody></table></div>` : '<p class="hint">Nenhum custo registado que toque este período.</p>'}</div>
 
 <div class="card" id="link"><h2 style="margin-top:0">Construtor de links</h2>
 <form method="get" action="/admin/metricas#link" class="mt-form">${periodInputs(p)}
