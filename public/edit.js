@@ -46,10 +46,14 @@
 
   // Formulários com alterações por guardar (para avisar antes de o assistente recarregar a página).
   const dirty = new Set();
-  let submittedHere = false;
+  // Formulário enviado nesta página e ação do assistente enviada nela (ver o 'pageshow' mais abaixo).
+  const submitted = new WeakSet();
+  let submittedHere = false, sentFromHere = false;
   // Valores que o browser repõe (ao recarregar ou ao voltar atrás) também são alterações por guardar. Confere-se no
-  // 'pageshow', que chega depois de o browser repor os formulários.
+  // 'pageshow', que chega depois de o browser repor os formulários. Um formulário já enviado não conta (o que tem
+  // escrito foi guardado).
   const restored = () => root && root.querySelectorAll('form').forEach((f) => {
+    if (submitted.has(f)) return;
     for (const e of f.elements) {
       if ((e.type === 'checkbox' || e.type === 'radio') ? e.checked !== e.defaultChecked
         // (sem nenhuma opção marcada no HTML, a escolhida por omissão é a primeira)
@@ -60,10 +64,17 @@
   if (root) {
     root.addEventListener('input', (ev) => { const f = ev.target.form; if (f) dirty.add(f); });
     root.addEventListener('change', (ev) => { const f = ev.target.form; if (f) dirty.add(f); });
-    // ao voltar atrás para esta página depois de enviar um formulário, a versão guardada pelo browser é a de antes do envio
-    root.addEventListener('submit', (ev) => { dirty.delete(ev.target); submittedHere = true; });
+    root.addEventListener('submit', (ev) => { dirty.delete(ev.target); submitted.add(ev.target); submittedHere = true; });
     addEventListener('pageshow', restored);
   }
+  // Voltar atrás para esta página depois de uma ação do assistente ou de um formulário enviado nela: a página guardada
+  // pelo browser (com o estado do script) é a de antes do envio (deixava acrescentar a mesma pergunta duas vezes ou
+  // reenviar um pedido adicional), por isso recarrega-se, sem os avisos antigos no endereço. Depois de um formulário,
+  // só se não houver alterações por guardar noutros (recarregar perdia-as; a ação do assistente já pediu confirmação
+  // para isso). Vale em todas as páginas de edição, com ou sem o painel do assistente.
+  addEventListener('pageshow', (ev) => {
+    if (ev.persisted && (sentFromHere || (submittedHere && !dirty.size))) reloadAt(location.hash.slice(1));
+  });
 
   // ---------------- assistente de composição ----------------
   const panel = document.getElementById('compor'), fab = document.getElementById('comporBtn');
@@ -157,7 +168,7 @@
       render(last); // volta a desativar «Adicionar» se não houver vagas
     }, 20000);
   };
-  let leaving = false, sentFromHere = false;
+  let leaving = false;
   addEventListener('pagehide', () => { leaving = true; });
   addEventListener('pageshow', () => { leaving = false; });
 
@@ -271,13 +282,6 @@
   render(last);
   // Reaberto no telemóvel depois de uma ação dele: mostra logo as sugestões, não o topo do painel.
   if (reopen && !wide() && last) panel.scrollTop = out.offsetTop - 12;
-  // Voltar atrás para esta página depois de uma ação do assistente ou de um formulário enviado nela: a página guardada
-  // pelo browser (com o estado do script) é a de antes do envio (deixava acrescentar a mesma sugestão duas vezes e
-  // dava por guardar o que já se guardou), por isso recarrega-se (sem os avisos antigos no endereço). Depois de um
-  // formulário, só se não houver alterações por guardar noutros (recarregar perdia-as; a ação do assistente já pediu
-  // confirmação para isso). Senão, fica como está e só se atualizam as dicas e o painel.
-  addEventListener('pageshow', (ev) => {
-    if (ev.persisted && (sentFromHere || (submittedHere && !dirty.size))) { reloadAt(location.hash.slice(1)); return; }
-    render(last); updateTips();
-  });
+  // Ao voltar à página sem a recarregar (ver o 'pageshow' do início), atualizam-se as dicas e o painel.
+  addEventListener('pageshow', () => { render(last); updateTips(); });
 })();

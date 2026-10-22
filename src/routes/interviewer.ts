@@ -18,7 +18,7 @@ import { inviteLimits, draftQuestionMax, answeredMs, secondsLeft, mmss, FOLLOWUP
 import { introCard } from './intro.ts';
 import { helpNav } from '../support.ts';
 import { assistantAiFor } from '../assistant.ts';
-import { composeAction, composeDraft, composeAssist, composeAvailable, COMPOSE_MAX_REQUEST, COMPOSE_BODY_LIMIT } from '../compose.ts';
+import { composeAction, composeDraft, composeAssist, composeAvailable, composeHourFull, COMPOSE_MAX_REQUEST, COMPOSE_BODY_LIMIT } from '../compose.ts';
 
 const H = { 'Content-Type': 'text/html; charset=utf-8' };
 export const nav = (u: any) => `<a href="/painel">Painel</a><a href="/entrevistas/nova">Nova entrevista</a><a href="/account">Conta</a>${u.role === 'admin' ? '' : '<a href="/conta/creditos">Créditos</a>'}${helpNav(u)}${u.role === 'admin' ? '<a href="/admin/entidades">Entidades</a><a href="/admin/utilizadores">Utilizadores</a><a href="/admin/definicoes">Definições</a>' : u.role === 'entity_admin' ? '<a href="/entidade">Entidade</a>' : ''}<form method="post" action="/sair" style="display:inline"><button class="ghost" style="padding:6px 12px;min-height:0;margin-left:16px">Sair (${esc(u.name)})</button></form>`;
@@ -308,6 +308,9 @@ ${locked ? '' : composePanel(iv, quota!, !(await inEntity(await entityOfIntervie
     const acao = composeAction((req.body as any)?.acao);
     if (!acao) return reply.code(400).send({ ok: false, error: 'Pedido inválido.' });
     if (!(await assistantAiFor(db, req.user))) return reply.code(403).send({ ok: false, error: 'As sugestões por IA estão disponíveis para contas com subscrição ativa.' });
+    // acima do limite por hora, recusa-se já, sem preparar o rascunho (tapar os contactos tem algum custo)
+    const hourFull = composeHourFull(req.user.id);
+    if (hourFull) return reply.code(429).send({ ok: false, error: hourFull });
     const quota = await quotaFor(db, req.user), max = draftQuestionMax(quota);
     const qs = (await db.query('SELECT id, text, audio_asset_id FROM questions WHERE interview_id=$1 ORDER BY position LIMIT $2', [iv.id, max])) as any[];
     const draft = composeDraft(iv, qs, { maxQuestions: max, answerLimitSec: inviteLimits(quota).answerLimitSec });

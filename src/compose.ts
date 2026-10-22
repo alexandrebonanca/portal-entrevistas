@@ -76,12 +76,13 @@ const NOT_SITE_UPPER = /^(asp|vb|ado|ml|ikvm|entity|dot)\.net$/i;
  * números que não são telefones (datas com hora, montantes grandes) e algumas abreviaturas («Ex.mo»): preferível a
  * deixar sair um contacto. Um endereço com maiúsculas e minúsculas misturadas e sem caminho («Maria.Pt») não se
  * distingue de «fim.De» e fica. Os campos de origem têm tamanho limitado (no máximo 4000 caracteres), por isso o corte
- * antes das expressões regulares nunca separa um contacto; depois corta-se no tamanho. O email tem âncora à esquerda
- * (o mesmo resultado, sem o tempo quadrático em textos longos).
+ * antes das expressões regulares nunca separa um contacto; depois corta-se no tamanho. O email é o da versão
+ * verificada, tal e qual (também apanha emails colados uns aos outros); o tempo dele cresce com o quadrado do texto,
+ * mas os campos têm tamanho limitado e a rota só prepara o rascunho dentro do limite por hora (ver composeHourFull).
  */
 export const scrub = (s: unknown, max: number) => String(s ?? '').slice(0, max + 4000)
   .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '')
-  .replace(/(?<![\p{L}\p{N}._%+-])[\p{L}\p{N}._%+-]+@[\p{L}\p{N}-]+(\.[\p{L}\p{N}-]+)*\.\p{L}{2,}/gu, '[email]')
+  .replace(/[\p{L}\p{N}._%+-]+@[\p{L}\p{N}-]+(\.[\p{L}\p{N}-]+)*\.\p{L}{2,}/gu, '[email]')
   .replace(/https?:\/\/[^\s,;)]+|www\.[^\s,;)]+/gi, '[link]')
   .replace(BASE_SITE_PATH, '[link]')
   .replace(BASE_SITE, '[link]')
@@ -208,6 +209,10 @@ const defaultBudget = () => ownKey() || rateRoom(GLOBAL_HOUR, config.openai.comp
 
 export type ComposeOutcome = { ok: true; result: ComposeResult } | { ok: false; error: string; status: number };
 
+const hourMessage = () => `Atingiu o limite de ${COMPOSE_RATE.perHour} pedidos por hora ao assistente. Tente mais tarde.`;
+/** Mensagem se a pessoa já gastou os pedidos desta hora (sem gastar nada): a rota confere-o antes de preparar o rascunho. */
+export const composeHourFull = (userId: string) => (rateRoom(`compose:${userId}`, COMPOSE_RATE.perHour, 3600_000) ? null : hourMessage());
+
 /** Desfaz a contagem de hoje de um pedido que não chegou a ser feito. */
 const unbump = (db: Db, who: string) => db.query(`UPDATE compose_usage SET n = n - 1 WHERE who=$1 AND day=current_date AND n > 0`, [who]);
 
@@ -244,7 +249,7 @@ export async function composeAssist(db: Db, userId: string, acao: ComposeAction,
   // Os limites só gastam quando o pedido segue para o modelo: primeiro confere-se se há lugar (por hora, em memória),
   // depois conta-se no dia (na base de dados) e só então se ocupa o lugar da hora; se entretanto se esgotou, desfaz-se.
   const busy = { ok: false as const, status: 429, error: 'O assistente está muito solicitado neste momento. Tente mais tarde.' };
-  const hourMsg = { ok: false as const, status: 429, error: `Atingiu o limite de ${COMPOSE_RATE.perHour} pedidos por hora ao assistente. Tente mais tarde.` };
+  const hourMsg = { ok: false as const, status: 429, error: hourMessage() };
   const userHour: [string, number, number] = [`compose:${userId}`, COMPOSE_RATE.perHour, 3600_000];
   if (!rateRoom(...userHour)) return hourMsg;
   if (!budget()) return busy;

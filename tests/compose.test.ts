@@ -219,6 +219,15 @@ test('pedido ao assistente: acesso, ações e respostas', async () => {
   assert.equal((await assist(id, 'sugerir', admin, { pedido: 'x'.repeat(C.COMPOSE_BODY_LIMIT) })).statusCode, 413);
   assert.equal((await assist(await newInterview(com), 'sugerir', com)).statusCode, 200, 'quem tem plano também pode');
 
+  // acima do limite por hora, a rota recusa antes de preparar o rascunho
+  const comUser = (await db.one(`SELECT id FROM users WHERE email='com@example.com'`)).id;
+  const cid2 = await newInterview(com);
+  const { rateLimit } = await import('../src/lib.ts');
+  while (rateLimit(`compose:${comUser}`, C.COMPOSE_RATE.perHour, 3600_000)) { /* esgota a hora desta conta */ }
+  const hour = await assist(cid2, 'sugerir', com);
+  assert.equal(hour.statusCode, 429);
+  assert.match(hour.json().error, new RegExp(`limite de ${C.COMPOSE_RATE.perHour} pedidos por hora`));
+
   // depois do convite: recusado
   await db.query(`UPDATE interviews SET collection_status='invited' WHERE id=$1`, [id]);
   assert.equal((await assist(id, 'sugerir', admin)).statusCode, 409);
@@ -279,10 +288,14 @@ test('tapar: emails, sites e telefones em vários formatos; datas, valores e nú
   assert.equal(C.scrub(prose, 2000), prose);
   // nomes de ficheiros em minúsculas com um domínio de país (main.py, README.md) continuam tapados, como antes
   assert.equal(C.scrub('Veja main.py e README.md', 1000), 'Veja [link] e [link]');
-  // o email tem âncora à esquerda: um texto longo sem @ já não custa tempo quadrático
+  // o email é o da versão verificada (tempo quadrático no texto, mas os campos têm tamanho limitado): um rascunho
+  // enorme e sem @ continua a demorar pouco
   const t0 = performance.now();
   for (let i = 0; i < 16; i++) C.scrub('a'.repeat(4000), 1000);
-  assert.ok(performance.now() - t0 < 100, `demorou ${Math.round(performance.now() - t0)} ms`);
+  assert.ok(performance.now() - t0 < 2000, `demorou ${Math.round(performance.now() - t0)} ms`);
+  // emails colados uns aos outros (a versão verificada tapava-os; uma âncora à esquerda deixava sair o segundo)
+  for (const x of ['rui@empresa.pt-ana@empresa.pt', 'rui@x.pt+ana@y.pt', 'a@b.com_x@c.org', 'a@b.pt.c@d.pt', 'rui@x.pt2ana@y.pt', 'mailto:rui@empresa.pt%2Cana@empresa.pt'])
+    assert.ok(!/ana@|x@c|c@d/.test(C.scrub(x, 1000)), x);
   // o corte antes das expressões regulares não separa um contacto (os campos de origem têm no máximo 4000 caracteres)
   assert.equal(C.scrub('x'.repeat(1490) + ' rui.costa@empresa.pt e 912 345 678', 1500), 'x'.repeat(1490) + ' [email] e');
 });
@@ -297,7 +310,8 @@ test('tapar: contactos nos formatos habituais em vários contextos nunca seguem 
     (c: string) => `«${c}»`, (c: string) => `${c}.Obrigado`, (c: string) => `${c}.Com`, (c: string) => `Contacto: ${c}\n€20 de inscrição`,
     (c: string) => `${c} - 50% de desconto`, (c: string) => `Data 12/03/2025 – ${c}`, (c: string) => `Tel.: ${c}`, (c: string) => `See ${c}. How did you start?`,
     (c: string) => `Reservas: ${c} € 25 por pessoa.`, (c: string) => `MB WAY ${c} €5`, (c: string) => `Ana\t${c}\t€ 1500`, (c: string) => `${c} mil obrigados`,
-    (c: string) => `LIGUE ${c}.NA SEDE`, (c: string) => `${c}.TO book`, (c: string) => `Tel ${c}.team`, (c: string) => `${c}.PT`, (c: string) => `[${c}]`, (c: string) => `${c}/x`];
+    (c: string) => `LIGUE ${c}.NA SEDE`, (c: string) => `${c}.TO book`, (c: string) => `Tel ${c}.team`, (c: string) => `${c}.PT`, (c: string) => `[${c}]`, (c: string) => `${c}/x`,
+    (c: string) => `rui@x.pt-${c}`, (c: string) => `rui@x.pt+${c}`, (c: string) => `${c}-ana@y.pt`];
   // Referência: as regras da versão verificada (5f886a5), copiadas tal e qual. O scrub atual tem de tapar sempre pelo
   // menos o mesmo (as regras novas só podem tapar mais); foi assim que se apanharam três regressões antes de publicar.
   const CC = 'ac ad ae af ag ai al am ao aq ar as at au aw ax az ba bb bd be bf bg bh bi bj bm bn bo br bs bt bw by bz ca cc cd cf cg ch ci ck cl cm cn co cr cu cv cw cx cy cz de dj dk dm do dz ec ee eg er es et eu fi fj fk fm fo fr ga gd ge gf gg gh gi gl gm gn gp gq gr gs gt gu gw gy hk hm hn hr ht hu id ie il im in io iq ir is it je jm jo jp ke kg kh ki km kn kp kr kw ky kz la lb lc li lk lr ls lt lu lv ly ma mc md me mg mh mk ml mm mn mo mp mq mr ms mt mu mv mw mx my mz na nc ne nf ng ni nl no np nr nu nz om pa pe pf pg ph pk pl pm pn pr ps pt pw py qa re ro rs ru rw sa sb sc sd se sg sh si sk sl sm sn so sr ss st su sv sx sy sz tc td tf tg th tj tk tl tm tn to tr tt tv tw tz ua ug uk us uy uz va vc ve vg vi vn vu wf ws ye yt za zm zw'.replace(/ /g, '|');
