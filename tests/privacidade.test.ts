@@ -15,6 +15,8 @@ const { openDb, migrate } = await import('../src/db.ts');
 const { buildApp } = await import('../src/app.ts');
 const { config } = await import('../src/config.ts');
 const { PRIVACY_UPDATED } = await import('../src/privacy.ts');
+const { purgeExpiredSessions } = await import('../src/worker.ts');
+const { sha256 } = await import('../src/lib.ts');
 
 let db: any, app: any, body = '';
 before(async () => {
@@ -55,6 +57,12 @@ test('privacidade: lista os terceiros integrados, as transferências e as bases 
   const rec = section('Who receives data');
   for (const p of ['Render', 'OpenAI', 'Google', 'Replicate', 'MailerSend', 'Stripe', 'Moloni']) assert.ok(rec.includes(`<strong>${p}</strong>`), `${p} na lista`);
   assert.match(rec, /Veo, through Vertex AI or the Gemini API/); assert.match(rec, /us-central1/); assert.match(rec, /We do not sell personal data/);
+  // O gestor de entidade só chega às chaves e aos dados de vendedora (canManage em routes/entities.ts); os utilizadores são do administrador.
+  assert.ok(rec.includes('entity managers manage their organisation’s service accounts and seller details, but cannot see its members’ accounts or open their interviews'));
+  assert.doesNotMatch(body, /settings and users/);
+  // A Stripe recebe os dados também ao gravar a faturação de uma empresa com IVA de outro país da UE (verifyVatNumber), antes de qualquer compra.
+  assert.match(rec, /<strong>Stripe<\/strong> \(when you buy, and when a business saves billing details with an EU VAT number from a country other than the seller’s, so that Stripe can check it in the EU VIES system\)/);
+  assert.doesNotMatch(body, /only when you buy/);
   // Os fornecedores do laboratório só recebem retratos fictícios: não aparecem como destinatários.
   assert.doesNotMatch(body, /fal\.ai|WaveSpeed/);
   const tr = section('International transfers');
@@ -69,15 +77,35 @@ test('privacidade: aprovação «por omissão», IA, prazos e cookies conforme o
   const pub = section('Publication');
   assert.match(pub, /Nothing is published without the interviewer’s decision and, by default, your approval of the final version, and always with your approval when you appear animated by AI/);
   assert.doesNotMatch(body, /Nothing is published without your approval/);
+  // Retirar a autorização da capa não muda uma capa já feita (cover_use só se lê ao gerar a capa): a página não promete o contrário.
+  assert.match(pub, /with your photos only if you allowed it when the cover was made/);
+  assert.match(pub, /does not change a cover that has already been made/); assert.match(pub, /use the interview’s help page or write to us/);
+  assert.match(section('Your rights'), /withdrawing permission for the cover does not change a cover already made/);
   const ai = section('AI processing');
   assert.match(ai, /no voice is cloned/); assert.match(ai, /audible notice/); assert.match(ai, /AI-animated portrait/); assert.match(ai, /AI-generated video · AI voice/);
   assert.match(ai, /not used to take decisions about anyone that have legal or similarly significant effects/);
   const keep = section('How long we keep data');
   for (const v of ['14 days', '180 days', '62 days', '90 days', '10 years', 'no automatic deletion period', 'kept privately until deletion is requested']) assert.ok(keep.includes(v), v);
+  assert.match(keep, /record of a session[^<]*is deleted when you sign out or within about an hour after the session expires/);
   // Os pedidos ao suporte não são apagados com a entrevista ou a conta (não há forma de as apagar no portal).
   assert.doesNotMatch(body, /deleted together with the interview or the account/);
   const ck = section('Cookies and browser storage');
   assert.match(ck, /<code>sid<\/code>/); assert.match(ck, /<code>gs<\/code>/); assert.match(ck, /no advertising, analytics or third-party cookies/);
+});
+
+test('privacidade: o worker apaga as sessões expiradas (de quem tem conta e dos convidados) e mantém as válidas', async () => {
+  const u = await db.one(`INSERT INTO users(email, name, password_hash) VALUES ('sessoes@example.com','S','x') RETURNING id`);
+  const iv = await db.one(`INSERT INTO interviews(owner_id, title) VALUES ($1,'Sessões') RETURNING id`, [u.id]);
+  const inv = await db.one(`INSERT INTO invitations(interview_id, token_hash, question_version, expires_at, purpose) VALUES ($1,'h-sessoes',1, now() + interval '1 day','invite') RETURNING id`, [iv.id]);
+  await db.query(`INSERT INTO sessions(id, user_id, expires_at) VALUES ($1,$3, now() - interval '1 minute'), ($2,$3, now() + interval '1 day')`, [sha256('sid-velha'), sha256('sid-nova'), u.id]);
+  await db.query(`INSERT INTO guest_sessions(id, interview_id, invitation_id, expires_at) VALUES ($1,$3,$4, now() - interval '1 minute'), ($2,$3,$4, now() + interval '1 day')`, [sha256('gs-velha'), sha256('gs-nova'), iv.id, inv.id]);
+  assert.equal(await purgeExpiredSessions(db, true), 2);
+  assert.deepEqual((await db.query('SELECT id FROM sessions WHERE user_id=$1', [u.id])).map((r: any) => r.id), [sha256('sid-nova')]);
+  assert.deepEqual((await db.query('SELECT id FROM guest_sessions WHERE invitation_id=$1', [inv.id])).map((r: any) => r.id), [sha256('gs-nova')]);
+  assert.equal(await purgeExpiredSessions(db), 0, 'no máximo uma vez por hora sem «force»');
+  // A sessão que ficou continua a dar entrada.
+  const r = await app.inject({ method: 'GET', url: '/account', cookies: { sid: 'sid-nova' } });
+  assert.equal(r.statusCode, 200);
 });
 
 test('privacidade: parágrafos já testados mantêm-se iguais', () => {
