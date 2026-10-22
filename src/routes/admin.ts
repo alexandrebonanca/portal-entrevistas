@@ -115,8 +115,8 @@ export async function serviceTest(db: any, g: string, userEmail: string): Promis
   return msg;
 }
 
-/** Navegação do administrador, com «Suporte» e o número de pedidos por ler, e a base do assistente virtual. */
-export const adminNav = (u?: any) => `<a href="/painel">Painel</a><a href="/admin/utilizadores">Utilizadores</a><a href="/admin/definicoes">Definições</a><a href="/admin/faturacao">Faturação</a><a href="/admin/creditos">Créditos</a><a href="/admin/laboratorio">Laboratório</a>${helpNav(u)}<a href="/admin/assistente">Assistente</a><form method="post" action="/sair" style="display:inline"><button class="ghost" style="padding:6px 12px;min-height:0;margin-left:16px">Sair</button></form>`;
+/** Navegação do administrador, com «Suporte» e o número de pedidos por ler, a base do assistente virtual e as métricas das campanhas. */
+export const adminNav = (u?: any) => `<a href="/painel">Painel</a><a href="/admin/utilizadores">Utilizadores</a><a href="/admin/definicoes">Definições</a><a href="/admin/faturacao">Faturação</a><a href="/admin/creditos">Créditos</a><a href="/admin/laboratorio">Laboratório</a>${helpNav(u)}<a href="/admin/assistente">Assistente</a><a href="/admin/metricas">Métricas</a><form method="post" action="/sair" style="display:inline"><button class="ghost" style="padding:6px 12px;min-height:0;margin-left:16px">Sair</button></form>`;
 
 export async function adminRoutes(app: FastifyInstance) {
   const db = app.db;
