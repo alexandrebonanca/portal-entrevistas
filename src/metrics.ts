@@ -137,7 +137,8 @@ export const OTHER = '(outros)';
  * inventar etiquetas aos milhares não enche a base, e o lixo de um grupo não esconde as campanhas de outro. 500 nas campanhas
  * com custo e nas «qi-…» das origens conhecidas; 100 nas outras campanhas dessas origens e no resto (origens desconhecidas,
  * sites de referência, direto), onde um pedido anónimo inventa uma combinação sem esforço. Com a agregação mensal
- * (`compactVisits`), a tabela fica com no máximo ~1200 linhas por dia nos últimos VISIT_DAILY_DAYS dias e ~500 por mês antes.
+ * (`compactVisits`, que guarda as combinações de cada mês pela mesma ordem dos grupos), a tabela fica com no máximo ~1200 linhas
+ * por dia nos últimos VISIT_DAILY_DAYS dias e ~500 por mês antes.
  */
 export const VISIT_ROW_CAPS: readonly number[] = [500, 500, 100, 100];
 /** Origens conhecidas (as do construtor de links, menos «other»): o grupo delas tem teto próprio. */
@@ -190,8 +191,12 @@ let lastCompact = 0;
 /**
  * Retenção das visitas: as linhas com mais de VISIT_DAILY_DAYS dias agregam-se por mês, no dia 1 desse mês e com a página «*»
  * (somam-se as páginas e as `utm_term`), mantendo a origem, o meio, a campanha, o conteúdo e o site de origem. Em cada mês ficam
- * no máximo `keep` combinações — primeiro as campanhas com custo registado, depois as mais visitadas — e as restantes, com a
- * «(outros)» do mês, juntam-se numa só «(outros)». A soma das visitas de cada mês não muda. Só refaz os meses com linhas por
+ * no máximo `keep` combinações, pela ordem dos grupos da contagem (`visitTierSql`: as campanhas com custo registado, as «qi-…»
+ * das origens conhecidas, as outras campanhas dessas origens e o resto) e, em cada grupo, as mais visitadas; as restantes, com a
+ * «(outros)» do mês, juntam-se numa só «(outros)». Assim, o lixo do último grupo (origens inventadas e sites de referência
+ * falsos, até ao teto diário dele, com mais visitas) não ocupa o mês e não apaga as campanhas verdadeiras dos outros grupos;
+ * só combinações inventadas de um grupo anterior (por exemplo «linkedin» com campanhas «qi-…» falsas) passam à frente das dos
+ * grupos seguintes. A soma das visitas de cada mês não muda. Só refaz os meses com linhas por
  * agregar (página diferente de «*» antes do corte), juntando-as às já agregadas desse mês, numa transação; a contagem do dia
  * nunca toca nesses dias. Um mês cortado a meio fica com a parte recente por dia até passar o corte. Corre no worker ao arrancar
  * e depois no máximo uma vez por dia (salvo `force`). Devolve o número de linhas a menos.
@@ -208,9 +213,9 @@ export async function compactVisits(db: Db, o: { today?: string; keep?: number; 
       // Dias do mês `m` antes do corte.
       const range = (d: string) => `${d} >= $1::date AND ${d} < LEAST(($1::date + interval '1 month')::date, $2::date)`;
       const groups: any[] = await t.query(`SELECT c.source, c.medium, c.campaign, c.content, c.referrer_host, sum(c.n)::int AS n, count(*)::int AS r,
-          (${visitTierSql('c.source', 'c.campaign')}) = 0 AS paid
+          (${visitTierSql('c.source', 'c.campaign')}) AS tier
         FROM campaign_visits c WHERE ${range('c.day')} GROUP BY 1,2,3,4,5`, [day(m), cutoff]);
-      const real = groups.filter(g => g.source !== OTHER).sort((a, b) => Number(b.paid) - Number(a.paid) || b.n - a.n
+      const real = groups.filter(g => g.source !== OTHER).sort((a, b) => a.tier - b.tier || b.n - a.n
         || [a.source, a.medium, a.campaign, a.content, a.referrer_host].join('\u0000').localeCompare([b.source, b.medium, b.campaign, b.content, b.referrer_host].join('\u0000')));
       const kept = real.slice(0, keep);
       const otherN = [...groups.filter(g => g.source === OTHER), ...real.slice(keep)].reduce((sum, g) => sum + g.n, 0);
@@ -296,7 +301,10 @@ export interface Metrics {
   /** Dia (UTC) em que a contagem das visitas começou (null se desconhecido). */
   trackingSince: string | null;
 }
-/** Máximo de linhas da tabela (e do CSV); as restantes juntam-se em «(outros)». */
+/**
+ * Máximo de linhas da tabela (e do CSV); as restantes juntam-se em «(outros)». As das campanhas com custo no período ficam
+ * sempre (mesmo que passem deste número, o que só acontece com centenas de linhas de campanhas com custo no período).
+ */
 export const MAX_TABLE_ROWS = 200;
 
 /** Chave da linha: origem / meio / campanha; sem origem, «(referência) site» ou «(direto)». */
@@ -356,8 +364,10 @@ export function prorate(e: { period_from: string; period_to: string; amount_cent
  *
  * Conversão: só os registos desde o início da contagem das visitas (`campaign_tracking`), porque os anteriores não têm visitas.
  *
- * Limites: a tabela tem no máximo MAX_TABLE_ROWS linhas (as mais visitadas; o resto junta-se em «(outros)»), e os dias percorrem-se
- * pelo número de dias do período (datas validadas entre 2000 e 2100), nunca por comparação de datas em texto.
+ * Limites: a tabela tem no máximo MAX_TABLE_ROWS linhas, escolhidas pela ordem dos grupos da contagem (`visitTierSql`) e, em
+ * cada grupo, pelas visitas; o resto junta-se em «(outros)», que nunca leva as linhas das campanhas com custo no período (ficam
+ * sempre, à frente das outras, também a que só tem o custo). Os dias percorrem-se pelo número de dias do período (datas
+ * validadas entre 2000 e 2100), nunca por comparação de datas em texto.
  */
 export async function campaignMetrics(db: Db, period: Period): Promise<Metrics> {
   const start = `${period.from}T00:00:00Z`, end = `${addDaysUtc(period.to, 1)}T00:00:00Z`;
@@ -368,9 +378,11 @@ export async function campaignMetrics(db: Db, period: Period): Promise<Metrics> 
   const ts = await db.one('SELECT min(started_on)::text AS d FROM campaign_tracking');
   const trackingSince: string | null = ts?.d ? day(ts.d) : null;
 
-  // Por chave, só as mais visitadas (LIMIT); o resto das visitas do período vai para «(outros)».
-  const visits = await db.query(`SELECT source, medium, campaign, referrer_host, sum(n)::int AS n FROM campaign_visits
-    WHERE day BETWEEN $1::date AND $2::date GROUP BY 1,2,3,4 ORDER BY 5 DESC, 1, 2, 3, 4 LIMIT ${MAX_TABLE_ROWS}`, [period.from, period.to]);
+  // Por chave, só as primeiras MAX_TABLE_ROWS (LIMIT) pela ordem dos grupos da contagem (`visitTierSql`: as campanhas com custo
+  // registado primeiro) e, em cada grupo, as mais visitadas; o resto das visitas do período vai para «(outros)». Assim, o lixo
+  // de um grupo (centenas de origens inventadas com mais visitas) não tira da tabela as campanhas pagas nem as dos grupos antes dele.
+  const visits = await db.query(`SELECT c.source, c.medium, c.campaign, c.referrer_host, sum(c.n)::int AS n FROM campaign_visits c
+    WHERE c.day BETWEEN $1::date AND $2::date GROUP BY 1,2,3,4 ORDER BY ${visitTierSql('c.source', 'c.campaign')}, 5 DESC, 1, 2, 3, 4 LIMIT ${MAX_TABLE_ROWS}`, [period.from, period.to]);
   let shown = 0;
   for (const v of visits) { rowFor(keyOf(v.source, v.medium, v.campaign, v.referrer_host)).visits += v.n; shown += v.n; }
   const perDay = await db.query(`SELECT day::text AS day, sum(n)::int AS n FROM campaign_visits WHERE day BETWEEN $1::date AND $2::date GROUP BY 1`, [period.from, period.to]);
@@ -427,16 +439,25 @@ export async function campaignMetrics(db: Db, period: Period): Promise<Metrics> 
     for (const r of targets) r.spendCents += (e.inPeriodCents * weight(r)) / tw;
   }
 
-  const byWeight = (a: Row, b: Row) => b.visits - a.visits || b.signups - a.signups || b.spendCents - a.spendCents || rowLabel(a).localeCompare(rowLabel(b));
+  // Linha de uma campanha com custo no período (as únicas que podem ter custo): fica sempre na tabela, à frente das outras.
+  const isPaid = (r: Row) => !!r.source && r.source !== OTHER && paidKeys.has(paidKey(r.source, r.campaign));
+  // Grupo da linha, como o da contagem (`visitTierSql`), com o grupo 0 só para as campanhas com custo no período.
+  const tierOf = (r: Row) => (isPaid(r) ? 0 : !KNOWN_SOURCES.includes(r.source) ? 3 : r.campaign.startsWith(PAID_PREFIX) ? 1 : 2);
+  const byWeight = (a: Row, b: Row) => Number(isPaid(b)) - Number(isPaid(a)) || b.visits - a.visits || b.signups - a.signups || b.spendCents - a.spendCents || rowLabel(a).localeCompare(rowLabel(b));
   const totals = emptyRow({ key: 'total', source: '', medium: '', campaign: '', ref: '' });
   const paid = emptyRow({ key: 'paid', source: '', medium: '', campaign: '', ref: '' });
-  for (const r of rows.values()) { addInto(totals, r); if (r.source && r.source !== OTHER && paidKeys.has(paidKey(r.source, r.campaign))) addInto(paid, r); }
+  for (const r of rows.values()) { addInto(totals, r); if (isPaid(r)) addInto(paid, r); }
   let list = [...rows.values()].filter(r => r.key !== 'other').sort(byWeight);
   let other = rows.get('other') ?? null;
   if (list.length > MAX_TABLE_ROWS) {
+    // O corte segue a ordem da consulta das visitas (grupo e, em cada grupo, visitas) e nunca leva as linhas das campanhas com
+    // custo, nem que passem de MAX_TABLE_ROWS: «(outros)» nunca fica com custo, e uma campanha paga sem visitas no período (ou
+    // com menos visitas do que o lixo) continua à vista na página e no CSV.
+    const ranked = [...list].sort((a, b) => tierOf(a) - tierOf(b) || byWeight(a, b));
+    const cut = new Set(ranked.slice(Math.max(MAX_TABLE_ROWS, ranked.filter(isPaid).length)));
     other ??= emptyRow(keyOf(OTHER, '', '', ''));
-    for (const r of list.slice(MAX_TABLE_ROWS)) addInto(other, r);
-    list = list.slice(0, MAX_TABLE_ROWS);
+    for (const r of cut) addInto(other, r);
+    list = list.filter(r => !cut.has(r));
   }
   if (other) list.push(other);
   return { period, rows: list, totals, paid, allRevenueCents: Number(all?.n ?? 0), entityRevenueCents, allEntityRevenueCents: Number(all?.e ?? 0), daily: [...daily.values()], spend, trackingSince };
