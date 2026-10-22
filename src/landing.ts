@@ -58,8 +58,13 @@ const STYLES = `
 @media (max-width:820px){.lp-grid,.lp-split{grid-template-columns:1fr;gap:28px}.lp-hero{padding-top:32px}.lp-covers{grid-template-columns:repeat(3,1fr);gap:8px}}
 `;
 
-export function landing(plans: any[]) {
+/**
+ * Landing. `cq` são as etiquetas da campanha já normalizadas (utm_*, ou `ref` com o site de onde veio): seguem em todos os
+ * links para o registo, para a conta ficar com a campanha que a trouxe (sem cookies).
+ */
+export function landing(plans: any[], cq = '') {
   const b = esc(config.brand);
+  const signup = (extra = '') => esc(`/registar${extra || cq ? '?' : ''}${extra}${extra && cq ? '&' : ''}${cq}`);
   // Preços sem IVA («+ VAT»); para os consumidores, também o preço com IVA (no continente, em Portugal).
   const cheapest = plans[0] ? `${eur(plans[0].price_cents)} + VAT` : '';
   const s = seller(), rate = homeConsumerRate(s);
@@ -82,14 +87,14 @@ export function landing(plans: any[]) {
     head: `<meta property="og:type" content="website"><meta property="og:site_name" content="${b}"><meta property="og:title" content="Great interviews, recorded in your guest’s own time">
 <meta property="og:description" content="Asynchronous interviews that share professional cultures and life experience across countries and languages."><meta property="og:url" content="${esc(config.baseUrl)}/">${ogImage ? `<meta property="og:image" content="${esc(ogImage)}"><meta name="twitter:card" content="summary_large_image">` : ''}`,
     styles: STYLES,
-    nav: `<a href="#how">How it works</a><a href="/podcasts">Gallery</a><a href="#pricing">Pricing</a><a href="/entrar">Sign in</a><a class="btn accent" href="/registar">Get started</a>`,
+    nav: `<a href="#how">How it works</a><a href="/podcasts">Gallery</a><a href="#pricing">Pricing</a><a href="/entrar">Sign in</a><a class="btn accent" href="${signup()}">Get started</a>`,
     body: `
 <section class="lp-hero"><div class="wrap lp-grid">
   <div>
     <p class="lp-eyebrow">Asynchronous interviews · podcast, video and subtitles</p>
     <h1>Great interviews, recorded in your guest’s own time.</h1>
     <p class="lp-lead">Invite people whose professional culture and life experience are worth sharing. They answer on their phone, in their own time and language. ${b} turns their answers into a reviewed English podcast and video, with subtitles in English, Portuguese, Spanish, French and German, so their stories travel across countries and generations.</p>
-    <p class="row"><a class="btn accent" href="/registar">${cheapest ? `Start from ${cheapest} / month` : 'Get started'}</a>${video ? '<a class="btn ghost" href="#tour">Watch the 1-minute video</a>' : '<a class="btn ghost" href="#how">See how it works</a>'}</p>
+    <p class="row"><a class="btn accent" href="${signup()}">${cheapest ? `Start from ${cheapest} / month` : 'Get started'}</a>${video ? '<a class="btn ghost" href="#tour">Watch the 1-minute video</a>' : '<a class="btn ghost" href="#how">See how it works</a>'}</p>
     <ul class="lp-trust"><li>No app for your guest</li><li>Consent at every step</li><li>Nothing published without approval</li></ul>
   </div>
   <figure class="lp-photo">${img('hero', 'A guest recording an interview answer', true)}
@@ -138,13 +143,13 @@ ${video ? `
   <div class="grid3" style="max-width:760px">${plans.map(p => `<div class="card"><h3 style="margin-top:0">${esc(p.name)}</h3><p style="font-size:2.2rem;margin:.1em 0">${eur(p.price_cents)}<span class="hint"> + VAT / month</span></p>
     ${rate ? `<p class="hint">Consumers: ${eur(withVat(p.price_cents, rate))} / month incl. ${fmtRate(rate)}% VAT${s.country === 'PT' ? ' (mainland Portugal)' : ''} · <span lang="pt-PT">consumidores: ${eurPt(withVat(p.price_cents, rate))}/mês com IVA incluído</span></p>` : ''}
     <p>Up to <strong>${p.interviews_per_month} interviews</strong> per month.</p><ul class="sans" style="padding-left:18px"><li>Invitations, recording and photos</li><li>Transcription, English script, narration</li><li>Subtitles, cover, player and video with photos</li><li>Cancel any time</li></ul>
-    <a class="btn accent" href="/registar?plan=${esc(p.id)}">Choose ${esc(p.name)}</a></div>`).join('')}</div>
+    <a class="btn accent" href="${signup(`plan=${encodeURIComponent(p.id)}`)}">Choose ${esc(p.name)}</a></div>`).join('')}</div>
   <p class="hint">Plans include photos only. AI animation is never part of a plan: each animated production is quoted before anything is generated and paid with prepaid credits. · <span lang="pt-PT">A animação por IA é orçamentada à parte e paga com créditos.</span></p>
   <p class="hint">Billing is monthly through Stripe, card only. Prices exclude VAT; the price with VAT is always shown before you pay.${s.tradeName || s.name ? ` Sold by ${esc(s.name || s.tradeName)}.` : ''} <a href="/termos">Terms of sale · Termos e condições</a> · ${complaintsLink(s)}. Plans and limits may change for new subscribers.</p>
 </section>
 
 <section class="wrap lp-section"><div class="card lp-cta"><h2 style="margin-top:0">Your next great guest is one polite invitation away.</h2>
-  <a class="btn accent" href="/registar">Create your account</a><p class="hint" style="margin-top:14px">Invited as a guest? Use the personal link in your email. There is nothing to sign up for.</p></div>
+  <a class="btn accent" href="${signup()}">Create your account</a><p class="hint" style="margin-top:14px">Invited as a guest? Use the personal link in your email. There is nothing to sign up for.</p></div>
   ${cr ? `<p class="hint">Photos: ${esc(cr)}</p>` : ''}${illustrated ? '<p class="hint">Illustrations on this page are fictional and do not depict any real person.</p>' : ''}
 </section>`,
   });
