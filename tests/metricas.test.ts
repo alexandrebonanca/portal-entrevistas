@@ -174,8 +174,8 @@ test('teto de combinações por dia: as novas depois do teto contam em «(outros
   const m = await M.campaignMetrics(db, { from: d, to: d, days: 1, preset: 'custom' });
   assert.deepEqual(m.rows.map(r => [M.rowLabel(r), r.visits]), [['a1 / — / —', 2], ['a2 / — / —', 1], ['a3 / — / —', 1], ['(outros)', 3]]);
   assert.equal(M.normTag(M.OTHER), 'outros', 'nenhuma etiqueta normalizada é igual a «(outros)»');
-  // Pelo site, com o teto normal (500 por dia), a contagem continua a ser uma linha por combinação.
-  assert.equal(M.MAX_VISIT_ROWS_PER_DAY, 500);
+  // Pelo site, os tetos por grupo: 500 nas campanhas com custo e nas «qi-…», 100 nas outras campanhas e no resto.
+  assert.deepEqual(M.VISIT_ROW_CAPS, [500, 500, 100, 100]);
 });
 
 test('a página e o CSV mostram no máximo MAX_TABLE_ROWS linhas; o resto junta-se em «(outros)»', async () => {
@@ -785,8 +785,9 @@ test('teto diário por grupo: lixo com origens inventadas ou sites falsos não e
   assert.equal(Number((await db.one(`SELECT count(*)::int AS n FROM campaign_visits WHERE day=$1 AND source <> $2`, [d, M.OTHER])).n), 3 + 3 + 3 + 1);
 });
 
-test('teto diário pelo site: 500 combinações inventadas antes não mandam uma campanha nova para «(outros)»', async () => {
-  const vals = Array.from({ length: M.MAX_VISIT_ROWS_PER_DAY + 20 }, (_, i) => `('${today}','/','s${i}','','c${i}',1)`);
+test('teto diário pelo site: os grupos das outras campanhas e do resto enchem com 100 combinações inventadas, sem esconder as «qi-…»', async () => {
+  const [, , c2, c3] = M.VISIT_ROW_CAPS;
+  const vals = [...Array.from({ length: c3 + 20 }, (_, i) => `('${today}','/','s${i}','','c${i}',1)`), ...Array.from({ length: c2 + 5 }, (_, i) => `('${today}','/','facebook','','org${i}',1)`)];
   await db.query(`INSERT INTO campaign_visits(day, path, source, medium, campaign, n) VALUES ${vals.join(',')}`);
   try {
     await visit('/?utm_source=linkedin&utm_medium=paid_social&utm_campaign=qi-depois');
@@ -794,8 +795,67 @@ test('teto diário pelo site: 500 combinações inventadas antes não mandam uma
     const o0 = await count('/', { source: M.OTHER });
     await visit('/?utm_source=inventada&utm_campaign=x1');
     assert.equal(await count('/', { source: 'inventada', campaign: 'x1' }), 0);
-    assert.equal(await count('/', { source: M.OTHER }), o0 + 1, 'o grupo das origens desconhecidas está cheio');
+    await visit('/?utm_source=facebook&utm_campaign=organico-novo');
+    assert.equal(await count('/', { source: 'facebook', campaign: 'organico-novo' }), 0);
+    assert.equal(await count('/', { source: M.OTHER }), o0 + 2, 'os grupos das origens desconhecidas e das outras campanhas estão cheios');
   } finally {
-    await db.query(`DELETE FROM campaign_visits WHERE day=$1 AND path='/' AND source ~ '^s[0-9]+$' AND campaign ~ '^c[0-9]+$'`, [today]);
+    await db.query(`DELETE FROM campaign_visits WHERE day=$1 AND path='/' AND ((source ~ '^s[0-9]+$' AND campaign ~ '^c[0-9]+$') OR (source='facebook' AND campaign ~ '^org[0-9]+$'))`, [today]);
   }
+});
+
+test('retenção: as visitas com mais de 90 dias agregam-se por mês sem mudar os totais; o excedente do mês vai para «(outros)»', async () => {
+  // Dias de 2024 (nenhum outro teste os usa). Hoje = 09/07/2024: corte em 10/04/2024 (março todo e abril até dia 9).
+  const v = (d: string, path: string, source: string, medium: string, campaign: string, content: string, term: string, ref: string, k: number) =>
+    db.query(`INSERT INTO campaign_visits(day, path, source, medium, campaign, content, term, referrer_host, n) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`, [d, path, source, medium, campaign, content, term, ref, k]);
+  await v('2024-03-02', '/', 'linkedin', 'paid_social', 'qi-ret', 'v1', 'a', '', 5);
+  await v('2024-03-02', '/registar', 'linkedin', 'paid_social', 'qi-ret', 'v1', 'b', '', 2);
+  await v('2024-03-20', '/', 'linkedin', 'paid_social', 'qi-ret', 'v1', '', '', 3);
+  await v('2024-03-05', '/', '', '', '', '', '', 'news.example', 4);
+  await v('2024-03-06', '/podcasts', '', '', '', '', '', '', 7);
+  await v('2024-03-07', '/', M.OTHER, '', '', '', '', '', 6);
+  await v('2024-03-08', '/e', 'google', 'cpc', 'qi-paga-ret', '', '', '', 1);
+  for (let i = 0; i < 5; i++) await v('2024-03-09', '/', `lixo${i}`, '', `c${i}`, '', '', '', 2);
+  await v('2024-04-09', '/', 'linkedin', 'paid_social', 'qi-ret', 'v2', '', '', 1);
+  await v('2024-04-10', '/', 'linkedin', 'paid_social', 'qi-ret', 'v2', '', '', 8);
+  await db.query(`INSERT INTO campaign_spend(period_from, period_to, source, campaign, amount_cents) VALUES ('2024-03-01','2024-03-31','google','qi-paga-ret',1000)`);
+  const PR = { from: '2024-03-01', to: '2024-04-30', days: 61, preset: 'custom' as const };
+  const snap = async () => {
+    const m = await M.campaignMetrics(db, PR);
+    return { total: m.totals.visits, rows: Object.fromEntries(m.rows.map(r => [M.rowLabel(r), r.visits])) as Record<string, number> };
+  };
+  const rowsOf = async () => (await db.query(`SELECT day::text AS day, path, source, medium, campaign, content, term, referrer_host AS ref, n FROM campaign_visits
+    WHERE day BETWEEN '2024-03-01' AND '2024-04-30' ORDER BY day, source, medium, campaign, content, referrer_host`)).map((r: any) => [r.day.slice(0, 10), r.path, r.source, r.medium, r.campaign, r.content, r.term, r.ref, r.n]);
+  const before0 = await snap();
+  assert.equal(before0.total, 10 + 4 + 7 + 6 + 1 + 10 + 1 + 8);
+  const removed = await M.compactVisits(db, { today: '2024-07-09', keep: 4, force: true });
+  // Março: 4 combinações (a campanha com custo primeiro, mesmo com menos visitas do que o lixo, depois as mais visitadas) e «(outros)» com as 5 de lixo e a anterior.
+  assert.deepEqual(await rowsOf(), [
+    ['2024-03-01', '*', '', '', '', '', '', '', 7],
+    ['2024-03-01', '*', '', '', '', '', '', 'news.example', 4],
+    ['2024-03-01', '*', '(outros)', '', '', '', '', '', 6 + 10],
+    ['2024-03-01', '*', 'google', 'cpc', 'qi-paga-ret', '', '', '', 1],
+    ['2024-03-01', '*', 'linkedin', 'paid_social', 'qi-ret', 'v1', '', '', 5 + 2 + 3],
+    ['2024-04-01', '*', 'linkedin', 'paid_social', 'qi-ret', 'v2', '', '', 1],
+    ['2024-04-10', '/', 'linkedin', 'paid_social', 'qi-ret', 'v2', '', '', 8],
+  ]);
+  assert.equal(removed, 13 - 6);
+  const after = await snap();
+  assert.equal(after.total, before0.total, 'o total do período não muda');
+  const lixo = Object.keys(before0.rows).filter(k => k.startsWith('lixo'));
+  assert.equal(lixo.length, 5);
+  for (const [k, n] of Object.entries(before0.rows)) if (!k.startsWith('lixo') && k !== M.OTHER) assert.equal(after.rows[k], n, k);
+  assert.equal(after.rows[M.OTHER], before0.rows[M.OTHER] + 10);
+  // De novo no mesmo dia: nada muda. Mais tarde, a parte recente de abril junta-se à já agregada.
+  assert.equal(await M.compactVisits(db, { today: '2024-07-09', keep: 4, force: true }), 0);
+  assert.equal(await M.compactVisits(db, { today: '2024-07-20', keep: 4, force: true }), 1);
+  assert.deepEqual((await rowsOf()).filter(r => String(r[0]) >= '2024-04-01'), [['2024-04-01', '*', 'linkedin', 'paid_social', 'qi-ret', 'v2', '', '', 9]]);
+  assert.equal((await snap()).total, before0.total);
+  // Sem `force`, no máximo uma vez por dia (a primeira volta do worker corre ao arrancar).
+  assert.equal(await M.compactVisits(db, { today: '2030-01-01' }), 0);
+  assert.equal(M.VISIT_DAILY_DAYS, 90); assert.equal(M.VISIT_ROWS_PER_MONTH, 500);
+  // A página explica a retenção e avisa num período com dias agregados.
+  const pg = (await get('/admin/metricas?p=custom&from=2024-03-01&to=2024-04-30', admin)).body;
+  assert.match(pg, /<strong>Retenção<\/strong>: ao fim de 90 dias, as visitas agregam-se por mês/);
+  assert.match(pg, /as visitas ficam agregadas por mês, no dia 1 de cada mês/);
+  assert.doesNotMatch((await get('/admin/metricas?p=7', admin)).body, /as visitas ficam agregadas por mês/);
 });

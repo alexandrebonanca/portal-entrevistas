@@ -133,10 +133,13 @@ export const utcDay = (ms = Date.now()) => new Date(ms).toISOString().slice(0, 1
  */
 export const OTHER = '(outros)';
 /**
- * Teto de combinações (página + etiquetas + site de origem) por dia e por grupo: quem inventar etiquetas aos milhares não enche a
- * base. Há um teto para cada grupo (`visitTierSql`), para que o lixo de um grupo não esconda as campanhas de outro.
+ * Teto de combinações (página + etiquetas + site de origem) por dia em cada grupo (`visitTierSql`, pela ordem dos grupos): quem
+ * inventar etiquetas aos milhares não enche a base, e o lixo de um grupo não esconde as campanhas de outro. 500 nas campanhas
+ * com custo e nas «qi-…» das origens conhecidas; 100 nas outras campanhas dessas origens e no resto (origens desconhecidas,
+ * sites de referência, direto), onde um pedido anónimo inventa uma combinação sem esforço. Com a agregação mensal
+ * (`compactVisits`), a tabela fica com no máximo ~1200 linhas por dia nos últimos VISIT_DAILY_DAYS dias e ~500 por mês antes.
  */
-export const MAX_VISIT_ROWS_PER_DAY = 500;
+export const VISIT_ROW_CAPS: readonly number[] = [500, 500, 100, 100];
 /** Origens conhecidas (as do construtor de links, menos «other»): o grupo delas tem teto próprio. */
 export const KNOWN_SOURCES = ['linkedin', 'instagram', 'facebook', 'google', 'newsletter'];
 /** Prefixo das campanhas pagas («qi-…»), sugerido no construtor de links. */
@@ -157,21 +160,70 @@ const visitTierSql = (src: string, camp: string) => `CASE WHEN EXISTS (SELECT 1 
 
 /**
  * Soma um ao contador do dia (um só INSERT … ON CONFLICT). Uma combinação que ainda não existe nesse dia, quando o seu grupo
- * (`visitTierSql`) já tem `cap` linhas nesse dia, conta na linha «(outros)» (que não entra em nenhum grupo).
+ * (`visitTierSql`) já tem o teto dele (`caps`, um por grupo, ou o mesmo para todos) em linhas nesse dia, conta na linha
+ * «(outros)» (que não entra em nenhum grupo).
  */
-export async function countVisit(db: Db, path: string, t: Tags, day = utcDay(), cap = MAX_VISIT_ROWS_PER_DAY) {
+export async function countVisit(db: Db, path: string, t: Tags, day = utcDay(), caps: number | readonly number[] = VISIT_ROW_CAPS) {
+  const cap = typeof caps === 'number' ? [caps, caps, caps, caps] : caps;
   await db.query(
-    `WITH nt AS (SELECT ${visitTierSql('$3::text', '$5::text')} AS tier),
+    `WITH nt AS (SELECT tier, (ARRAY[$9::int, $10::int, $11::int, $12::int])[tier + 1] AS cap FROM (SELECT ${visitTierSql('$3::text', '$5::text')} AS tier) x),
      full_day AS (
-       SELECT count(*) >= $9::int AS f FROM campaign_visits c, nt
+       SELECT (SELECT count(*) FROM campaign_visits c
         WHERE c.day = $1::date AND c.source <> '${OTHER}' AND ${visitTierSql('c.source', 'c.campaign')} = nt.tier
           AND NOT EXISTS (SELECT 1 FROM campaign_visits WHERE day=$1::date AND path=$2::text AND source=$3::text
-          AND medium=$4::text AND campaign=$5::text AND content=$6::text AND term=$7::text AND referrer_host=$8::text))
+          AND medium=$4::text AND campaign=$5::text AND content=$6::text AND term=$7::text AND referrer_host=$8::text)) >= nt.cap AS f FROM nt)
      INSERT INTO campaign_visits(day, path, source, medium, campaign, content, term, referrer_host, n)
      SELECT $1::date, $2::text, CASE WHEN f THEN '${OTHER}' ELSE $3::text END, CASE WHEN f THEN '' ELSE $4::text END, CASE WHEN f THEN '' ELSE $5::text END,
             CASE WHEN f THEN '' ELSE $6::text END, CASE WHEN f THEN '' ELSE $7::text END, CASE WHEN f THEN '' ELSE $8::text END, 1 FROM full_day
      ON CONFLICT (day, path, source, medium, campaign, content, term, referrer_host) DO UPDATE SET n = campaign_visits.n + 1`,
-    [day, path, t.source, t.medium, t.campaign, t.content, t.term, t.source ? '' : t.ref, cap]);
+    [day, path, t.source, t.medium, t.campaign, t.content, t.term, t.source ? '' : t.ref, cap[0], cap[1], cap[2], cap[3]]);
+}
+
+/** Dias (UTC, até hoje) em que as visitas ficam por dia; as mais antigas agregam-se por mês (`compactVisits`). */
+export const VISIT_DAILY_DAYS = 90;
+/** Combinações guardadas em cada mês agregado; as restantes juntam-se em «(outros)». */
+export const VISIT_ROWS_PER_MONTH = 500;
+/** Página das linhas agregadas por mês (as páginas somam-se). */
+export const MONTH_PATH = '*';
+
+let lastCompact = 0;
+/**
+ * Retenção das visitas: as linhas com mais de VISIT_DAILY_DAYS dias agregam-se por mês, no dia 1 desse mês e com a página «*»
+ * (somam-se as páginas e as `utm_term`), mantendo a origem, o meio, a campanha, o conteúdo e o site de origem. Em cada mês ficam
+ * no máximo `keep` combinações — primeiro as campanhas com custo registado, depois as mais visitadas — e as restantes, com a
+ * «(outros)» do mês, juntam-se numa só «(outros)». A soma das visitas de cada mês não muda. Só refaz os meses com linhas por
+ * agregar (página diferente de «*» antes do corte), juntando-as às já agregadas desse mês, numa transação; a contagem do dia
+ * nunca toca nesses dias. Um mês cortado a meio fica com a parte recente por dia até passar o corte. Corre no worker ao arrancar
+ * e depois no máximo uma vez por dia (salvo `force`). Devolve o número de linhas a menos.
+ */
+export async function compactVisits(db: Db, o: { today?: string; keep?: number; force?: boolean } = {}) {
+  if (!o.force && Date.now() - lastCompact < 86400_000) return 0;
+  lastCompact = Date.now();
+  const cutoff = addDaysUtc(o.today ?? utcDay(), -VISIT_DAILY_DAYS), keep = o.keep ?? VISIT_ROWS_PER_MONTH;
+  return db.tx(async (t) => {
+    const months = await t.query(`SELECT DISTINCT date_trunc('month', day::timestamp)::date::text AS m FROM campaign_visits
+      WHERE day < $1::date AND path <> '${MONTH_PATH}' ORDER BY 1`, [cutoff]);
+    let removed = 0;
+    for (const { m } of months) {
+      // Dias do mês `m` antes do corte.
+      const range = (d: string) => `${d} >= $1::date AND ${d} < LEAST(($1::date + interval '1 month')::date, $2::date)`;
+      const groups: any[] = await t.query(`SELECT c.source, c.medium, c.campaign, c.content, c.referrer_host, sum(c.n)::int AS n, count(*)::int AS r,
+          (${visitTierSql('c.source', 'c.campaign')}) = 0 AS paid
+        FROM campaign_visits c WHERE ${range('c.day')} GROUP BY 1,2,3,4,5`, [day(m), cutoff]);
+      const real = groups.filter(g => g.source !== OTHER).sort((a, b) => Number(b.paid) - Number(a.paid) || b.n - a.n
+        || [a.source, a.medium, a.campaign, a.content, a.referrer_host].join('\u0000').localeCompare([b.source, b.medium, b.campaign, b.content, b.referrer_host].join('\u0000')));
+      const kept = real.slice(0, keep);
+      const otherN = [...groups.filter(g => g.source === OTHER), ...real.slice(keep)].reduce((sum, g) => sum + g.n, 0);
+      const out = otherN ? [...kept, { source: OTHER, medium: '', campaign: '', content: '', referrer_host: '', n: otherN }] : kept;
+      await t.query(`DELETE FROM campaign_visits WHERE ${range('day')}`, [day(m), cutoff]);
+      const vals: any[] = [];
+      const tuples = out.map((g, i) => { vals.push(g.source, g.medium, g.campaign, g.content, g.referrer_host, g.n); const k = i * 6 + 2;
+        return `($1::date, '${MONTH_PATH}', $${k}, $${k + 1}, $${k + 2}, $${k + 3}, '', $${k + 4}, $${k + 5}::int)`; });
+      if (tuples.length) await t.query(`INSERT INTO campaign_visits(day, path, source, medium, campaign, content, term, referrer_host, n) VALUES ${tuples.join(', ')}`, [day(m), ...vals]);
+      removed += groups.reduce((sum, g) => sum + g.r, 0) - out.length;
+    }
+    return removed;
+  });
 }
 
 /**
