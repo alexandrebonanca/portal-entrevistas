@@ -42,42 +42,49 @@ const GENERIC = 'com org net info biz edu gov int mil name pro mobi asia cat coo
   + 'app dev xyz online site website web store shop shopping blog club live news tech technology media studio page link top email agency digital world today space '
   + 'art design cloud life vip fun work works group company one ltd academy global network solutions consulting health coach events film music social gal eus scot wales '
   + 'bio eco green energy finance capital ventures partners services systems software tools education school university institute training expert guru '
-  + 'photography photo pics gallery video audio radio games game play casino bet sport sports fitness yoga golf football team run bike '
+  + 'photography photo photos pics gallery video audio radio games game play casino bet sport sports fitness yoga golf football team run bike careers gle '
   + 'cafe restaurant bar pizza food kitchen recipes wine beer coffee farm garden house home homes realestate properties land city town place zone center centre '
   + 'plus rocks lol cool fyi ninja tips review reviews press report wiki forum chat community family dating love wedding baby kids care clinic dental doctor '
   + 'hospital pharmacy vet legal law lawyer attorney accountant tax money cash credit loans insurance bank market markets trade trading exchange sale deals '
-  + 'discount gift gifts fashion clothing shoes jewelry beauty hair makeup skin spa salon fit style boutique luxury lat africa berlin london paris nyc tokyo madrid barcelona';
-const TLDS = new Set(`${CC} ${GENERIC}`.split(' '));
-/** Nomes técnicos e de ficheiros com o feitio de um endereço (Node.js, ASP.NET, main.py, README.md). */
-const NOT_SITE = new Set('js ts py md sh rs'.split(' '));
-const NOT_SITE_WORDS = /^(asp\.net|vb\.net|ado\.net)$/i;
+  + 'discount gift gifts fashion clothing shoes jewelry beauty hair makeup skin spa salon fit style boutique luxury watch lat africa berlin london paris nyc tokyo madrid barcelona';
+const TLD_LIST = [...new Set(`${CC} ${GENERIC}`.split(' '))].sort((a, b) => b.length - a.length);
+const TLD = TLD_LIST.join('|'), TLD_UPPER = TLD_LIST.map(t => t.toUpperCase()).join('|');
+// Partes comuns: um nome não pode vir colado a letras, algarismos, @, ponto ou hífen; o caminho não engole a pontuação final.
+const BEFORE = String.raw`(?<![\p{L}\p{N}@._-])`, LABEL = String.raw`[\p{L}\p{N}_-]`, PATH = String.raw`\/(?:[^\s,;)]*[^\s,;).!?:'"»])?`;
 /**
- * Endereços de sites sem http nem www: nome.domínio, com o domínio numa lista conhecida (de país ou genérico).
- * Com caminho (linktr.ee/joao, Empresa.PT/contactos), em qualquer caixa; sem caminho, o domínio em minúsculas
- * (joana.art, empresa.co.ao) ou o endereço todo em maiúsculas (EMPRESA.PT). Ficam frases sem espaço depois do ponto
- * («percurso.Como»), abreviaturas («Dr.Silva», «Exmo.Sr.», «p.ex.») e nomes técnicos («Socket.IO», «Node.js»).
+ * Endereços de sites sem http nem www, por quatro regras que se somam (tapar a mais nunca destapa):
+ * 1. qualquer nome.domínio em minúsculas seguido de «/» (linktr.ee/joao, forms.gle/abc);
+ * 2. um domínio da lista, em qualquer caixa, seguido de «/» (Empresa.PT/contactos);
+ * 3. sem caminho, um domínio da lista em minúsculas (empresa.pt, joana.art, empresa.co.ao), também colado à frase
+ *    seguinte («empresa.pt.Obrigado»);
+ * 4. sem caminho, o endereço todo em maiúsculas (EMPRESA.PT).
+ * Ficam frases sem espaço depois do ponto («percurso.Como»), abreviaturas («Dr.Silva», «Exmo.Sr.», «p.ex.»,
+ * «Ex.mo») e nomes técnicos com maiúsculas («Socket.IO», «ASP.NET», «Node.js»). Um endereço com maiúsculas e
+ * minúsculas misturadas e sem caminho («Maria.Pt») não se distingue de «fim.De» e fica.
  */
-const SITE = /(?<![\p{L}\p{N}@._-])(?:[\p{L}\p{N}_-]+\.)*([\p{L}\p{N}_-]+)\.(\p{L}{2,24})(?![\p{L}\p{N}_-])(\/(?:[^\s,;)]*[^\s,;).!?:'"»])?)?/gu;
-const site = (m: string, host: string, tld: string, path: string | undefined) => {
-  const t = tld.toLowerCase();
-  if (!TLDS.has(t) || NOT_SITE_WORDS.test(m)) return m;
-  if (path) return '[link]';
-  if (host.length < 2 || NOT_SITE.has(t)) return m;
-  return tld === t || m === m.toUpperCase() ? '[link]' : m;
-};
+const SITE_PATH_ANY = new RegExp(String.raw`${BEFORE}${LABEL}+(\.${LABEL}+)*\.[a-z]{2,}${PATH}`, 'gu');
+const SITE_PATH_LIST = new RegExp(String.raw`${BEFORE}${LABEL}+(\.${LABEL}+)*\.(${TLD})${PATH}`, 'giu');
+const SITE_LOWER = new RegExp(String.raw`${BEFORE}(${LABEL}+\.)*${LABEL}{2,}\.(${TLD})(?![\p{L}\p{N}_-])`, 'gu');
+const SITE_UPPER = new RegExp(String.raw`${BEFORE}([\p{Lu}\p{N}_-]+\.)*[\p{Lu}\p{N}_-]{2,}\.(${TLD_UPPER})(?![\p{L}\p{N}_-])`, 'gu');
+/** Abreviaturas portuguesas com o feitio de um endereço (Ex.mo, Il.ma) e nomes técnicos em maiúsculas (ASP.NET). */
+const NOT_SITE_LOWER = /^(ex|il|exm|ilm)\.(mo|ma|mos|mas)$/i;
+const NOT_SITE_UPPER = /^(asp|vb|ado|ml|ikvm|entity)\.net$/i;
 /** Separadores de um número de telefone: espaços, hífenes e travessões (U+2010–2015, U+2212), pontos, ponto médio, barras, parênteses, hífen suave e espaço sem largura. */
-const PHONE = /(\+|\b00)?\(?\+?\d[\d\s()./\u00AD\u00B7\u200B\u2010-\u2015\u2212-]{6,}\d/g;
-/** Montantes e percentagens não são telefones (250.000.000 €, 2 500 000 000 de euros, 12 000 000%). */
-const AMOUNT_AFTER = /^\s*(€|\$|£|%|eur\b|euros?\b|usd\b|dólares\b|milhões\b|mil\b)/i;
-/** Uma data no início (dia/mês/ano ou ano-mês-dia, dia e mês válidos, sem mais algarismos colados) não faz parte do número que se lhe segue. */
+const PHONE = /(\+|\b00)?\(?\+?\d[\d\s()./\xAD\xB7\u{200B}\u{2010}-\u{2015}\u{2212}-]{6,}\d/gu;
+/** Um só número (seguido ou agrupado em milhares) com uma moeda ou percentagem logo a seguir, na mesma linha, é um montante. */
+const ONE_NUMBER = /^\d{1,3}([ .\xA0]\d{3})+$|^\d+$/;
+const AMOUNT_NEXT = /^[ \t\xA0]*(€|\$|£|%|(eur|euros?|usd|dólares|milhões|mil)(?![\p{L}\p{N}]))/iu;
+/**
+ * Uma data no início (dia/mês/ano ou ano-mês-dia, dia e mês válidos, sem mais algarismos colados) não faz parte do
+ * número que se lhe segue: «12/03/2025 – 912 345 678» fica «12/03/2025 – [número]»; «12/03/2024 10:30» fica todo.
+ */
 const DATE_START = /^((0?[1-9]|[12]\d|3[01])[/.-](0?[1-9]|1[0-2])[/.-](\d{4}|\d{2})|\d{4}[/.-](0?[1-9]|1[0-2])[/.-](0?[1-9]|[12]\d|3[01]))(?!\d)(?![./-]\d)/;
 const digits = (s: string) => (s.match(/\d/g) ?? []).length;
 const phone = (m: string, ...rest: any[]) => {
   const str = rest[rest.length - 1] as string, at = rest[rest.length - 2] as number;
-  if (AMOUNT_AFTER.test(str.slice(at + m.length))) return m;
+  if (ONE_NUMBER.test(m) && AMOUNT_NEXT.test(str.slice(at + m.length))) return m;
   const date = DATE_START.exec(m);
   if (date) {
-    // «12/03/2025 – 912 345 678»: fica a data e tapa-se o resto, se for um número; «12/03/2024 10:30» fica todo
     const tail = m.slice(date[0].length), lead = /^[^\d+(]*/.exec(tail)![0];
     return digits(tail) >= 9 ? date[0] + lead + '[número]' : m;
   }
@@ -91,10 +98,13 @@ const phone = (m: string, ...rest: any[]) => {
  * a expressão era quadrática em textos longos).
  */
 export const scrub = (s: unknown, max: number) => String(s ?? '').slice(0, max + 4000)
-  .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '')
+  .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '')
   .replace(/(?<![\p{L}\p{N}._%+-])[\p{L}\p{N}._%+-]+@[\p{L}\p{N}-]+(\.[\p{L}\p{N}-]+)*\.\p{L}{2,}/gu, '[email]')
   .replace(/https?:\/\/[^\s,;)]+|www\.[^\s,;)]+/gi, '[link]')
-  .replace(SITE, site)
+  .replace(SITE_PATH_ANY, '[link]')
+  .replace(SITE_PATH_LIST, '[link]')
+  .replace(SITE_LOWER, m => (NOT_SITE_LOWER.test(m) ? m : '[link]'))
+  .replace(SITE_UPPER, m => (NOT_SITE_UPPER.test(m) ? m : '[link]'))
   .replace(PHONE, phone)
   .trim().slice(0, max);
 /** Marcadores postos pelo scrub (ou parecidos, de uma ou mais palavras): uma sugestão do modelo que os traga não serve. */

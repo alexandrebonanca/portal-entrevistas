@@ -151,7 +151,7 @@ export function requireUser(req: FastifyRequest, reply: FastifyReply) {
 }
 
 export async function ownedInterview(app: FastifyInstance, req: FastifyRequest, id: string) {
-  if (!req.user || !/^[0-9a-f-]{36}$/i.test(id)) return undefined;
+  if (!req.user || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) return undefined; // um id malformado dava erro 500 no Postgres
   return app.db.one(`SELECT * FROM interviews WHERE id=$1 AND (owner_id=$2 OR $3='admin')`, [id, req.user.id, req.user.role]);
 }
 

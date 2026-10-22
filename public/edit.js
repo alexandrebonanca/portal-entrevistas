@@ -46,6 +46,7 @@
 
   // Formulários com alterações por guardar (para avisar antes de o assistente recarregar a página).
   const dirty = new Set();
+  let submittedHere = false;
   // Valores que o browser repõe (ao recarregar ou ao voltar atrás) também são alterações por guardar. Confere-se no
   // 'pageshow', que chega depois de o browser repor os formulários.
   const restored = () => root && root.querySelectorAll('form').forEach((f) => {
@@ -59,7 +60,8 @@
   if (root) {
     root.addEventListener('input', (ev) => { const f = ev.target.form; if (f) dirty.add(f); });
     root.addEventListener('change', (ev) => { const f = ev.target.form; if (f) dirty.add(f); });
-    root.addEventListener('submit', (ev) => dirty.delete(ev.target));
+    // ao voltar atrás para esta página depois de enviar um formulário, a versão guardada pelo browser é a de antes do envio
+    root.addEventListener('submit', (ev) => { dirty.delete(ev.target); submittedHere = true; });
     addEventListener('pageshow', restored);
   }
 
@@ -269,11 +271,12 @@
   render(last);
   // Reaberto no telemóvel depois de uma ação dele: mostra logo as sugestões, não o topo do painel.
   if (reopen && !wide() && last) panel.scrollTop = out.offsetTop - 12;
-  // Voltar atrás para esta página depois de uma ação do assistente feita nela: a página guardada pelo browser (com o
-  // estado do script) é a de antes da ação e deixava acrescentar a mesma sugestão duas vezes, por isso recarrega-se.
+  // Voltar atrás para esta página depois de uma ação do assistente ou de um formulário enviado nela: a página guardada
+  // pelo browser (com o estado do script) é a de antes do envio (deixava acrescentar a mesma sugestão duas vezes e
+  // dava por guardar o que já se guardou), por isso recarrega-se.
   // Sem essa ação, fica como está (as alterações por guardar não se perdem) e só se atualizam as dicas e o painel.
   addEventListener('pageshow', (ev) => {
-    if (ev.persisted && sentFromHere) { location.reload(); return; }
+    if (ev.persisted && (sentFromHere || submittedHere)) { location.reload(); return; }
     render(last); updateTips();
   });
 })();

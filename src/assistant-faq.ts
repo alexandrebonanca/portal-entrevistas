@@ -354,7 +354,7 @@ export const FAQ_SEED: SeedEntry[] = [
       'assistente, perguntas ao assistente, registo, privacidade, dados, IA, OpenAI, inteligência artificial, quem vê as perguntas, guarda as perguntas, guardar, armazenar, armazenam, registo das perguntas'],
     en: ['What happens to the questions I ask the assistant?',
       `They are stored for {logDays} days with no link to you (no account, entity or IP address; emails, links and long numbers are masked), so the portal team can improve the answers. The answer always comes from these frequently asked questions. With an active subscription or as an entity manager, and if the portal has AI switched on, the text of the question alone may be sent to an external AI provider (OpenAI) to draft a short answer from them. Do not write personal data or passwords.`,
-      'assistant, questions to the assistant, log, privacy, data, AI, OpenAI, artificial intelligence, who sees my questions, store, stored, keep, kept'] },
+      'assistant, questions to the assistant, log, privacy, data, AI, OpenAI, artificial intelligence, who sees my questions, store, stored'] },
 
   { key: 'suporte-portal', audience: 'interviewer',
     pt: ['Como falo com o suporte?',

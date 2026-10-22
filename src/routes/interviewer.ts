@@ -251,7 +251,14 @@ ${locked ? '' : composePanel(iv, quota!, !(await inEntity(await entityOfIntervie
     // (sem texto, o texto vem da transcrição). Vinda do assistente, a página mostra a pergunta acrescentada; senão,
     // volta à caixa para a seguinte.
     const text = String(b?.text ?? '').trim().slice(0, 1000);
-    const { max, sent, full, value: r } = await withSlot(req, iv, (tx, n) => tx.one('INSERT INTO questions(interview_id, position, text) VALUES ($1,$2,$3) RETURNING id', [iv.id, n + 1, text]));
+    // Do assistente, a mesma sugestão não entra duas vezes (um segundo clique ou um envio repetido vão para a que já existe).
+    const fromAssistant = b?.origem === 'assistente' && !!text;
+    const existing = fromAssistant ? await db.one('SELECT id FROM questions WHERE interview_id=$1 AND text=$2 ORDER BY position LIMIT 1', [iv.id, text]) : null;
+    if (existing) return reply.redirect(back(iv, qAnchor(existing.id)));
+    const { max, sent, full, value: r } = await withSlot(req, iv, async (tx, n) => {
+      const again = fromAssistant ? await tx.one('SELECT id FROM questions WHERE interview_id=$1 AND text=$2 LIMIT 1', [iv.id, text]) : null;
+      return again ?? tx.one('INSERT INTO questions(interview_id, position, text) VALUES ($1,$2,$3) RETURNING id', [iv.id, n + 1, text]);
+    });
     if (sent) return reply.redirect(`/entrevistas/${iv.id}/editar?e=` + encodeURIComponent(SENT));
     if (full) return reply.redirect(back(iv, 'nq', fullMsg(max)));
     return reply.redirect(back(iv, !text || b?.audio === '1' || b?.origem === 'assistente' ? qAnchor((r as any).id) : 'nq'));

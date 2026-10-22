@@ -74,6 +74,10 @@ test('editar: cada ação sobre as perguntas volta ao sítio onde se estava, nã
   const fromAssistant = await post(`/entrevistas/${id}/perguntas`, { text: 'Que conselho daria?', origem: 'assistente' }, admin);
   qs = await questions(id);
   assert.equal(fromAssistant.headers.location, `/entrevistas/${id}/editar#q-${qs[3].id}`);
+  // a mesma sugestão outra vez (duplo clique, envio repetido): não entra duas vezes
+  const again = await post(`/entrevistas/${id}/perguntas`, { text: 'Que conselho daria?', origem: 'assistente' }, admin);
+  assert.equal(again.headers.location, fromAssistant.headers.location);
+  assert.equal((await questions(id)).length, 4);
   for (const q of qs.slice(1)) await post(`/entrevistas/${id}/perguntas/${q.id}/eliminar`, {}, admin);
 
   assert.equal((await post(`/entrevistas/${id}/perguntas/${q1.id}`, { text: 'Como começou a cozinhar?' }, admin)).headers.location, `/entrevistas/${id}/editar#q-${q1.id}`);
@@ -152,6 +156,8 @@ test('painel do assistente: só no rascunho; sugestões por IA só para o admini
   config.openai.composeAiPerHour = 0;
   try { assert.match((await get(`/entrevistas/${sid}/editar`, sem)).body, /As sugestões por IA estão desligadas de momento/); }
   finally { config.openai.composeAiPerHour = was; }
+  // entrevista com id malformado (36 caracteres sem o feitio de um UUID): 404 em vez de erro 500
+  assert.equal((await get('/entrevistas/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa-/editar', admin)).statusCode, 404);
   // áudio de uma pergunta com id malformado: 404 (antes dava erro 500)
   const audioBad = await app.inject({ method: 'POST', url: `/api/entrevistas/${aid}/perguntas/nao-e-um-id/audio`, payload: Buffer.from('x'), headers: { 'content-type': 'application/octet-stream', cookie: admin } });
   assert.equal(audioBad.statusCode, 404);
@@ -263,14 +269,31 @@ test('tapar: emails, sites e telefones em vários formatos; datas, valores e nú
   // minúsculas misturadas, sem caminho, como «Maria.Pt», não se distingue de «fim.De»: fica)
   const prose = 'Fale-nos do seu percurso.Como chegou aqui? Entre 2005 e 2012.Depois mudou-se? Como é a vida em Maputo.Recomenda? What was your first job.How did you get it? '
     + 'O Dr.Silva, na Av.da Liberdade, Univ.Coimbra, Mr.Smith, Prof.Doutor, Eng.Silva, Sta.Maria, Sto.António, Exmo.Sr., Dra.Ana. '
-    + 'Socket.IO, pandas.DataFrame, numpy.array, System.out.println, Power.BI, React.Native, main.py, README.md, Maria.Pt.';
+    + 'Socket.IO, pandas.DataFrame, numpy.array, System.out.println, Power.BI, React.Native, ML.NET, Maria.Pt, Ex.mo Senhor, Il.ma Senhora.';
   assert.equal(C.scrub(prose, 2000), prose);
+  // nomes de ficheiros em minúsculas com um domínio de país (main.py, README.md) continuam tapados, como antes
+  assert.equal(C.scrub('Veja main.py e README.md', 1000), 'Veja [link] e [link]');
   // o email tem âncora à esquerda: um texto longo sem @ já não custa tempo quadrático
   const t0 = performance.now();
   for (let i = 0; i < 16; i++) C.scrub('a'.repeat(4000), 1000);
   assert.ok(performance.now() - t0 < 100, `demorou ${Math.round(performance.now() - t0)} ms`);
   // o corte antes das expressões regulares não separa um contacto (os campos de origem têm no máximo 4000 caracteres)
   assert.equal(C.scrub('x'.repeat(1490) + ' rui.costa@empresa.pt e 912 345 678', 1500), 'x'.repeat(1490) + ' [email] e');
+});
+
+test('tapar: contactos nos formatos habituais em vários contextos nunca seguem por tapar', () => {
+  const phones = ['912 345 678', '912345678', '+351 912 345 678', '(+351) 912 345 678', '00351 912 345 678', '912-345-678', '912.345.678', '21 123 4567',
+    '+44 20 7946 0958', '+55 11 91234-5678', '+244 923 456 789', '+258 84 123 4567', '808 200 200', '91.23.45.678', '06.12.34.56.78', '912/345/678', '+1 (415) 555-0132'];
+  const emails = ['rui@empresa.pt', 'Rui.Costa@Empresa.PT', 'joão@empresa.pt', 'a.b-c@sub.dominio.co.ao'];
+  const sites = ['empresa.pt', 'www.empresa.pt', 'https://empresa.pt/x', 'empresa.pt/contactos', 'linktr.ee/joao', 'bit.ly/abc', 't.co/abc', 'forms.gle/abc123',
+    'fb.watch/abc', 'anchor.fm/maria', 'joana.art', 'empresa.co.ao', 'EMPRESA.PT', 'Empresa.PT/contactos', 'escola.mz', 'company.com', 'docs.rs', 'bun.sh', 'café.pt'];
+  const contexts = [(c: string) => `Ver ${c}`, (c: string) => `Ver ${c}.`, (c: string) => `Ver ${c}, já`, (c: string) => `Ver ${c}: já`, (c: string) => `(${c})`,
+    (c: string) => `«${c}»`, (c: string) => `${c}.Obrigado`, (c: string) => `${c}.Com`, (c: string) => `Contacto: ${c}\n€20 de inscrição`,
+    (c: string) => `${c} - 50% de desconto`, (c: string) => `Data 12/03/2025 – ${c}`, (c: string) => `Tel.: ${c}`, (c: string) => `See ${c}. How did you start?`];
+  for (const c of [...phones, ...emails, ...sites]) for (const ctx of contexts) {
+    const x = ctx(c), out = C.scrub(x, 2000);
+    assert.ok(!out.includes(c), `por tapar: ${JSON.stringify(x)} → ${JSON.stringify(out)}`);
+  }
 });
 
 test('rascunho com mais perguntas do que o máximo: o pedido leva só as que cabem', () => {
