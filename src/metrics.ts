@@ -338,7 +338,8 @@ export function prorate(e: { period_from: string; period_to: string; amount_cent
  * (valores negativos, na data do reembolso, e a linha corretiva quando um reembolso falha depois de concluído). Soma-se
  * `net_cents` pela data do pagamento (`paid_at`). Só a conta Stripe do portal (`invoice_queue.entity_id` NULL: nas subscrições é
  * a entidade do webhook, dona da conta Stripe, e nos carregamentos o `stripe_scope` do lote): o que uma entidade com Stripe
- * própria cobra é de outro vendedor e fica à parte (`entityRevenueCents`), também nas disputas perdidas (pelo lote). Cada pagamento e cada reembolso aparece lá uma só vez (`stripe_ref` único), por isso não há dupla
+ * própria cobra é de outro vendedor e fica à parte (`entityRevenueCents`), também nas disputas perdidas (pelo lote). Cada
+ * pagamento e cada reembolso aparece lá uma só vez (`stripe_ref` único), por isso não há dupla
  * contagem; `payment_events` (eventos em bruto), `subscriptions` (estado atual), `credit_topups` e `wallet_entries`
  * (créditos, que são a mesma receita vista pela carteira) não se somam. As disputas não passam pela lista: só uma disputa
  * perdida de um carregamento de créditos tira receita, o líquido debitado na carteira (`wallet_entries` 'dispute', fechada por
