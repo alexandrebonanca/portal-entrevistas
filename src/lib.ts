@@ -37,28 +37,47 @@ export const isEmail = (s: string) => /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(s) &&
 /** Email que pode servir de contacto ou de Reply-To: válido e não um endereço de exemplo (de uma instalação de desenvolvimento). */
 export const isRealEmail = (s: string) => isEmail(s) && !/@example\.(com|org|net)$/i.test(s);
 
-/** Limitador em memória (por processo): suficiente para o MVP de uma instância. */
-const buckets = new Map<string, number[]>();
+/**
+ * Limitador em memória (por processo): suficiente para o MVP de uma instância. Cada chave (IP, email, conta) guarda os
+ * instantes dentro da janela e o fim da janela do mais recente; deixa de estar em memória quando já não conta: sem
+ * instantes na janela sai logo do Map e, se ninguém voltar a usá-la, a limpeza de cada minuto tira-a (a página de
+ * privacidade diz que os IP só ficam em memória enquanto contam).
+ */
+const buckets = new Map<string, { hits: number[]; until: number }>();
+/** Instantes de uma chave ainda dentro da janela. */
+const live = (key: string, windowMs: number, now: number) => (buckets.get(key)?.hits ?? []).filter(t => now - t < windowMs);
+/** Guarda os instantes da chave até ao fim da janela do mais recente; sem nenhum, a chave sai do Map. */
+const keep = (key: string, hits: number[], windowMs: number) => {
+  if (hits.length) buckets.set(key, { hits, until: Math.max(...hits) + windowMs }); else buckets.delete(key);
+};
 export function rateLimit(key: string, max: number, windowMs: number) {
-  const now = Date.now();
-  const hits = (buckets.get(key) ?? []).filter(t => now - t < windowMs);
-  if (hits.length >= max) { buckets.set(key, hits); return false; }
-  hits.push(now); buckets.set(key, hits);
-  return true;
+  const now = Date.now(), hits = live(key, windowMs, now);
+  const ok = hits.length < max;
+  if (ok) hits.push(now);
+  keep(key, hits, windowMs);
+  return ok;
 }
 /** Vários limites de uma vez (por exemplo, a pessoa e o IP): só conta, em todos, quando todos estão dentro do limite. */
 export function rateLimitAll(limits: [key: string, max: number, windowMs: number][]) {
   const now = Date.now();
-  const lists = limits.map(([key, max, windowMs]) => { const hits = (buckets.get(key) ?? []).filter(t => now - t < windowMs); buckets.set(key, hits); return { hits, max }; });
-  if (lists.some(l => l.hits.length >= l.max)) return false;
-  for (const l of lists) l.hits.push(now);
-  return true;
+  const lists = limits.map(([key, max, windowMs]) => ({ key, max, windowMs, hits: live(key, windowMs, now) }));
+  const ok = !lists.some(l => l.hits.length >= l.max);
+  for (const l of lists) { if (ok) l.hits.push(now); keep(l.key, l.hits, l.windowMs); }
+  return ok;
 }
-/** Se ainda há lugar num limite, sem o gastar (para recusar antes de outros limites que gastam). */
+/** Se ainda há lugar num limite, sem o gastar (para recusar antes de outros limites que gastam). Não guarda nada. */
 export function rateRoom(key: string, max: number, windowMs: number) {
-  const now = Date.now();
-  return (buckets.get(key) ?? []).filter(t => now - t < windowMs).length < max;
+  return live(key, windowMs, Date.now()).length < max;
 }
+/** Tira da memória as chaves cuja janela já acabou (corre sozinha a cada minuto; `now` explícito nos testes). */
+export function sweepRateLimits(now = Date.now()) {
+  let n = 0;
+  for (const [key, b] of buckets) if (b.until <= now) { buckets.delete(key); n++; }
+  return n;
+}
+setInterval(() => sweepRateLimits(), 60_000).unref();
+/** Se uma chave ainda está em memória (para os testes). */
+export const rateHeld = (key: string) => buckets.has(key);
 
 export const fmtDuration = (ms: number | null | undefined) => {
   if (!ms) return '—';

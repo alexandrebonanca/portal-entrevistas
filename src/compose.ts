@@ -23,8 +23,19 @@ export const COMPOSE_MAX_SUGGESTIONS = 5;
 /** Pontos de uma revisão (os mais importantes primeiro): cabem com folga no teto de tokens da resposta. */
 export const COMPOSE_MAX_REVIEW = 8;
 export const COMPOSE_PROMPT_VERSION = 'compose-v2';
-/** Dias de contagens diárias guardadas em `compose_usage`; as mais antigas apagam-se no primeiro pedido do dia de uma conta. */
+/** Dias de contagens diárias guardadas em `compose_usage`; as mais antigas apaga-as o worker (purgeComposeUsage). */
 export const COMPOSE_USAGE_DAYS = 62;
+
+let lastUsagePurge = 0;
+/**
+ * Apaga as contagens diárias com mais de COMPOSE_USAGE_DAYS dias, no máximo uma vez por hora (salvo `force`). Corre no
+ * worker, para se apagarem mesmo que ninguém volte a usar o assistente: a página de privacidade dá esse prazo.
+ */
+export async function purgeComposeUsage(db: Db, force = false) {
+  if (!force && Date.now() - lastUsagePurge < 3600_000) return 0;
+  lastUsagePurge = Date.now();
+  return (await db.query(`DELETE FROM compose_usage WHERE day < current_date - ${COMPOSE_USAGE_DAYS} RETURNING who`)).length;
+}
 
 export interface DraftQuestion { text: string; audio: boolean }
 export interface ComposeDraft {
@@ -236,7 +247,6 @@ async function usageAllowed(db: Db, userId: string, portal: boolean): Promise<'o
   const month = Number((await db.one(`SELECT COALESCE(sum(n),0)::int AS n FROM compose_usage WHERE who=$1 AND day >= date_trunc('month', current_date)::date`, [userId])).n);
   if (month > COMPOSE_RATE.perMonth) { await unbump(db, userId); return 'month'; }
   if (portal && await bump('global', config.openai.composeAiPerDay) == null) { await unbump(db, userId); return 'global'; }
-  if (today === 1) await db.query(`DELETE FROM compose_usage WHERE day < current_date - ${COMPOSE_USAGE_DAYS}`); // limpeza ocasional
   return 'ok';
 }
 

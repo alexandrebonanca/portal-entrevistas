@@ -682,8 +682,8 @@ test('construtor de links', async () => {
 
 test('privacidade: parágrafo sobre os links das campanhas', async () => {
   const b = (await visit('/privacy')).body;
-  assert.match(b, /<h2>Campaign links<\/h2><p>Visits to the home page and the sign-up page, and to the gallery and episode pages when the link carries campaign tags, are counted as daily totals[^<]*use no cookies and hold no IP address[^<]*server’s technical logs, which record the IP address and the page address\. When you create an account, the campaign tags you arrived with, or otherwise the website you came from, are kept with your account to measure campaign results\.<\/p>/);
-  assert.match(b, /<h2>Composition assistant<\/h2>/); assert.match(b, /<h2>Your rights<\/h2>/);
+  assert.match(b, /<h2 id="campaign-links">Campaign links<\/h2><p>Visits to the home page and the sign-up page, and to the gallery and episode pages when the link carries campaign tags, are counted as daily totals[^<]*use no cookies and hold no IP address[^<]*server’s technical logs, which record the IP address and the page address\. When you create an account, the campaign tags you arrived with, or otherwise the website you came from, are kept with your account to measure campaign results\.<\/p>/);
+  assert.match(b, /<h2 id="composition-assistant">Composition assistant<\/h2>/); assert.match(b, /<h2 id="your-rights">Your rights<\/h2>/);
 });
 
 test('migração 034: registos anteriores identificados pela auditoria', async () => {

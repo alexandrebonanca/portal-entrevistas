@@ -44,6 +44,13 @@ export async function flushOutbox(db: Db) {
  */
 export const replyTo = () => (isRealEmail(config.owner.email) ? config.owner.email : '');
 
+/**
+ * Seguimento desligado em cada envio, seja qual for a configuração do domínio no painel da MailerSend: sem píxel de
+ * aberturas, sem links reescritos para contar cliques e sem o conteúdo guardado na atividade (campos `settings` da API
+ * v1, /v1/email). A /privacy diz que os emails não têm seguimento de aberturas nem de cliques.
+ */
+export const MAILERSEND_SETTINGS = { track_clicks: false, track_opens: false, track_content: false } as const;
+
 async function deliver(m: any): Promise<string> {
   if (!S('MAILERSEND_API_KEY')) {
     // Sem fornecedor configurado: regista na consola (desenvolvimento). Não é entrega real.
@@ -59,19 +66,26 @@ async function deliver(m: any): Promise<string> {
       ...(replyTo() ? { reply_to: { email: replyTo(), name: config.brand } } : {}),
       to: [{ email: m.to_email }],
       subject: m.subject, html: m.html, text: m.text_body,
+      settings: MAILERSEND_SETTINGS,
     }),
   });
   if (!res.ok) throw new Error(`MailerSend ${res.status}: ${(await res.text()).slice(0, 200)}`);
   return res.headers.get('x-message-id') ?? 'accepted';
 }
 
-/** Rodapé por omissão dos emails: a marca e a ligação ao formulário de contacto do portal (nunca um endereço de email). */
-export const emailFooter = (lang: 'pt' | 'en' = 'pt') =>
-  `<p style="font:13px Arial,sans-serif;color:#6b655c;margin-top:32px">${esc(config.brand)} · <a href="${esc(config.baseUrl)}/contact" style="color:#b4691f">${lang === 'en' ? 'Contact us' : 'Contacto'}</a></p>`;
+/** Ligação à página de privacidade no rodapé dos emails (o desta moldura e o dos convites, em invites.ts). */
+export const emailPrivacyLink = (label: string) => `<a href="${esc(config.baseUrl)}/privacy" style="color:#b4691f">${esc(label)}</a>`;
 
 /**
- * Moldura dos emails. opts.after: texto secundário depois do botão; opts.footer: rodapé próprio (por omissão, a marca e o
- * formulário de contacto, na língua opts.lang).
+ * Rodapé por omissão dos emails: a marca, a ligação ao formulário de contacto do portal (nunca um endereço de email) e a
+ * página de privacidade.
+ */
+export const emailFooter = (lang: 'pt' | 'en' = 'pt') =>
+  `<p style="font:13px Arial,sans-serif;color:#6b655c;margin-top:32px">${esc(config.brand)} · <a href="${esc(config.baseUrl)}/contact" style="color:#b4691f">${lang === 'en' ? 'Contact us' : 'Contacto'}</a> · ${emailPrivacyLink(lang === 'en' ? 'Privacy' : 'Privacidade')}</p>`;
+
+/**
+ * Moldura dos emails. opts.after: texto secundário depois do botão; opts.footer: rodapé próprio (por omissão, a marca, o
+ * formulário de contacto e a privacidade, na língua opts.lang).
  */
 export function emailShell(title: string, bodyHtml: string, button?: { label: string; url: string }, opts: { footer?: string; after?: string; lang?: 'pt' | 'en' } = {}) {
   return `<!doctype html><html><body style="margin:0;background:#f4f1ea;font-family:Georgia,serif;color:#1c1a17">

@@ -484,5 +484,5 @@ test('ajuda: a entrada do assistente de composição diz os limites em vigor e a
     const list = FAQ_SEED.filter(x => x.audience !== 'guest').map((x, i) => ({ id: x.key, lang, audience: x.audience, question: x[lang][0], answer: x[lang][1], keywords: x[lang][2], sort: i }));
     assert.equal(searchFaq(list, q)[0]?.entry.id, want, q);
   }
-  assert.match((await get('/privacy')).body, /<h2>Composition assistant<\/h2><p>[^<]*and the optional request typed in the panel, are sent to OpenAI[^<]*in the usual formats are masked first\); the name and email fields and the personal message are not sent/);
+  assert.match((await get('/privacy')).body, /<h2 id="composition-assistant">Composition assistant<\/h2><p>[^<]*and the optional request typed in the panel, are sent to OpenAI[^<]*in the usual formats are masked first\); the name and email fields and the personal message are not sent/);
 });

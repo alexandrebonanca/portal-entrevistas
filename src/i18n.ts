@@ -35,7 +35,7 @@ const D = {
     c_processing: 'Transcrição, tradução para inglês e narração com vozes sintéticas geradas por IA, através de serviços externos.',
     c_publish: 'Publicação do episódio resultante, depois de eu o ter visto e aprovado.',
     c_publish_host: 'Publicação do episódio resultante, depois de revisto e aprovado pelo entrevistador. Um vídeo em que eu apareça animado por IA só é publicado depois de eu o ter visto e aprovado.',
-    consentLong: 'Quem organiza: o entrevistador indicado no convite. Finalidades: gravar as suas respostas, transcrevê-las, traduzi-las e produzir um episódio de podcast em inglês com vozes sintéticas (não clonamos a sua voz). Serviços externos: transcrição, tradução e voz sintética são feitos por um fornecedor de IA. Publicação: {PUB} Conservação: os originais ficam privados e pode pedir a sua eliminação através do contacto de apoio.',
+    consentLong: 'Quem organiza: o entrevistador indicado no convite. Finalidades: gravar as suas respostas, transcrevê-las, traduzi-las e produzir um episódio de podcast em inglês com vozes sintéticas (não clonamos a sua voz). Serviços externos: transcrição, tradução e voz sintética são feitos por um fornecedor de IA. Publicação: {PUB} Conservação: os originais ficam privados e pode pedir a sua eliminação na página «Ajuda» desta entrevista ou, depois de o link deixar de valer, pelo formulário de contacto do portal.',
     pubAll: 'só após a sua aprovação do resultado.', pubHost: 'decidida pelo entrevistador; um vídeo em que apareça animado por IA só com a sua aprovação.',
     adults: 'Confirmo que tenho 18 anos ou mais.',
     save: 'Guardar e continuar', start: 'Começar', continue: 'Continuar',
@@ -69,7 +69,7 @@ const D = {
     howConsent: 'Antes de começar, escolhe o que autoriza (gravação, tratamento e publicação); as fotografias são opcionais e pedidas no fim.',
     linkUntil: (d: string) => `Este link é pessoal. Pode responder até ${d}.`,
     emailDecline: 'Se não pretende participar, abra o link e escolha «Não pretendo participar».',
-    help: 'Dúvidas? Abra o seu link pessoal e use a página «Ajuda»: a equipa do portal responde lá.', tagline: 'entrevistas gravadas no seu tempo',
+    help: 'Dúvidas? Abra o seu link pessoal e use a página «Ajuda»: a equipa do portal responde lá.', tagline: 'entrevistas gravadas no seu tempo', privacyLink: 'Privacidade',
     saved: 'Guardado.',
     // ajuda e suporte interno (sem email)
     helpNav: 'Ajuda', helpTitle: 'Ajuda', supportTitle: 'Falar com o suporte',
@@ -131,7 +131,7 @@ const D = {
     c_processing: 'Transcription, translation into English and narration with AI-generated synthetic voices, using external services.',
     c_publish: 'Publication of the resulting episode, after I have seen and approved it.',
     c_publish_host: 'Publication of the resulting episode, after it has been reviewed and approved by the interviewer. A video in which I appear animated by AI is only published after I have seen and approved it.',
-    consentLong: 'Organiser: the interviewer named in the invitation. Purposes: record your answers, transcribe and translate them, and produce an English-language podcast episode narrated with synthetic voices (we do not clone your voice). External services: transcription, translation and synthetic voice are provided by an AI vendor. Publication: {PUB} Retention: the originals stay private and you can ask for deletion through the support contact.',
+    consentLong: 'Organiser: the interviewer named in the invitation. Purposes: record your answers, transcribe and translate them, and produce an English-language podcast episode narrated with synthetic voices (we do not clone your voice). External services: transcription, translation and synthetic voice are provided by an AI vendor. Publication: {PUB} Retention: the originals stay private and you can ask for their deletion on this interview’s “Help” page or, once your link is no longer valid, through the portal’s contact form.',
     pubAll: 'only after you approve the result.', pubHost: 'decided by the interviewer; a video in which you appear animated by AI only with your approval.',
     adults: 'I confirm I am 18 or older.',
     save: 'Save and continue', start: 'Start', continue: 'Continue',
@@ -165,7 +165,7 @@ const D = {
     howConsent: 'Before you start, you choose what you allow (recording, processing and publication); photos are optional and asked for at the end.',
     linkUntil: (d: string) => `This link is personal. You can answer until ${d}.`,
     emailDecline: 'If you do not wish to take part, open the link and choose “I do not wish to take part”.',
-    help: 'Need help? Open your personal link and use the “Help” page: the portal team replies there.', tagline: 'interviews recorded in your own time',
+    help: 'Need help? Open your personal link and use the “Help” page: the portal team replies there.', tagline: 'interviews recorded in your own time', privacyLink: 'Privacy',
     saved: 'Saved.',
     // help and in-portal support (no email)
     helpNav: 'Help', helpTitle: 'Help', supportTitle: 'Contact support',
@@ -199,7 +199,9 @@ const D = {
 
 export const t = (lang: Lang) => D[lang];
 
-export const CONSENT_VERSION = 'v2-2026-10'; // v2: publicação conforme a política de revisão; Replicate na animação
+// v2: publicação conforme a política de revisão; Replicate na animação. v3: o pedido de eliminação segue pela «Ajuda» da
+// entrevista ou pelo formulário de contacto (já não pelo «contacto de apoio», o email que deixou de se mostrar).
+export const CONSENT_VERSION = 'v3-2026-10';
 export const CONSENT_PURPOSES = ['participation', 'processing', 'photo_capture', 'cover_use', 'publish_photo', 'animate_portrait', 'ai_video', 'publish'] as const;
 export type ConsentPurpose = typeof CONSENT_PURPOSES[number];
 /** Texto de cada autorização; a de publicação depende da política de revisão da entrevista. */

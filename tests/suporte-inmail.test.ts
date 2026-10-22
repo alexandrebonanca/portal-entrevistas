@@ -368,13 +368,12 @@ test('sentinela: o SUPPORT_EMAIL não aparece em nenhuma página nem em nenhum e
   const vis = await visitorOf('rui.visitante@exemplo.pt');
   await post(`/admin/suporte/${vis.id}/responder`, { message: 'Já corrigimos o apelido.' }, admin); // aviso «You have a reply»
   const vtoken = tokenOf((await mailsTo(vis.visitor_email))[0].text_body);
-  // A /privacy fica de fora: o texto dela é reescrito noutro ramo, com o email da entidade gestora (pendente em docs/estado.md).
   for (const [label, body] of seen) assert.ok(!body.toLowerCase().includes(SENTINEL), `${label} mostra o SUPPORT_EMAIL`);
   assert.ok(seen.length >= 9, `${seen.length} páginas do convidado`);
   const all: [string, string][] = [
-    ['/', ''], ['/termos', ''], ['/privacidade-pagamentos', ''], ['/podcasts', ''], [`/e/${slug}`, ''], ['/contact', ''], ['/contact?ok=sent', ''], [`/contact/t/${vtoken}`, ''],
+    ['/', ''], ['/termos', ''], ['/privacidade-pagamentos', ''], ['/privacy', ''], ['/podcasts', ''], [`/e/${slug}`, ''], ['/contact', ''], ['/contact?ok=sent', ''], [`/contact/t/${vtoken}`, ''],
     ['/entrar', ''], ['/registar', ''],
-    ['/ajuda', ana], [`/ajuda/${anaThread}`, ana], ['/painel', ana], ['/account', ana], ['/conta/creditos', ana], ['/contact', ana],
+    ['/ajuda', ana], [`/ajuda/${anaThread}`, ana], ['/painel', ana], ['/account', ana], ['/conta/creditos', ana], ['/contact', ana], ['/privacy', ana], ['/privacidade-pagamentos', ana],
     ['/painel', admin], ['/admin/definicoes', admin], ['/admin/suporte', admin], [`/admin/suporte/${vis.id}`, admin], [`/admin/suporte/${tid}`, admin], ['/admin/faturacao', admin], ['/ajuda', admin],
   ];
   for (const [url, c] of all) {
@@ -390,9 +389,13 @@ test('sentinela: o SUPPORT_EMAIL não aparece em nenhuma página nem em nenhum e
   for (const k of ['invite:', 'submitted:', 'contact:', 'contact-reply:']) assert.ok(mails.some((m: any) => m.dedupe_key.startsWith(k)), k);
   for (const m of mails) assert.ok(!`${m.subject}\n${m.html}\n${m.text_body}`.toLowerCase().includes(SENTINEL), `email ${m.dedupe_key} com o SUPPORT_EMAIL`);
   const done = mails.find((m: any) => m.dedupe_key.startsWith('submitted:'));
-  assert.match(done.html, /quietinterview · <a href="http:\/\/test\.local\/contact" style="color:#b4691f">Contacto<\/a><\/p>/, 'rodapé por omissão: o formulário de contacto');
+  assert.match(done.html, /quietinterview · <a href="http:\/\/test\.local\/contact" style="color:#b4691f">Contacto<\/a> · <a href="http:\/\/test\.local\/privacy" style="color:#b4691f">Privacidade<\/a><\/p>/, 'rodapé por omissão: o formulário de contacto e a privacidade');
   const inv = mails.find((m: any) => m.dedupe_key.startsWith('invite:') && /Pescadores/.test(m.subject));
   assert.match(inv.text_body, /Need help\? Open your personal link and use the “Help” page: the portal team replies there\./);
+  // os convites têm rodapé próprio, também com a página de privacidade (no HTML e no texto)
+  assert.match(inv.html, /<a href="http:\/\/test\.local\/privacy" style="color:#b4691f">Privacy<\/a><\/p>/);
+  assert.match(inv.text_body, /\nPrivacy: http:\/\/test\.local\/privacy$/);
+  for (const m of mails) assert.ok(m.html.includes('http://test.local/privacy'), `email ${m.dedupe_key} sem a ligação à privacidade`);
   assert.equal(replyTo(), 'certifinternational@gmail.com', 'Reply-To: o email da entidade gestora');
 
   // vendedora: sem email definido, o da entidade gestora, com aviso nas Definições
@@ -405,7 +408,7 @@ test('sentinela: o SUPPORT_EMAIL não aparece em nenhuma página nem em nenhum e
   process.env.SELLER_EMAIL = SENTINEL;
   try {
     assert.equal(seller().email, 'certifinternational@gmail.com');
-    for (const url of ['/termos', '/privacidade-pagamentos', '/account', '/conta/creditos']) assert.ok(!(await get(url, ana)).body.toLowerCase().includes(SENTINEL), url);
+    for (const url of ['/termos', '/privacidade-pagamentos', '/privacy', '/account', '/conta/creditos']) assert.ok(!(await get(url, ana)).body.toLowerCase().includes(SENTINEL), url);
     const def = (await get('/admin/definicoes', admin)).body;
     assert.ok(!def.toLowerCase().includes(SENTINEL), 'nem no formulário das Definições');
     assert.match(def, /o que estava guardado era o email de apoio interno, que não se mostra ao público/);

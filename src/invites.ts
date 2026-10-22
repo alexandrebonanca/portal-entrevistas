@@ -1,7 +1,7 @@
 import type { Db } from './db.ts';
 import { config } from './config.ts';
 import { esc, newToken, sha256, lisbonDay, addDays } from './lib.ts';
-import { queueEmail, emailShell } from './mail.ts';
+import { queueEmail, emailShell, emailPrivacyLink } from './mail.ts';
 import { t, normLang } from './i18n.ts';
 import { guestReview, reviewCopy } from './approval.ts';
 
@@ -36,11 +36,11 @@ export async function createInvitation(db: Db, interview: any, host: { name: str
   const d = t(lang);
   const url = `${config.baseUrl}/i/${token}`;
   const hostName = interview.host_name || (await db.one('SELECT name FROM users WHERE id=$1', [interview.owner_id ?? null]))?.name || host.name;
-  // Rodapé dos emails ao convidado: marca, frase e endereço do portal. As dúvidas seguem pela página «Ajuda» do link
-  // pessoal (suporte dentro do portal), sem nenhum endereço de email.
+  // Rodapé dos emails ao convidado: marca, frase, endereço do portal e a página de privacidade. As dúvidas seguem pela
+  // página «Ajuda» do link pessoal (suporte dentro do portal), sem nenhum endereço de email.
   const site = new URL(config.baseUrl).host;
-  const footer = `<p style="font:13px Arial,sans-serif;color:#6b655c;margin-top:32px">${esc(config.brand)} — ${esc(d.tagline)} · <a href="${esc(config.baseUrl)}" style="color:#b4691f">${esc(site)}</a></p>`;
-  const footerText = `${config.brand} — ${d.tagline} · ${site}`;
+  const footer = `<p style="font:13px Arial,sans-serif;color:#6b655c;margin-top:32px">${esc(config.brand)} — ${esc(d.tagline)} · <a href="${esc(config.baseUrl)}" style="color:#b4691f">${esc(site)}</a> · ${emailPrivacyLink(d.privacyLink)}</p>`;
+  const footerText = `${config.brand} — ${d.tagline} · ${site}\n${d.privacyLink}: ${config.baseUrl}/privacy`;
   const help = d.help;
   const small = (s: string) => `<p style="font-size:14px;color:#6b655c">${esc(s)}</p>`;
   if (opts.preview) {

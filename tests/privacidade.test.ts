@@ -27,12 +27,12 @@ before(async () => {
 });
 after(async () => { await app.close(); await db.close(); });
 
-/** Texto de uma secção (do <h2> até ao <h2> seguinte ou ao fim). */
+/** Texto de uma secção (do <h2 id="…"> até ao <h2 seguinte ou ao fim). */
 const section = (title: string) => {
-  const i = body.indexOf(`<h2>${title}</h2>`);
-  assert.ok(i >= 0, `secção «${title}»`);
-  const j = body.indexOf('<h2>', i + 4);
-  return body.slice(i, j < 0 ? undefined : j);
+  const m = new RegExp(`<h2 id="[a-z-]+">${title}</h2>`).exec(body);
+  assert.ok(m, `secção «${title}»`);
+  const j = body.indexOf('<h2', m.index + 4);
+  return body.slice(m.index, j < 0 ? undefined : j);
 };
 
 test('privacidade: completa, sem o aviso «por completar» e sem o email pessoal', () => {
@@ -93,7 +93,12 @@ test('privacidade: aprovação «por omissão», IA, prazos e cookies conforme o
   assert.match(ai, /no voice is cloned/); assert.match(ai, /audible notice/); assert.match(ai, /AI-animated portrait/); assert.match(ai, /AI-generated video · AI voice/);
   assert.match(ai, /not used to take decisions about anyone that have legal or similarly significant effects/);
   const keep = section('How long we keep data');
-  for (const v of ['14 days', '180 days', '62 days', '90 days', '10 years', 'no automatic deletion period', 'kept privately until deletion is requested']) assert.ok(keep.includes(v), v);
+  for (const v of ['14 days', '180 days', '62 days', '90 days', 'no automatic deletion period', 'kept privately until deletion is requested']) assert.ok(keep.includes(v), v);
+  // As faturas: o prazo é o da lei, cumprido pela vendedora; o portal não apaga as suas cópias (não há prazo implementado).
+  assert.match(keep, /Invoices and VAT evidence: kept by the seller for the period tax law requires; the portal’s copies have no automatic deletion yet\./);
+  assert.doesNotMatch(body, /10 years/);
+  // As contagens da composição apaga-as o worker (purgeComposeUsage), uma vez por hora.
+  assert.match(keep, /Composition assistant daily counts: deleted once they are more than 62 days old \(checked every hour\)\./);
   assert.match(keep, /record of a session[^<]*is deleted when you sign out or within about an hour after the session expires/);
   // Os pedidos ao suporte não são apagados com a entrevista ou a conta (não há forma de as apagar no portal).
   assert.doesNotMatch(body, /deleted together with the interview or the account/);
@@ -207,7 +212,127 @@ test('privacidade: retirar a autorização da capa antes e depois de publicar', 
 });
 
 test('privacidade: parágrafos já testados mantêm-se iguais', () => {
-  assert.ok(body.includes('<h2>Campaign links</h2><p>Visits to the home page and the sign-up page, and to the gallery and episode pages when the link carries campaign tags, are counted as daily totals by page and by the campaign tags in the link (or the website you came from). These counters use no cookies and hold no IP address or anything else that identifies you; like any request, the visit also appears in the server’s technical logs, which record the IP address and the page address. When you create an account, the campaign tags you arrived with, or otherwise the website you came from, are kept with your account to measure campaign results.</p>'));
-  assert.ok(body.includes('<h2>Composition assistant</h2><p>When an interviewer with access to it asks the composition assistant on the interview edit page for suggestions, the saved title, goal, roles and question texts of that draft, and the optional request typed in the panel, are sent to OpenAI to draft suggestions (emails, website addresses and phone numbers in the usual formats are masked first); the name and email fields and the personal message are not sent. The portal keeps only a daily count of requests per account, not the texts or the suggestions.</p>'));
+  assert.ok(body.includes('<h2 id="campaign-links">Campaign links</h2><p>Visits to the home page and the sign-up page, and to the gallery and episode pages when the link carries campaign tags, are counted as daily totals by page and by the campaign tags in the link (or the website you came from). These counters use no cookies and hold no IP address or anything else that identifies you; like any request, the visit also appears in the server’s technical logs, which record the IP address and the page address. When you create an account, the campaign tags you arrived with, or otherwise the website you came from, are kept with your account to measure campaign results.</p>'));
+  assert.ok(body.includes('<h2 id="composition-assistant">Composition assistant</h2><p>When an interviewer with access to it asks the composition assistant on the interview edit page for suggestions, the saved title, goal, roles and question texts of that draft, and the optional request typed in the panel, are sent to OpenAI to draft suggestions (emails, website addresses and phone numbers in the usual formats are masked first); the name and email fields and the personal message are not sent. The portal keeps only a daily count of requests per account, not the texts or the suggestions.</p>'));
   assert.match(section('Help assistant and support'), /never sent to AI services[^<]*stored for|stored for 180 days[^<]*never sent to AI services/);
+});
+
+test('privacidade: formulário de contacto, direitos também pelo /contact e alojamento em Frankfurt', () => {
+  const cf = section('Contact form');
+  for (const v of ['your name, your email address, the topic you choose, your message', 'the address or title of an episode', 'only to answer your request',
+    'legitimate interest', 'steps you ask us to take before entering into a contract', 'read only by the portal’s administrators',
+    'through MailerSend with a private link to the conversation', 'never contain your message or our reply', 'Anyone who has the link can read the conversation and reply in it',
+    'no automatic deletion period yet', 'until an administrator deletes the request', 'stops the link working']) assert.ok(cf.includes(v), v);
+  assert.match(cf, /<a href="\/contact">contact form<\/a>/);
+  assert.match(section('How long we keep data'), /Contact-form conversations \(name, email address, topic, episode reference and messages\)[^<]*kept until an administrator deletes the request, with no automatic deletion period yet/);
+  assert.match(section('What we collect and why'), /<strong>Contact form:<\/strong>/);
+  assert.match(section('Help assistant and support'), /Messages that account holders and guests send to support stay inside the portal \(no email is sent\)/);
+  assert.match(section('Who we are'), /Contact: <a href="mailto:[^"]+">[^<]+<\/a> or the <a href="\/contact">contact form<\/a>\./);
+  const rights = section('Your rights');
+  assert.ok(rights.includes('<a href="/contact?topic=privacy">contact form</a> (topic “Privacy request”)'));
+  assert.match(rights, /the help page of the interview while their link is valid, and the contact form after that/);
+  // Render: empresa dos EUA, com o serviço e a base na região de Frankfurt (UE)
+  const rec = section('Who receives data');
+  assert.match(rec, /<strong>Render<\/strong> \(always\)[^<]*The service and its database run in Render’s Frankfurt region, in the EU\./);
+  assert.match(section('International transfers'), /Render, the hosting provider, is also based there, although the service and its database run in its Frankfurt region, in the EU/);
+  assert.doesNotMatch(body, /in the region chosen for it/);
+  // OpenAI: o rótulo com os usos reais (também fora do processamento de uma entrevista)
+  assert.match(rec, /<strong>OpenAI<\/strong> \(when answers, recorded questions or goals are transcribed, when questions are read aloud, when a script, its narration, subtitles or a cover are made, and when the assistants are used\)/);
+  assert.doesNotMatch(body, /whenever an interview is processed/);
+  // MailerSend: os emails do formulário e o seguimento desligado (MAILERSEND_SETTINGS em src/mail.ts)
+  assert.match(rec, /<strong>MailerSend<\/strong>[^<]*the emails with the private link to a contact-form conversation\. Emails are sent with MailerSend’s open, click and content tracking switched off/);
+  // Limites por IP: só em memória, enquanto contam (sweepRateLimits)
+  assert.match(section('What we collect and why'), /<li id="abuse-limits"><strong>Abuse limits:<\/strong> sign-in, sign-up, invitation, support, contact-form and assistant requests are counted per IP address \(and, on the contact form, also per email address\) in the server’s memory, never in the database\. Each count lasts from 10 minutes to a day, and an address leaves the memory within about a minute after its count ends/);
+});
+
+test('privacidade: convidados (primeira abertura, registo e emails com o link pessoal), «(in Portuguese)» e remissões com âncora', () => {
+  const what = section('What we collect and why');
+  assert.match(what, /the first time you open your link is recorded and shown to the interviewer/);
+  assert.match(what, /a log of key steps \([^)]*\) keeps what was done and when, without your IP address/);
+  assert.match(what, /reach you by email, through MailerSend, with your personal link: anyone who has the link can open your interview while it is valid/);
+  // as páginas em português dizem-no na ligação
+  const pt = [...body.matchAll(/<a href="\/(termos|privacidade-pagamentos)">[^<]*<\/a>( \(in Portuguese\))?/g)];
+  assert.equal(pt.length, 3);
+  for (const m of pt) assert.ok(m[2], `${m[0]} sem «(in Portuguese)»`);
+  // cada remissão «see …» é uma ligação para uma âncora que existe, e todas as secções têm âncora
+  const ids = new Set([...body.matchAll(/ id="([a-z-]+)"/g)].map(m => m[1]));
+  const refs = [...body.matchAll(/href="#([a-z-]+)"/g)].map(m => m[1]);
+  assert.ok(refs.length >= 10, `${refs.length} remissões`);
+  for (const r of refs) assert.ok(ids.has(r), `#${r} sem âncora`);
+  assert.doesNotMatch(body, /\(see [A-Z][^<)]*\)|described under [A-Z]/, 'nenhuma remissão sem ligação');
+  assert.doesNotMatch(body, /<h2>/, 'todas as secções com âncora');
+});
+
+test('privacidade: a FAQ do assistente não contradiz a /privacy nem manda escrever por email', async () => {
+  const { FAQ_SEED } = await import('../src/assistant-faq.ts');
+  const answers = FAQ_SEED.flatMap(e => [e.pt[1], e.en[1]]).join('\n');
+  assert.doesNotMatch(answers, /ou por email|or by email|contacte-nos|contact us|contacto de apoio|support contact/i);
+  const by = (k: string) => FAQ_SEED.find(e => e.key === k)!;
+  // retirar a autorização do vídeo IA: apagam-se os vídeos e os clipes do Veo; os do retrato animado ficam (eraseGuestAiVideo)
+  assert.match(by('convidado-video-ia').pt[1], /os vídeos do episódio em que aparece animado deixam de ser mostrados e são apagados, tal como os clipes do Google Veo com a sua imagem; os clipes do retrato animado ficam guardados em privado até pedir ao suporte/);
+  assert.match(by('convidado-video-ia').en[1], /together with the Google Veo clips of you; the animated-portrait clips are kept privately until you ask support/);
+  assert.match(section('How long we keep data'), /together with their Google Veo clips; animated-portrait clips are kept privately until deletion is requested/);
+  assert.match(by('convidado-privacidade').pt[1], /depois de o link deixar de valer, use o formulário de contacto do portal/);
+  assert.match(by('convidado-suporte').en[1], /for a new request, use the portal’s contact form/);
+  assert.match(by('convidado-aprovar').en[1], /use the link «Ask for a correction or the withdrawal of the episode» \(it opens the portal’s contact form with the episode filled in\)/);
+  assert.match(by('devolucoes').pt[1], /peça-o ao suporte, nesta página de ajuda\./);
+});
+
+test('emails: a MailerSend recebe o seguimento desligado (aberturas, cliques e conteúdo) em cada envio, e o rodapé liga à /privacy', async () => {
+  const { queueEmail, flushOutbox, MAILERSEND_SETTINGS, emailShell } = await import('../src/mail.ts');
+  assert.deepEqual(MAILERSEND_SETTINGS, { track_clicks: false, track_opens: false, track_content: false });
+  const sent: any[] = [], realFetch = globalThis.fetch;
+  process.env.MAILERSEND_API_KEY = 'chave-falsa-dos-testes'; // nunca sai daqui: o fetch é substituído
+  globalThis.fetch = (async (u: any, init: any) => {
+    sent.push({ url: String(u), body: JSON.parse(init.body) });
+    return new Response('', { status: 202, headers: { 'x-message-id': `m${sent.length}` } });
+  }) as any;
+  try {
+    await queueEmail(db, { key: 'teste-seguimento', to: 'seguimento@exemplo.pt', subject: 'Teste', html: emailShell('Teste', '<p>Teste</p>'), text: 'Teste' });
+    await flushOutbox(db);
+  } finally { globalThis.fetch = realFetch; delete process.env.MAILERSEND_API_KEY; }
+  const m = sent.find(x => x.body.to?.[0]?.email === 'seguimento@exemplo.pt');
+  assert.ok(m, 'enviado pela API');
+  assert.equal(m.url, 'https://api.mailersend.com/v1/email');
+  assert.deepEqual(m.body.settings, { track_clicks: false, track_opens: false, track_content: false });
+  for (const x of sent) assert.deepEqual(x.body.settings, MAILERSEND_SETTINGS, 'em todos os envios');
+  const row = await db.one(`SELECT state, provider_id FROM emails WHERE dedupe_key='teste-seguimento'`);
+  assert.deepEqual([row.state, row.provider_id], ['sent', `m${sent.indexOf(m) + 1}`]);
+  // rodapé por omissão: o formulário de contacto e a página de privacidade
+  assert.match(m.body.html, /<a href="http:\/\/test\.local\/contact" style="color:#b4691f">Contacto<\/a> · <a href="http:\/\/test\.local\/privacy" style="color:#b4691f">Privacidade<\/a><\/p>/);
+  assert.match(emailShell('T', '', undefined, { lang: 'en' }), /Contact us<\/a> · <a href="http:\/\/test\.local\/privacy" style="color:#b4691f">Privacy<\/a>/);
+});
+
+test('privacidade: os contadores dos limites por IP saem da memória quando deixam de contar', async () => {
+  const { rateLimit, rateLimitAll, rateRoom, sweepRateLimits, rateHeld } = await import('../src/lib.ts');
+  const t0 = Date.now();
+  assert.equal(rateLimit('teste-ip:198.51.100.7', 2, 10 * 60_000), true);
+  assert.equal(rateLimitAll([['teste-ip:198.51.100.8', 5, 3600_000], ['teste-email:a@exemplo.pt', 5, 24 * 3600_000]]), true);
+  assert.equal(rateRoom('teste-ip:198.51.100.9', 1, 60_000), true);
+  assert.equal(rateHeld('teste-ip:198.51.100.9'), false, 'conferir se há lugar não guarda nada');
+  assert.equal(rateLimit('teste-fechado:198.51.100.10', 0, 60_000), false);
+  assert.equal(rateHeld('teste-fechado:198.51.100.10'), false, 'uma recusa sem contagens não guarda a chave');
+  const held = () => ['teste-ip:198.51.100.7', 'teste-ip:198.51.100.8', 'teste-email:a@exemplo.pt'].map(rateHeld);
+  sweepRateLimits(t0 + 10 * 60_000 - 1000);
+  assert.deepEqual(held(), [true, true, true], 'ainda contam');
+  sweepRateLimits(t0 + 10 * 60_000 + 1000);
+  assert.deepEqual(held(), [false, true, true], 'a janela de 10 min acabou');
+  sweepRateLimits(t0 + 3600_000 + 1000);
+  assert.deepEqual(held(), [false, false, true]);
+  sweepRateLimits(t0 + 24 * 3600_000 + 1000);
+  assert.deepEqual(held(), [false, false, false], 'o email do formulário sai ao fim do dia');
+  // Uma chave cujos instantes saíram da janela sai do Map no pedido seguinte (sem esperar pela limpeza).
+  assert.equal(rateLimit('teste-ip:198.51.100.11', 1, 1), true);
+  await new Promise(r => setTimeout(r, 5));
+  assert.equal(rateLimitAll([['teste-ip:198.51.100.11', 0, 1]]), false);
+  assert.equal(rateHeld('teste-ip:198.51.100.11'), false);
+});
+
+test('privacidade: o worker apaga as contagens da composição com mais de 62 dias', async () => {
+  const { purgeComposeUsage, COMPOSE_USAGE_DAYS } = await import('../src/compose.ts');
+  assert.equal(COMPOSE_USAGE_DAYS, 62);
+  await db.query(`INSERT INTO compose_usage(who, day, n) VALUES ('teste-velha', current_date - 63, 1), ('teste-62', current_date - 62, 1), ('teste-recente', current_date - 1, 1)`);
+  assert.equal(await purgeComposeUsage(db, true), 1);
+  assert.deepEqual((await db.query(`SELECT who FROM compose_usage WHERE who LIKE 'teste-%' ORDER BY who`)).map((r: any) => r.who), ['teste-62', 'teste-recente']);
+  assert.equal(await purgeComposeUsage(db), 0, 'no máximo uma vez por hora sem «force»');
 });
