@@ -48,7 +48,18 @@
   const dirty = new Set();
   if (root) {
     root.addEventListener('input', (ev) => { const f = ev.target.form; if (f) dirty.add(f); });
+    root.addEventListener('change', (ev) => { const f = ev.target.form; if (f) dirty.add(f); });
     root.addEventListener('submit', (ev) => dirty.delete(ev.target));
+    // Valores que o browser repõe ao recarregar (o Firefox, por exemplo) também são alterações por guardar.
+    const restored = () => root.querySelectorAll('form').forEach((f) => {
+      for (const e of f.elements) {
+        if ((e.type === 'checkbox' || e.type === 'radio') ? e.checked !== e.defaultChecked
+          // (sem nenhuma opção marcada no HTML, a escolhida por omissão é a primeira)
+          : e.tagName === 'SELECT' ? e.selectedIndex !== Math.max(0, [...e.options].findIndex((o) => o.defaultSelected))
+          : 'defaultValue' in e && e.type !== 'hidden' && e.type !== 'file' && e.value !== e.defaultValue) { dirty.add(f); break; }
+      }
+    });
+    addEventListener('load', restored);
   }
 
   // ---------------- assistente de composição ----------------
@@ -95,7 +106,8 @@
   };
   const updateTips = () => {
     const obj = document.getElementById('obj'), il = document.getElementById('il');
-    const closedQ = CLOSED_Q[il && il.value === 'en' ? 'en' : 'pt-PT'];
+    const en = !!il && il.value === 'en', closedQ = CLOSED_Q[en ? 'en' : 'pt-PT'];
+    const openWords = en ? '«How», «Why» ou «What»' : '«Como», «Porquê» ou «O que»';
     const qs = cards().map((c) => ({ text: textOf(c).trim(), audio: c.dataset.audio === '1' })), n = qs.length, list = [];
     if (obj && !obj.value.trim()) list.push('Escreva o objetivo: orienta o entrevistado e as sugestões do assistente.');
     list.push(`Perguntas: ${n} de ${maxQ}.` + (limit && n ? ` O entrevistado tem ${mmss(limit)} de resposta no total, cerca de ${mmss(limit / n)} por pergunta.` : ''));
@@ -108,7 +120,7 @@
       if (!t) { if (!q.audio) perQ.push(`A pergunta ${k} está vazia: escreva o texto ou grave-a em áudio.`); }
       else if (t.length > 300) perQ.push(`A pergunta ${k} é longa: encurte-a para se perceber bem ao ouvir.`);
       else if ((t.match(/\?/g) || []).length > 1) perQ.push(`A pergunta ${k} parece ter mais de uma pergunta: separe-as.`);
-      else if (closedQ.test(t)) perQ.push(`A pergunta ${k} pode ter resposta «sim» ou «não»: experimente começar por «Como», «Porquê» ou «O que».`);
+      else if (closedQ.test(t)) perQ.push(`A pergunta ${k} pode ter resposta «sim» ou «não»: experimente começar por ${openWords}.`);
     });
     list.push(...perQ.slice(0, 4));
     if (perQ.length === 5) list.push('Há mais 1 pergunta a rever.');
@@ -126,13 +138,23 @@
   // ficam desativados (um duplo clique não acrescenta a pergunta duas vezes).
   const postForm = (action, fields) => {
     if (dirty.size && !confirm('Há alterações por guardar nesta página que se perdem ao continuar. Continuar?')) return;
+    const keep = appliedForm;
     appliedForm = null; // já se confirmou: o browser não volta a perguntar ao sair
     panel.querySelectorAll('button').forEach((x) => (x.disabled = true));
     if (!panel.hidden) store.set('sessionStorage', REOPEN, 1);
     const f = el('form'); f.method = 'post'; f.action = action; f.hidden = true;
     for (const [k, v] of Object.entries(fields)) { const t = el('textarea'); t.name = k; t.value = v; f.appendChild(t); }
     document.body.appendChild(f); f.submit();
+    // Se a saída for cancelada (por exemplo, pelo aviso de uma gravação por guardar), a página continua utilizável.
+    setTimeout(() => {
+      if (leaving) return;
+      appliedForm = keep; store.set('sessionStorage', REOPEN, null); f.remove();
+      panel.querySelectorAll('button').forEach((x) => (x.disabled = false));
+      render(last); // volta a desativar «Adicionar» se não houver vagas
+    }, 8000);
   };
+  let leaving = false;
+  addEventListener('pagehide', () => { leaving = true; });
 
   // O estado de cada sugestão vem da própria página (a pergunta existe? o texto já é o proposto?), não de marcas
   // guardadas: se o servidor recusar (limite, sessão), a sugestão continua por usar. O último resultado fica também
@@ -244,6 +266,7 @@
   render(last);
   // Reaberto no telemóvel depois de uma ação dele: mostra logo as sugestões, não o topo do painel.
   if (reopen && !wide() && last) panel.scrollTop = out.offsetTop - 12;
-  // Voltar à página pela cache do browser (botão Retroceder): os botões desativados ao enviar voltam a funcionar.
-  addEventListener('pageshow', (ev) => { if (ev.persisted) { panel.querySelectorAll('button').forEach((x) => (x.disabled = false)); render(last); } });
+  // Voltar à página pela cache do browser (botão Retroceder): mostra-se de novo o que está no servidor (a página da
+  // cache é a de antes da ação e deixava acrescentar a mesma sugestão duas vezes).
+  addEventListener('pageshow', (ev) => { if (ev.persisted) location.reload(); });
 })();

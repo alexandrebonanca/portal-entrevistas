@@ -1,7 +1,7 @@
 import type { Db } from './db.ts';
 import { config } from './config.ts';
 import { rateLimit, rateLimitAll, rateRoom } from './lib.ts';
-import { S } from './settings.ts';
+import { S, ownsAny, currentEntity } from './settings.ts';
 import { mmss } from './limits.ts';
 
 /**
@@ -35,32 +35,45 @@ export type ComposeResult =
 
 export const composeAction = (a: unknown): ComposeAction | null => (COMPOSE_ACTIONS.includes(a as ComposeAction) ? a as ComposeAction : null);
 
-/** Domínios de país (ISO 3166, mais eu e uk) e genéricos, para reconhecer endereços de sites escritos sem http nem www. */
-const CC = 'ac ad ae af ag ai al am ao aq ar as at au aw ax az ba bb bd be bf bg bh bi bj bm bn bo br bs bt bw by bz ca cc cd cf cg ch ci ck cl cm cn co cr cu cv cw cx cy cz de dj dk dm do dz ec ee eg er es et eu fi fj fk fm fo fr ga gd ge gf gg gh gi gl gm gn gp gq gr gs gt gu gw gy hk hm hn hr ht hu id ie il im in io iq ir is it je jm jo jp ke kg kh ki km kn kp kr kw ky kz la lb lc li lk lr ls lt lu lv ly ma mc md me mg mh mk ml mm mn mo mp mq mr ms mt mu mv mw mx my mz na nc ne nf ng ni nl no np nr nu nz om pa pe pf pg ph pk pl pm pn pr ps pt pw py qa re ro rs ru rw sa sb sc sd se sg sh si sk sl sm sn so sr ss st su sv sx sy sz tc td tf tg th tj tk tl tm tn to tr tt tv tw tz ua ug uk us uy uz va vc ve vg vi vn vu wf ws ye yt za zm zw'.replace(/ /g, '|');
-const GENERIC = 'com|org|net|info|biz|edu|gov|int|mil|app|dev|xyz|online|site|store|shop|blog|club|live|news|tech|media|studio|page|link|top|pro|name|mobi|asia|cat|coop|museum|travel|jobs|email|agency|digital|world|today|space|website';
 /**
- * Endereços de sites sem http nem www: qualquer anfitrião.domínio seguido de «/» (linktr.ee/joao, bit.ly/abc) e, sem
- * caminho, nomes acabados num domínio de país ou genérico conhecido, em minúsculas como se escrevem os endereços
- * (empresa.ao, anchor.fm, exemplo.com). Ficam «ASP.NET», «Node.js», «p.ex.» e «3.5».
+ * Endereços de sites sem http nem www: anfitrião.domínio (com ou sem caminho, maiúsculas ou minúsculas: joana.art,
+ * linktr.ee/joao, EMPRESA.PT, empresa.co.ao). O nome antes do domínio tem pelo menos 2 caracteres («p.ex.», «e.g.»,
+ * «V.Ex.ª» ficam) e ficam também extensões de ficheiros e nomes técnicos que não são sites (Node.js, ASP.NET, .pdf).
  */
-const SITE_PATH = /(?<![\p{L}\p{N}@._-])[\p{L}\p{N}_-]+(\.[\p{L}\p{N}_-]+)*\.[a-z]{2,}\/[^\s,;)]*/gu;
-const SITE = new RegExp(`(?<![\\p{L}\\p{N}@._-])([\\p{L}\\p{N}_-]+\\.)*[\\p{L}\\p{N}_-]{2,}\\.(${CC}|${GENERIC})(?![\\p{L}\\p{N}_-])`, 'gu');
+const SITE = /(?<![\p{L}\p{N}@._-])(?:[\p{L}\p{N}_-]+\.)*([\p{L}\p{N}_-]{2,})\.(\p{L}{2,24})(?![\p{L}\p{N}_-])(\/[^\s,;)]*)?/giu;
+/** Com caminho, qualquer nome antes do domínio (t.co/abc). */
+const SITE_PATH = /(?<![\p{L}\p{N}@._-])[\p{L}\p{N}_-]+(\.[\p{L}\p{N}_-]+)*\.\p{L}{2,24}\/[^\s,;)]*/giu;
+const NOT_SITE = new Set('js ts jsx tsx mjs cjs txt pdf doc docx xls xlsx ppt pptx odt ods odp rtf csv json xml yml yaml html htm css scss png jpg jpeg gif svg webp heic mp3 mp4 wav m4a ogg webm mov avi zip rar exe dll apk ipynb java kt cpp cs php sql log ini cfg tsv'.split(' '));
+const NOT_SITE_WORDS = /^(asp\.net|vb\.net|ado\.net)$/i;
+const site = (m: string, _host: string, tld: string, path: string | undefined) =>
+  (!path && (NOT_SITE.has(tld.toLowerCase()) || NOT_SITE_WORDS.test(m)) ? m : '[link]');
+/** Separadores de um número de telefone: espaços, hífenes e travessões (U+2010–2015, U+2212), pontos, ponto médio, barras, parênteses, hífen suave e espaço sem largura. */
+const PHONE = /(\+|\b00)?\(?\+?\d[\d\s()./\u00AD\u00B7\u200B\u2010-\u2015\u2212-]{6,}\d/g;
+/** Montantes, percentagens e datas não são telefones (250.000.000 €, 12/03/2024 10:30). */
+const NOT_PHONE_AFTER = /^\s*(€|\$|£|%|eur\b|euros?\b|usd\b|dólares\b|milhões\b|mil\b|:)/i;
+const DATE_START = /^\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}\b/;
+const phone = (m: string, ...rest: any[]) => {
+  const str = rest[rest.length - 1] as string, at = rest[rest.length - 2] as number;
+  if ((m.match(/\d/g) ?? []).length < 9 || NOT_PHONE_AFTER.test(str.slice(at + m.length)) || DATE_START.test(m)) return m;
+  return '[número]';
+};
 /**
  * Tapa, nos formatos habituais, emails, endereços de sites e números de telefone (9 ou mais algarismos, com ou sem
- * indicativo, separados por espaços, hífenes, travessões, pontos, barras ou parênteses); o resto do rascunho segue
- * como está: é o texto que o entrevistador quer melhorar. Os campos de origem têm tamanho limitado (no máximo 4000
- * caracteres), por isso o corte antes das expressões regulares nunca separa um contacto; depois corta-se no tamanho.
+ * indicativo, com os separadores de PHONE); o resto do rascunho segue como está: é o texto que o entrevistador quer
+ * melhorar. Os campos de origem têm tamanho limitado (no máximo 4000 caracteres), por isso o corte antes das
+ * expressões regulares nunca separa um contacto; depois corta-se no tamanho. O email tem âncora à esquerda (sem ela,
+ * a expressão era quadrática em textos longos).
  */
 export const scrub = (s: unknown, max: number) => String(s ?? '').slice(0, max + 4000)
   .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '')
-  .replace(/[\p{L}\p{N}._%+-]+@[\p{L}\p{N}-]+(\.[\p{L}\p{N}-]+)*\.\p{L}{2,}/gu, '[email]')
+  .replace(/(?<![\p{L}\p{N}._%+-])[\p{L}\p{N}._%+-]+@[\p{L}\p{N}-]+(\.[\p{L}\p{N}-]+)*\.\p{L}{2,}/gu, '[email]')
   .replace(/https?:\/\/[^\s,;)]+|www\.[^\s,;)]+/gi, '[link]')
   .replace(SITE_PATH, '[link]')
-  .replace(SITE, '[link]')
-  .replace(/(\+|\b00)?\(?\+?\d[\d\s()./‐-―-]{6,}\d/g, m => ((m.match(/\d/g) ?? []).length >= 9 ? '[número]' : m))
+  .replace(SITE, site)
+  .replace(PHONE, phone)
   .trim().slice(0, max);
-/** Marcadores postos pelo scrub: uma sugestão do modelo que os traga não serve (o texto original não é este). */
-const MASK = /\[(link|email|número)\]/;
+/** Marcadores postos pelo scrub (ou parecidos): uma sugestão do modelo que os traga não serve (o texto original não é este). */
+const MASK = /\[\s*(link|url|site|e-?mail|n[uú]mero|number|telefone|telem[oó]vel|phone)\s*\]/i;
 
 export function composeDraft(iv: any, questions: { text: string; audio_asset_id?: string | null }[], limits: { maxQuestions: number; answerLimitSec: number | null }): ComposeDraft {
   return {
@@ -164,10 +177,15 @@ export type ComposeAi = (system: string, user: string) => Promise<any>;
 /** budget: se o teto global por hora ainda tem lugar (os testes substituem-no). */
 export interface ComposeDeps { ai: ComposeAi; aiEnabled: () => boolean; budget: () => boolean }
 const defaultAi: ComposeAi = async (system, user) => (await import('./ai/openai.ts')).composeHelp(system, user);
+/**
+ * A entidade da entrevista (em contexto, ver inEntity) tem chave própria da OpenAI: paga ela, por isso os tetos
+ * globais do portal (que protegem a conta do portal) não se aplicam nem se gastam; os da pessoa aplicam-se sempre.
+ */
+const ownKey = () => ownsAny(currentEntity(), ['OPENAI_API_KEY']);
 /** Com chave (a da entidade da entrevista, se tiver, senão a do portal) e sem um teto global posto a 0 (desligado). */
-const defaultAiEnabled = () => (config.openai.mock || !!S('OPENAI_API_KEY')) && config.openai.composeAiPerHour > 0 && config.openai.composeAiPerDay > 0;
+export const composeAvailable = () => (config.openai.mock || !!S('OPENAI_API_KEY')) && config.openai.composeAiPerHour > 0 && config.openai.composeAiPerDay > 0;
 const GLOBAL_HOUR = 'compose-ai:global';
-const defaultBudget = () => rateRoom(GLOBAL_HOUR, config.openai.composeAiPerHour, 3600_000);
+const defaultBudget = () => ownKey() || rateRoom(GLOBAL_HOUR, config.openai.composeAiPerHour, 3600_000);
 
 export type ComposeOutcome = { ok: true; result: ComposeResult } | { ok: false; error: string; status: number };
 
@@ -180,14 +198,14 @@ const unbump = (db: Db, who: string) => db.query(`UPDATE compose_usage SET n = n
  * mensal confere-se depois de contar e, se passou, desfaz-se. Um pedido recusado não gasta quota. Dias e meses em
  * UTC (current_date da base de dados).
  */
-async function usageAllowed(db: Db, userId: string): Promise<'ok' | 'day' | 'month' | 'global'> {
+async function usageAllowed(db: Db, userId: string, portal: boolean): Promise<'ok' | 'day' | 'month' | 'global'> {
   const bump = async (who: string, max: number) => (await db.one(`INSERT INTO compose_usage(who, day, n) VALUES ($1, current_date, 1)
     ON CONFLICT (who, day) DO UPDATE SET n = compose_usage.n + 1 WHERE compose_usage.n < $2 RETURNING n`, [who, max]))?.n as number | undefined;
   const today = await bump(userId, COMPOSE_RATE.perDay);
   if (today == null) return 'day';
   const month = Number((await db.one(`SELECT COALESCE(sum(n),0)::int AS n FROM compose_usage WHERE who=$1 AND day >= date_trunc('month', current_date)::date`, [userId])).n);
   if (month > COMPOSE_RATE.perMonth) { await unbump(db, userId); return 'month'; }
-  if (await bump('global', config.openai.composeAiPerDay) == null) { await unbump(db, userId); return 'global'; }
+  if (portal && await bump('global', config.openai.composeAiPerDay) == null) { await unbump(db, userId); return 'global'; }
   if (today === 1) await db.query(`DELETE FROM compose_usage WHERE day < current_date - 62`); // limpeza ocasional
   return 'ok';
 }
@@ -197,7 +215,7 @@ async function usageAllowed(db: Db, userId: string): Promise<'ok' | 'day' | 'mon
  * sugerir, quando não há perguntas para rever (resposta local) e quando se passa um limite da pessoa ou do portal.
  */
 export async function composeAssist(db: Db, userId: string, acao: ComposeAction, d: ComposeDraft, rawRequest: unknown, deps: Partial<ComposeDeps> = {}): Promise<ComposeOutcome> {
-  const ai = deps.ai ?? defaultAi, aiEnabled = deps.aiEnabled ?? defaultAiEnabled, budget = deps.budget ?? defaultBudget;
+  const ai = deps.ai ?? defaultAi, aiEnabled = deps.aiEnabled ?? composeAvailable, budget = deps.budget ?? defaultBudget;
   const raw = typeof rawRequest === 'string' ? rawRequest : '';
   if (raw.length > COMPOSE_MAX_REQUEST) return { ok: false, status: 400, error: `O pedido tem mais de ${COMPOSE_MAX_REQUEST} caracteres.` };
   const request = scrub(raw, COMPOSE_MAX_REQUEST);
@@ -211,12 +229,13 @@ export async function composeAssist(db: Db, userId: string, acao: ComposeAction,
   const userHour: [string, number, number] = [`compose:${userId}`, COMPOSE_RATE.perHour, 3600_000];
   if (!rateRoom(...userHour)) return hourMsg;
   if (!budget()) return busy;
-  const use = await usageAllowed(db, userId);
+  const portal = !ownKey(); // com a chave do portal, contam também os tetos globais
+  const use = await usageAllowed(db, userId, portal);
   if (use === 'day') return { ok: false, status: 429, error: `Atingiu o limite de ${COMPOSE_RATE.perDay} pedidos por dia ao assistente. O limite renova-se à meia-noite (UTC).` };
   if (use === 'month') return { ok: false, status: 429, error: `Atingiu o limite de ${COMPOSE_RATE.perMonth} pedidos por mês ao assistente.` };
   if (use === 'global') return busy;
-  const taken = deps.budget ? rateLimit(...userHour) : rateLimitAll([userHour, [GLOBAL_HOUR, config.openai.composeAiPerHour, 3600_000]]);
-  if (!taken) { await unbump(db, userId); await unbump(db, 'global'); return rateRoom(...userHour) ? busy : hourMsg; }
+  const taken = deps.budget || !portal ? rateLimit(...userHour) : rateLimitAll([userHour, [GLOBAL_HOUR, config.openai.composeAiPerHour, 3600_000]]);
+  if (!taken) { await unbump(db, userId); if (portal) await unbump(db, 'global'); return rateRoom(...userHour) ? busy : hourMsg; }
   try {
     const p = composePrompt(acao, d, request);
     const out = config.openai.mock && !deps.ai ? composeMock(acao, d) : await ai(p.system, p.user);

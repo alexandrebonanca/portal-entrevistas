@@ -140,6 +140,20 @@ test('painel do assistente: só no rascunho; sugestões por IA só para o admini
   assert.doesNotMatch(s, /data-act=/);
   assert.match(s, /estão disponíveis para contas com subscrição ativa\. <a href="\/account">Ver os planos<\/a>/);
 
+  // IA desligada no portal (teto a 0): o painel fica só com as dicas e uma nota
+  const was = config.openai.composeAiPerHour;
+  config.openai.composeAiPerHour = 0;
+  try {
+    const off = (await get(`/entrevistas/${aid}/editar`, admin)).body;
+    assert.doesNotMatch(off, /data-act=/);
+    assert.match(off, /As sugestões por IA estão desligadas de momento/);
+  } finally { config.openai.composeAiPerHour = was; }
+  // id de pergunta malformado: volta à lista (antes dava erro 500 na base de dados)
+  for (const a of ['', '/duplicar', '/mover?d=1', '/eliminar']) {
+    const r = await post(`/entrevistas/${aid}/perguntas/nao-e-um-id${a}`, { text: 'x' }, admin);
+    assert.equal(r.statusCode, 302, a);
+    assert.equal(r.headers.location, `/entrevistas/${aid}/editar#perguntas`);
+  }
   // depois do convite, perguntas e objetivo ficam bloqueados: sem painel
   await db.query(`UPDATE interviews SET collection_status='invited' WHERE id=$1`, [sid]);
   assert.doesNotMatch((await get(`/entrevistas/${sid}/editar`, sem)).body, /id="compor"/);
@@ -214,14 +228,21 @@ test('pedido enorme: recusado logo pelo tamanho, sem expressões regulares sobre
 });
 
 test('tapar: emails, sites e telefones em vários formatos; datas, valores e números curtos ficam', () => {
-  const phones = ['912 345 678', '912-345-678', '(+351) 912 345 678', '00351912345678', '21 123 4567', '+351 21 123 45 67', '912.345.678', '+44 20 7946 0958', '912–345–678', '912/345/678', '21/123 45 67'];
+  const phones = ['912 345 678', '912-345-678', '(+351) 912 345 678', '00351912345678', '21 123 4567', '+351 21 123 45 67', '912.345.678', '+44 20 7946 0958', '912–345–678', '912/345/678', '21/123 45 67', '912·345·678', '912\u2212345\u2212678'];
   for (const p of phones) assert.equal(C.scrub(`Ligue ${p} hoje`, 1000), 'Ligue [número] hoje', p);
   const sites = ['empresa.pt/contactos', 'exemplo.com', 'https://x.y/z', 'www.a.b', 'Sub.Dominio.org', 'linktr.ee/joao', 'bit.ly/abc', 'anchor.fm/maria', 'anchor.fm', 'empresa.ao/contactos',
-    'empresa.ao', 'escola.mz', 'loja.cv', 'univ.edu', 'site.xyz', 'firma.us', 'empresa.co.ao', 't.co/abc', 'café.pt', 'meu_site.com'];
+    'empresa.ao', 'escola.mz', 'loja.cv', 'univ.edu', 'site.xyz', 'firma.us', 'empresa.co.ao', 't.co/abc', 'café.pt', 'meu_site.com',
+    'joana.art', 'estudio.design', 'ana.cloud', 'empresa.group', 'EMPRESA.PT', 'Maria.Pt', 'EMPRESA.PT/CONTACTOS', 'Empresa.PT/x'];
   for (const l of sites) assert.equal(C.scrub(`Veja ${l}, depois`, 1000), 'Veja [link], depois', l);
-  assert.equal(C.scrub('Escreva a rui.costa@empresa.pt ou joão@empresa.pt', 1000), 'Escreva a [email] ou [email]');
-  const keep = 'Entre 1990-2020 e 2010 e 2020, 3.5 vezes, Node.js, Vue.js, ASP.NET, p.ex. isto, e.g. 25%, i.e. isto, V.Ex.ª, trabalho.De, 12 000 euros, 2.500.000 de pessoas, ano 2024, 12/10/2026, n.º 5, aprox.um.';
+  assert.equal(C.scrub('Escreva a rui.costa@empresa.pt ou joão@empresa.pt ou RUI@EMPRESA.PT', 1000), 'Escreva a [email] ou [email] ou [email]');
+  assert.equal(C.scrub('Veja empresa.art?x e empresa.art#y', 1000), 'Veja [link]?x e [link]#y');
+  const keep = 'Entre 1990-2020 e 2010 e 2020, 3.5 vezes, Node.js, Vue.js, ASP.NET, p.ex. isto, e.g. 25%, i.e. isto, V.Ex.ª, 12 000 euros, 2.500.000 de pessoas, ano 2024, 12/10/2026, n.º 5, '
+    + '250.000.000 € de receita, 250 000 000 euros, a 12/03/2024 10:30, o relatório.pdf, o README.txt, 2.5%, versão 1.2.3.';
   assert.equal(C.scrub(keep, 1000), keep);
+  // o email tem âncora à esquerda: um texto longo sem @ já não custa tempo quadrático
+  const t0 = performance.now();
+  for (let i = 0; i < 16; i++) C.scrub('a'.repeat(4000), 1000);
+  assert.ok(performance.now() - t0 < 100, `demorou ${Math.round(performance.now() - t0)} ms`);
   // o corte antes das expressões regulares não separa um contacto (os campos de origem têm no máximo 4000 caracteres)
   assert.equal(C.scrub('x'.repeat(1490) + ' rui.costa@empresa.pt e 912 345 678', 1500), 'x'.repeat(1490) + ' [email] e');
 });
@@ -254,6 +275,16 @@ test('recusas não gastam quota; o portal pode desligar o assistente com 0', asy
     assert.ok(rs.filter(r => r.ok).length <= 1);
     assert.ok(Number((await db.one(`SELECT sum(n)::int n FROM compose_usage WHERE who='q5'`)).n) <= C.COMPOSE_RATE.perMonth);
   }
+  // com a chave OpenAI da própria entidade, os tetos do portal não se aplicam (quem paga é a entidade)
+  const { saveEntitySetting, inEntity } = await import('../src/settings.ts');
+  const ent = (await db.one(`INSERT INTO entities(slug, name) VALUES ('com-chave','Com chave') RETURNING id`)).id;
+  await saveEntitySetting(db, ent, 'OPENAI_API_KEY', 'sk-' + 'proj-' + 'X'.repeat(48));
+  const g2 = await db.one(`SELECT n FROM compose_usage WHERE who='global' AND day=current_date`);
+  await db.query(`INSERT INTO compose_usage(who, day, n) VALUES ('global', current_date, $1) ON CONFLICT (who, day) DO UPDATE SET n=$1`, [config.openai.composeAiPerDay]);
+  const own = { ai: async () => ({ questions: [{ text: 'Como começou?', why: 'x' }] }), aiEnabled: () => true };
+  assert.equal((await inEntity(ent, () => C.composeAssist(db, 'q6', 'sugerir', d, '', own))).ok, true, 'entidade com chave própria');
+  assert.match(((await C.composeAssist(db, 'q7', 'sugerir', d, '', own)) as any).error, /muito solicitado/, 'com a chave do portal, o teto do portal conta');
+  await db.query(`UPDATE compose_usage SET n=$1 WHERE who='global' AND day=current_date`, [g2?.n ?? 0]);
   // com o teto global a 0, o assistente fica indisponível (sem chamar o modelo)
   const was = config.openai.composeAiPerHour;
   config.openai.composeAiPerHour = 0;
@@ -303,6 +334,7 @@ test('resposta do modelo validada: limites, duplicados, perguntas só em áudio 
   assert.deepEqual((C.parseCompose('sugerir', { questions: [{ text: 'Pode partilhar o [link] do seu trabalho?', why: 'x' }, { text: 'Onde trabalha hoje?', why: 'y' }] }, d) as any).questions.map((q: any) => q.text), ['Onde trabalha hoje?']);
   assert.deepEqual((C.parseCompose('rever', { items: [{ n: 1, issue: 'x', rewrite: 'Ligue para [número]?' }] }, d) as any).items, []);
   assert.deepEqual(C.parseCompose('objetivo', { title: 'Visite [link]', objective: 'Bom objetivo.' }, d), { acao: 'objetivo', title: '', objective: 'Bom objetivo.', note: '' });
+  for (const m of ['[numero]', '[Link]', '[telefone]', '[ E-mail ]', '[URL]']) assert.deepEqual((C.parseCompose('sugerir', { questions: [{ text: `Qual é o seu ${m} preferido?`, why: 'x' }] }, d) as any).questions, [], m);
 });
 
 test('falhas e limites: modelo indisponível, por hora, por dia, por mês e do portal', async () => {
@@ -337,7 +369,7 @@ test('falhas e limites: modelo indisponível, por hora, por dia, por mês e do p
   assert.deepEqual(req.response_format, { type: 'json_object' });
   assert.equal(req.model, config.openai.assistantModel);
   // tetos configuráveis: um valor inválido ou vazio nunca tira o teto
-  assert.deepEqual(['abc', '', ' ', '0', '-5', undefined, '75', '1500.5', '2000000'].map(v => positive(v, 200)), [200, 200, 200, 0, 200, 200, 75, 200, 200], '0 desliga; inválido, decimal ou enorme fica o valor por omissão');
+  assert.deepEqual(['abc', '', ' ', '0', '-5', undefined, '75', '1500.5', '2000000'].map(v => positive(v, 200)), [200, 200, 200, 0, 0, 200, 75, 200, 200], '0 ou negativo desliga; inválido, decimal ou enorme fica o valor por omissão');
 });
 
 test('ajuda: a entrada do assistente de composição diz os limites em vigor e aparece na pesquisa', async () => {

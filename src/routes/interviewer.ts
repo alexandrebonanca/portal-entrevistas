@@ -18,7 +18,7 @@ import { inviteLimits, draftQuestionMax, answeredMs, secondsLeft, mmss, FOLLOWUP
 import { introCard } from './intro.ts';
 import { helpNav } from '../support.ts';
 import { assistantAiFor } from '../assistant.ts';
-import { composeAction, composeDraft, composeAssist, COMPOSE_MAX_REQUEST, COMPOSE_BODY_LIMIT } from '../compose.ts';
+import { composeAction, composeDraft, composeAssist, composeAvailable, COMPOSE_MAX_REQUEST, COMPOSE_BODY_LIMIT } from '../compose.ts';
 
 const H = { 'Content-Type': 'text/html; charset=utf-8' };
 export const nav = (u: any) => `<a href="/painel">Painel</a><a href="/entrevistas/nova">Nova entrevista</a><a href="/account">Conta</a>${u.role === 'admin' ? '' : '<a href="/conta/creditos">Créditos</a>'}${helpNav(u)}${u.role === 'admin' ? '<a href="/admin/entidades">Entidades</a><a href="/admin/utilizadores">Utilizadores</a><a href="/admin/definicoes">Definições</a>' : u.role === 'entity_admin' ? '<a href="/entidade">Entidade</a>' : ''}<form method="post" action="/sair" style="display:inline"><button class="ghost" style="padding:6px 12px;min-height:0;margin-left:16px">Sair (${esc(u.name)})</button></form>`;
@@ -28,16 +28,18 @@ const statusPill = (s: string) => pill(STATUS_LABEL[s] ?? s, ['submitted', 'read
 
 /**
  * Painel do assistente de composição, ao lado da edição (o edit.js abre-o e mantém as dicas atualizadas; sem
- * JavaScript fica escondido). As sugestões por IA só para quem tem o assistente da ajuda com IA (assistantAiFor).
+ * JavaScript fica escondido). As sugestões por IA só para quem tem o assistente da ajuda com IA (assistantAiFor) e com
+ * a IA do assistente ligada (composeAvailable); senão ficam as dicas e uma nota.
  */
-const composePanel = (iv: any, quota: any, ai: boolean) => `<aside id="compor" class="compose" hidden aria-labelledby="compor-t" data-max-questions="${draftQuestionMax(quota)}" data-answer-limit="${inviteLimits(quota).answerLimitSec ?? ''}">
+const composePanel = (iv: any, quota: any, ai: 'ok' | 'plano' | 'desligada') => `<aside id="compor" class="compose" hidden aria-labelledby="compor-t" data-max-questions="${draftQuestionMax(quota)}" data-answer-limit="${inviteLimits(quota).answerLimitSec ?? ''}">
 <div class="row" style="justify-content:space-between"><h2 id="compor-t">Assistente de composição</h2><button type="button" class="ghost" data-c="close" aria-label="Fechar o assistente">×</button></div>
 <ul class="compose-tips" data-c="tips"></ul>
-${ai ? `<label for="cp">O que pretende? (opcional)</label><textarea id="cp" rows="2" maxlength="${COMPOSE_MAX_REQUEST}" placeholder="Ex.: foco no percurso profissional e em conselhos práticos"></textarea>
+${ai === 'ok' ? `<label for="cp">O que pretende? (opcional)</label><textarea id="cp" rows="2" maxlength="${COMPOSE_MAX_REQUEST}" placeholder="Ex.: foco no percurso profissional e em conselhos práticos"></textarea>
 <div class="row" style="margin-top:8px"><button type="button" class="accent" data-act="sugerir">Sugerir perguntas</button><button type="button" class="ghost" data-act="rever">Rever as perguntas</button><button type="button" class="ghost" data-act="objetivo">Melhorar título e objetivo</button></div>
 <div data-c="out" aria-live="polite"></div>
 <p class="hint">Sugestões geradas por IA (OpenAI) a partir do título, do objetivo, das funções e das perguntas deste rascunho, tal como estão guardados, e do pedido que escrever acima. Os emails, os endereços de sites e os números de telefone nos formatos habituais são tapados antes do envio; os campos de nome e de email e a mensagem pessoal não são enviados. Nada muda na entrevista sem clicar em «Adicionar», «Substituir» ou «Guardar dados».</p>`
-  : '<p class="hint">As sugestões por IA (novas perguntas, revisão das perguntas, título e objetivo) estão disponíveis para contas com subscrição ativa. <a href="/account">Ver os planos</a></p>'}
+  : ai === 'plano' ? '<p class="hint">As sugestões por IA (novas perguntas, revisão das perguntas, título e objetivo) estão disponíveis para contas com subscrição ativa. <a href="/account">Ver os planos</a></p>'
+  : '<p class="hint">As sugestões por IA estão desligadas de momento; as dicas acima continuam a acompanhar a composição.</p>'}
 </aside>
 <button type="button" id="comporBtn" class="accent compose-fab" aria-controls="compor" aria-expanded="false" hidden>✦ Assistente</button>`;
 
@@ -169,7 +171,7 @@ ${locked ? '' : `<div class="rec" data-rec data-target="/api/entrevistas/${iv.id
 ${locked && q.qe === fu!.reason ? '' : flash(q.qe, 'bad')}${locked ? `${fu!.info ? `<p class="hint sans">${esc(fu!.info)}</p>` : ''}${fu!.reason ? `<div class="flash bad">${esc(fu!.reason)}</div>` : ''}<form id="adicional" method="post" action="/entrevistas/${iv.id}/adicional"><label for="fq">Pedido adicional (nova pergunta identificada como adicional)</label><textarea id="fq" name="text" required ${fu!.reason ? 'disabled' : ''}></textarea><button class="accent" ${fu!.reason ? 'disabled' : ''}>Acrescentar e reenviar convite</button></form>`
   : `<form id="nova" method="post" action="/entrevistas/${iv.id}/perguntas"><label for="nq">Nova pergunta</label><textarea id="nq" name="text" maxlength="1000"></textarea><div class="row"><button class="accent">Adicionar pergunta</button><button class="ghost" name="audio" value="1">Adicionar e gravar áudio</button></div><p class="hint">«Adicionar e gravar áudio» cria a pergunta (com o texto escrito, se houver) e leva-o ao gravador dela${aiAvailable() ? '; sem texto, o texto vem da transcrição da gravação' : ''}.</p></form>`}</div>
 <p><a class="btn" href="/entrevistas/${iv.id}${locked ? '' : '/convidar'}">${locked ? 'Ver entrevista' : 'Rever e convidar →'}</a></p></div>
-${locked ? '' : composePanel(iv, quota!, await assistantAiFor(db, req.user))}`;
+${locked ? '' : composePanel(iv, quota!, !(await assistantAiFor(db, req.user)) ? 'plano' : (await inEntity(await entityOfInterview(db, iv.id), composeAvailable)) ? 'ok' : 'desligada')}`;
     return view(req, reply, 'Editar entrevista', body, '/static/edit.js');
   });
 
@@ -212,6 +214,8 @@ ${locked ? '' : composePanel(iv, quota!, await assistantAiFor(db, req.user))}`;
     if (!requireUser(req, reply)) return null;
     const iv = await ownedInterview(app, req, req.params.id);
     if (!iv) { reply.code(404).send('Não encontrada'); return null; }
+    // um id de pergunta malformado (link antigo, mexido à mão) volta à lista em vez de dar erro na base de dados
+    if (req.params.qid !== undefined && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(req.params.qid)) { reply.redirect(`/entrevistas/${iv.id}/editar#perguntas`); return null; }
     if (iv.collection_status !== 'draft') { reply.redirect(`/entrevistas/${iv.id}/editar?e=` + encodeURIComponent('Perguntas bloqueadas depois do convite.')); return null; }
     return iv;
   };
