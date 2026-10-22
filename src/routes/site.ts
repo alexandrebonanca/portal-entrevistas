@@ -12,8 +12,9 @@ export async function siteRoutes(app: FastifyInstance) {
   const db = app.db;
 
   // Landing: conta a visita (agregada, sem cookies nem IP) e passa as etiquetas da campanha aos links para o registo.
-  // Quem volta à landing a partir do próprio site (logótipo, sair da conta, /podcasts, /entrar) já foi contado ao chegar: não
-  // conta outra vez, e as etiquetas vêm do URL (a galeria e a entrada levam-nas nos links) ou do URL da página de onde veio.
+  // Quem vem de outra página do próprio site (logótipo, sair da conta, /podcasts, /e/…, /entrar) não conta: ou já foi contado
+  // à chegada (landing, registo, galeria ou episódio com etiquetas), ou chegou por uma página que não conta (galeria ou episódio
+  // sem etiquetas, privacidade). As etiquetas vêm do URL (a galeria e a entrada levam-nas nos links) ou do URL da página de onde veio.
   app.get('/', async (req, reply) => {
     const own = ownHosts(req.headers.host);
     const tags = tagsFrom(req.query, req.headers.referer, own);
@@ -32,7 +33,7 @@ export async function siteRoutes(app: FastifyInstance) {
 <h2>Publication</h2><p>Nothing is published without the interviewer’s decision and, by default, your approval of the final version. Originals and unselected photos stay private.</p>
 <h2>Help assistant and support</h2><p>Questions typed into the help assistant are stored for ${ASSISTANT_LOG_DAYS} days without any link to the person who asked (emails, links and long numbers are masked), to improve the answers. Guests’ questions are answered only from the portal’s frequently asked questions and are never sent to AI services. For interviewers with an active subscription and for entity managers, the text of the question alone may be sent to an AI provider (OpenAI) to draft a short answer from those entries. Messages to support stay inside the portal (no email is sent) and are deleted together with the interview or the account.</p>
 <h2>Composition assistant</h2><p>When an interviewer with access to it asks the composition assistant on the interview edit page for suggestions, the saved title, goal, roles and question texts of that draft, and the optional request typed in the panel, are sent to OpenAI to draft suggestions (emails, website addresses and phone numbers in the usual formats are masked first); the name and email fields and the personal message are not sent. The portal keeps only a daily count of requests per account, not the texts or the suggestions.</p>
-<h2>Campaign links</h2><p>Visits to the home page and the sign-up page are counted in aggregate per day, by page and by the campaign tags in the link (or the website you came from), without cookies, IP addresses or anything else that identifies you. When you sign up after following a campaign link, the campaign tags (or the website you came from) are kept with your account to measure campaign results.</p>
+<h2>Campaign links</h2><p>Visits to the home page and the sign-up page, and to the gallery and episode pages when the link carries campaign tags, are counted as daily totals by page and by the campaign tags in the link (or the website you came from). These counters use no cookies and hold no IP address or anything else that identifies you; like any request, the visit also appears in the server’s technical logs, which record the IP address and the page address. When you create an account, the campaign tags you arrived with, or otherwise the website you came from, are kept with your account to measure campaign results.</p>
 <h2>Your rights</h2><p>Ask for access, correction, withdrawal of consent or deletion at <a href="mailto:${esc(config.supportEmail)}">${esc(config.supportEmail)}</a>. Copies already downloaded or distributed elsewhere may not be recoverable.</p>
 <p class="hint">The processor list, retention periods and legal bases are maintained in the operator’s documentation and must be completed before production use.</p></div>`,
   })));

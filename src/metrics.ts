@@ -94,9 +94,9 @@ export function campaignQuery(t: Tags): string {
 export const withCampaign = (path: string, cq: string) => (cq ? `${path}${path.includes('?') ? '&' : '?'}${cq}` : path);
 
 /**
- * Etiquetas que uma página interna (galeria, episódio, entrada) passa adiante: só as que vêm no próprio URL (levadas da landing),
- * nunca o Referer, porque estas páginas não contam visitas — uma referência de outro site que chega diretamente a elas não é
- * atribuída a nada.
+ * Etiquetas que uma página interna (galeria, episódio, entrada) passa adiante: só as que vêm no próprio URL (levadas da landing,
+ * ou do link da campanha), nunca o Referer: a galeria e os episódios só contam a visita quando o link traz etiquetas, por isso
+ * uma referência de outro site que chega diretamente a eles não é contada nem atribuída a nada.
  */
 export const carriedTags = (query: any, own: Set<string>): Tags => tagsFrom(query, undefined, own);
 

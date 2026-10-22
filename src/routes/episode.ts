@@ -7,7 +7,7 @@ import { toVtt, toSrt, type Cue } from '../subtitles.ts';
 import { t, normLang } from '../i18n.ts';
 import { approvalScope, videoMeta, guestDecides, reviewCopy } from '../approval.ts';
 import { guestHelpNav } from '../support.ts';
-import { carriedTags, campaignQuery, ownHosts, withCampaign } from '../metrics.ts';
+import { carriedTags, campaignQuery, ownHosts, withCampaign, fromOwnSite, trackVisit } from '../metrics.ts';
 
 export interface PlayerUrls { audio: string; cover: string; subs: (lang: string, ext: 'vtt' | 'srt') => string }
 
@@ -40,9 +40,21 @@ export async function episodeRoutes(app: FastifyInstance) {
     `SELECT e.*, i.host_name, i.guest_name, i.id AS iid FROM episodes e JOIN interviews i ON i.id=e.interview_id
      WHERE e.slug=$1 AND e.status='published' AND e.visibility IN ('unlisted','public') AND e.withdrawn_at IS NULL`, [slug]);
 
+  /**
+   * Visita da galeria ou de um episódio: conta só quem chega de fora com etiquetas da campanha no link (UTM ou `ref`), porque
+   * são essas que seguem até ao registo (nos links da galeria, ou pelo Referer interno quando o episódio leva à landing), que
+   * depois não conta de novo. Sem etiquetas não conta (é sobretudo quem ouve um episódio partilhado); a navegação interna também não.
+   */
+  const trackTagged = async (req: any, path: string) => {
+    const own = ownHosts(req.headers.host);
+    const tags = carriedTags(req.query, own);
+    if (campaignQuery(tags) && !fromOwnSite(req.headers.referer, own)) await trackVisit(req, db, path, tags);
+  };
+
   app.get('/e/:slug', async (req, reply) => {
     const ep = await live((req.params as any).slug);
     if (!ep) return reply.code(404).send('Episódio não disponível');
+    await trackTagged(req, '/e');
     const s = ep.slug;
     return send(reply, page({
       lang: 'en', title: ep.title, noindex: ep.visibility !== 'public', desc: ep.description || undefined,
@@ -67,6 +79,7 @@ export async function episodeRoutes(app: FastifyInstance) {
   // As etiquetas da campanha que vêm da landing seguem em todos os links (início, temas, episódios, entrada), para que um
   // registo feito depois de ver a galeria fique na campanha que trouxe a visita (sem cookies).
   app.get('/podcasts', async (req, reply) => {
+    await trackTagged(req, '/podcasts');
     const cq = campaignQuery(carriedTags(req.query, ownHosts(req.headers.host)));
     const L = (path: string) => esc(withCampaign(path, cq));
     const rows = await db.query(`SELECT e.slug, e.title, e.theme, e.duration_ms, e.published_at, e.video_asset_id, i.host_name, i.guest_name FROM episodes e JOIN interviews i ON i.id=e.interview_id

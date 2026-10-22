@@ -649,7 +649,7 @@ test('construtor de links', async () => {
 
 test('privacidade: parágrafo sobre os links das campanhas', async () => {
   const b = (await visit('/privacy')).body;
-  assert.match(b, /<h2>Campaign links<\/h2><p>Visits to the home page and the sign-up page are counted in aggregate per day[^<]*without cookies, IP addresses[^<]*When you sign up after following a campaign link, the campaign tags[^<]*are kept with your account to measure campaign results\.<\/p>/);
+  assert.match(b, /<h2>Campaign links<\/h2><p>Visits to the home page and the sign-up page, and to the gallery and episode pages when the link carries campaign tags, are counted as daily totals[^<]*use no cookies and hold no IP address[^<]*server’s technical logs, which record the IP address and the page address\. When you create an account, the campaign tags you arrived with, or otherwise the website you came from, are kept with your account to measure campaign results\.<\/p>/);
   assert.match(b, /<h2>Composition assistant<\/h2>/); assert.match(b, /<h2>Your rights<\/h2>/);
 });
 
@@ -716,6 +716,46 @@ test('etiquetas levadas pela galeria (/podcasts) e pela entrada (/entrar) até a
     assert.doesNotMatch(b, /<script>alert|"><script|'onmouseover/);
     assert.match(b, /utm_source=scriptalert1script&amp;utm_campaign=onmouseover/);
   }
+});
+
+test('galeria e episódios: a chegada de fora com etiquetas conta uma vez e o registo fica na mesma campanha; sem etiquetas não conta', async () => {
+  const owner = (await db.one(`SELECT id FROM users WHERE email='ana@example.com'`)).id;
+  const iv = (await db.one(`INSERT INTO interviews(owner_id, title) VALUES ($1,'Ep') RETURNING id`, [owner])).id;
+  const sc = (await db.one(`INSERT INTO scripts(interview_id, revision, title_en, segments, prompt_version, model) VALUES ($1,1,'Ep','[]','t','t') RETURNING id`, [iv])).id;
+  await db.query(`INSERT INTO episodes(interview_id, script_id, slug, title, status, visibility, published_at, gallery) VALUES ($1,$2,'ep-metricas','Ep','published','public',now(),true)`, [iv, sc]);
+  const before0 = await total();
+  const raw = 'utm_source=linkedin&utm_medium=paid_social&utm_campaign=qi-ep';
+  const T = { source: 'linkedin', medium: 'paid_social', campaign: 'qi-ep' };
+  // Episódio partilhado com etiquetas: conta à chegada; o logótipo leva à landing, que não conta outra vez e mantém as etiquetas.
+  assert.equal((await visit(`/e/ep-metricas?${raw}`, { referer: 'https://www.linkedin.com/' })).statusCode, 200);
+  assert.equal(await count('/e', T), 1);
+  const land = (await visit('/', { referer: `http://test.local/e/ep-metricas?${raw}` })).body;
+  assert.match(land, /href="\/registar\?utm_source=linkedin&amp;utm_medium=paid_social&amp;utm_campaign=qi-ep">Get started/);
+  await visit(`/registar?${raw}`, { referer: `http://test.local/?${raw}` });
+  assert.equal(await total(), before0 + 1, 'só a chegada ao episódio');
+  await post('/registar', { name: 'Eva', email: 'eva@example.com', password: PW, terms: 1, utm_source: 'linkedin', utm_medium: 'paid_social', utm_campaign: 'qi-ep' });
+  const m = await M.campaignMetrics(db, { from: today, to: today, days: 1, preset: 'custom' });
+  const row = m.rows.find(r => M.rowLabel(r) === 'linkedin / paid_social / qi-ep')!;
+  assert.deepEqual([row.visits, row.signups, M.ratios(row).conversion], [1, 1, 1], 'a visita e o registo na mesma campanha');
+  // Galeria com etiquetas, chegada direta: conta; daí para um episódio e para a landing (navegação interna): não.
+  await visit(`/podcasts?${raw}`);
+  assert.equal(await count('/podcasts', T), 1);
+  await visit(`/e/ep-metricas?${raw}`, { referer: `http://test.local/podcasts?${raw}` });
+  await visit(`/?${raw}`, { referer: `http://test.local/podcasts?${raw}` });
+  assert.equal(await total(), before0 + 2);
+  // Sem etiquetas (quem ouve um episódio partilhado), episódio inexistente, robô, HEAD e sessão iniciada: não contam.
+  await visit('/e/ep-metricas', { referer: 'https://www.linkedin.com/' });
+  await visit('/podcasts', { referer: 'https://news.example/' });
+  assert.equal((await visit(`/e/nao-existe?${raw}`)).statusCode, 404);
+  await visit(`/e/ep-metricas?${raw}`, { 'user-agent': 'LinkedInBot/1.0 (compatible; Mozilla/5.0; Apache-HttpClient +http://www.linkedin.com)' });
+  await visit(`/podcasts?${raw}`, {}, 'HEAD');
+  await visit(`/podcasts?${raw}`, { cookie: ana });
+  assert.equal(await total(), before0 + 2);
+  // A página diz exatamente o que se conta.
+  const pg = (await get('/admin/metricas?p=7', admin)).body;
+  assert.match(pg, /e, quando o link traz etiquetas da campanha, a galeria \(\/podcasts\) e as páginas dos episódios \(\/e\/…\)/);
+  assert.match(pg, /<p class="l">Visitas<\/p><p class="v">[^<]+<\/p><p class="s">chegadas de fora ao site<\/p>/);
+  assert.doesNotMatch(pg, /já contada à chegada/);
 });
 
 test('teto diário por grupo: lixo com origens inventadas ou sites falsos não esconde as campanhas verdadeiras', async () => {
