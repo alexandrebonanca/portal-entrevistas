@@ -421,6 +421,60 @@ test('custos com vários meios na mesma origem e campanha: repartidos pelas visi
   assert.equal(M.prorate({ period_from: '2026-03-01', period_to: '2026-03-31', amount_cents: 31000 }, { from: '2026-01-31', to: '2026-02-05', days: 6, preset: 'custom' }), 0);
 });
 
+test('campanhas pagas: um meio sem visitas (registo vindo por outro meio) entra no custo por registo e no ROAS do total', async () => {
+  const d = '2026-02-15';
+  await db.query(`INSERT INTO campaign_visits(day, path, source, medium, campaign, n) VALUES ($1,'/','instagram','paid_social','qi-m',50)`, [d]);
+  const u = await mkUser({ at: `${d}T10:00:00Z`, source: 'instagram', medium: 'social', campaign: 'qi-m' });
+  await pay(u, `${d}T12:00:00Z`, 4900);
+  await db.query(`INSERT INTO campaign_spend(period_from, period_to, source, campaign, amount_cents) VALUES ($1,$1,'instagram','qi-m',5000)`, [d]);
+  const m = await M.campaignMetrics(db, { from: d, to: d, days: 1, preset: 'custom' });
+  const by = Object.fromEntries(m.rows.map(r => [M.rowLabel(r), r]));
+  assert.deepEqual([by['instagram / paid_social / qi-m'].spendCents, by['instagram / social / qi-m'].spendCents], [5000, 0], 'o custo reparte-se pelas visitas');
+  assert.deepEqual([m.paid.visits, m.paid.signups, m.paid.paying, m.paid.revenueCents, m.paid.spendCents], [50, 1, 1, 4900, 5000], 'o meio sem visitas conta na campanha paga');
+  assert.deepEqual(M.totalRatios(m), { conversion: 1 / 50, cpa: 5000, cpp: 5000, roas: 0.98 });
+  const html = (await get(`/admin/metricas?p=custom&from=${d}&to=${d}`, admin)).body;
+  assert.match(html, /<p class="l">Custo por registo<\/p><p class="v">50,00 €<\/p>/);
+  assert.match(html, /<p class="l">ROAS<\/p><p class="v">0,98×<\/p>/);
+  const csv = (await get(`/admin/metricas.csv?p=custom&from=${d}&to=${d}`, admin)).body.slice(1).split('\r\n');
+  assert.equal(csv.at(-2), 'Total;;;;50;1;2,0;0;0;1;49,00;50,00;50,00;50,00;0,98');
+  // Sem visitas em nenhum meio: o custo reparte-se pelos registos.
+  const d2 = '2026-02-16';
+  for (const medium of ['cpc', 'cpc', 'display']) await mkUser({ at: `${d2}T10:00:00Z`, source: 'google', medium, campaign: 'qi-n' });
+  await db.query(`INSERT INTO campaign_spend(period_from, period_to, source, campaign, amount_cents) VALUES ($1,$1,'google','qi-n',3000)`, [d2]);
+  const m2 = await M.campaignMetrics(db, { from: d2, to: d2, days: 1, preset: 'custom' });
+  assert.deepEqual(m2.rows.map(r => [M.rowLabel(r), r.spendCents]), [['google / cpc / qi-n', 2000], ['google / display / qi-n', 1000]]);
+  assert.equal(M.totalRatios(m2).cpa, 1000);
+});
+
+test('datas impossíveis (mês 00 ou 13, dia 00 ou 32) recusadas com a mensagem, nunca com erro 500', async () => {
+  for (const bad of ['2026-13-01', '2026-00-10', '2026-01-00', '2026-01-32', '2026-02-30', '2026-99-99']) {
+    assert.equal(M.validDay(bad), false, bad);
+    assert.match(M.parsePeriod({ p: 'custom', from: bad, to: '2026-03-01' }, '2026-10-22').error!, /Indique as duas datas/, bad);
+    const r = await get(`/admin/metricas?p=custom&from=${bad}&to=2026-03-01`, admin);
+    assert.equal(r.statusCode, 200, bad); assert.match(r.body, /Indique as duas datas/); assert.match(r.body, /\(30 dias\)/);
+    assert.equal((await get(`/admin/metricas.csv?p=custom&from=2026-01-01&to=${bad}`, admin)).statusCode, 200, bad);
+    const c = await post('/admin/metricas/custos', { p: '7', period_from: bad, period_to: '2026-03-01', source: 'linkedin', amount: '10' }, admin);
+    assert.equal(c.statusCode, 302, bad);
+    assert.match(decodeURIComponent(String(c.headers.location)), /e=Indique as datas de início e de fim do custo/);
+    // Um período inválido nos campos escondidos dos formulários volta aos 30 dias.
+    const del = await post('/admin/metricas/custos/nao-e-um-id/apagar', { p: 'custom', from: bad, to: bad }, admin);
+    assert.equal(del.statusCode, 302, bad); assert.match(String(del.headers.location), /^\/admin\/metricas\?p=30&e=/);
+  }
+});
+
+test('CSV: o dinheiro arredonda-se ao cêntimo como na página (100,5 cêntimos dão 1,01 nos dois)', async () => {
+  const d = '2026-02-20';
+  await db.query(`INSERT INTO campaign_visits(day, path, source, medium, campaign, n) VALUES ($1,'/','google','cpc','qi-r',10), ($1,'/','google','display','qi-r',10)`, [d]);
+  await db.query(`INSERT INTO campaign_spend(period_from, period_to, source, campaign, amount_cents) VALUES ($1,$1,'google','qi-r',201)`, [d]);
+  const q = `p=custom&from=${d}&to=${d}`;
+  const html = (await get(`/admin/metricas?${q}`, admin)).body;
+  for (const medium of ['cpc', 'display']) assert.match(html, new RegExp(`<td>google / ${medium} / qi-r</td>[^\\n]*\\n<td class="n">0,00 €</td><td class="n">1,01 €</td>`), medium);
+  const csv = (await get(`/admin/metricas.csv?${q}`, admin)).body.slice(1).split('\r\n');
+  assert.ok(csv.includes('google;cpc;qi-r;;10;0;0,0;0;0;0;0,00;1,01;;;0,00'), csv.join('\n'));
+  assert.ok(csv.includes('google;display;qi-r;;10;0;0,0;0;0;0;0,00;1,01;;;0,00'));
+  assert.equal(csv.at(-2), 'Total;;;;20;0;0,0;0;0;0;0,00;2,01;;;0,00');
+});
+
 test('CSV: valores, escapes e proteção contra fórmulas', async () => {
   const r = await get('/admin/metricas.csv?p=custom&from=2026-01-01&to=2026-01-10', admin);
   assert.equal(r.statusCode, 200);

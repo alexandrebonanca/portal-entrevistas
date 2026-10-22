@@ -186,8 +186,15 @@ export async function trackVisit(req: FastifyRequest, db: Db, path: string, t: T
 // ---------- página do administrador ----------
 export interface Period { from: string; to: string; days: number; preset: '7' | '30' | '90' | 'custom' }
 const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
-/** Data AAAA-MM-DD que existe, entre 2000 e 2100 (fora disso não há dados e as contas de datas deixam de ser seguras). */
-export const validDay = (s: string) => DAY_RE.test(s) && s >= '2000-01-01' && s <= '2100-12-31' && utcDay(Date.parse(`${s}T00:00:00Z`)) === s;
+/**
+ * Data AAAA-MM-DD que existe, entre 2000 e 2100 (fora disso não há dados e as contas de datas deixam de ser seguras). Mês 00/13
+ * ou dia 00/32 dão NaN no Date.parse: recusados antes de formatar (toISOString lançaria RangeError).
+ */
+export const validDay = (s: string) => {
+  if (!DAY_RE.test(s) || s < '2000-01-01' || s > '2100-12-31') return false;
+  const ms = Date.parse(`${s}T00:00:00Z`);
+  return Number.isFinite(ms) && utcDay(ms) === s;
+};
 export const addDaysUtc = (day: string, n: number) => utcDay(Date.parse(`${day}T00:00:00Z`) + n * 86400_000);
 export const daysBetween = (a: string, b: string) => Math.round((Date.parse(`${b}T00:00:00Z`) - Date.parse(`${a}T00:00:00Z`)) / 86400_000) + 1;
 export const MAX_PERIOD_DAYS = 1100;
@@ -217,7 +224,10 @@ export interface Row {
 export interface SpendEntry { id: string; period_from: string; period_to: string; source: string; campaign: string; amount_cents: number; note: string; created_at: any; created_by: string | null; inPeriodCents: number }
 export interface Metrics {
   period: Period; rows: Row[]; totals: Row;
-  /** Soma só das linhas com custo (as campanhas pagas): base do custo por registo, do custo por pagante e do ROAS totais. */
+  /**
+   * Soma das linhas das campanhas com custo no período (mesma origem e campanha de um custo, qualquer meio): base do custo por
+   * registo, do custo por pagante e do ROAS totais.
+   */
   paid: Row;
   allRevenueCents: number; daily: { day: string; visits: number; signups: number }[]; spend: SpendEntry[];
   /** Dia (UTC) em que a contagem das visitas começou (null se desconhecido). */
@@ -272,10 +282,11 @@ export function prorate(e: { period_from: string; period_to: string; amount_cent
  * pagamentos noutra moeda que não o euro.
  *
  * Custos: as entradas manuais que tocam o período, rateadas pelos dias (`prorate`) e imputadas às linhas da mesma origem e
- * campanha (qualquer meio); havendo várias, repartidas pelas visitas de cada uma (em partes iguais sem visitas). Sem nenhuma
- * linha dessa origem e campanha, a entrada aparece numa linha própria, só com o custo. O custo por registo, o custo por pagante
- * e o ROAS do total usam só as linhas com custo (`paid`): os registos e a receita de «(direto)» e «(referência)» não são das
- * campanhas pagas.
+ * campanha (qualquer meio); havendo várias, repartidas pelas visitas de cada uma (sem visitas, pelos registos; sem uns nem
+ * outros, em partes iguais). Sem nenhuma linha dessa origem e campanha, a entrada aparece numa linha própria, só com o custo.
+ * O custo por registo, o custo por pagante e o ROAS do total usam só as campanhas com custo (`paid`: todas as linhas da origem
+ * e campanha de um custo no período, mesmo as que não ficaram com parte dele): os registos e a receita de «(direto)» e
+ * «(referência)» não são das campanhas pagas.
  *
  * Conversão: só os registos desde o início da contagem das visitas (`campaign_tracking`), porque os anteriores não têm visitas.
  *
@@ -327,19 +338,27 @@ export async function campaignMetrics(db: Db, period: Period): Promise<Metrics> 
   const spendRows = await db.query(`SELECT id, period_from::text AS period_from, period_to::text AS period_to, source, campaign, amount_cents, note, created_at, created_by
     FROM campaign_spend WHERE period_to >= $1::date AND period_from <= $2::date ORDER BY period_from DESC, created_at DESC`, [period.from, period.to]);
   const spend: SpendEntry[] = spendRows.map((e: any) => ({ ...e, period_from: day(e.period_from), period_to: day(e.period_to), inPeriodCents: 0 }));
+  // Campanhas pagas no período (origem e campanha com custo): todas as linhas delas entram em `paid`, também as que não
+  // ficaram com parte do custo por não terem visitas (por exemplo, o registo veio por outro meio ou de uma visita anterior).
+  const paidKeys = new Set<string>();
+  const paidKey = (source: string, campaign: string) => `${source}\u0000${campaign}`;
   for (const e of spend) {
     e.inPeriodCents = prorate(e, period);
     if (!e.inPeriodCents) continue;
+    paidKeys.add(paidKey(e.source, e.campaign));
     let targets = [...rows.values()].filter(r => r.source === e.source && r.campaign === e.campaign);
     if (!targets.length) targets = [rowFor(keyOf(e.source, '', e.campaign, ''))];
-    const tv = targets.reduce((s, r) => s + r.visits, 0);
-    for (const r of targets) r.spendCents += tv ? (e.inPeriodCents * r.visits) / tv : e.inPeriodCents / targets.length;
+    // Pelas visitas; sem visitas, pelos registos; sem uns nem outros, em partes iguais.
+    const sum = (f: (r: Row) => number) => targets.reduce((s, r) => s + f(r), 0);
+    const weight: (r: Row) => number = sum(r => r.visits) ? r => r.visits : sum(r => r.signups) ? r => r.signups : () => 1;
+    const tw = sum(weight);
+    for (const r of targets) r.spendCents += (e.inPeriodCents * weight(r)) / tw;
   }
 
   const byWeight = (a: Row, b: Row) => b.visits - a.visits || b.signups - a.signups || b.spendCents - a.spendCents || rowLabel(a).localeCompare(rowLabel(b));
   const totals = emptyRow({ key: 'total', source: '', medium: '', campaign: '', ref: '' });
   const paid = emptyRow({ key: 'paid', source: '', medium: '', campaign: '', ref: '' });
-  for (const r of rows.values()) { addInto(totals, r); if (r.spendCents > 0) addInto(paid, r); }
+  for (const r of rows.values()) { addInto(totals, r); if (r.source && r.source !== OTHER && paidKeys.has(paidKey(r.source, r.campaign))) addInto(paid, r); }
   let list = [...rows.values()].filter(r => r.key !== 'other').sort(byWeight);
   let other = rows.get('other') ?? null;
   if (list.length > MAX_TABLE_ROWS) {
@@ -379,6 +398,11 @@ export function csvCell(v: string | number | null, text = typeof v === 'string')
   return /[;"\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 const num = (v: number | null, d = 2) => (v === null ? null : v.toFixed(d).replace('.', ','));
+/**
+ * Euros a partir de cêntimos (que podem ter frações, do rateio dos custos): arredondados ao cêntimo primeiro, como na página
+ * (`eurPt(Math.round(c))`); 100,5 cêntimos dão 1,01 nos dois (toFixed sobre 1,005 daria 1,00).
+ */
+const eur = (c: number | null) => (c === null ? null : num(Math.round(c) / 100));
 
 export function metricsCsv(m: Metrics): string {
   const head = ['Origem', 'Meio', 'Campanha', 'Site de referência', 'Visitas', 'Registos', 'Conversão (%)', 'Ativados', 'Com convite', 'Pagantes', 'Receita sem IVA (EUR)', 'Custo (EUR)', 'Custo por registo (EUR)', 'Custo por pagante (EUR)', 'ROAS'];
@@ -387,8 +411,8 @@ export function metricsCsv(m: Metrics): string {
     const origin = label ?? (r.source || (r.ref ? '(referência)' : '(direto)'));
     return [csvCell(origin, true), csvCell(r.medium, true), csvCell(r.campaign, true), csvCell(r.ref, true), csvCell(r.visits), csvCell(r.signups),
       csvCell(num(x.conversion === null ? null : x.conversion * 100, 1), false), csvCell(r.activated), csvCell(r.invited), csvCell(r.paying),
-      csvCell(num(r.revenueCents / 100), false), csvCell(num(r.spendCents / 100), false), csvCell(num(x.cpa === null ? null : x.cpa / 100), false),
-      csvCell(num(x.cpp === null ? null : x.cpp / 100), false), csvCell(num(x.roas), false)].join(';');
+      csvCell(eur(r.revenueCents), false), csvCell(eur(r.spendCents), false), csvCell(eur(x.cpa), false),
+      csvCell(eur(x.cpp), false), csvCell(num(x.roas), false)].join(';');
   };
   return '﻿' + [head.map(h => csvCell(h, true)).join(';'), ...m.rows.map(r => line(r)), line(m.totals, 'Total')].join('\r\n') + '\r\n';
 }
