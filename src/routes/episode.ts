@@ -7,6 +7,7 @@ import { toVtt, toSrt, type Cue } from '../subtitles.ts';
 import { t, normLang } from '../i18n.ts';
 import { approvalScope, videoMeta, guestDecides, reviewCopy } from '../approval.ts';
 import { guestHelpNav } from '../support.ts';
+import { carriedTags, campaignQuery, ownHosts, withCampaign } from '../metrics.ts';
 
 export interface PlayerUrls { audio: string; cover: string; subs: (lang: string, ext: 'vtt' | 'srt') => string }
 
@@ -63,7 +64,11 @@ export async function episodeRoutes(app: FastifyInstance) {
   app.get('/e/:slug/video', (req, reply) => pubAsset(req, reply, 'video'));
 
   // Galeria pública «Podcasts gerados»: só episódios publicados como públicos e autorizados pelo entrevistador, por tema.
+  // As etiquetas da campanha que vêm da landing seguem em todos os links (início, temas, episódios, entrada), para que um
+  // registo feito depois de ver a galeria fique na campanha que trouxe a visita (sem cookies).
   app.get('/podcasts', async (req, reply) => {
+    const cq = campaignQuery(carriedTags(req.query, ownHosts(req.headers.host)));
+    const L = (path: string) => esc(withCampaign(path, cq));
     const rows = await db.query(`SELECT e.slug, e.title, e.theme, e.duration_ms, e.published_at, e.video_asset_id, i.host_name, i.guest_name FROM episodes e JOIN interviews i ON i.id=e.interview_id
       WHERE e.gallery AND e.status='published' AND e.visibility='public' AND e.withdrawn_at IS NULL ORDER BY e.theme, e.published_at DESC`);
     const q = String((req.query as any).theme ?? '');
@@ -72,10 +77,10 @@ export async function episodeRoutes(app: FastifyInstance) {
     const themes = [...new Set(rows.map((r: any) => r.theme || 'Other'))];
     return send(reply, page({
       lang: 'en', title: 'Podcast gallery', desc: 'Published interview episodes, organised by theme.',
-      nav: `<a href="/">Home</a><a href="/podcasts">Gallery</a><a href="/entrar">Sign in</a>`,
+      nav: `<a href="${L('/')}">Home</a><a href="${L('/podcasts')}">Gallery</a><a href="${L('/entrar')}">Sign in</a>`,
       body: `<div class="wrap" style="padding-top:32px"><h1>Podcast gallery</h1><p class="hint sans">Episodes published by their interviewers for public listening. Translation and narration are AI-generated.</p>
-${themes.length > 1 ? `<p class="row sans"><a class="btn ${q ? 'ghost' : 'accent'}" href="/podcasts">All</a>${themes.map(t => `<a class="btn ${q === t ? 'accent' : 'ghost'}" href="/podcasts?theme=${encodeURIComponent(t)}">${esc(t)}</a>`).join('')}</p>` : ''}
-${groups.size ? [...groups].map(([t, eps]) => `<section style="margin-top:28px"><h2>${esc(t)}</h2><div class="grid3">${eps.map((e: any) => `<a class="card" href="/e/${esc(e.slug)}" style="text-decoration:none;color:inherit;margin:0"><img src="/e/${esc(e.slug)}/thumb" alt="" width="300" height="300" loading="lazy" style="width:100%;height:auto;border-radius:8px"><h3 style="margin:.5em 0 .2em">${esc(e.title)}</h3><p class="hint sans" style="margin:0">${esc(e.host_name)} · ${esc(e.guest_name)} · ${fmtDuration(e.duration_ms)}${e.video_asset_id ? ' · video' : ''}</p></a>`).join('')}</div></section>`).join('') : '<div class="card"><p>No episodes yet.</p></div>'}</div>`,
+${themes.length > 1 ? `<p class="row sans"><a class="btn ${q ? 'ghost' : 'accent'}" href="${L('/podcasts')}">All</a>${themes.map(t => `<a class="btn ${q === t ? 'accent' : 'ghost'}" href="${L(`/podcasts?theme=${encodeURIComponent(t)}`)}">${esc(t)}</a>`).join('')}</p>` : ''}
+${groups.size ? [...groups].map(([t, eps]) => `<section style="margin-top:28px"><h2>${esc(t)}</h2><div class="grid3">${eps.map((e: any) => `<a class="card" href="${L(`/e/${encodeURIComponent(e.slug)}`)}" style="text-decoration:none;color:inherit;margin:0"><img src="/e/${esc(e.slug)}/thumb" alt="" width="300" height="300" loading="lazy" style="width:100%;height:auto;border-radius:8px"><h3 style="margin:.5em 0 .2em">${esc(e.title)}</h3><p class="hint sans" style="margin:0">${esc(e.host_name)} · ${esc(e.guest_name)} · ${fmtDuration(e.duration_ms)}${e.video_asset_id ? ' · video' : ''}</p></a>`).join('')}</div></section>`).join('') : '<div class="card"><p>No episodes yet.</p></div>'}</div>`,
     }));
   });
   const subsReply = (cues: Cue[] | undefined, fmt: string, reply: any) => {

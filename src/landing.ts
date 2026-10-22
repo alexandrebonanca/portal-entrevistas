@@ -60,11 +60,13 @@ const STYLES = `
 
 /**
  * Landing. `cq` são as etiquetas da campanha já normalizadas (utm_*, ou `ref` com o site de onde veio): seguem em todos os
- * links para o registo, para a conta ficar com a campanha que a trouxe (sem cookies).
+ * links para o registo, para a conta ficar com a campanha que a trouxe (sem cookies), e também nos links para a galeria e para
+ * a entrada, que as passam ao registo.
  */
 export function landing(plans: any[], cq = '') {
   const b = esc(config.brand);
   const signup = (extra = '') => esc(`/registar${extra || cq ? '?' : ''}${extra}${extra && cq ? '&' : ''}${cq}`);
+  const withTags = (path: string) => esc(cq ? `${path}?${cq}` : path);
   // Preços sem IVA («+ VAT»); para os consumidores, também o preço com IVA (no continente, em Portugal).
   const cheapest = plans[0] ? `${eur(plans[0].price_cents)} + VAT` : '';
   const s = seller(), rate = homeConsumerRate(s);
@@ -87,7 +89,7 @@ export function landing(plans: any[], cq = '') {
     head: `<meta property="og:type" content="website"><meta property="og:site_name" content="${b}"><meta property="og:title" content="Great interviews, recorded in your guest’s own time">
 <meta property="og:description" content="Asynchronous interviews that share professional cultures and life experience across countries and languages."><meta property="og:url" content="${esc(config.baseUrl)}/">${ogImage ? `<meta property="og:image" content="${esc(ogImage)}"><meta name="twitter:card" content="summary_large_image">` : ''}`,
     styles: STYLES,
-    nav: `<a href="#how">How it works</a><a href="/podcasts">Gallery</a><a href="#pricing">Pricing</a><a href="/entrar">Sign in</a><a class="btn accent" href="${signup()}">Get started</a>`,
+    nav: `<a href="#how">How it works</a><a href="${withTags('/podcasts')}">Gallery</a><a href="#pricing">Pricing</a><a href="${withTags('/entrar')}">Sign in</a><a class="btn accent" href="${signup()}">Get started</a>`,
     body: `
 <section class="lp-hero"><div class="wrap lp-grid">
   <div>

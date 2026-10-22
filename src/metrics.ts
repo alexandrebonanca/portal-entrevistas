@@ -87,6 +87,19 @@ export function campaignQuery(t: Tags): string {
   return p.toString();
 }
 
+/**
+ * Link interno com as etiquetas da campanha (`cq` de `campaignQuery`), para que não se percam na navegação dentro do portal
+ * (galeria, episódios, entrada). `path` pode já ter parâmetros. Sem escapar: o resultado passa por esc() na página.
+ */
+export const withCampaign = (path: string, cq: string) => (cq ? `${path}${path.includes('?') ? '&' : '?'}${cq}` : path);
+
+/**
+ * Etiquetas que uma página interna (galeria, episódio, entrada) passa adiante: só as que vêm no próprio URL (levadas da landing),
+ * nunca o Referer, porque estas páginas não contam visitas — uma referência de outro site que chega diretamente a elas não é
+ * atribuída a nada.
+ */
+export const carriedTags = (query: any, own: Set<string>): Tags => tagsFrom(query, undefined, own);
+
 /** Campos escondidos do formulário de registo (valores normalizados; escapados por segurança). */
 export function campaignInputs(t: Tags): string {
   const e = (s: string) => s.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
@@ -119,18 +132,40 @@ export const utcDay = (ms = Date.now()) => new Date(ms).toISOString().slice(0, 1
  * que nenhuma etiqueta normalizada pode ter, por isso nunca se confunde com uma origem verdadeira.
  */
 export const OTHER = '(outros)';
-/** Teto de combinações (página + etiquetas + site de origem) por dia: quem inventar etiquetas aos milhares não enche a base. */
+/**
+ * Teto de combinações (página + etiquetas + site de origem) por dia e por grupo: quem inventar etiquetas aos milhares não enche a
+ * base. Há um teto para cada grupo (`visitTierSql`), para que o lixo de um grupo não esconda as campanhas de outro.
+ */
 export const MAX_VISIT_ROWS_PER_DAY = 500;
+/** Origens conhecidas (as do construtor de links, menos «other»): o grupo delas tem teto próprio. */
+export const KNOWN_SOURCES = ['linkedin', 'instagram', 'facebook', 'google', 'newsletter'];
+/** Prefixo das campanhas pagas («qi-…»), sugerido no construtor de links. */
+export const PAID_PREFIX = 'qi-';
+/**
+ * Grupo de uma combinação, para o teto diário (expressão SQL sobre a origem e a campanha):
+ * 0 — origem e campanha com um custo registado (`campaign_spend`): as campanhas pagas declaradas pelo administrador;
+ * 1 — origem conhecida e campanha começada por «qi-»;
+ * 2 — outra campanha de uma origem conhecida;
+ * 3 — o resto (origens desconhecidas, sites de referência, direto).
+ * Assim, centenas de pedidos anónimos com origens inventadas ou sites de referência falsos (grupo 3) não fazem com que uma
+ * campanha verdadeira, vista pela primeira vez nesse dia depois deles, vá parar a «(outros)». Para a esconder, seria preciso
+ * inventar combinações do mesmo grupo (por exemplo «linkedin» com campanhas «qi-…» falsas, ou variantes de uma campanha paga).
+ */
+const visitTierSql = (src: string, camp: string) => `CASE WHEN EXISTS (SELECT 1 FROM campaign_spend s WHERE s.source=${src} AND s.campaign=${camp}) THEN 0
+  WHEN ${src} IN (${KNOWN_SOURCES.map(k => `'${k}'`).join(',')}) AND left(${camp}, ${PAID_PREFIX.length}) = '${PAID_PREFIX}' THEN 1
+  WHEN ${src} IN (${KNOWN_SOURCES.map(k => `'${k}'`).join(',')}) THEN 2 ELSE 3 END`;
 
 /**
- * Soma um ao contador do dia (um só INSERT … ON CONFLICT). Uma combinação que ainda não existe nesse dia, quando o dia já tem
- * `cap` linhas, conta na linha «(outros)».
+ * Soma um ao contador do dia (um só INSERT … ON CONFLICT). Uma combinação que ainda não existe nesse dia, quando o seu grupo
+ * (`visitTierSql`) já tem `cap` linhas nesse dia, conta na linha «(outros)» (que não entra em nenhum grupo).
  */
 export async function countVisit(db: Db, path: string, t: Tags, day = utcDay(), cap = MAX_VISIT_ROWS_PER_DAY) {
   await db.query(
-    `WITH full_day AS (
-       SELECT count(*) >= $9::int AS f FROM campaign_visits
-        WHERE day = $1::date AND NOT EXISTS (SELECT 1 FROM campaign_visits WHERE day=$1::date AND path=$2::text AND source=$3::text
+    `WITH nt AS (SELECT ${visitTierSql('$3::text', '$5::text')} AS tier),
+     full_day AS (
+       SELECT count(*) >= $9::int AS f FROM campaign_visits c, nt
+        WHERE c.day = $1::date AND c.source <> '${OTHER}' AND ${visitTierSql('c.source', 'c.campaign')} = nt.tier
+          AND NOT EXISTS (SELECT 1 FROM campaign_visits WHERE day=$1::date AND path=$2::text AND source=$3::text
           AND medium=$4::text AND campaign=$5::text AND content=$6::text AND term=$7::text AND referrer_host=$8::text))
      INSERT INTO campaign_visits(day, path, source, medium, campaign, content, term, referrer_host, n)
      SELECT $1::date, $2::text, CASE WHEN f THEN '${OTHER}' ELSE $3::text END, CASE WHEN f THEN '' ELSE $4::text END, CASE WHEN f THEN '' ELSE $5::text END,
@@ -231,9 +266,10 @@ export function prorate(e: { period_from: string; period_to: string; amount_cent
  * pagamento (`paid_at`). Cada pagamento e cada reembolso aparece lá uma só vez (`stripe_ref` único), por isso não há dupla
  * contagem; `payment_events` (eventos em bruto), `subscriptions` (estado atual), `credit_topups` e `wallet_entries`
  * (créditos, que são a mesma receita vista pela carteira) não se somam. As disputas não passam pela lista: só uma disputa
- * perdida tira receita, o líquido debitado na carteira (`wallet_entries` 'dispute', fechada por 'dispute_lost'), na data em que
- * foi perdida; uma disputa aberta ou ganha não tira nada. Não entram: reembolsos de subscrições feitos no painel da Stripe (a
- * aplicação ainda não os regista) e pagamentos noutra moeda que não o euro.
+ * perdida de um carregamento de créditos tira receita, o líquido debitado na carteira (`wallet_entries` 'dispute', fechada por
+ * 'dispute_lost'), na data em que foi perdida; uma disputa aberta ou ganha não tira nada. Não entram: disputas de subscrições
+ * (não passam pela carteira), reembolsos de subscrições feitos no painel da Stripe (a aplicação ainda não os regista) e
+ * pagamentos noutra moeda que não o euro.
  *
  * Custos: as entradas manuais que tocam o período, rateadas pelos dias (`prorate`) e imputadas às linhas da mesma origem e
  * campanha (qualquer meio); havendo várias, repartidas pelas visitas de cada uma (em partes iguais sem visitas). Sem nenhuma
@@ -358,7 +394,7 @@ export function metricsCsv(m: Metrics): string {
 }
 
 // ---------- construtor de links ----------
-export const LINK_SOURCES = ['linkedin', 'instagram', 'facebook', 'google', 'newsletter', 'other'];
+export const LINK_SOURCES = [...KNOWN_SOURCES, 'other'];
 export const LINK_MEDIUMS = ['paid_social', 'social', 'cpc', 'email', 'referral'];
 
 /** Link da campanha para a landing (BASE_URL); null com o motivo quando falta a origem, o meio ou a campanha. */

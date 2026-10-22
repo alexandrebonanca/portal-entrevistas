@@ -6,14 +6,14 @@ import { setSessionCookie, audit } from '../app.ts';
 import { landing } from '../landing.ts';
 import { S } from '../settings.ts';
 import { ASSISTANT_LOG_DAYS } from '../assistant.ts';
-import { tagsFrom, ownHosts, trackVisit, campaignQuery, campaignInputs, fromOwnSite, type Tags } from '../metrics.ts';
+import { tagsFrom, ownHosts, trackVisit, campaignQuery, campaignInputs, fromOwnSite, carriedTags, withCampaign, type Tags } from '../metrics.ts';
 
 export async function siteRoutes(app: FastifyInstance) {
   const db = app.db;
 
   // Landing: conta a visita (agregada, sem cookies nem IP) e passa as etiquetas da campanha aos links para o registo.
   // Quem volta à landing a partir do próprio site (logótipo, sair da conta, /podcasts, /entrar) já foi contado ao chegar: não
-  // conta outra vez, e as etiquetas vêm do URL da página de onde veio, quando as tiver.
+  // conta outra vez, e as etiquetas vêm do URL (a galeria e a entrada levam-nas nos links) ou do URL da página de onde veio.
   app.get('/', async (req, reply) => {
     const own = ownHosts(req.headers.host);
     const tags = tagsFrom(req.query, req.headers.referer, own);
@@ -47,24 +47,29 @@ export async function siteRoutes(app: FastifyInstance) {
   const userCount = async () => Number((await db.one('SELECT count(*)::int AS n FROM users'))?.n);
   const canSignup = async () => (await userCount()) === 0 || S('SIGNUPS_OPEN') !== '0';
 
+  // Entrada: as etiquetas da campanha que vêm da landing seguem no link «Create an account» (e no formulário, para não se
+  // perderem depois de uma tentativa falhada), para que o registo feito por aqui fique na campanha que trouxe a visita.
   app.get('/entrar', async (req, reply) => {
     if (req.user) return reply.redirect('/painel');
     const q = req.query as any;
+    const tags = carriedTags(q, ownHosts(req.headers.host));
     return reply.type('text/html; charset=utf-8').send(authPage('Sign in', `${flash(q.e, 'bad')}
-<form method="post" action="/entrar" class="card"><label for="e">Email</label><input id="e" name="email" type="email" required autocomplete="username">
+<form method="post" action="/entrar" class="card">${campaignInputs(tags)}<label for="e">Email</label><input id="e" name="email" type="email" required autocomplete="username">
 <label for="p">Password</label><input id="p" name="password" type="password" required autocomplete="current-password">
-<p><button class="accent">Sign in</button></p></form>${(await canSignup()) ? '<p>New here? <a href="/registar">Create an account</a></p>' : ''}`));
+<p><button class="accent">Sign in</button></p></form>${(await canSignup()) ? `<p>New here? <a href="${esc(withCampaign('/registar', campaignQuery(tags)))}">Create an account</a></p>` : ''}`));
   });
 
   app.post('/entrar', async (req, reply) => {
     const b = req.body as any;
-    if (!rateLimit(`login:${req.ip}`, 10, 10 * 60_000)) return reply.redirect('/entrar?e=' + encodeURIComponent('Too many attempts. Please wait a few minutes.'));
+    const cq = campaignQuery(carriedTags(b, ownHosts(req.headers.host)));
+    const fail = (msg: string) => reply.redirect(withCampaign('/entrar?e=' + encodeURIComponent(msg), cq));
+    if (!rateLimit(`login:${req.ip}`, 10, 10 * 60_000)) return fail('Too many attempts. Please wait a few minutes.');
     const email = String(b?.email ?? '').trim().toLowerCase();
     const u = await db.one('SELECT * FROM users WHERE email=$1', [email]);
     // Verifica sempre, para não revelar por tempo de resposta se o email existe.
     const ok = await verifyPassword(String(b?.password ?? ''), u?.password_hash ?? 'scrypt$AAAAAAAAAAAAAAAAAAAAAA==$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=');
-    if (!u || !ok) return reply.redirect('/entrar?e=' + encodeURIComponent('Invalid email or password.'));
-    if (!u.active) return reply.redirect('/entrar?e=' + encodeURIComponent('This account is deactivated. Please contact support.'));
+    if (!u || !ok) return fail('Invalid email or password.');
+    if (!u.active) return fail('This account is deactivated. Please contact support.');
     await startSession(reply, u.id);
     await audit(db, u.email, 'login', null);
     return reply.redirect(u.role === 'admin' ? '/painel' : '/account');

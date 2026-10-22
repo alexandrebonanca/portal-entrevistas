@@ -579,3 +579,99 @@ test('migração 034: registos anteriores identificados pela auditoria', async (
     assert.deepEqual((await d2.query(`SELECT email, self_signup FROM users ORDER BY email`)).map((r: any) => [r.email, r.self_signup]), [['adm@x.pt', false], ['criado@x.pt', false], ['reg@x.pt', true]]);
   } finally { await d2.close(); }
 });
+
+test('etiquetas levadas pela galeria (/podcasts) e pela entrada (/entrar) até ao registo: o registo fica na campanha', async () => {
+  const before0 = await total();
+  const raw = 'utm_source=linkedin&utm_medium=paid_social&utm_campaign=qi-path';
+  const cq = raw.replace(/&/g, '&amp;');
+  const landed = (await visit(`/?${raw}`, { referer: 'https://www.linkedin.com/' })).body;
+  assert.match(landed, new RegExp(`<a href="/podcasts\\?${cq}">Gallery</a>`), 'galeria com as etiquetas');
+  assert.match(landed, new RegExp(`<a href="/entrar\\?${cq}">Sign in</a>`), 'entrada com as etiquetas');
+  assert.doesNotMatch(landed, /href="\/(podcasts|entrar)"/);
+  // Galeria: todos os links levam as etiquetas; não conta como visita.
+  const gal = (await visit(`/podcasts?${raw}`, { referer: `http://test.local/?${raw}` })).body;
+  assert.match(gal, new RegExp(`<a href="/\\?${cq}">Home</a><a href="/podcasts\\?${cq}">Gallery</a><a href="/entrar\\?${cq}">Sign in</a>`));
+  // Volta à landing pelo «Home» da galeria: não conta outra vez e os links para o registo continuam com as etiquetas.
+  const back = (await visit(`/?${raw}`, { referer: `http://test.local/podcasts?${raw}` })).body;
+  assert.match(back, new RegExp(`<a class="btn accent" href="/registar\\?${cq}">Get started</a>`));
+  // Pelo logótipo da galeria (link simples para /): as etiquetas vêm do URL da galeria.
+  assert.match((await visit('/', { referer: `http://test.local/podcasts?${raw}` })).body, new RegExp(`href="/registar\\?${cq}">Get started`));
+  // Entrada: o link «Create an account» e o formulário levam as etiquetas; um erro de entrada mantém-nas.
+  const ent = (await visit(`/entrar?${raw}`, { referer: `http://test.local/podcasts?${raw}` })).body;
+  assert.match(ent, new RegExp(`<a href="/registar\\?${cq}">Create an account</a>`));
+  assert.match(ent, /<input type="hidden" name="utm_source" value="linkedin"><input type="hidden" name="utm_medium" value="paid_social"><input type="hidden" name="utm_campaign" value="qi-path">/);
+  const fail = await post('/entrar', { email: 'ninguem@example.com', password: 'errada-mas-comprida', utm_source: 'LinkedIn', utm_medium: 'paid_social', utm_campaign: 'qi-path' });
+  assert.match(String(fail.headers.location), new RegExp(`^/entrar\\?e=[^&]+&${raw}$`));
+  // Registo aberto a partir da entrada: campos escondidos, sem contar visita.
+  const reg = (await visit(`/registar?${raw}`, { referer: `http://test.local/entrar?${raw}` })).body;
+  assert.match(reg, /<input type="hidden" name="utm_source" value="linkedin"><input type="hidden" name="utm_medium" value="paid_social"><input type="hidden" name="utm_campaign" value="qi-path">/);
+  assert.equal(await total(), before0 + 1, 'só a chegada à landing conta');
+  await post('/registar', { name: 'Paula', email: 'paula@example.com', password: PW, terms: 1, utm_source: 'linkedin', utm_medium: 'paid_social', utm_campaign: 'qi-path' });
+  assert.deepEqual(await db.one(`SELECT self_signup, utm_source, utm_medium, utm_campaign FROM users WHERE email='paula@example.com'`),
+    { self_signup: true, utm_source: 'linkedin', utm_medium: 'paid_social', utm_campaign: 'qi-path' });
+  const m = await M.campaignMetrics(db, { from: today, to: today, days: 1, preset: 'custom' });
+  const row = m.rows.find(r => M.rowLabel(r) === 'linkedin / paid_social / qi-path');
+  assert.ok(row); assert.equal(row!.visits, 1); assert.equal(row!.signups, 1, 'o registo feito pela galeria e pela entrada fica na campanha');
+  // A página explica por onde as etiquetas passam, quando se perdem (e o que isso faz ao custo por registo), e os grupos do teto.
+  const pg = (await get('/admin/metricas?p=7', admin)).body;
+  assert.match(pg, /para a galeria \(\/podcasts[^<]*e para a entrada \(\/entrar/);
+  assert.match(pg, /<strong>Perdem-se<\/strong> \(o registo conta em «\(direto\)»/);
+  assert.match(pg, /saiu do caminho que leva as etiquetas/, 'dica de «(direto)»');
+  assert.match(pg, /combinações diferentes em cada um de quatro grupos/);
+  assert.match(pg, /disputas de subscrições não são abatidas/);
+  // Sem etiquetas na landing, a galeria e a entrada ficam com links simples; um site de origem que chega diretamente à
+  // galeria não é levado (a galeria não conta visitas).
+  const plainGal = (await visit('/podcasts', { referer: 'https://news.example/x' })).body;
+  assert.match(plainGal, /<a href="\/">Home<\/a><a href="\/podcasts">Gallery<\/a><a href="\/entrar">Sign in<\/a>/);
+  assert.match((await visit('/entrar', { referer: 'https://news.example/x' })).body, /<a href="\/registar">Create an account<\/a>/);
+  assert.match((await visit('/')).body, /<a href="\/podcasts">Gallery<\/a><a href="#pricing">Pricing<\/a><a href="\/entrar">Sign in<\/a>/);
+  // Etiquetas hostis no URL da galeria e da entrada: normalizadas e escapadas.
+  const hostile = '?utm_source=%22%3E%3Cscript%3Ealert(1)%3C%2Fscript%3E&utm_campaign=%27onmouseover%3D';
+  for (const u of ['/podcasts', '/entrar']) {
+    const b = (await visit(u + hostile)).body;
+    assert.doesNotMatch(b, /<script>alert|"><script|'onmouseover/);
+    assert.match(b, /utm_source=scriptalert1script&amp;utm_campaign=onmouseover/);
+  }
+});
+
+test('teto diário por grupo: lixo com origens inventadas ou sites falsos não esconde as campanhas verdadeiras', async () => {
+  const d = '2026-08-02';
+  const tg = (source: string, campaign = '', ref = '') => ({ ...M.NO_TAGS, source, campaign, ref });
+  // Grupo «resto» cheio (origens desconhecidas e sites de referência) antes da campanha verdadeira.
+  for (let i = 0; i < 5; i++) { await M.countVisit(db, '/', tg(`junk${i}`, `c${i}`), d, 3); await M.countVisit(db, '/', tg('', '', `spam${i}.example`), d, 3); }
+  await M.countVisit(db, '/', tg('linkedin', 'qi-real'), d, 3);
+  await M.countVisit(db, '/', tg('linkedin', 'qi-real'), d, 3);
+  // Grupo «outras campanhas de origens conhecidas» cheio: as «qi-…» continuam a contar.
+  for (let i = 0; i < 5; i++) await M.countVisit(db, '/', tg('instagram', `random${i}`), d, 3);
+  await M.countVisit(db, '/', tg('instagram', 'qi-insta'), d, 3);
+  // Grupo «qi-…» cheio com campanhas falsas: uma campanha com custo registado continua a contar; outra «qi-…» nova não.
+  for (let i = 0; i < 5; i++) await M.countVisit(db, '/', tg('linkedin', `qi-fake${i}`), d, 3);
+  await db.query(`INSERT INTO campaign_spend(period_from, period_to, source, campaign, amount_cents) VALUES ($1,$1,'google','marca-paga',1000)`, [d]);
+  await M.countVisit(db, '/', tg('google', 'marca-paga'), d, 3);
+  await M.countVisit(db, '/', tg('linkedin', 'qi-late'), d, 3);
+  const n = async (source: string, campaign: string) => Number((await db.one(`SELECT COALESCE(sum(n),0)::int AS n FROM campaign_visits WHERE day=$1 AND source=$2 AND campaign=$3`, [d, source, campaign])).n);
+  assert.equal(await n('linkedin', 'qi-real'), 2, 'campanha verdadeira depois do lixo: linha própria');
+  assert.equal(await n('instagram', 'qi-insta'), 1);
+  assert.equal(await n('google', 'marca-paga'), 1, 'campanha com custo registado: grupo próprio');
+  assert.equal(await n('linkedin', 'qi-late'), 0);
+  // «(outros)» (tetos de 3 por grupo): 7 das 10 do «resto», 2 das 5 campanhas instagram, 4 das 5 «qi-» falsas (qi-real e
+  // qi-insta já ocupavam 2 lugares do grupo) e qi-late.
+  assert.equal(await n(M.OTHER, ''), 7 + 2 + 4 + 1);
+  // Linhas próprias: 3 no grupo «resto», 3 no das outras campanhas, 3 no das «qi-» e 1 no das campanhas com custo.
+  assert.equal(Number((await db.one(`SELECT count(*)::int AS n FROM campaign_visits WHERE day=$1 AND source <> $2`, [d, M.OTHER])).n), 3 + 3 + 3 + 1);
+});
+
+test('teto diário pelo site: 500 combinações inventadas antes não mandam uma campanha nova para «(outros)»', async () => {
+  const vals = Array.from({ length: M.MAX_VISIT_ROWS_PER_DAY + 20 }, (_, i) => `('${today}','/','s${i}','','c${i}',1)`);
+  await db.query(`INSERT INTO campaign_visits(day, path, source, medium, campaign, n) VALUES ${vals.join(',')}`);
+  try {
+    await visit('/?utm_source=linkedin&utm_medium=paid_social&utm_campaign=qi-depois');
+    assert.equal(await count('/', { source: 'linkedin', medium: 'paid_social', campaign: 'qi-depois' }), 1);
+    const o0 = await count('/', { source: M.OTHER });
+    await visit('/?utm_source=inventada&utm_campaign=x1');
+    assert.equal(await count('/', { source: 'inventada', campaign: 'x1' }), 0);
+    assert.equal(await count('/', { source: M.OTHER }), o0 + 1, 'o grupo das origens desconhecidas está cheio');
+  } finally {
+    await db.query(`DELETE FROM campaign_visits WHERE day=$1 AND path='/' AND source ~ '^s[0-9]+$' AND campaign ~ '^c[0-9]+$'`, [today]);
+  }
+});
