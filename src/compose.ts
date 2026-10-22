@@ -37,78 +37,62 @@ export const composeAction = (a: unknown): ComposeAction | null => (COMPOSE_ACTI
 
 /** Domínios de país (ISO 3166, mais eu e uk). */
 const CC = 'ac ad ae af ag ai al am ao aq ar as at au aw ax az ba bb bd be bf bg bh bi bj bm bn bo br bs bt bw by bz ca cc cd cf cg ch ci ck cl cm cn co cr cu cv cw cx cy cz de dj dk dm do dz ec ee eg er es et eu fi fj fk fm fo fr ga gd ge gf gg gh gi gl gm gn gp gq gr gs gt gu gw gy hk hm hn hr ht hu id ie il im in io iq ir is it je jm jo jp ke kg kh ki km kn kp kr kw ky kz la lb lc li lk lr ls lt lu lv ly ma mc md me mg mh mk ml mm mn mo mp mq mr ms mt mu mv mw mx my mz na nc ne nf ng ni nl no np nr nu nz om pa pe pf pg ph pk pl pm pn pr ps pt pw py qa re ro rs ru rw sa sb sc sd se sg sh si sk sl sm sn so sr ss st su sv sx sy sz tc td tf tg th tj tk tl tm tn to tr tt tv tw tz ua ug uk us uy uz va vc ve vg vi vn vu wf ws ye yt za zm zw';
-/** Domínios genéricos em uso corrente (os antigos e os novos mais registados). */
-const GENERIC = 'com org net info biz edu gov int mil name pro mobi asia cat coop museum travel jobs tel aero '
-  + 'app dev xyz online site website web store shop shopping blog club live news tech technology media studio page link top email agency digital world today space '
-  + 'art design cloud life vip fun work works group company one ltd academy global network solutions consulting health coach events film music social gal eus scot wales '
+/** Domínios genéricos da primeira lista (a da versão verificada) e os acrescentados depois (os novos mais registados). */
+const GENERIC_BASE = 'com org net info biz edu gov int mil app dev xyz online site store shop blog club live news tech media studio page link top pro name mobi asia cat coop museum travel jobs email agency digital world today space website';
+const GENERIC_MORE = 'tel aero web shopping technology art design cloud life vip work group company ltd academy global network solutions consulting health coach events film music social gal eus scot wales '
   + 'bio eco green energy finance capital ventures partners services systems software tools education school university institute training expert guru '
-  + 'photography photo photos pics gallery video audio radio games game play casino bet sport sports fitness yoga golf football team run bike careers gle '
-  + 'cafe restaurant bar pizza food kitchen recipes wine beer coffee farm garden house home homes realestate properties land city town place zone center centre '
-  + 'plus rocks lol cool fyi ninja tips review reviews press report wiki forum chat community family dating love wedding baby kids care clinic dental doctor '
-  + 'hospital pharmacy vet legal law lawyer attorney accountant tax money cash credit loans insurance bank market markets trade trading exchange sale deals '
-  + 'discount gift gifts fashion clothing shoes jewelry beauty hair makeup skin spa salon fit style boutique luxury watch lat africa berlin london paris nyc tokyo madrid barcelona';
-const TLD_LIST = [...new Set(`${CC} ${GENERIC}`.split(' '))].sort((a, b) => b.length - a.length);
-const TLD = TLD_LIST.join('|'), TLD_UPPER = TLD_LIST.map(t => t.toUpperCase()).join('|');
+  + 'photography photo photos pics gallery video audio radio casino sport sports fitness yoga golf football bike careers gle restaurant kitchen recipes farm garden '
+  + 'house home homes realestate properties land city town dating wedding clinic dental doctor hospital pharmacy legal lawyer attorney accountant credit loans '
+  + 'insurance bank market markets trading exchange sale deals discount gift gifts fashion clothing shoes jewelry beauty hair makeup skin spa salon style boutique luxury '
+  + 'lat africa berlin london paris nyc tokyo madrid barcelona';
+const alt = (list: string) => [...new Set(list.split(' '))].sort((a, b) => b.length - a.length).join('|');
+const BASE_TLD = alt(`${CC} ${GENERIC_BASE}`), TLD = alt(`${CC} ${GENERIC_BASE} ${GENERIC_MORE}`);
+const TLD_UPPER = TLD.toUpperCase();
 // Partes comuns: um nome não pode vir colado a letras, algarismos, @, ponto ou hífen; o caminho não engole a pontuação final.
 const BEFORE = String.raw`(?<![\p{L}\p{N}@._-])`, LABEL = String.raw`[\p{L}\p{N}_-]`, PATH = String.raw`\/(?:[^\s,;)]*[^\s,;).!?:'"»])?`;
-/**
- * Endereços de sites sem http nem www, por quatro regras que se somam (tapar a mais nunca destapa):
- * 1. qualquer nome.domínio em minúsculas seguido de «/» (linktr.ee/joao, forms.gle/abc);
- * 2. um domínio da lista, em qualquer caixa, seguido de «/» (Empresa.PT/contactos);
- * 3. sem caminho, um domínio da lista em minúsculas (empresa.pt, joana.art, empresa.co.ao), também colado à frase
- *    seguinte («empresa.pt.Obrigado»);
- * 4. sem caminho, o endereço todo em maiúsculas (EMPRESA.PT).
- * Ficam frases sem espaço depois do ponto («percurso.Como»), abreviaturas («Dr.Silva», «Exmo.Sr.», «p.ex.»,
- * «Ex.mo») e nomes técnicos com maiúsculas («Socket.IO», «ASP.NET», «Node.js»). Um endereço com maiúsculas e
- * minúsculas misturadas e sem caminho («Maria.Pt») não se distingue de «fim.De» e fica.
- */
-const SITE_PATH_ANY = new RegExp(String.raw`${BEFORE}${LABEL}+(\.${LABEL}+)*\.[a-z]{2,}${PATH}`, 'gu');
-const SITE_PATH_LIST = new RegExp(String.raw`${BEFORE}${LABEL}+(\.${LABEL}+)*\.(${TLD})${PATH}`, 'giu');
-const SITE_LOWER = new RegExp(String.raw`${BEFORE}(${LABEL}+\.)*${LABEL}{2,}\.(${TLD})(?![\p{L}\p{N}_-])`, 'gu');
-const SITE_UPPER = new RegExp(String.raw`${BEFORE}([\p{Lu}\p{N}_-]+\.)*[\p{Lu}\p{N}_-]{2,}\.(${TLD_UPPER})(?![\p{L}\p{N}_-])`, 'gu');
-/** Abreviaturas portuguesas com o feitio de um endereço (Ex.mo, Il.ma) e nomes técnicos em maiúsculas (ASP.NET). */
-const NOT_SITE_LOWER = /^(ex|il|exm|ilm)\.(mo|ma|mos|mas)$/i;
-const NOT_SITE_UPPER = /^(asp|vb|ado|ml|ikvm|entity)\.net$/i;
-/** Separadores de um número de telefone: espaços, hífenes e travessões (U+2010–2015, U+2212), pontos, ponto médio, barras, parênteses, hífen suave e espaço sem largura. */
-const PHONE = /(\+|\b00)?\(?\+?\d[\d\s()./\xAD\xB7\u{200B}\u{2010}-\u{2015}\u{2212}-]{6,}\d/gu;
-/** Um só número (seguido ou agrupado em milhares) com uma moeda ou percentagem logo a seguir, na mesma linha, é um montante. */
-const ONE_NUMBER = /^\d{1,3}([ .\xA0]\d{3})+$|^\d+$/;
-const AMOUNT_NEXT = /^[ \t\xA0]*(€|\$|£|%|(eur|euros?|usd|dólares|milhões|mil)(?![\p{L}\p{N}]))/iu;
-/**
- * Uma data no início (dia/mês/ano ou ano-mês-dia, dia e mês válidos, sem mais algarismos colados) não faz parte do
- * número que se lhe segue: «12/03/2025 – 912 345 678» fica «12/03/2025 – [número]»; «12/03/2024 10:30» fica todo.
- */
-const DATE_START = /^((0?[1-9]|[12]\d|3[01])[/.-](0?[1-9]|1[0-2])[/.-](\d{4}|\d{2})|\d{4}[/.-](0?[1-9]|1[0-2])[/.-](0?[1-9]|[12]\d|3[01]))(?!\d)(?![./-]\d)/;
 const digits = (s: string) => (s.match(/\d/g) ?? []).length;
-const phone = (m: string, ...rest: any[]) => {
-  const str = rest[rest.length - 1] as string, at = rest[rest.length - 2] as number;
-  if (ONE_NUMBER.test(m) && AMOUNT_NEXT.test(str.slice(at + m.length))) return m;
-  const date = DATE_START.exec(m);
-  if (date) {
-    const tail = m.slice(date[0].length), lead = /^[^\d+(]*/.exec(tail)![0];
-    return digits(tail) >= 9 ? date[0] + lead + '[número]' : m;
-  }
-  return digits(m) >= 9 ? '[número]' : m;
-};
+const longNumber = (m: string) => (digits(m) >= 9 ? '[número]' : m);
+
+// 1. Regras da versão verificada (5f886a5), tal e qual: o que elas tapam continua sempre tapado.
+const BASE_SITE_PATH = new RegExp(String.raw`${BEFORE}${LABEL}+(\.${LABEL}+)*\.[a-z]{2,}\/[^\s,;)]*`, 'gu');
+const BASE_SITE = new RegExp(String.raw`${BEFORE}(${LABEL}+\.)*${LABEL}{2,}\.(${BASE_TLD})(?![\p{L}\p{N}_-])`, 'gu');
+const BASE_PHONE = /(\+|\b00)?\(?\+?\d[\d\s()./\u{2010}-\u{2015}-]{6,}\d/gu;
+// 2. Regras acrescentadas, por cima das anteriores (só tapam mais, nunca destapam). Os telefones vêm antes dos sites,
+//    para um domínio colado ao fim de um número («912 345 678.team») não partir o número.
+/** Telefones com mais separadores: ponto médio, sinal de menos, hífen suave e espaço sem largura. */
+const MORE_PHONE = /(\+|\b00)?\(?\+?\d[\d\s()./\xAD\xB7\u{200B}\u{2010}-\u{2015}\u{2212}-]{6,}\d/gu;
+/** Com caminho, um domínio da lista em minúsculas ou em maiúsculas (Empresa.PT/contactos), não «Eng.Software/Dados». */
+const MORE_SITE_PATH = new RegExp(String.raw`${BEFORE}${LABEL}+(\.${LABEL}+)*\.(${TLD})${PATH}`, 'giu');
+/** Sem caminho, os domínios acrescentados em minúsculas (joana.art, estudio.design). */
+const MORE_SITE = new RegExp(String.raw`${BEFORE}(${LABEL}+\.)*${LABEL}{2,}\.(${TLD})(?![\p{L}\p{N}_-])`, 'gu');
+/** Sem caminho, o endereço todo em maiúsculas (EMPRESA.PT), menos nomes técnicos (ASP.NET). */
+const MORE_SITE_UPPER = new RegExp(String.raw`${BEFORE}([\p{Lu}\p{N}_-]+\.)*[\p{Lu}\p{N}_-]{2,}\.(${TLD_UPPER})(?![\p{L}\p{N}_-])`, 'gu');
+const NOT_SITE_UPPER = /^(asp|vb|ado|ml|ikvm|entity|dot)\.net$/i;
+
 /**
  * Tapa, nos formatos habituais, emails, endereços de sites e números de telefone (9 ou mais algarismos, com ou sem
- * indicativo, com os separadores de PHONE); o resto do rascunho segue como está: é o texto que o entrevistador quer
- * melhorar. Os campos de origem têm tamanho limitado (no máximo 4000 caracteres), por isso o corte antes das
- * expressões regulares nunca separa um contacto; depois corta-se no tamanho. O email tem âncora à esquerda (sem ela,
- * a expressão era quadrática em textos longos).
+ * indicativo); o resto do rascunho segue como está: é o texto que o entrevistador quer melhorar. Primeiro as regras da
+ * versão verificada, sem mudanças; depois as acrescentadas, que só tapam mais. Por isso também ficam tapados alguns
+ * números que não são telefones (datas com hora, montantes grandes) e algumas abreviaturas («Ex.mo»): preferível a
+ * deixar sair um contacto. Um endereço com maiúsculas e minúsculas misturadas e sem caminho («Maria.Pt») não se
+ * distingue de «fim.De» e fica. Os campos de origem têm tamanho limitado (no máximo 4000 caracteres), por isso o corte
+ * antes das expressões regulares nunca separa um contacto; depois corta-se no tamanho. O email tem âncora à esquerda
+ * (o mesmo resultado, sem o tempo quadrático em textos longos).
  */
 export const scrub = (s: unknown, max: number) => String(s ?? '').slice(0, max + 4000)
   .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '')
   .replace(/(?<![\p{L}\p{N}._%+-])[\p{L}\p{N}._%+-]+@[\p{L}\p{N}-]+(\.[\p{L}\p{N}-]+)*\.\p{L}{2,}/gu, '[email]')
   .replace(/https?:\/\/[^\s,;)]+|www\.[^\s,;)]+/gi, '[link]')
-  .replace(SITE_PATH_ANY, '[link]')
-  .replace(SITE_PATH_LIST, '[link]')
-  .replace(SITE_LOWER, m => (NOT_SITE_LOWER.test(m) ? m : '[link]'))
-  .replace(SITE_UPPER, m => (NOT_SITE_UPPER.test(m) ? m : '[link]'))
-  .replace(PHONE, phone)
+  .replace(BASE_SITE_PATH, '[link]')
+  .replace(BASE_SITE, '[link]')
+  .replace(BASE_PHONE, longNumber)
+  .replace(MORE_PHONE, longNumber)
+  .replace(MORE_SITE_PATH, (m: string, _l: string, tld: string) => (tld === tld.toLowerCase() || tld === tld.toUpperCase() ? '[link]' : m))
+  .replace(MORE_SITE, '[link]')
+  .replace(MORE_SITE_UPPER, (m: string) => (NOT_SITE_UPPER.test(m) ? m : '[link]'))
   .trim().slice(0, max);
 /** Marcadores postos pelo scrub (ou parecidos, de uma ou mais palavras): uma sugestão do modelo que os traga não serve. */
-const MASK = /\[[^\]\n]{0,30}?(link|url|site|mail|n[uú]mero|number|telefone|telem[oó]vel|phone|contact)[^\]\n]{0,30}\]/i;
+const MASK = /\[[^\]\n]{0,30}?(link|url|site|mail|n[uú]mero|number|telefone|telem[oó]vel|phone|conta?c?to|contact)[^\]\n]{0,30}\]/i;
 
 export function composeDraft(iv: any, questions: { text: string; audio_asset_id?: string | null }[], limits: { maxQuestions: number; answerLimitSec: number | null }): ComposeDraft {
   return {

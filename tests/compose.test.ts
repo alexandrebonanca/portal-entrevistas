@@ -247,29 +247,35 @@ test('tapar: emails, sites e telefones em vários formatos; datas, valores e nú
     'empresa.ao', 'escola.mz', 'loja.cv', 'univ.edu', 'site.xyz', 'firma.us', 'empresa.co.ao', 't.co/abc', 'café.pt', 'meu_site.com',
     'joana.art', 'estudio.design', 'ana.cloud', 'empresa.group', 'EMPRESA.PT', 'EMPRESA.PT/CONTACTOS', 'Empresa.PT/x'];
   for (const l of sites) assert.equal(C.scrub(`Veja ${l}, depois`, 1000), 'Veja [link], depois', l);
-  assert.equal(C.scrub('Veja linktr.ee/joao, bit.ly/abc e t.co/abc.', 1000), 'Veja [link], [link] e [link].', 'a pontuação depois do caminho fica');
-  // telefones seguidos de «:» ou depois de uma data (regressão apanhada na verificação focada)
+  assert.equal(C.scrub('Veja linktr.ee/joao, bit.ly/abc e t.co/abc', 1000), 'Veja [link], [link] e [link]');
+  // telefones seguidos de «:», depois de uma data ou antes de um montante (regressões apanhadas nas verificações focadas)
   const around: [string, string][] = [
     ['Ligue-me para 912 345 678: estou disponível.', 'Ligue-me para [número]: estou disponível.'],
     ['Phone +44 20 7946 0958: call after 6pm.', 'Phone [número]: call after 6pm.'],
     ['Contactos – Ana: 912 345 678; Rui: 913 456 789: só à tarde.', 'Contactos – Ana: [número]; Rui: [número]: só à tarde.'],
-    ['Entrevista a 12/03/2025 – 912 345 678 é o contacto', 'Entrevista a 12/03/2025 – [número] é o contacto'],
-    ['Data 15/03/2025 912345678', 'Data 15/03/2025 [número]'],
     ['Ligue 91.23.45.678 hoje', 'Ligue [número] hoje'],
     ['Ligue 06.12.34.56.78 hoje', 'Ligue [número] hoje'],
     ['Tel.: 912345678', 'Tel.: [número]'],
+    ['Reservas: 912 345 678 € 25 por pessoa.', 'Reservas: [número] € 25 por pessoa.'],
+    ['MB WAY 912345678 €5', 'MB WAY [número] €5'],
+    ['LIGUE 912 345 678.NA SEDE', 'LIGUE [número].NA SEDE'],
+    ['Tel 912 345 678.team', 'Tel [número].team'],
+    ['Ligue 912·345·678.team', 'Ligue [número].team'],
   ];
   for (const [x, want] of around) assert.equal(C.scrub(x, 1000), want, x);
+  for (const x of ['Entrevista a 12/03/2025 – 912 345 678 é o contacto', 'Data 15/03/2025 912345678']) assert.ok(!C.scrub(x, 1000).includes('345'), x);
+  // como na versão verificada, alguns números que não são telefones também ficam tapados (preferível a deixar sair um)
+  assert.equal(C.scrub('a 12/03/2024 10:30', 1000), 'a [número]:30');
   assert.equal(C.scrub('Escreva a rui.costa@empresa.pt ou joão@empresa.pt ou RUI@EMPRESA.PT', 1000), 'Escreva a [email] ou [email] ou [email]');
   assert.equal(C.scrub('Veja empresa.art?x e empresa.art#y', 1000), 'Veja [link]?x e [link]#y');
   const keep = 'Entre 1990-2020 e 2010 e 2020, 3.5 vezes, Node.js, Vue.js, ASP.NET, p.ex. isto, e.g. 25%, i.e. isto, V.Ex.ª, 12 000 euros, 2.500.000 de pessoas, ano 2024, 12/10/2026, n.º 5, '
-    + '250.000.000 € de receita, 250 000 000 euros, a 12/03/2024 10:30, a 2024-01-15 10:30, o relatório.pdf, o README.txt, 2.5%, versão 1.2.3, Eng.Civil/Mecânica.';
+    + 'o relatório.pdf, o README.txt, 2.5%, versão 1.2.3, Eng.Civil/Mecânica, Eng.Software/Dados.';
   assert.equal(C.scrub(keep, 1000), keep);
   // frases sem espaço depois do ponto, abreviaturas e nomes técnicos não são sites (e um nome com maiúsculas e
   // minúsculas misturadas, sem caminho, como «Maria.Pt», não se distingue de «fim.De»: fica)
   const prose = 'Fale-nos do seu percurso.Como chegou aqui? Entre 2005 e 2012.Depois mudou-se? Como é a vida em Maputo.Recomenda? What was your first job.How did you get it? '
     + 'O Dr.Silva, na Av.da Liberdade, Univ.Coimbra, Mr.Smith, Prof.Doutor, Eng.Silva, Sta.Maria, Sto.António, Exmo.Sr., Dra.Ana. '
-    + 'Socket.IO, pandas.DataFrame, numpy.array, System.out.println, Power.BI, React.Native, ML.NET, Maria.Pt, Ex.mo Senhor, Il.ma Senhora.';
+    + 'Socket.IO, pandas.DataFrame, numpy.array, System.out.println, Power.BI, React.Native, ML.NET, DOT.NET, Maria.Pt.';
   assert.equal(C.scrub(prose, 2000), prose);
   // nomes de ficheiros em minúsculas com um domínio de país (main.py, README.md) continuam tapados, como antes
   assert.equal(C.scrub('Veja main.py e README.md', 1000), 'Veja [link] e [link]');
@@ -289,10 +295,24 @@ test('tapar: contactos nos formatos habituais em vários contextos nunca seguem 
     'fb.watch/abc', 'anchor.fm/maria', 'joana.art', 'empresa.co.ao', 'EMPRESA.PT', 'Empresa.PT/contactos', 'escola.mz', 'company.com', 'docs.rs', 'bun.sh', 'café.pt'];
   const contexts = [(c: string) => `Ver ${c}`, (c: string) => `Ver ${c}.`, (c: string) => `Ver ${c}, já`, (c: string) => `Ver ${c}: já`, (c: string) => `(${c})`,
     (c: string) => `«${c}»`, (c: string) => `${c}.Obrigado`, (c: string) => `${c}.Com`, (c: string) => `Contacto: ${c}\n€20 de inscrição`,
-    (c: string) => `${c} - 50% de desconto`, (c: string) => `Data 12/03/2025 – ${c}`, (c: string) => `Tel.: ${c}`, (c: string) => `See ${c}. How did you start?`];
+    (c: string) => `${c} - 50% de desconto`, (c: string) => `Data 12/03/2025 – ${c}`, (c: string) => `Tel.: ${c}`, (c: string) => `See ${c}. How did you start?`,
+    (c: string) => `Reservas: ${c} € 25 por pessoa.`, (c: string) => `MB WAY ${c} €5`, (c: string) => `Ana\t${c}\t€ 1500`, (c: string) => `${c} mil obrigados`,
+    (c: string) => `LIGUE ${c}.NA SEDE`, (c: string) => `${c}.TO book`, (c: string) => `Tel ${c}.team`, (c: string) => `${c}.PT`, (c: string) => `[${c}]`, (c: string) => `${c}/x`];
+  // Referência: as regras da versão verificada (5f886a5), copiadas tal e qual. O scrub atual tem de tapar sempre pelo
+  // menos o mesmo (as regras novas só podem tapar mais); foi assim que se apanharam três regressões antes de publicar.
+  const CC = 'ac ad ae af ag ai al am ao aq ar as at au aw ax az ba bb bd be bf bg bh bi bj bm bn bo br bs bt bw by bz ca cc cd cf cg ch ci ck cl cm cn co cr cu cv cw cx cy cz de dj dk dm do dz ec ee eg er es et eu fi fj fk fm fo fr ga gd ge gf gg gh gi gl gm gn gp gq gr gs gt gu gw gy hk hm hn hr ht hu id ie il im in io iq ir is it je jm jo jp ke kg kh ki km kn kp kr kw ky kz la lb lc li lk lr ls lt lu lv ly ma mc md me mg mh mk ml mm mn mo mp mq mr ms mt mu mv mw mx my mz na nc ne nf ng ni nl no np nr nu nz om pa pe pf pg ph pk pl pm pn pr ps pt pw py qa re ro rs ru rw sa sb sc sd se sg sh si sk sl sm sn so sr ss st su sv sx sy sz tc td tf tg th tj tk tl tm tn to tr tt tv tw tz ua ug uk us uy uz va vc ve vg vi vn vu wf ws ye yt za zm zw'.replace(/ /g, '|');
+  const GENERIC = 'com|org|net|info|biz|edu|gov|int|mil|app|dev|xyz|online|site|store|shop|blog|club|live|news|tech|media|studio|page|link|top|pro|name|mobi|asia|cat|coop|museum|travel|jobs|email|agency|digital|world|today|space|website';
+  const baseScrub = (s: string) => s
+    .replace(/[\p{L}\p{N}._%+-]+@[\p{L}\p{N}-]+(\.[\p{L}\p{N}-]+)*\.\p{L}{2,}/gu, '[email]')
+    .replace(/https?:\/\/[^\s,;)]+|www\.[^\s,;)]+/gi, '[link]')
+    .replace(/(?<![\p{L}\p{N}@._-])[\p{L}\p{N}_-]+(\.[\p{L}\p{N}_-]+)*\.[a-z]{2,}\/[^\s,;)]*/gu, '[link]')
+    .replace(new RegExp(`(?<![\\p{L}\\p{N}@._-])([\\p{L}\\p{N}_-]+\\.)*[\\p{L}\\p{N}_-]{2,}\\.(${CC}|${GENERIC})(?![\\p{L}\\p{N}_-])`, 'gu'), '[link]')
+    .replace(/(\+|\b00)?\(?\+?\d[\d\s()./\u{2010}-\u{2015}-]{6,}\d/gu, m => ((m.match(/\d/g) ?? []).length >= 9 ? '[número]' : m));
+  const masks = (s: string) => (s.match(/\[(link|número|email)\]/g) ?? []).length;
   for (const c of [...phones, ...emails, ...sites]) for (const ctx of contexts) {
-    const x = ctx(c), out = C.scrub(x, 2000);
+    const x = ctx(c), out = C.scrub(x, 2000), base = baseScrub(x);
     assert.ok(!out.includes(c), `por tapar: ${JSON.stringify(x)} → ${JSON.stringify(out)}`);
+    assert.ok(masks(out) >= masks(base), `tapa menos do que a versão verificada: ${JSON.stringify(x)} → ${JSON.stringify(out)} (antes ${JSON.stringify(base)})`);
   }
 });
 

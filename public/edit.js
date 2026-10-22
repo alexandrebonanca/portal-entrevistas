@@ -273,10 +273,11 @@
   if (reopen && !wide() && last) panel.scrollTop = out.offsetTop - 12;
   // Voltar atrás para esta página depois de uma ação do assistente ou de um formulário enviado nela: a página guardada
   // pelo browser (com o estado do script) é a de antes do envio (deixava acrescentar a mesma sugestão duas vezes e
-  // dava por guardar o que já se guardou), por isso recarrega-se.
-  // Sem essa ação, fica como está (as alterações por guardar não se perdem) e só se atualizam as dicas e o painel.
+  // dava por guardar o que já se guardou), por isso recarrega-se (sem os avisos antigos no endereço). Depois de um
+  // formulário, só se não houver alterações por guardar noutros (recarregar perdia-as; a ação do assistente já pediu
+  // confirmação para isso). Senão, fica como está e só se atualizam as dicas e o painel.
   addEventListener('pageshow', (ev) => {
-    if (ev.persisted && (sentFromHere || submittedHere)) { location.reload(); return; }
+    if (ev.persisted && (sentFromHere || (submittedHere && !dirty.size))) { reloadAt(location.hash.slice(1)); return; }
     render(last); updateTips();
   });
 })();
