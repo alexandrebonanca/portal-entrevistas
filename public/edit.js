@@ -71,15 +71,9 @@
   // pelo browser (com o estado do script) é a de antes do envio (deixava acrescentar a mesma pergunta duas vezes ou
   // reenviar um pedido adicional), por isso recarrega-se, sem os avisos antigos no endereço. Depois de um formulário,
   // só se não houver alterações por guardar noutros (recarregar perdia-as; a ação do assistente já pediu confirmação
-  // para isso). Vale em todas as páginas de edição, com ou sem o painel do assistente. Se o servidor recusou o envio (a
-  // página seguinte trazia um aviso de erro no endereço), não se recarrega: nada mudou e o texto escrito recupera-se
-  // com Voltar, como antes.
-  const REFUSED = 'editar:recusado:' + ivId;
-  try { if (/[?&]q?e=/.test(location.search)) sessionStorage.setItem(REFUSED, '1'); else sessionStorage.removeItem(REFUSED); } catch (e) { /* sem armazenamento */ }
+  // para isso). Vale em todas as páginas de edição, com ou sem o painel do assistente.
   addEventListener('pageshow', (ev) => {
-    let refused = false;
-    try { refused = sessionStorage.getItem(REFUSED) === '1'; } catch (e) { /* sem armazenamento */ }
-    if (ev.persisted && !refused && (sentFromHere || (submittedHere && !dirty.size))) reloadAt(location.hash.slice(1));
+    if (ev.persisted && (sentFromHere || (submittedHere && !dirty.size))) reloadAt(location.hash.slice(1));
   });
 
   // ---------------- assistente de composição ----------------
