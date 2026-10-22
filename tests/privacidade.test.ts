@@ -276,6 +276,19 @@ test('privacidade: a FAQ do assistente não contradiz a /privacy nem manda escre
   assert.match(by('convidado-suporte').en[1], /for a new request, use the portal’s contact form/);
   assert.match(by('convidado-aprovar').en[1], /use the link «Ask for a correction or the withdrawal of the episode» \(it opens the portal’s contact form with the episode filled in\)/);
   assert.match(by('devolucoes').pt[1], /peça-o ao suporte, nesta página de ajuda\./);
+  // regravar: cada «Repetir» acrescenta uma gravação (answer_takes) e as anteriores ficam, como diz a /privacy
+  assert.match(section('What we collect and why'), /your recorded answers \(a new recording is added and earlier ones are kept, not overwritten\)/);
+  assert.match(by('convidado-regravar').pt[1], /Usa-se a gravação mais recente; as anteriores não são apagadas: ficam guardadas em privado com a entrevista, não entram no episódio, e pode pedir ao suporte, nesta página, que as apague\./);
+  assert.match(by('convidado-regravar').en[1], /The latest recording is used; earlier ones are not deleted: they are kept privately with the interview, are not used in the episode, and you can ask support, on this page, to delete them\./);
+  assert.doesNotMatch(answers, /fica a gravação mais recente|the latest recording is kept/);
+  // quem pergunta como apagar a resposta ou a gravação anterior recebe primeiro uma entrada que não diz que se apaga sozinha
+  const { searchFaq } = await import('../src/assistant.ts');
+  for (const [q, lang] of [['Posso apagar a minha resposta?', 'pt'], ['quero apagar a gravação anterior', 'pt'], ['Can I delete my answer?', 'en'], ['delete answer', 'en']] as const) {
+    const guest = FAQ_SEED.filter(e => e.audience !== 'interviewer')
+      .map((e, i) => ({ id: e.key, lang, audience: e.audience, question: e[lang][0], answer: e[lang][1], keywords: e[lang][2], sort: i * 10 }));
+    const [first] = searchFaq(guest, q);
+    assert.ok(['convidado-regravar', 'convidado-privacidade'].includes(first?.entry.id), `${q}: ${first?.entry.id}`);
+  }
 });
 
 test('emails: a MailerSend recebe o seguimento desligado (aberturas, cliques e conteúdo) em cada envio, e o rodapé liga à /privacy', async () => {

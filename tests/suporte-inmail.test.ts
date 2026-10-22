@@ -477,6 +477,64 @@ test('sentinela: o SUPPORT_EMAIL não aparece em nenhuma página nem em nenhum e
   assert.match((await get('/termos')).body, /mailto:vendas@telecert\.pt/);
 });
 
+test('sentinela: emails da fila com o rodapé antigo saem sem o SUPPORT_EMAIL; guardar as Definições só repõe os falhados das últimas 48 h', async () => {
+  // como a 727855d os gerava: rodapé por omissão «marca · SUPPORT_EMAIL» (HTML) e, nos convites, «Dúvidas: …» ou
+  // «Need help? …» (HTML e texto)
+  const html = (help: string) => `<p>Convite</p><p style="font-size:14px;color:#6b655c">Se não quiser participar, abra o link. ${help} ${SENTINEL}</p>
+<p style="font:13px Arial,sans-serif;color:#6b655c;margin-top:32px">${config.brand} · ${SENTINEL}</p>`;
+  const text = (help: string) => `Convite\n\nSe não quiser participar, abra o link.\n${help} ${SENTINEL}\n\n${config.brand} — entrevistas gravadas no seu tempo · test.local`;
+  const old = (key: string, help: string, state: string, attempts: number, age: string) =>
+    db.query(`INSERT INTO emails(dedupe_key, to_email, subject, html, text_body, state, attempts, next_attempt_at, created_at)
+      VALUES ($1,$2,'Convite antigo',$3,$4,$5,$6, now(), now() - $7::interval)`, [`antigo:${key}`, `${key}@exemplo.org`, html(help), text(help), state, attempts, age]);
+  await old('pendente', 'Dúvidas:', 'pending', 0, '3 days');
+  await old('falhado', 'Need help?', 'failed', 2, '1 hour');
+  await old('esgotado-recente', 'Dúvidas:', 'failed', 6, '47 hours');
+  await old('esgotado-antigo', 'Dúvidas:', 'failed', 6, '30 days');
+  // um email ao próprio dono com o endereço dele fora destes padrões: sai como está
+  const own = { html: `<p>A sua conta: ${SENTINEL}</p>`, text: `A sua conta: ${SENTINEL}` };
+  await db.query(`INSERT INTO emails(dedupe_key, to_email, subject, html, text_body) VALUES ('antigo:ao-dono',$1,'A sua conta',$2,$3)`, [SENTINEL, own.html, own.text]);
+  const sent: any[] = [], realFetch = globalThis.fetch;
+  const to = (key: string) => sent.filter(b => b.to[0].email === `${key}@exemplo.org`);
+  const row = (key: string) => db.one(`SELECT state, attempts, html, text_body FROM emails WHERE dedupe_key=$1`, [`antigo:${key}`]);
+  process.env.MAILERSEND_API_KEY = 'chave-falsa-dos-testes'; // nunca sai daqui: o fetch é substituído
+  globalThis.fetch = (async (_u: any, init: any) => {
+    sent.push(JSON.parse(init.body));
+    return new Response('', { status: 202, headers: { 'x-message-id': `m${sent.length}` } });
+  }) as any;
+  try {
+    await flushOutbox(db);
+    const footer = `${config.brand} · <a href="http://test.local/contact" style="color:#b4691f">Contacto</a> · <a href="http://test.local/privacy" style="color:#b4691f">Privacidade</a></p>`;
+    for (const [key, help] of [['pendente', 'Dúvidas? Abra o seu link pessoal e use a página «Ajuda»: a equipa do portal responde lá.'],
+      ['falhado', 'Need help? Open your personal link and use the “Help” page: the portal team replies there.']]) {
+      const [m] = to(key);
+      assert.ok(m, `${key} enviado`);
+      assert.ok(!JSON.stringify(m).toLowerCase().includes(SENTINEL), `${key} sem o SUPPORT_EMAIL`);
+      assert.ok(m.html.includes(`abra o link. ${help}</p>`) && m.html.endsWith(footer), `${key}: a ajuda e o rodapé de agora no HTML`);
+      assert.ok(m.text.includes(`abra o link.\n${help}\n\n`), `${key}: a ajuda de agora no texto`);
+      const r = await row(key);
+      assert.deepEqual([r.state, r.html, r.text_body], ['sent', m.html, m.text], `${key}: a cópia guardada é a que saiu`);
+    }
+    const [mine] = sent.filter(b => b.to[0].email === SENTINEL);
+    assert.deepEqual([mine.html, mine.text], [own.html, own.text], 'o email ao dono sai como estava');
+    assert.equal(to('esgotado-recente').length + to('esgotado-antigo').length, 0, 'sem tentativas: não saem');
+
+    // guardar as Definições (o formulário envia sempre o remetente) repõe só os falhados das últimas 48 h
+    const saved = await post('/admin/definicoes', { MAIL_FROM: 'noreply@quietinterview.test', signups_open: '1' }, admin);
+    assert.match(msgOf(saved), /Definições guardadas\./);
+    assert.deepEqual([(await row('esgotado-recente')).state, (await row('esgotado-antigo')).state], ['pending', 'failed']);
+    await flushOutbox(db);
+    const [late] = to('esgotado-recente');
+    assert.ok(late && !JSON.stringify(late).toLowerCase().includes(SENTINEL), 'o falhado de há 47 h sai sem o SUPPORT_EMAIL');
+    assert.equal(to('esgotado-antigo').length, 0, 'o de há 30 dias fica por enviar');
+    const r = await row('esgotado-antigo');
+    assert.deepEqual([r.state, r.attempts], ['failed', 6]);
+    assert.ok(r.html.includes(SENTINEL), 'e não foi tocado');
+  } finally {
+    globalThis.fetch = realFetch; delete process.env.MAILERSEND_API_KEY;
+    await post('/admin/definicoes', { MAIL_FROM: '-', signups_open: '1' }, admin);
+  }
+});
+
 test('migração 035 sobre dados antigos: pedidos de utilizadores e convidados intactos; regras dos pedidos de visitantes', async () => {
   const d2 = await openDb();
   try {

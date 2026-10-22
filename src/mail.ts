@@ -2,6 +2,7 @@ import { config } from './config.ts';
 import { emailBrand } from './brand.ts';
 import type { Db } from './db.ts';
 import { esc, isRealEmail } from './lib.ts';
+import { t } from './i18n.ts';
 import { S, inEntity, entityOfInterview } from './settings.ts';
 
 /** Coloca o email na outbox (deduplicado por chave). O envio real é feito por flushOutbox(). */
@@ -27,6 +28,12 @@ export async function flushOutbox(db: Db) {
     const claimed = await db.one(`UPDATE emails SET state='sending', attempts=attempts+1 WHERE id=$1 AND state IN ('pending','failed') AND attempts < 6 AND next_attempt_at <= now() RETURNING id`, [m.id]);
     if (!claimed) continue;
     try {
+      // Email posto na fila antes do lançamento de 22/10 com o rodapé antigo: sai, e fica guardado, sem o email pessoal.
+      const fixed = withoutOldFooter(m);
+      if (fixed.html !== m.html || fixed.text_body !== m.text_body) {
+        await db.query('UPDATE emails SET html=$2, text_body=$3 WHERE id=$1', [m.id, fixed.html, fixed.text_body]);
+        Object.assign(m, fixed);
+      }
       // Com entrevista: chaves da entidade do dono; sem entrevista (ex.: teste): mantém o contexto atual.
       const id = m.interview_id ? await inEntity(await entityOfInterview(db, m.interview_id), () => deliver(m)) : await deliver(m);
       await db.query(`UPDATE emails SET state='sent', provider_id=$2, sent_at=now(), error=NULL WHERE id=$1`, [m.id, id]);
@@ -76,12 +83,36 @@ async function deliver(m: any): Promise<string> {
 /** Ligação à página de privacidade no rodapé dos emails (o desta moldura e o dos convites, em invites.ts). */
 export const emailPrivacyLink = (label: string) => `<a href="${esc(config.baseUrl)}/privacy" style="color:#b4691f">${esc(label)}</a>`;
 
+/** Conteúdo do rodapé por omissão: a marca, o formulário de contacto e a página de privacidade. */
+const footerLine = (lang: 'pt' | 'en') =>
+  `${esc(config.brand)} · <a href="${esc(config.baseUrl)}/contact" style="color:#b4691f">${lang === 'en' ? 'Contact us' : 'Contacto'}</a> · ${emailPrivacyLink(lang === 'en' ? 'Privacy' : 'Privacidade')}`;
+
 /**
  * Rodapé por omissão dos emails: a marca, a ligação ao formulário de contacto do portal (nunca um endereço de email) e a
  * página de privacidade.
  */
 export const emailFooter = (lang: 'pt' | 'en' = 'pt') =>
-  `<p style="font:13px Arial,sans-serif;color:#6b655c;margin-top:32px">${esc(config.brand)} · <a href="${esc(config.baseUrl)}/contact" style="color:#b4691f">${lang === 'en' ? 'Contact us' : 'Contacto'}</a> · ${emailPrivacyLink(lang === 'en' ? 'Privacy' : 'Privacidade')}</p>`;
+  `<p style="font:13px Arial,sans-serif;color:#6b655c;margin-top:32px">${footerLine(lang)}</p>`;
+
+/**
+ * Emails postos na fila pela versão anterior ao lançamento de 22/10 (727855d), que mostrava o email pessoal do dono
+ * (SUPPORT_EMAIL) no rodapé por omissão («marca · email», no HTML) e na linha de ajuda dos convites («Dúvidas: email» ou
+ * «Need help? email», no HTML e no texto): estes dois padrões passam ao rodapé por omissão e à linha de ajuda de agora.
+ * Só estes: o SUPPORT_EMAIL noutro sítio (por exemplo, num email dirigido ao próprio dono, se a conta dele usar esse
+ * endereço) fica como está; a consulta de docs/estado.md («Lançamento 22/10») mostra-os antes de publicar.
+ */
+export function withoutOldFooter(m: { html: string; text_body: string }) {
+  const s = config.supportEmail.trim();
+  if (!s) return { html: m.html, text_body: m.text_body };
+  let html = m.html.replaceAll(`${esc(config.brand)} · ${esc(s)}</p>`, () => `${footerLine('pt')}</p>`);
+  let text = m.text_body;
+  for (const [old, lang] of [['Dúvidas:', 'pt-PT'], ['Need help?', 'en']] as const) {
+    const now = t(lang).help;
+    html = html.replaceAll(`${old} ${esc(s)}`, () => esc(now));
+    text = text.replaceAll(`${old} ${s}`, () => now);
+  }
+  return { html, text_body: text };
+}
 
 /**
  * Moldura dos emails. opts.after: texto secundário depois do botão; opts.footer: rodapé próprio (por omissão, a marca, o
@@ -95,7 +126,17 @@ ${button ? `<p style="margin:28px 0"><a href="${esc(button.url)}" style="backgro
 ${opts.footer ?? emailFooter(opts.lang)}</div></body></html>`;
 }
 
-/** Depois de corrigir a configuração (chave, remetente), as mensagens falhadas voltam à fila. */
+/** Idade máxima (horas desde que entrou na fila) de um email falhado que volta à fila em retryFailedEmails. */
+export const RETRY_FAILED_HOURS = 48;
+
+/**
+ * Depois de corrigir a configuração (chave, remetente), as mensagens falhadas das últimas RETRY_FAILED_HOURS horas voltam
+ * à fila (devolve quantas). As mais antigas ficam falhadas: guardar as Definições (o formulário envia sempre o remetente)
+ * não manda, sem ninguém ver, emails de há semanas (entre eles, os que versões anteriores deixaram na fila); um convite
+ * reenvia-se pela página da entrevista.
+ */
 export async function retryFailedEmails(db: Db) {
-  await db.query(`UPDATE emails SET state='pending', attempts=0, next_attempt_at=now() WHERE state='failed'`);
+  const rows = await db.query(`UPDATE emails SET state='pending', attempts=0, next_attempt_at=now()
+    WHERE state='failed' AND created_at > now() - ($1 || ' hours')::interval RETURNING id`, [String(RETRY_FAILED_HOURS)]);
+  return rows.length;
 }
