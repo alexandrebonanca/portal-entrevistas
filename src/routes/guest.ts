@@ -142,7 +142,7 @@ ${iv.objective_shared && iv.objective_text ? `<h2>${esc(d.objective)}</h2><p>${e
 <h2>${esc(d.beforeStart)}</h2><p>${esc(consentLongFor(lang, iv.review_policy))}</p><p class="hint">${esc(d.consentIntro)}</p>
 <form method="post" action="/entrevista/consentimentos" class="card">${cb('participation', d.c_participation, false, true)}${cb('processing', d.c_processing, processing)}${cb('publish', consentText(lang, 'publish', iv.review_policy), publish)}${cb('adult', d.adults, false, true)}
 <p><button class="accent" style="width:100%">${esc(d.start)}</button></p></form>
-<p class="hint">${esc(d.contact)} ${esc(config.supportEmail)} · <a href="/entrevista/ajuda">${esc(d.supportTitle)}</a></p>`);
+<p class="hint">${esc(d.helpLine)} <a href="/entrevista/ajuda">${esc(d.supportTitle)}</a></p>`);
     }
     const qs = await db.query(`SELECT q.*, a.status FROM questions q LEFT JOIN answers a ON a.question_id=q.id WHERE q.interview_id=$1 ORDER BY q.position`, [iv.id]);
     const next = qs.find((q: any) => !q.status) ?? qs[0];
@@ -431,7 +431,7 @@ ${s.complete ? `<form method="post" action="/entrevista/submeter" onsubmit="retu
     const ep = guestDecides(await guestReview(db, iv)); // há um episódio por publicar que o convidado valida
     return gpage(reply, lang, d.thanks, `<h1>${esc(d.thanks)}</h1><p>${esc(d.thanksText)}</p>
 <div class="card sans"><strong>${esc(d.receipt)}</strong><br>${esc(iv.title)}<br>${esc(fmtDate(sub?.created_at))}<br><code>${esc(sub?.id ?? '')}</code></div>
-<p class="hint">${esc(d.contact)} ${esc(config.supportEmail)} · <a href="/entrevista/ajuda">${esc(d.supportTitle)}</a></p><p><a href="/entrevista/fotos">${esc(d.photoAuth)}</a></p>${ep ? `<p><a class="btn accent" href="/entrevista/episodio">${esc(d.episodePreview)}</a></p>` : ''}`);
+<p class="hint">${esc(d.helpLine)} <a href="/entrevista/ajuda">${esc(d.supportTitle)}</a></p><p><a href="/entrevista/fotos">${esc(d.photoAuth)}</a></p>${ep ? `<p><a class="btn accent" href="/entrevista/episodio">${esc(d.episodePreview)}</a></p>` : ''}`);
   });
 }
 

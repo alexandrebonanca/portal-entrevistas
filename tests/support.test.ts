@@ -335,7 +335,9 @@ test('convite cancelado: o convidado continua a ler as respostas (só leitura) e
   const help = await get('/entrevista/ajuda', gs);
   assert.equal(help.statusCode, 200);
   assert.match(help.body, /O seu convite já não está ativo/);
-  assert.match(help.body, /support@example\.com/);
+  // sem o SUPPORT_EMAIL: quem o convidou ou o formulário de contacto
+  assert.match(help.body, /contacte quem o convidou ou use o <a href="\/contact">formulário de contacto<\/a>\./);
+  assert.doesNotMatch(help.body, /support@example\.com/);
   assert.match(help.body, /<a href="\/entrevista\/ajuda">Ajuda <span class="badge" aria-hidden="true">1<\/span>/);
   assert.doesNotMatch(help.body, /id="sp-m"|id="as-q"|Voltar à entrevista/, 'sem formulários nem regresso à entrevista');
   assert.match(help.body, /Apaguem os meus dados/);

@@ -1,7 +1,7 @@
 import { config } from './config.ts';
 import type { Db } from './db.ts';
 import { esc } from './lib.ts';
-import { sellerS, stripeScopedValue, inEntity, ownsAny, SELLER_CORE_KEYS, SELLER_CONSUMER_KEYS } from './settings.ts';
+import { sellerS, stripeScopedValue, inEntity, ownsAny, sellerEmailIsSupport, SELLER_CORE_KEYS, SELLER_CONSUMER_KEYS } from './settings.ts';
 import { sellerVatProblems, normVatNumber, isEuCountry, countryName, regionalRate, ptRegion, withVat, eurPt, fmtRate, EU_STANDARD_RATES, type VatSeller } from './vat.ts';
 
 /** Versão dos termos de venda (guardada na Stripe, na auditoria e na lista «por faturar»). */
@@ -71,8 +71,8 @@ export function seller(): Seller {
   };
 }
 
-/** Contacto mostrado nas recusas («contacte-nos»). */
-export const contactEmail = (s: Seller = seller()) => s.email || config.supportEmail;
+/** Contacto mostrado nas recusas («contacte-nos»): o da vendedora ou, sem ele, o da entidade gestora (nunca o SUPPORT_EMAIL). */
+export const contactEmail = (s: Seller = seller()) => s.email || config.owner.email;
 
 /** Motivo para recusar um pagamento em linha (subscrição ou carregamento) a quem não é administrador; null = pode pagar. */
 export function checkoutBlock(s: Seller, consumer: boolean): { pt: string; en: string } | null {
@@ -113,7 +113,13 @@ export async function sellerWarnings(db: Db): Promise<string[]> {
     if (acct.name && (s.name || s.tradeName) && !sameCompany(acct.name, [s.name, s.tradeName]))
       out.push(`${who}: a conta Stripe chama-se «${acct.name}», que não coincide com a empresa vendedora «${s.name || s.tradeName}». Confirme que as chaves são as da conta Stripe da empresa vendedora.`);
   };
-  inEntity(null, () => check('Empresa vendedora (definições globais)'));
+  inEntity(null, () => {
+    check('Empresa vendedora (definições globais)');
+    // Sem o email da vendedora, os termos, os emails das compras e as recusas mostram o da entidade gestora.
+    const s = seller();
+    if (s.email && s.email.toLowerCase() === config.owner.email.toLowerCase())
+      out.push(`Empresa vendedora (definições globais): o email de contacto da vendedora não está definido e usa-se o da entidade gestora (${s.email})${sellerEmailIsSupport() ? '; o que estava guardado era o email de apoio interno, que não se mostra ao público' : ''}. É o que aparece nos termos, nos emails das compras e nas mensagens «contacte-nos»: indique o email da empresa vendedora em «Email de contacto (e reclamações)».`);
+  });
   for (const e of await db.query('SELECT id, name FROM entities WHERE active ORDER BY name')) {
     if (ownsAny(e.id, ['STRIPE_SECRET_KEY'])) inEntity(e.id, () => check(`Entidade ${e.name} (Stripe própria)`));
   }

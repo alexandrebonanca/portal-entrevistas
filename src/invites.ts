@@ -36,11 +36,12 @@ export async function createInvitation(db: Db, interview: any, host: { name: str
   const d = t(lang);
   const url = `${config.baseUrl}/i/${token}`;
   const hostName = interview.host_name || (await db.one('SELECT name FROM users WHERE id=$1', [interview.owner_id ?? null]))?.name || host.name;
-  // Rodapé dos emails ao convidado: marca, frase e endereço do portal; contacto de apoio no corpo.
+  // Rodapé dos emails ao convidado: marca, frase e endereço do portal. As dúvidas seguem pela página «Ajuda» do link
+  // pessoal (suporte dentro do portal), sem nenhum endereço de email.
   const site = new URL(config.baseUrl).host;
   const footer = `<p style="font:13px Arial,sans-serif;color:#6b655c;margin-top:32px">${esc(config.brand)} — ${esc(d.tagline)} · <a href="${esc(config.baseUrl)}" style="color:#b4691f">${esc(site)}</a></p>`;
   const footerText = `${config.brand} — ${d.tagline} · ${site}`;
-  const help = `${d.help} ${config.supportEmail}`;
+  const help = d.help;
   const small = (s: string) => `<p style="font-size:14px;color:#6b655c">${esc(s)}</p>`;
   if (opts.preview) {
     // Validação do episódio: email próprio (sem número de perguntas, sem «responder no telemóvel», sem recusa).

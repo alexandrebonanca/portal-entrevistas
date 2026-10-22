@@ -5,7 +5,7 @@ import { page, flash, pill } from '../views.ts';
 import { audit } from '../app.ts';
 import { quotaFor, noSubscriptionNeeded, ACTIVE_STATUSES, stripe, savedTaxRates, STRIPE_EVENTS, refundTopup, sendRefund } from '../billing.ts';
 import { findWallet, ledgerCheck, RefundError, cr, REFUND_WINDOW_DAYS } from '../wallet.ts';
-import { SETTING_DEFS, S, maskSetting, saveSetting, saveStripeScoped, fromDb, secretFingerprint, settingsFormError, SELLER_GROUP, type SettingDef } from '../settings.ts';
+import { SETTING_DEFS, S, maskSetting, saveSetting, saveStripeScoped, fromDb, secretFingerprint, settingsFormError, isSupportEmail, SELLER_GROUP, type SettingDef } from '../settings.ts';
 import { seller, sellerWarnings, sameCompany, savedStripeAccount } from '../legal.ts';
 import { REGIME_LABEL, regionalRate, countryName, eurPt, fmtRate } from '../vat.ts';
 import { queueEmail, emailShell, flushOutbox, retryFailedEmails } from '../mail.ts';
@@ -25,7 +25,7 @@ f.addEventListener('change',async()=>{const x=f.files&&f.files[0];if(!x)return;t
   if (d.options) return `<select id="f_${d.key}" name="${d.key}">${blankLabel !== undefined ? `<option value="" ${value ? '' : 'selected'}>${esc(blankLabel)}</option>` : ''}${d.options.map(([v, l]) => `<option value="${esc(v)}" ${(value || blank) === v ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select>`;
   return `<input id="f_${d.key}" name="${d.key}" type="${d.secret ? 'password' : 'text'}" autocomplete="${d.secret ? 'new-password' : 'off'}" data-lpignore="true" spellcheck="false" placeholder="${esc(d.secret ? maskSetting(d.key, value) || (d.hint ?? '') : (d.hint ?? ''))}" value="${d.secret ? '' : esc(value)}">`;
 }
-export const SELLER_HINT = 'Quem vende ao cliente final (a Telecert Consultoria Lda): a dona da conta Stripe configurada acima e do Moloni em que se emitem as faturas. A Certif Int Association OÜ é a entidade gestora da plataforma e não vende (é ela que aparece no rodapé). Por omissão, os dados da Telecert Consultoria Lda (denominação, NIF, morada e Livro de Reclamações) e, enquanto não for indicado outro, o email de apoio; apagar um campo volta ao valor por omissão. Aparecem nas páginas de compra, nos termos e nos orçamentos. Os dados legais nunca se inventam: enquanto faltarem a denominação, o NIF e a morada, os pagamentos em linha ficam suspensos para quem não é administrador; sem o email e a ligação do Livro de Reclamações Eletrónico, fica bloqueada a venda a consumidores. O OSS só se liga quando as vendas a consumidores de outros países da UE (de todas as atividades da empresa) passarem 10 000 €/ano (art. 6.º-A do CIVA).';
+export const SELLER_HINT = 'Quem vende ao cliente final (a Telecert Consultoria Lda): a dona da conta Stripe configurada acima e do Moloni em que se emitem as faturas. A Certif Int Association OÜ é a entidade gestora da plataforma e não vende (é ela que aparece no rodapé). Por omissão, os dados da Telecert Consultoria Lda (denominação, NIF, morada e Livro de Reclamações) e, enquanto não for indicado o email da vendedora, o da entidade gestora; apagar um campo volta ao valor por omissão. Aparecem nas páginas de compra, nos termos e nos orçamentos. Os dados legais nunca se inventam: enquanto faltarem a denominação, o NIF e a morada, os pagamentos em linha ficam suspensos para quem não é administrador; sem o email e a ligação do Livro de Reclamações Eletrónico, fica bloqueada a venda a consumidores. O OSS só se liga quando as vendas a consumidores de outros países da UE (de todas as atividades da empresa) passarem 10 000 €/ano (art. 6.º-A do CIVA).';
 export const VERTEX_HINT = 'O Google Veo usa o Vertex AI quando há conta de serviço (Veo 3.1 Fast: veo-3.1-fast-generate-001; Lite: veo-3.1-lite-generate-001, em pré-visualização). Sem conta de serviço usa a Gemini API, que a Google desliga para estes modelos a partir de 22/10/2026. A chave JSON nunca volta a ser mostrada: aparece só o email da conta e o projeto.';
 
 /** Uso do período na lista de utilizadores: sem limite mensal para o administrador e o gestor de entidade. */
@@ -273,6 +273,8 @@ ${u.role === 'entity_admin' ? '<p class="sans">Gestor de entidade: sem subscriç
     const warn = await sellerWarnings(db);
     const taxRates = savedTaxRates().rates, acct = savedStripeAccount(), who = seller().name || seller().tradeName;
     const status = (d: SettingDef) => (S(d.key) ? (fromDb(d.key) ? '· definido' : '· definido por variável de ambiente') : d.default ? '· valor por omissão' : '· por definir');
+    // O email da vendedora guardado igual ao SUPPORT_EMAIL (a omissão antiga) não volta ao formulário: no lugar dele, a omissão atual.
+    const shown = (d: SettingDef) => (d.key === 'SELLER_EMAIL' && isSupportEmail(S(d.key)) ? (d.default ?? '') : S(d.key) || (d.default ?? ''));
     return view(reply, 'Definições', `<h1>Definições</h1>${flash(q.ok)}${flash(q.e, 'bad')}${warn.map(w => flash(w, 'bad')).join('')}
 <p class="hint sans">As chaves são guardadas cifradas e nunca voltam a ser mostradas por inteiro. Deixe um campo em branco para manter o valor atual; escreva <code>-</code> para o apagar. Uma variável de ambiente com o mesmo nome serve de valor de reserva.</p>
 <form method="post" action="/admin/definicoes">
@@ -281,7 +283,7 @@ ${g === 'Stripe' ? `<p class="hint sans">As chaves têm de ser as da conta Strip
 ${g === SELLER_GROUP ? `<p class="hint sans">${esc(SELLER_HINT)}</p>` : ''}
 ${g === 'Google' ? `<p class="hint sans">${esc(VERTEX_HINT)}</p>` : ''}
 ${SETTING_DEFS.filter(d => d.group === g).map(d => `<label for="f_${d.key}">${esc(d.label)} <span class="hint">${status(d)}</span></label>
-${settingInput(d, S(d.key) || (d.default ?? ''), d.default ?? d.options?.[0]?.[0] ?? '')}`).join('')}</div>`).join('')}
+${settingInput(d, shown(d), d.default ?? d.options?.[0]?.[0] ?? '')}`).join('')}</div>`).join('')}
 <div class="card"><h2 style="margin-top:0">Registo de utilizadores</h2><label class="check"><input type="checkbox" name="signups_open" value="1" ${signups ? 'checked' : ''}> Permitir que novos utilizadores se registem (e subscrevam um plano)</label>
 <p class="hint sans">Vídeo IA: os entrevistadores pedem a animação com o Google Veo por orçamento, aceite por eles e pago com créditos; os retratos animados (Replicate) e o Veo sem orçamento ficam só para o administrador (custo interno). O gestor de uma entidade com credenciais Google próprias gera o Veo sem orçamento nem créditos (paga a entidade, no projeto Google dela); sem elas, por orçamento, como os outros.</p></div>
 <p><button class="accent">Guardar definições</button></p></form>

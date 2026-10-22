@@ -151,7 +151,8 @@ ${video ? `
 </section>
 
 <section class="wrap lp-section"><div class="card lp-cta"><h2 style="margin-top:0">Your next great guest is one polite invitation away.</h2>
-  <a class="btn accent" href="${signup()}">Create your account</a><p class="hint" style="margin-top:14px">Invited as a guest? Use the personal link in your email. There is nothing to sign up for.</p></div>
+  <a class="btn accent" href="${signup()}">Create your account</a><p class="hint" style="margin-top:14px">Invited as a guest? Use the personal link in your email. There is nothing to sign up for.</p>
+  <p class="hint">Questions about plans or a project of your own? <a href="/contact?topic=sales">Write to us</a>.</p></div>
   ${cr ? `<p class="hint">Photos: ${esc(cr)}</p>` : ''}${illustrated ? '<p class="hint">Illustrations on this page are fictional and do not depict any real person.</p>' : ''}
 </section>`,
   });

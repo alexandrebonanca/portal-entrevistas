@@ -9,6 +9,9 @@ process.env.AI_MOCK = '1';
 process.env.PGLITE_MEMORY = '1';
 process.env.STORAGE_DIR = mkdtempSync(join(tmpdir(), 'pe-test-'));
 process.env.BASE_URL = 'http://test.local';
+// Sem email da vendedora (variável vazia, que se sobrepõe à omissão, o email da entidade gestora): a venda a consumidores
+// fica bloqueada até o administrador o indicar. A omissão é testada em tests/suporte-inmail.test.ts.
+process.env.SELLER_EMAIL = '';
 
 const { openDb, migrate } = await import('../src/db.ts');
 const { buildApp } = await import('../src/app.ts');
@@ -374,8 +377,8 @@ test('empresa vendedora: por omissão a Telecert Consultoria Lda; sem denominaç
   assert.match(msg(await post('/billing/profile', { kind: 'business', name: 'Cliente Empresa, Lda.', country: 'PT', tax_id: `PT ${CLIENT_NIF}`, address: 'Rua A', postal_code: '9000100', city: 'Funchal' }, biz.cookie)), /Billing details saved/);
   const bp = await db.one('SELECT * FROM billing_profiles WHERE user_id=$1', [biz.id]);
   assert.deepEqual([bp.kind, bp.nif, bp.postal_code, bp.country], ['business', CLIENT_NIF, '9000-100', 'PT']);
-  // por omissão, os dados da Telecert Consultoria Lda (o NIF sem o prefixo PT); o email de apoio dos testes é o de exemplo,
-  // que nunca serve de contacto legal: falta só o email para vender a consumidores
+  // por omissão, os dados da Telecert Consultoria Lda (o NIF sem o prefixo PT); o email da vendedora está vazio neste
+  // ficheiro (ver o início): falta só o email para vender a consumidores
   const { seller } = await import('../src/legal.ts');
   const s0 = seller();
   assert.deepEqual([s0.name, s0.nif, s0.address, s0.complaintsUrl, s0.email], ['Telecert Consultoria Lda', '514907274', 'Avenida 5 de Outubro, 38A, 8000-077 Faro', 'https://www.livroreclamacoes.pt/Inicio/', '']);

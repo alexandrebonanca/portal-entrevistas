@@ -2,7 +2,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { createCipheriv, createDecipheriv, createHash, createPrivateKey, randomBytes } from 'node:crypto';
 import { config } from './config.ts';
 import type { Db } from './db.ts';
-import { isEmail } from './lib.ts';
+import { isEmail, isRealEmail } from './lib.ts';
 import { EU_COUNTRIES, countryName, normNif } from './vat.ts';
 
 /**
@@ -34,16 +34,16 @@ export const SETTING_DEFS: SettingDef[] = [
   { key: 'MOLONI_PASSWORD', label: 'Palavra-passe', group: 'Moloni ON', secret: true },
   { key: 'MOLONI_COMPANY_ID', label: 'ID da empresa', group: 'Moloni ON', secret: false },
   // Por omissão os dados da Telecert Consultoria Lda dados pelo dono (config.seller: denominação, NIF, morada e Livro de
-  // Reclamações), em Portugal e registada para IVA; o email de contacto é o de apoio até haver outro. Apagar um campo
-  // volta ao valor por omissão.
+  // Reclamações), em Portugal e registada para IVA; o email de contacto é o da entidade gestora (config.owner) até se
+  // indicar o da vendedora (as Definições avisam). Apagar um campo volta ao valor por omissão.
   { key: 'SELLER_TRADE_NAME', label: 'Nome comercial', group: SELLER_GROUP, secret: false, default: 'Telecert' },
   { key: 'SELLER_NAME', label: 'Denominação social completa', group: SELLER_GROUP, secret: false, hint: 'como no registo comercial', default: config.seller.name },
   { key: 'SELLER_NIF', label: 'NIF', group: SELLER_GROUP, secret: false, hint: '9 algarismos', default: config.seller.vat.replace(/^PT/i, '') },
   { key: 'SELLER_ADDRESS', label: 'Morada da sede', group: SELLER_GROUP, secret: false, hint: 'rua, n.º, código postal e localidade', default: config.seller.address },
   { key: 'SELLER_COUNTRY', label: 'País da sede', group: SELLER_GROUP, secret: false, default: 'PT', options: EU_COUNTRIES.map(c => [c, `${countryName(c)} (${c})`] as [string, string]) },
   { key: 'SELLER_VAT_REGIME', label: 'Regime de IVA', group: SELLER_GROUP, secret: false, default: 'registered', options: [['registered', 'Registada para IVA (liquida IVA nas vendas)'], ['not_registered', 'Não registada para IVA']] },
-  // (o endereço de exemplo de uma instalação de desenvolvimento nunca serve de contacto legal)
-  { key: 'SELLER_EMAIL', label: 'Email de contacto (e reclamações)', group: SELLER_GROUP, secret: false, default: /@example\.(com|org|net)$/i.test(config.supportEmail) ? undefined : config.supportEmail },
+  // (o endereço de exemplo de uma instalação de desenvolvimento nunca serve de contacto legal; o SUPPORT_EMAIL também não)
+  { key: 'SELLER_EMAIL', label: 'Email de contacto (e reclamações)', group: SELLER_GROUP, secret: false, default: isRealEmail(config.owner.email) ? config.owner.email : undefined },
   { key: 'SELLER_COMPLAINTS_URL', label: 'Ligação do Livro de Reclamações Eletrónico', group: SELLER_GROUP, secret: false, hint: 'https://www.livroreclamacoes.pt/…', default: config.seller.complaintsUrl },
   { key: 'SELLER_ADR', label: 'Entidade de resolução alternativa de litígios (opcional)', group: SELLER_GROUP, secret: false, hint: 'nome e sítio da entidade RAL' },
   { key: 'OSS_ACTIVE', label: 'Balcão único (OSS)', group: SELLER_GROUP, secret: false, options: [['', 'Desligado: consumidores de outros países da UE pagam o IVA português (abaixo de 10 000 €/ano)'], ['1', 'Ligado: consumidores de outros países da UE pagam o IVA do seu país']] },
@@ -181,6 +181,7 @@ export function prepareSetting(key: string, value: string): string {
     return v;
   }
   if (key === 'SELLER_EMAIL' && !isEmail(value.trim())) throw new SettingError('Email da empresa vendedora inválido.');
+  if (key === 'SELLER_EMAIL' && isSupportEmail(value)) throw new SettingError('O email de apoio interno (SUPPORT_EMAIL) não se mostra ao público: indique o email da empresa vendedora.');
   if (key === 'SELLER_COMPLAINTS_URL' && !/^https:\/\/[^\s<>"]+$/i.test(value.trim())) throw new SettingError('A ligação do Livro de Reclamações Eletrónico tem de começar por https://.');
   const def = SETTING_DEFS.find(d => d.key === key);
   if (def?.options && !def.options.some(o => o[0] === value)) throw new SettingError(`Valor inválido em «${def.label}».`);
@@ -258,11 +259,25 @@ export async function saveSetting(db: Db, key: string, value: string) {
  * O que pertence à conta Stripe (empresa que vende, taxas de IVA criadas, nome da conta) segue esta escolha e nunca se mistura.
  */
 export const stripeScope = (): string | null => { const e = als.getStore() ?? null; return ownsAny(e, ['STRIPE_SECRET_KEY']) ? e : null; };
-/** Dados da empresa vendedora: com Stripe própria só os da entidade; sem ela os globais, com os valores por omissão. */
+/**
+ * É o SUPPORT_EMAIL (configuração interna, o email pessoal do dono)? Nunca se mostra a utilizadores, convidados ou
+ * visitantes, nem como email da vendedora.
+ */
+export const isSupportEmail = (v: string) => !!v.trim() && v.trim().toLowerCase() === config.supportEmail.trim().toLowerCase();
+/** Email da vendedora guardado (ou numa variável de ambiente) igual ao SUPPORT_EMAIL: era a omissão antiga, gravada pelo formulário. */
+export const sellerEmailIsSupport = () => { const e = stripeScope(); return isSupportEmail(e ? entityValue(e, 'SELLER_EMAIL') : (cache.get('SELLER_EMAIL') ?? process.env.SELLER_EMAIL ?? '')); };
+
+/**
+ * Dados da empresa vendedora: com Stripe própria só os da entidade; sem ela os globais, com os valores por omissão.
+ * Um email igual ao SUPPORT_EMAIL (o valor por omissão antigo, que o formulário das Definições gravava) é ignorado: fica o
+ * valor por omissão (o email da entidade gestora) ou, numa entidade com Stripe própria, nenhum.
+ */
 export const sellerS = (key: string): string => {
   const e = stripeScope();
-  if (e) return entityValue(e, key);
-  return cache.get(key) ?? process.env[key] ?? SETTING_DEFS.find(d => d.key === key)?.default ?? '';
+  const def = SETTING_DEFS.find(d => d.key === key)?.default ?? '';
+  const v = e ? entityValue(e, key) : (cache.get(key) ?? process.env[key] ?? def);
+  if (key === 'SELLER_EMAIL' && isSupportEmail(v)) return e ? '' : def;
+  return v;
 };
 /** Valor e gravação de uma definição interna na conta Stripe em contexto. */
 export const stripeScopedValue = (key: string) => { const e = stripeScope(); return e ? entityValue(e, key) : (cache.get(key) ?? ''); };
