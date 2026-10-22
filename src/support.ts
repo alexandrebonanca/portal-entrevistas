@@ -28,11 +28,18 @@ export function cleanBody(raw: unknown): { ok: true; text: string } | { ok: fals
   return { ok: true, text };
 }
 
+/**
+ * O início de um campo de uma linha vindo de um formulário, antes de qualquer outro tratamento: as substituições e o
+ * espalhar por caracteres custam memória e tempo proporcionais ao tamanho, e o corpo de um pedido pode ter dezenas de MB
+ * (o limite global é o dos carregamentos). Folga para os espaços e as quebras que depois se juntam; sem meio emoji no fim.
+ */
+const rawHead = (raw: unknown, chars: number) => String(raw ?? '').slice(0, chars * 4 + 16).replace(/[\uD800-\uDBFF]$/, '');
+
 /** Assunto numa linha (cortado por caracteres, não por metades de emoji); sem assunto, o início da mensagem. */
 export function cleanSubject(raw: unknown, body: string): string {
   const one = (s: string) => s.replace(/[\u0000-\u001F\u007F]+/g, ' ').replace(/\s+/g, ' ').trim();
   const cut = (s: string, n: number) => { const c = [...s]; return c.length > n ? c.slice(0, n - 1).join('').trimEnd() + '…' : s; };
-  return cut(one(String(raw ?? '')), SUPPORT_MAX_SUBJECT) || cut(one(body.split('\n')[0]), 80) || '—';
+  return cut(one(rawHead(raw, SUPPORT_MAX_SUBJECT)), SUPPORT_MAX_SUBJECT) || cut(one(body.split('\n')[0]), 80) || '—';
 }
 
 /** Limite de envio: o remetente (utilizador ou convidado) e o IP têm de estar dentro do limite; um envio recusado não gasta nenhum dos dois. */
@@ -120,6 +127,12 @@ export const CONTACT_MIN_MS = 3000;
 export const CONTACT_MAX_MS = 24 * 3600_000;
 export const CONTACT_MAX_NAME = 100;
 export const CONTACT_MAX_REF = 200;
+/**
+ * Corpo máximo dos POST públicos do formulário e do link privado (o global, maxUploadMb, é o dos carregamentos). O maior
+ * envio legítimo fica abaixo de 50 KB: 5000 caracteres de mensagem com até 9 bytes cada no formulário (UTF-8 com %), mais
+ * o nome, o email e a referência. Acima disto, 413 sem ler o resto do pedido.
+ */
+export const CONTACT_BODY_LIMIT = 64 * 1024;
 export const CONTACT_TOPICS = ['sales', 'interview', 'episode', 'privacy', 'other'] as const;
 export type ContactTopic = typeof CONTACT_TOPICS[number];
 /** Temas no formulário (inglês, como a landing) e na caixa do administrador (português). */
@@ -140,9 +153,13 @@ export const contactHref = (topic?: ContactTopic, episode?: string) => {
   return s ? `/contact?${s}` : '/contact';
 };
 
-/** Uma linha de texto (nome, referência do episódio): sem caracteres de controlo nem quebras, espaços simples, cortada por caracteres. */
+/**
+ * Uma linha de texto (nome, referência do episódio): sem caracteres de controlo nem quebras, espaços simples, cortada por
+ * caracteres. O texto em bruto corta-se primeiro (rawHead): no POST /contact isto corre antes do campo-armadilha e do
+ * carimbo, para qualquer pedido anónimo.
+ */
 export const oneLine = (raw: unknown, max: number) => {
-  const c = [...String(raw ?? '').replace(/[\u0000-\u001F\u007F\u2028\u2029]+/g, ' ').replace(/\s+/g, ' ').trim()];
+  const c = [...rawHead(raw, max).replace(/[\u0000-\u001F\u007F\u2028\u2029]+/g, ' ').replace(/\s+/g, ' ').trim()];
   return (c.length > max ? c.slice(0, max) : c).join('').trim();
 };
 

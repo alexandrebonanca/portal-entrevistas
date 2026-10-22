@@ -9,7 +9,7 @@ import { adminNav } from './admin.ts';
 import {
   SUPPORT_CSS, SUPPORT_MAX_BODY, cleanBody, cleanSubject, supportAllowed, openThread, addMessage, setThreadStatus, threadMessages, isUuid,
   guestHelpNav, CONTACT_TOPICS, CONTACT_MIN_MS, CONTACT_MAX_MS, CONTACT_MAX_NAME, CONTACT_MAX_REF, TOPIC_EN, TOPIC_PT, topicOf, oneLine, contactStamp,
-  contactStampAge, contactAllowed, openVisitorThread, visitorThread, visitorEmail, deleteVisitorThread, type ContactTopic,
+  contactStampAge, contactAllowed, CONTACT_BODY_LIMIT, openVisitorThread, visitorThread, visitorEmail, deleteVisitorThread, type ContactTopic,
 } from '../support.ts';
 import { cleanQuestion, assistantAllowed, answerQuestion, assistantSig, assistantSigOk, loadAnswer, assistantTranscript, assistantAiFor, faqLang, withAskerVars, userAskerVars, guestAskerVars, ASSISTANT_MAX_QUESTION, type Audience } from '../assistant.ts';
 import { config } from '../config.ts';
@@ -412,9 +412,11 @@ ${signedInNote(req)}${flash(e, 'bad')}${contactForm(v, stamp)}`, code);
     return contactPage(req, reply, { topic: topicOf(q.topic) || undefined, episode: /^[a-z0-9-]{1,100}$/.test(ep) ? `${config.baseUrl}/e/${ep}` : ep });
   });
 
-  app.post('/contact', async (req, reply) => {
+  app.post('/contact', { bodyLimit: CONTACT_BODY_LIMIT }, async (req, reply) => {
     const b = (req.body ?? {}) as any;
-    const v: ContactForm = { name: oneLine(b.name, CONTACT_MAX_NAME * 2), email: String(b.email ?? '').trim().slice(0, 300), topic: topicOf(b.topic) || 'other', episode: oneLine(b.episode, CONTACT_MAX_REF), message: String(b.message ?? '').slice(0, SUPPORT_MAX_BODY * 2) };
+    // O email corta-se antes de tudo o resto (300 > 254, o máximo válido): o formulário que volta e o isEmail só veem isto.
+    const rawEmail = String(b.email ?? '').slice(0, 300).trim();
+    const v: ContactForm = { name: oneLine(b.name, CONTACT_MAX_NAME * 2), email: rawEmail, topic: topicOf(b.topic) || 'other', episode: oneLine(b.episode, CONTACT_MAX_REF), message: String(b.message ?? '').slice(0, SUPPORT_MAX_BODY * 2) };
     // Campo-armadilha preenchido: um robô. Responde como se tivesse corrido bem, sem gravar nem enviar nada.
     if (String(b.website ?? '').trim()) return reply.redirect('/contact?ok=sent', 303);
     const age = contactStampAge(b.ts);
@@ -422,7 +424,7 @@ ${signedInNote(req)}${flash(e, 'bad')}${contactForm(v, stamp)}`, code);
     const again = (msg: string, code = 422) => contactPage(req, reply, v, msg, code, valid ? String(b.ts) : undefined);
     if (!valid) return again('This form has expired. Please check your message and send it again.');
     if (age < CONTACT_MIN_MS) return again('That was very quick. Please check your message and send it again.');
-    const name = oneLine(b.name, CONTACT_MAX_NAME), email = String(b.email ?? '').trim().toLowerCase(), body = cleanBody(b.message);
+    const name = oneLine(b.name, CONTACT_MAX_NAME), email = rawEmail.toLowerCase(), body = cleanBody(b.message);
     if (!name) return again('Please write your name.');
     if (!isEmail(email)) return again('Please write a valid email address, so that we can send you the link to the conversation.');
     if (!body.ok) return again(body.error === 'empty' ? EN.supportEmpty : EN.supportTooLong(SUPPORT_MAX_BODY));
@@ -470,7 +472,7 @@ ${th.status === 'closed'
     return visitorPage(req, reply, th, token);
   });
 
-  app.post('/contact/t/:token/responder', async (req, reply) => {
+  app.post('/contact/t/:token/responder', { bodyLimit: CONTACT_BODY_LIMIT }, async (req, reply) => {
     const token = (req.params as any).token, th = await visitorThread(db, token);
     if (!th) return notFound(reply);
     // Pedido fechado: só leitura (o administrador pode reabri-lo; o visitante escreve um pedido novo).

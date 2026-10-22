@@ -33,7 +33,11 @@ export function sign(value: string) {
   return createHmac('sha256', config.secret).update(value).digest('base64url');
 }
 
-export const isEmail = (s: string) => /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(s) && s.length <= 254;
+/**
+ * Email com forma válida. O comprimento confere-se antes da expressão: numa cadeia longa com muitos «.» e «@», o
+ * retrocesso dela cresce com o quadrado do tamanho e pára o processo (100 KB, segundos).
+ */
+export const isEmail = (s: string) => s.length <= 254 && /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(s);
 /** Email que pode servir de contacto ou de Reply-To: válido e não um endereço de exemplo (de uma instalação de desenvolvimento). */
 export const isRealEmail = (s: string) => isEmail(s) && !/@example\.(com|org|net)$/i.test(s);
 

@@ -295,6 +295,9 @@ test('pedidos apagados com o utilizador ou com a entrevista; assunto e corpo nor
 
   assert.equal(cleanSubject('  Várias\n linhas\t aqui ', ''), 'Várias linhas aqui');
   assert.equal([...cleanSubject('😀'.repeat(200), '')].length, 140, 'cortado por caracteres, sem partir emojis');
+  const huge = 'S'.repeat(32 * 1024 * 1024), t0 = performance.now(); // assunto de 32 MB (um convidado com o link pode enviá-lo)
+  assert.equal(cleanSubject(huge, ''), 'S'.repeat(139) + '…');
+  assert.ok(performance.now() - t0 < 100, `cortado antes de espalhar por caracteres: ${Math.round(performance.now() - t0)} ms`);
   assert.equal(cleanSubject('', '\n'), '—');
   assert.deepEqual(cleanBody('a\u0000b\r\nc\u0007'), { ok: true, text: 'ab\nc' });
 });

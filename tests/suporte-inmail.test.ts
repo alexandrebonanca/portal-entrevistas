@@ -23,8 +23,8 @@ const { runOne } = await import('../src/jobs.ts');
 const { handlers } = await import('../src/pipeline.ts');
 const { flushOutbox, replyTo } = await import('../src/mail.ts');
 const { makeToneWav } = await import('../src/media.ts');
-const { sha256 } = await import('../src/lib.ts');
-const { contactStamp } = await import('../src/support.ts');
+const { sha256, isEmail } = await import('../src/lib.ts');
+const { contactStamp, oneLine, CONTACT_BODY_LIMIT } = await import('../src/support.ts');
 const { seller } = await import('../src/legal.ts');
 const { S } = await import('../src/settings.ts');
 const { config } = await import('../src/config.ts');
@@ -183,6 +183,58 @@ test('proteções: campo-armadilha, tempo mínimo, carimbo, aceitação obrigat�
   assert.equal((await send({ email: 'longo@exemplo.pt', name: 'N'.repeat(150), episode: 'E'.repeat(300), message: 'm'.repeat(5000) })).statusCode, 303);
   const th = await visitorOf('longo@exemplo.pt');
   assert.equal(th.visitor_name.length, 100); assert.equal(th.episode_ref.length, 200);
+});
+
+test('tamanho: campos de vários MB cortados sem custo, corpo acima de 64 KB recusado (413), email enorme recusado logo', async () => {
+  const t0 = await count('support_threads'), e0 = await count('emails');
+  const ms = (t: number) => `${Math.round(performance.now() - t)} ms`;
+  // nome e referência de vários MB: cortados antes de qualquer tratamento (espalhar a cadeia inteira por caracteres
+  // custava centenas de MB de memória a um pedido anónimo, antes do campo-armadilha e do carimbo; 32 MB, 200 ms e 270 MB)
+  const MB = 1024 * 1024, names = 'N'.repeat(32 * MB), refs = ` \r\n${'É'.repeat(8 * MB)}`, faces = '😀'.repeat(4 * MB);
+  let t = performance.now();
+  assert.equal(oneLine(names, 100), 'N'.repeat(100));
+  assert.equal(oneLine(refs, 200), 'É'.repeat(200));
+  assert.equal(oneLine(faces, 3), '😀😀😀', 'cortado por caracteres');
+  assert.ok(performance.now() - t < 100, `oneLine: ${ms(t)}`);
+  assert.equal(oneLine(' '.repeat(27) + '😀', 3), '', 'o corte em bruto não deixa meio emoji');
+  // pelo formulário: o corpo passa do limite da rota e é recusado antes de ser lido; o mesmo no link privado
+  t = performance.now();
+  assert.equal((await send({ name: 'N'.repeat(3 * 1024 * 1024), episode: 'E'.repeat(3 * 1024 * 1024) })).statusCode, 413);
+  assert.ok(performance.now() - t < 1000, `413: ${ms(t)}`);
+  assert.equal((await post(`/contact/t/${joanaToken}/responder`, { message: 'x'.repeat(CONTACT_BODY_LIMIT) })).statusCode, 413);
+  // logo abaixo do limite: o nome e a referência voltam ao formulário cortados (200 caracteres cada)
+  const near = await send({ name: 'N'.repeat(60_000), episode: 'E'.repeat(2000), accept: '' });
+  assert.equal(near.statusCode, 422); assert.match(near.body, /Please tick the box/);
+  assert.ok(near.body.includes(`value="${'N'.repeat(200)}"`) && !near.body.includes('N'.repeat(201)), 'nome cortado');
+  assert.ok(near.body.includes(`value="${'E'.repeat(200)}"`) && !near.body.includes('E'.repeat(201)), 'referência cortada');
+  // o maior envio legítimo cabe: 5000 caracteres de mensagem com 3 bytes cada em UTF-8 (9 no formulário)
+  const max = { email: 'maximo@exemplo.pt', name: 'Ç'.repeat(100), episode: '界'.repeat(200), message: '界'.repeat(5000) };
+  const size = form({ ts: opened(), topic: 'sales', accept: '1', ...max }).length;
+  assert.ok(size > 45_000 && size < CONTACT_BODY_LIMIT, `${size} bytes`);
+  assert.equal((await send(max)).statusCode, 303);
+  assert.equal((await visitorOf('maximo@exemplo.pt')).visitor_name, 'Ç'.repeat(100));
+
+  // email enorme: o comprimento confere-se antes da expressão (o retrocesso dela crescia com o quadrado do tamanho)
+  const evil = (n: number) => 'a@' + '.a'.repeat(n) + '@';
+  const e100 = evil(50_000); // 100 KB
+  t = performance.now();
+  assert.equal(isEmail(e100), false);
+  assert.ok(performance.now() - t < 50, `isEmail: ${ms(t)}`);
+  assert.equal(isEmail(`${'a'.repeat(64)}@${'b'.repeat(186)}.pt`), true, '254 caracteres passam');
+  assert.equal(isEmail(`${'a'.repeat(64)}@${'b'.repeat(187)}.pt`), false, '255 não');
+  t = performance.now();
+  const r = await send({ email: evil(30_000) }); // 60 KB, dentro do limite da rota
+  assert.equal(r.statusCode, 422); assert.match(r.body, /valid email address/);
+  assert.ok(performance.now() - t < 500, `/contact: ${ms(t)}`);
+  assert.ok(r.body.includes(`value="${evil(30_000).slice(0, 300)}"`) && !r.body.includes('.a'.repeat(150)), 'volta cortado a 300 caracteres');
+  // o /registar (aberto por omissão) tinha o mesmo defeito
+  t = performance.now();
+  const reg = await post('/registar', { name: 'Robô', email: e100, password: PW, terms: 1 }, '', '10.70.0.1');
+  assert.equal(reg.statusCode, 302); assert.match(msgOf(reg), /Please complete all fields/);
+  assert.ok(performance.now() - t < 500, `/registar: ${ms(t)}`);
+
+  assert.equal(await count('support_threads'), t0 + 1, 'só o envio legítimo foi gravado');
+  assert.equal(await count('emails'), e0 + 1, 'e só ele mandou o email com o link');
 });
 
 test('limites: 3 pedidos novos por hora e 10 por dia por email; 10 por hora por IP; as recusas não gastam o limite', async () => {
