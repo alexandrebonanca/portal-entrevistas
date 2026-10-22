@@ -46,20 +46,21 @@
 
   // Formulários com alterações por guardar (para avisar antes de o assistente recarregar a página).
   const dirty = new Set();
+  // Valores que o browser repõe (ao recarregar ou ao voltar atrás) também são alterações por guardar. Confere-se no
+  // 'pageshow', que chega depois de o browser repor os formulários.
+  const restored = () => root && root.querySelectorAll('form').forEach((f) => {
+    for (const e of f.elements) {
+      if ((e.type === 'checkbox' || e.type === 'radio') ? e.checked !== e.defaultChecked
+        // (sem nenhuma opção marcada no HTML, a escolhida por omissão é a primeira)
+        : e.tagName === 'SELECT' ? e.selectedIndex !== Math.max(0, [...e.options].findIndex((o) => o.defaultSelected))
+        : 'defaultValue' in e && e.type !== 'hidden' && e.type !== 'file' && e.value !== e.defaultValue) { dirty.add(f); break; }
+    }
+  });
   if (root) {
     root.addEventListener('input', (ev) => { const f = ev.target.form; if (f) dirty.add(f); });
     root.addEventListener('change', (ev) => { const f = ev.target.form; if (f) dirty.add(f); });
     root.addEventListener('submit', (ev) => dirty.delete(ev.target));
-    // Valores que o browser repõe ao recarregar (o Firefox, por exemplo) também são alterações por guardar.
-    const restored = () => root.querySelectorAll('form').forEach((f) => {
-      for (const e of f.elements) {
-        if ((e.type === 'checkbox' || e.type === 'radio') ? e.checked !== e.defaultChecked
-          // (sem nenhuma opção marcada no HTML, a escolhida por omissão é a primeira)
-          : e.tagName === 'SELECT' ? e.selectedIndex !== Math.max(0, [...e.options].findIndex((o) => o.defaultSelected))
-          : 'defaultValue' in e && e.type !== 'hidden' && e.type !== 'file' && e.value !== e.defaultValue) { dirty.add(f); break; }
-      }
-    });
-    addEventListener('load', restored);
+    addEventListener('pageshow', restored);
   }
 
   // ---------------- assistente de composição ----------------
@@ -142,19 +143,21 @@
     appliedForm = null; // já se confirmou: o browser não volta a perguntar ao sair
     panel.querySelectorAll('button').forEach((x) => (x.disabled = true));
     if (!panel.hidden) store.set('sessionStorage', REOPEN, 1);
+    sentFromHere = true; // ao voltar atrás para esta página, recarrega-se (ver 'pageshow')
     const f = el('form'); f.method = 'post'; f.action = action; f.hidden = true;
     for (const [k, v] of Object.entries(fields)) { const t = el('textarea'); t.name = k; t.value = v; f.appendChild(t); }
     document.body.appendChild(f); f.submit();
     // Se a saída for cancelada (por exemplo, pelo aviso de uma gravação por guardar), a página continua utilizável.
     setTimeout(() => {
       if (leaving) return;
-      appliedForm = keep; store.set('sessionStorage', REOPEN, null); f.remove();
+      appliedForm = keep; sentFromHere = false; store.set('sessionStorage', REOPEN, null); f.remove();
       panel.querySelectorAll('button').forEach((x) => (x.disabled = false));
       render(last); // volta a desativar «Adicionar» se não houver vagas
-    }, 8000);
+    }, 20000);
   };
-  let leaving = false;
+  let leaving = false, sentFromHere = false;
   addEventListener('pagehide', () => { leaving = true; });
+  addEventListener('pageshow', () => { leaving = false; });
 
   // O estado de cada sugestão vem da própria página (a pergunta existe? o texto já é o proposto?), não de marcas
   // guardadas: se o servidor recusar (limite, sessão), a sugestão continua por usar. O último resultado fica também
@@ -266,7 +269,11 @@
   render(last);
   // Reaberto no telemóvel depois de uma ação dele: mostra logo as sugestões, não o topo do painel.
   if (reopen && !wide() && last) panel.scrollTop = out.offsetTop - 12;
-  // Voltar à página pela cache do browser (botão Retroceder): mostra-se de novo o que está no servidor (a página da
-  // cache é a de antes da ação e deixava acrescentar a mesma sugestão duas vezes).
-  addEventListener('pageshow', (ev) => { if (ev.persisted) location.reload(); });
+  // Voltar atrás para esta página depois de uma ação do assistente feita nela: a página guardada pelo browser (com o
+  // estado do script) é a de antes da ação e deixava acrescentar a mesma sugestão duas vezes, por isso recarrega-se.
+  // Sem essa ação, fica como está (as alterações por guardar não se perdem) e só se atualizam as dicas e o painel.
+  addEventListener('pageshow', (ev) => {
+    if (ev.persisted && sentFromHere) { location.reload(); return; }
+    render(last); updateTips();
+  });
 })();

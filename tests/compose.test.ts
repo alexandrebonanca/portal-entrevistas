@@ -148,6 +148,13 @@ test('painel do assistente: só no rascunho; sugestões por IA só para o admini
     assert.doesNotMatch(off, /data-act=/);
     assert.match(off, /As sugestões por IA estão desligadas de momento/);
   } finally { config.openai.composeAiPerHour = was; }
+  // sem plano e com a IA desligada: a nota é a da IA desligada (não a de subscrever)
+  config.openai.composeAiPerHour = 0;
+  try { assert.match((await get(`/entrevistas/${sid}/editar`, sem)).body, /As sugestões por IA estão desligadas de momento/); }
+  finally { config.openai.composeAiPerHour = was; }
+  // áudio de uma pergunta com id malformado: 404 (antes dava erro 500)
+  const audioBad = await app.inject({ method: 'POST', url: `/api/entrevistas/${aid}/perguntas/nao-e-um-id/audio`, payload: Buffer.from('x'), headers: { 'content-type': 'application/octet-stream', cookie: admin } });
+  assert.equal(audioBad.statusCode, 404);
   // id de pergunta malformado: volta à lista (antes dava erro 500 na base de dados)
   for (const a of ['', '/duplicar', '/mover?d=1', '/eliminar']) {
     const r = await post(`/entrevistas/${aid}/perguntas/nao-e-um-id${a}`, { text: 'x' }, admin);
@@ -232,13 +239,32 @@ test('tapar: emails, sites e telefones em vários formatos; datas, valores e nú
   for (const p of phones) assert.equal(C.scrub(`Ligue ${p} hoje`, 1000), 'Ligue [número] hoje', p);
   const sites = ['empresa.pt/contactos', 'exemplo.com', 'https://x.y/z', 'www.a.b', 'Sub.Dominio.org', 'linktr.ee/joao', 'bit.ly/abc', 'anchor.fm/maria', 'anchor.fm', 'empresa.ao/contactos',
     'empresa.ao', 'escola.mz', 'loja.cv', 'univ.edu', 'site.xyz', 'firma.us', 'empresa.co.ao', 't.co/abc', 'café.pt', 'meu_site.com',
-    'joana.art', 'estudio.design', 'ana.cloud', 'empresa.group', 'EMPRESA.PT', 'Maria.Pt', 'EMPRESA.PT/CONTACTOS', 'Empresa.PT/x'];
+    'joana.art', 'estudio.design', 'ana.cloud', 'empresa.group', 'EMPRESA.PT', 'EMPRESA.PT/CONTACTOS', 'Empresa.PT/x'];
   for (const l of sites) assert.equal(C.scrub(`Veja ${l}, depois`, 1000), 'Veja [link], depois', l);
+  assert.equal(C.scrub('Veja linktr.ee/joao, bit.ly/abc e t.co/abc.', 1000), 'Veja [link], [link] e [link].', 'a pontuação depois do caminho fica');
+  // telefones seguidos de «:» ou depois de uma data (regressão apanhada na verificação focada)
+  const around: [string, string][] = [
+    ['Ligue-me para 912 345 678: estou disponível.', 'Ligue-me para [número]: estou disponível.'],
+    ['Phone +44 20 7946 0958: call after 6pm.', 'Phone [número]: call after 6pm.'],
+    ['Contactos – Ana: 912 345 678; Rui: 913 456 789: só à tarde.', 'Contactos – Ana: [número]; Rui: [número]: só à tarde.'],
+    ['Entrevista a 12/03/2025 – 912 345 678 é o contacto', 'Entrevista a 12/03/2025 – [número] é o contacto'],
+    ['Data 15/03/2025 912345678', 'Data 15/03/2025 [número]'],
+    ['Ligue 91.23.45.678 hoje', 'Ligue [número] hoje'],
+    ['Ligue 06.12.34.56.78 hoje', 'Ligue [número] hoje'],
+    ['Tel.: 912345678', 'Tel.: [número]'],
+  ];
+  for (const [x, want] of around) assert.equal(C.scrub(x, 1000), want, x);
   assert.equal(C.scrub('Escreva a rui.costa@empresa.pt ou joão@empresa.pt ou RUI@EMPRESA.PT', 1000), 'Escreva a [email] ou [email] ou [email]');
   assert.equal(C.scrub('Veja empresa.art?x e empresa.art#y', 1000), 'Veja [link]?x e [link]#y');
   const keep = 'Entre 1990-2020 e 2010 e 2020, 3.5 vezes, Node.js, Vue.js, ASP.NET, p.ex. isto, e.g. 25%, i.e. isto, V.Ex.ª, 12 000 euros, 2.500.000 de pessoas, ano 2024, 12/10/2026, n.º 5, '
-    + '250.000.000 € de receita, 250 000 000 euros, a 12/03/2024 10:30, o relatório.pdf, o README.txt, 2.5%, versão 1.2.3.';
+    + '250.000.000 € de receita, 250 000 000 euros, a 12/03/2024 10:30, a 2024-01-15 10:30, o relatório.pdf, o README.txt, 2.5%, versão 1.2.3, Eng.Civil/Mecânica.';
   assert.equal(C.scrub(keep, 1000), keep);
+  // frases sem espaço depois do ponto, abreviaturas e nomes técnicos não são sites (e um nome com maiúsculas e
+  // minúsculas misturadas, sem caminho, como «Maria.Pt», não se distingue de «fim.De»: fica)
+  const prose = 'Fale-nos do seu percurso.Como chegou aqui? Entre 2005 e 2012.Depois mudou-se? Como é a vida em Maputo.Recomenda? What was your first job.How did you get it? '
+    + 'O Dr.Silva, na Av.da Liberdade, Univ.Coimbra, Mr.Smith, Prof.Doutor, Eng.Silva, Sta.Maria, Sto.António, Exmo.Sr., Dra.Ana. '
+    + 'Socket.IO, pandas.DataFrame, numpy.array, System.out.println, Power.BI, React.Native, main.py, README.md, Maria.Pt.';
+  assert.equal(C.scrub(prose, 2000), prose);
   // o email tem âncora à esquerda: um texto longo sem @ já não custa tempo quadrático
   const t0 = performance.now();
   for (let i = 0; i < 16; i++) C.scrub('a'.repeat(4000), 1000);
@@ -334,7 +360,7 @@ test('resposta do modelo validada: limites, duplicados, perguntas só em áudio 
   assert.deepEqual((C.parseCompose('sugerir', { questions: [{ text: 'Pode partilhar o [link] do seu trabalho?', why: 'x' }, { text: 'Onde trabalha hoje?', why: 'y' }] }, d) as any).questions.map((q: any) => q.text), ['Onde trabalha hoje?']);
   assert.deepEqual((C.parseCompose('rever', { items: [{ n: 1, issue: 'x', rewrite: 'Ligue para [número]?' }] }, d) as any).items, []);
   assert.deepEqual(C.parseCompose('objetivo', { title: 'Visite [link]', objective: 'Bom objetivo.' }, d), { acao: 'objetivo', title: '', objective: 'Bom objetivo.', note: '' });
-  for (const m of ['[numero]', '[Link]', '[telefone]', '[ E-mail ]', '[URL]']) assert.deepEqual((C.parseCompose('sugerir', { questions: [{ text: `Qual é o seu ${m} preferido?`, why: 'x' }] }, d) as any).questions, [], m);
+  for (const m of ['[numero]', '[Link]', '[telefone]', '[ E-mail ]', '[URL]', '[Número de telefone]', '[website]', '[email address]', '[phone number]']) assert.deepEqual((C.parseCompose('sugerir', { questions: [{ text: `Qual é o seu ${m} preferido?`, why: 'x' }] }, d) as any).questions, [], m);
 });
 
 test('falhas e limites: modelo indisponível, por hora, por dia, por mês e do portal', async () => {
@@ -387,7 +413,8 @@ test('ajuda: a entrada do assistente de composição diz os limites em vigor e a
   assert.match(FAQ_SEED.find(x => x.key === 'perguntas')!.pt[1], /«Adicionar e gravar áudio»/);
   assert.match(e.pt[1], /e o pedido opcional escrito no painel \(os emails, os endereços de sites e os números de telefone nos formatos habituais são tapados\)/);
   assert.match(e.en[1], /together with the optional request typed in the panel \(emails, website addresses and phone numbers in the usual formats are masked\)/);
-  for (const [lang, q, want] of [['pt', 'O assistente guarda as minhas perguntas?', 'assistente-privacidade'], ['en', 'Does the assistant store my questions?', 'assistente-privacidade']] as const) {
+  for (const [lang, q, want] of [['pt', 'O assistente guarda as minhas perguntas?', 'assistente-privacidade'], ['en', 'Does the assistant store my questions?', 'assistente-privacidade'],
+    ['en', 'Do you store my questions?', 'assistente-privacidade'], ['pt', 'Armazenam as minhas perguntas?', 'assistente-privacidade'], ['pt', 'Que dados são enviados à OpenAI?', 'assistente-composicao']] as const) {
     const list = FAQ_SEED.filter(x => x.audience !== 'guest').map((x, i) => ({ id: x.key, lang, audience: x.audience, question: x[lang][0], answer: x[lang][1], keywords: x[lang][2], sort: i }));
     assert.equal(searchFaq(list, q)[0]?.entry.id, want, q);
   }

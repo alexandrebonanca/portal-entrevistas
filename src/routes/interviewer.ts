@@ -171,7 +171,7 @@ ${locked ? '' : `<div class="rec" data-rec data-target="/api/entrevistas/${iv.id
 ${locked && q.qe === fu!.reason ? '' : flash(q.qe, 'bad')}${locked ? `${fu!.info ? `<p class="hint sans">${esc(fu!.info)}</p>` : ''}${fu!.reason ? `<div class="flash bad">${esc(fu!.reason)}</div>` : ''}<form id="adicional" method="post" action="/entrevistas/${iv.id}/adicional"><label for="fq">Pedido adicional (nova pergunta identificada como adicional)</label><textarea id="fq" name="text" required ${fu!.reason ? 'disabled' : ''}></textarea><button class="accent" ${fu!.reason ? 'disabled' : ''}>Acrescentar e reenviar convite</button></form>`
   : `<form id="nova" method="post" action="/entrevistas/${iv.id}/perguntas"><label for="nq">Nova pergunta</label><textarea id="nq" name="text" maxlength="1000"></textarea><div class="row"><button class="accent">Adicionar pergunta</button><button class="ghost" name="audio" value="1">Adicionar e gravar áudio</button></div><p class="hint">«Adicionar e gravar áudio» cria a pergunta (com o texto escrito, se houver) e leva-o ao gravador dela${aiAvailable() ? '; sem texto, o texto vem da transcrição da gravação' : ''}.</p></form>`}</div>
 <p><a class="btn" href="/entrevistas/${iv.id}${locked ? '' : '/convidar'}">${locked ? 'Ver entrevista' : 'Rever e convidar →'}</a></p></div>
-${locked ? '' : composePanel(iv, quota!, !(await assistantAiFor(db, req.user)) ? 'plano' : (await inEntity(await entityOfInterview(db, iv.id), composeAvailable)) ? 'ok' : 'desligada')}`;
+${locked ? '' : composePanel(iv, quota!, !(await inEntity(await entityOfInterview(db, iv.id), composeAvailable)) ? 'desligada' : (await assistantAiFor(db, req.user)) ? 'ok' : 'plano')}`;
     return view(req, reply, 'Editar entrevista', body, '/static/edit.js');
   });
 
@@ -348,6 +348,7 @@ ${locked ? '' : composePanel(iv, quota!, !(await assistantAiFor(db, req.user)) ?
   });
 
   app.post('/api/entrevistas/:id/perguntas/:qid/audio', async (req, reply) => {
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test((req.params as any).qid)) return reply.code(404).send({ error: 'Pergunta não encontrada' });
     const r = await rawUpload(req, reply, 'audio'); if (!r) return;
     if (r.iv.collection_status !== 'draft') return reply.code(409).send({ error: 'Bloqueado' });
     const q = await db.one('SELECT * FROM questions WHERE id=$2 AND interview_id=$1', [r.iv.id, (req.params as any).qid]);

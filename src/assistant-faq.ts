@@ -351,10 +351,10 @@ export const FAQ_SEED: SeedEntry[] = [
   { key: 'assistente-privacidade', audience: 'interviewer',
     pt: ['O que acontece às perguntas que faço ao assistente?',
       `Ficam registadas durante {logDays} dias sem ligação a si (sem conta, entidade nem endereço IP; emails, links e números longos são tapados), para a equipa do portal melhorar as respostas. A resposta vem sempre destas perguntas frequentes. Com uma subscrição ativa ou como gestor de entidade, e se o portal tiver a IA ligada, o texto da pergunta (só ele) pode ser enviado a um fornecedor de IA externo (OpenAI) para redigir uma resposta curta a partir delas. Não escreva dados pessoais nem palavras-passe.`,
-      'assistente, perguntas ao assistente, registo, privacidade, dados, IA, OpenAI, inteligência artificial, quem vê as perguntas, guarda as perguntas, registo das perguntas'],
+      'assistente, perguntas ao assistente, registo, privacidade, dados, IA, OpenAI, inteligência artificial, quem vê as perguntas, guarda as perguntas, guardar, armazenar, armazenam, registo das perguntas'],
     en: ['What happens to the questions I ask the assistant?',
       `They are stored for {logDays} days with no link to you (no account, entity or IP address; emails, links and long numbers are masked), so the portal team can improve the answers. The answer always comes from these frequently asked questions. With an active subscription or as an entity manager, and if the portal has AI switched on, the text of the question alone may be sent to an external AI provider (OpenAI) to draft a short answer from them. Do not write personal data or passwords.`,
-      'assistant, questions to the assistant, log, privacy, data, AI, OpenAI, artificial intelligence, who sees my questions, questions kept'] },
+      'assistant, questions to the assistant, log, privacy, data, AI, OpenAI, artificial intelligence, who sees my questions, store, stored, keep, kept'] },
 
   { key: 'suporte-portal', audience: 'interviewer',
     pt: ['Como falo com o suporte?',

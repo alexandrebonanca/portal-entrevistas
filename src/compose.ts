@@ -35,27 +35,53 @@ export type ComposeResult =
 
 export const composeAction = (a: unknown): ComposeAction | null => (COMPOSE_ACTIONS.includes(a as ComposeAction) ? a as ComposeAction : null);
 
-/**
- * Endereços de sites sem http nem www: anfitrião.domínio (com ou sem caminho, maiúsculas ou minúsculas: joana.art,
- * linktr.ee/joao, EMPRESA.PT, empresa.co.ao). O nome antes do domínio tem pelo menos 2 caracteres («p.ex.», «e.g.»,
- * «V.Ex.ª» ficam) e ficam também extensões de ficheiros e nomes técnicos que não são sites (Node.js, ASP.NET, .pdf).
- */
-const SITE = /(?<![\p{L}\p{N}@._-])(?:[\p{L}\p{N}_-]+\.)*([\p{L}\p{N}_-]{2,})\.(\p{L}{2,24})(?![\p{L}\p{N}_-])(\/[^\s,;)]*)?/giu;
-/** Com caminho, qualquer nome antes do domínio (t.co/abc). */
-const SITE_PATH = /(?<![\p{L}\p{N}@._-])[\p{L}\p{N}_-]+(\.[\p{L}\p{N}_-]+)*\.\p{L}{2,24}\/[^\s,;)]*/giu;
-const NOT_SITE = new Set('js ts jsx tsx mjs cjs txt pdf doc docx xls xlsx ppt pptx odt ods odp rtf csv json xml yml yaml html htm css scss png jpg jpeg gif svg webp heic mp3 mp4 wav m4a ogg webm mov avi zip rar exe dll apk ipynb java kt cpp cs php sql log ini cfg tsv'.split(' '));
+/** Domínios de país (ISO 3166, mais eu e uk). */
+const CC = 'ac ad ae af ag ai al am ao aq ar as at au aw ax az ba bb bd be bf bg bh bi bj bm bn bo br bs bt bw by bz ca cc cd cf cg ch ci ck cl cm cn co cr cu cv cw cx cy cz de dj dk dm do dz ec ee eg er es et eu fi fj fk fm fo fr ga gd ge gf gg gh gi gl gm gn gp gq gr gs gt gu gw gy hk hm hn hr ht hu id ie il im in io iq ir is it je jm jo jp ke kg kh ki km kn kp kr kw ky kz la lb lc li lk lr ls lt lu lv ly ma mc md me mg mh mk ml mm mn mo mp mq mr ms mt mu mv mw mx my mz na nc ne nf ng ni nl no np nr nu nz om pa pe pf pg ph pk pl pm pn pr ps pt pw py qa re ro rs ru rw sa sb sc sd se sg sh si sk sl sm sn so sr ss st su sv sx sy sz tc td tf tg th tj tk tl tm tn to tr tt tv tw tz ua ug uk us uy uz va vc ve vg vi vn vu wf ws ye yt za zm zw';
+/** Domínios genéricos em uso corrente (os antigos e os novos mais registados). */
+const GENERIC = 'com org net info biz edu gov int mil name pro mobi asia cat coop museum travel jobs tel aero '
+  + 'app dev xyz online site website web store shop shopping blog club live news tech technology media studio page link top email agency digital world today space '
+  + 'art design cloud life vip fun work works group company one ltd academy global network solutions consulting health coach events film music social gal eus scot wales '
+  + 'bio eco green energy finance capital ventures partners services systems software tools education school university institute training expert guru '
+  + 'photography photo pics gallery video audio radio games game play casino bet sport sports fitness yoga golf football team run bike '
+  + 'cafe restaurant bar pizza food kitchen recipes wine beer coffee farm garden house home homes realestate properties land city town place zone center centre '
+  + 'plus rocks lol cool fyi ninja tips review reviews press report wiki forum chat community family dating love wedding baby kids care clinic dental doctor '
+  + 'hospital pharmacy vet legal law lawyer attorney accountant tax money cash credit loans insurance bank market markets trade trading exchange sale deals '
+  + 'discount gift gifts fashion clothing shoes jewelry beauty hair makeup skin spa salon fit style boutique luxury lat africa berlin london paris nyc tokyo madrid barcelona';
+const TLDS = new Set(`${CC} ${GENERIC}`.split(' '));
+/** Nomes técnicos e de ficheiros com o feitio de um endereço (Node.js, ASP.NET, main.py, README.md). */
+const NOT_SITE = new Set('js ts py md sh rs'.split(' '));
 const NOT_SITE_WORDS = /^(asp\.net|vb\.net|ado\.net)$/i;
-const site = (m: string, _host: string, tld: string, path: string | undefined) =>
-  (!path && (NOT_SITE.has(tld.toLowerCase()) || NOT_SITE_WORDS.test(m)) ? m : '[link]');
+/**
+ * Endereços de sites sem http nem www: nome.domínio, com o domínio numa lista conhecida (de país ou genérico).
+ * Com caminho (linktr.ee/joao, Empresa.PT/contactos), em qualquer caixa; sem caminho, o domínio em minúsculas
+ * (joana.art, empresa.co.ao) ou o endereço todo em maiúsculas (EMPRESA.PT). Ficam frases sem espaço depois do ponto
+ * («percurso.Como»), abreviaturas («Dr.Silva», «Exmo.Sr.», «p.ex.») e nomes técnicos («Socket.IO», «Node.js»).
+ */
+const SITE = /(?<![\p{L}\p{N}@._-])(?:[\p{L}\p{N}_-]+\.)*([\p{L}\p{N}_-]+)\.(\p{L}{2,24})(?![\p{L}\p{N}_-])(\/(?:[^\s,;)]*[^\s,;).!?:'"»])?)?/gu;
+const site = (m: string, host: string, tld: string, path: string | undefined) => {
+  const t = tld.toLowerCase();
+  if (!TLDS.has(t) || NOT_SITE_WORDS.test(m)) return m;
+  if (path) return '[link]';
+  if (host.length < 2 || NOT_SITE.has(t)) return m;
+  return tld === t || m === m.toUpperCase() ? '[link]' : m;
+};
 /** Separadores de um número de telefone: espaços, hífenes e travessões (U+2010–2015, U+2212), pontos, ponto médio, barras, parênteses, hífen suave e espaço sem largura. */
 const PHONE = /(\+|\b00)?\(?\+?\d[\d\s()./\u00AD\u00B7\u200B\u2010-\u2015\u2212-]{6,}\d/g;
-/** Montantes, percentagens e datas não são telefones (250.000.000 €, 12/03/2024 10:30). */
-const NOT_PHONE_AFTER = /^\s*(€|\$|£|%|eur\b|euros?\b|usd\b|dólares\b|milhões\b|mil\b|:)/i;
-const DATE_START = /^\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}\b/;
+/** Montantes e percentagens não são telefones (250.000.000 €, 2 500 000 000 de euros, 12 000 000%). */
+const AMOUNT_AFTER = /^\s*(€|\$|£|%|eur\b|euros?\b|usd\b|dólares\b|milhões\b|mil\b)/i;
+/** Uma data no início (dia/mês/ano ou ano-mês-dia, dia e mês válidos, sem mais algarismos colados) não faz parte do número que se lhe segue. */
+const DATE_START = /^((0?[1-9]|[12]\d|3[01])[/.-](0?[1-9]|1[0-2])[/.-](\d{4}|\d{2})|\d{4}[/.-](0?[1-9]|1[0-2])[/.-](0?[1-9]|[12]\d|3[01]))(?!\d)(?![./-]\d)/;
+const digits = (s: string) => (s.match(/\d/g) ?? []).length;
 const phone = (m: string, ...rest: any[]) => {
   const str = rest[rest.length - 1] as string, at = rest[rest.length - 2] as number;
-  if ((m.match(/\d/g) ?? []).length < 9 || NOT_PHONE_AFTER.test(str.slice(at + m.length)) || DATE_START.test(m)) return m;
-  return '[número]';
+  if (AMOUNT_AFTER.test(str.slice(at + m.length))) return m;
+  const date = DATE_START.exec(m);
+  if (date) {
+    // «12/03/2025 – 912 345 678»: fica a data e tapa-se o resto, se for um número; «12/03/2024 10:30» fica todo
+    const tail = m.slice(date[0].length), lead = /^[^\d+(]*/.exec(tail)![0];
+    return digits(tail) >= 9 ? date[0] + lead + '[número]' : m;
+  }
+  return digits(m) >= 9 ? '[número]' : m;
 };
 /**
  * Tapa, nos formatos habituais, emails, endereços de sites e números de telefone (9 ou mais algarismos, com ou sem
@@ -68,12 +94,11 @@ export const scrub = (s: unknown, max: number) => String(s ?? '').slice(0, max +
   .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '')
   .replace(/(?<![\p{L}\p{N}._%+-])[\p{L}\p{N}._%+-]+@[\p{L}\p{N}-]+(\.[\p{L}\p{N}-]+)*\.\p{L}{2,}/gu, '[email]')
   .replace(/https?:\/\/[^\s,;)]+|www\.[^\s,;)]+/gi, '[link]')
-  .replace(SITE_PATH, '[link]')
   .replace(SITE, site)
   .replace(PHONE, phone)
   .trim().slice(0, max);
-/** Marcadores postos pelo scrub (ou parecidos): uma sugestão do modelo que os traga não serve (o texto original não é este). */
-const MASK = /\[\s*(link|url|site|e-?mail|n[uú]mero|number|telefone|telem[oó]vel|phone)\s*\]/i;
+/** Marcadores postos pelo scrub (ou parecidos, de uma ou mais palavras): uma sugestão do modelo que os traga não serve. */
+const MASK = /\[[^\]\n]{0,30}?(link|url|site|mail|n[uú]mero|number|telefone|telem[oó]vel|phone|contact)[^\]\n]{0,30}\]/i;
 
 export function composeDraft(iv: any, questions: { text: string; audio_asset_id?: string | null }[], limits: { maxQuestions: number; answerLimitSec: number | null }): ComposeDraft {
   return {
