@@ -34,6 +34,8 @@ export function sign(value: string) {
 }
 
 export const isEmail = (s: string) => /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(s) && s.length <= 254;
+/** Email que pode servir de contacto ou de Reply-To: válido e não um endereço de exemplo (de uma instalação de desenvolvimento). */
+export const isRealEmail = (s: string) => isEmail(s) && !/@example\.(com|org|net)$/i.test(s);
 
 /** Limitador em memória (por processo): suficiente para o MVP de uma instância. */
 const buckets = new Map<string, number[]>();

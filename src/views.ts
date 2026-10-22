@@ -77,7 +77,7 @@ ${o.noindex ? '<meta name="robots" content="noindex,nofollow"><meta name="referr
 <style>${CSS}${o.styles ?? ''}</style></head><body><a class="skip" href="#main">Skip to content</a>
 <header class="top"><div class="wrap"><a class="brand" href="/" aria-label="${esc(config.brand)}">${markSvg(28)}${wordmark()}</a><nav>${o.nav ?? ''}</nav></div></header>
 <main id="main">${o.body}</main>
-<footer><div class="wrap"><p>${esc(config.brand)} · <a href="/privacy">Privacy</a></p><p>${ownerLine(o.lang)}</p></div></footer>
+<footer><div class="wrap"><p>${esc(config.brand)} · <a href="/privacy">Privacy</a> · <a href="/contact">Contact</a></p><p>${ownerLine(o.lang)}</p></div></footer>
 ${o.script ? `<script src="/static/recorder.js" defer></script><script src="${o.script}" defer></script>` : ''}</body></html>`;
 }
 

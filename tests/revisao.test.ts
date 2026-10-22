@@ -142,7 +142,10 @@ test('episódio já publicado: o convidado vê e ouve, sem formulário de aprova
   view = await get('/entrevista/episodio', pubGuest);
   assert.match(view.body, /<strong>Your interview episode<\/strong>/);
   assert.match(view.body, /The episode has already been published: you can watch and listen to it\./);
-  assert.match(view.body, /Published on \d{1,2} \w+ \d{4}\. For corrections, contact support@example\.com/);
+  // correções e retirada pelo formulário de contacto, com o episódio indicado (nunca o SUPPORT_EMAIL)
+  assert.match(view.body, /Published on \d{1,2} \w+ \d{4}\. <a href="\/contact\?topic=episode&amp;episode=[a-z0-9-]+">Ask for a correction or the withdrawal of the episode<\/a>/);
+  assert.ok(view.body.includes(`episode=${pubEp.slug}"`), 'com a referência do episódio');
+  assert.doesNotMatch(view.body, /support@example\.com/);
   assert.doesNotMatch(view.body, /Please confirm and validate|action="\/entrevista\/episodio\/decisao"|Silence is never treated as approval/);
   const n = (await db.one(`SELECT count(*)::int n FROM approvals WHERE episode_id=$1 AND actor='guest'`, [pubEp.id])).n;
   await post('/entrevista/episodio/decisao', { decision: 'changes', note: 'Mudem isto', video: '' }, pubGuest);

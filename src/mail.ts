@@ -1,7 +1,7 @@
 import { config } from './config.ts';
 import { emailBrand } from './brand.ts';
 import type { Db } from './db.ts';
-import { esc } from './lib.ts';
+import { esc, isRealEmail } from './lib.ts';
 import { S, inEntity, entityOfInterview } from './settings.ts';
 
 /** Coloca o email na outbox (deduplicado por chave). O envio real é feito por flushOutbox(). */
@@ -18,7 +18,10 @@ export async function flushOutbox(db: Db) {
     if (Date.now() - lastWarn > 300_000) { lastWarn = Date.now(); console.warn('[mail] MAILERSEND_API_KEY não configurada: emails pendentes na outbox'); }
     return;
   }
-  const rows = await db.query(`SELECT * FROM emails WHERE state IN ('pending','failed') AND attempts < 6 AND next_attempt_at <= now() ORDER BY created_at LIMIT 20`);
+  // Os emails do formulário público de contacto (chaves contact:… e contact-reply:…; não confundir com contract:…, o
+  // contrato da subscrição) vão depois dos outros: uma leva de pedidos de visitantes não atrasa convites nem recibos.
+  const rows = await db.query(`SELECT * FROM emails WHERE state IN ('pending','failed') AND attempts < 6 AND next_attempt_at <= now()
+    ORDER BY (starts_with(dedupe_key, 'contact:') OR starts_with(dedupe_key, 'contact-reply:')), created_at LIMIT 20`);
   for (const m of rows) {
     // Reserva a linha antes de enviar: dois processos não enviam a mesma mensagem.
     const claimed = await db.one(`UPDATE emails SET state='sending', attempts=attempts+1 WHERE id=$1 AND state IN ('pending','failed') AND attempts < 6 AND next_attempt_at <= now() RETURNING id`, [m.id]);
@@ -35,8 +38,11 @@ export async function flushOutbox(db: Db) {
   }
 }
 
-/** Endereço de resposta: o contacto de apoio, se for um email real (não o de exemplo). */
-export const replyTo = () => (/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(config.supportEmail) && !/@example\.(com|org)$/i.test(config.supportEmail) ? config.supportEmail : '');
+/**
+ * Endereço de resposta: o email da entidade gestora (config.owner), se for um email real (não o de exemplo). Nunca o
+ * SUPPORT_EMAIL, que é só configuração interna: as dúvidas seguem pela ajuda do portal ou pelo formulário de contacto.
+ */
+export const replyTo = () => (isRealEmail(config.owner.email) ? config.owner.email : '');
 
 async function deliver(m: any): Promise<string> {
   if (!S('MAILERSEND_API_KEY')) {
@@ -49,7 +55,7 @@ async function deliver(m: any): Promise<string> {
     headers: { Authorization: `Bearer ${S('MAILERSEND_API_KEY')}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({
       from: { email: S('MAIL_FROM') || config.mail.from, name: S('MAIL_FROM_NAME') || config.mail.fromName },
-      // Respostas vão para o contacto de apoio (o remetente é no-reply).
+      // Respostas vão para o email da entidade gestora (o remetente é no-reply).
       ...(replyTo() ? { reply_to: { email: replyTo(), name: config.brand } } : {}),
       to: [{ email: m.to_email }],
       subject: m.subject, html: m.html, text: m.text_body,
@@ -59,13 +65,20 @@ async function deliver(m: any): Promise<string> {
   return res.headers.get('x-message-id') ?? 'accepted';
 }
 
-/** Moldura dos emails. opts.after: texto secundário depois do botão; opts.footer: rodapé próprio (por omissão, marca e contacto). */
-export function emailShell(title: string, bodyHtml: string, button?: { label: string; url: string }, opts: { footer?: string; after?: string } = {}) {
+/** Rodapé por omissão dos emails: a marca e a ligação ao formulário de contacto do portal (nunca um endereço de email). */
+export const emailFooter = (lang: 'pt' | 'en' = 'pt') =>
+  `<p style="font:13px Arial,sans-serif;color:#6b655c;margin-top:32px">${esc(config.brand)} · <a href="${esc(config.baseUrl)}/contact" style="color:#b4691f">${lang === 'en' ? 'Contact us' : 'Contacto'}</a></p>`;
+
+/**
+ * Moldura dos emails. opts.after: texto secundário depois do botão; opts.footer: rodapé próprio (por omissão, a marca e o
+ * formulário de contacto, na língua opts.lang).
+ */
+export function emailShell(title: string, bodyHtml: string, button?: { label: string; url: string }, opts: { footer?: string; after?: string; lang?: 'pt' | 'en' } = {}) {
   return `<!doctype html><html><body style="margin:0;background:#f4f1ea;font-family:Georgia,serif;color:#1c1a17">
 <div style="max-width:560px;margin:0 auto;padding:32px 20px">${emailBrand()}
 <h1 style="font-size:24px;line-height:1.25;margin:8px 0 18px">${esc(title)}</h1><div style="font-size:16px;line-height:1.6">${bodyHtml}</div>
 ${button ? `<p style="margin:28px 0"><a href="${esc(button.url)}" style="background:#1c1a17;color:#fff;text-decoration:none;padding:14px 22px;border-radius:6px;font:600 15px Arial,sans-serif;display:inline-block">${esc(button.label)}</a></p>` : ''}${opts.after ?? ''}
-${opts.footer ?? `<p style="font:13px Arial,sans-serif;color:#6b655c;margin-top:32px">${esc(config.brand)} · ${esc(config.supportEmail)}</p>`}</div></body></html>`;
+${opts.footer ?? emailFooter(opts.lang)}</div></body></html>`;
 }
 
 /** Depois de corrigir a configuração (chave, remetente), as mensagens falhadas voltam à fila. */

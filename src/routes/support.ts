@@ -1,5 +1,5 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
-import { esc } from '../lib.ts';
+import { esc, isEmail } from '../lib.ts';
 import { page, flash, pill, STATUS_LABEL } from '../views.ts';
 import { requireUser, audit } from '../app.ts';
 import { t, normLang, type Lang } from '../i18n.ts';
@@ -8,7 +8,8 @@ import { nav as interviewerNav } from './interviewer.ts';
 import { adminNav } from './admin.ts';
 import {
   SUPPORT_CSS, SUPPORT_MAX_BODY, cleanBody, cleanSubject, supportAllowed, openThread, addMessage, setThreadStatus, threadMessages, isUuid,
-  guestHelpNav,
+  guestHelpNav, CONTACT_TOPICS, CONTACT_MIN_MS, CONTACT_MAX_MS, CONTACT_MAX_NAME, CONTACT_MAX_REF, TOPIC_EN, TOPIC_PT, topicOf, oneLine, contactStamp,
+  contactStampAge, contactAllowed, openVisitorThread, visitorThread, visitorEmail, deleteVisitorThread, type ContactTopic,
 } from '../support.ts';
 import { cleanQuestion, assistantAllowed, answerQuestion, assistantSig, assistantSigOk, loadAnswer, assistantTranscript, assistantAiFor, faqLang, withAskerVars, userAskerVars, guestAskerVars, ASSISTANT_MAX_QUESTION, type Audience } from '../assistant.ts';
 import { config } from '../config.ts';
@@ -18,13 +19,15 @@ type Dict = ReturnType<typeof t>;
 const HTML = { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' };
 const STATUS_KIND: Record<string, '' | 'ok' | 'warn'> = { open: 'warn', answered: 'ok', closed: '' };
 const ROLE_LABEL: Record<string, string> = { interviewer: 'Entrevistador', entity_admin: 'Gestor de entidade', admin: 'Administrador' };
-const ORIGIN_LABEL: Record<string, string> = { portal: 'Portal (utilizador)', guest: 'Páginas do convidado', assistant: 'Assistente virtual' };
+const ORIGIN_LABEL: Record<string, string> = { portal: 'Portal (utilizador)', guest: 'Páginas do convidado', assistant: 'Assistente virtual', visitor: 'Formulário de contacto (visitante)' };
 const LANG_LABEL: Record<string, string> = { 'pt-PT': 'Português', en: 'Inglês' };
 
 const when = (d: unknown, lang: string) => (d ? new Date(d as string).toLocaleString(lang === 'en' ? 'en-GB' : 'pt-PT', { dateStyle: 'short', timeStyle: 'short' }) : '—');
 const statusPill = (s: string, d: Dict) => pill((d.supportStatus as Record<string, string>)[s] ?? s, STATUS_KIND[s] ?? '');
 /** Mensagens de aviso por código (nunca texto vindo do URL). */
-const okMsg = (d: Dict, c: unknown) => ({ sent: d.supportSent, reply: d.supportReplySent, closed: d.supportClosedOk, reopened: d.supportReopenedOk } as Record<string, string>)[String(c)];
+const okMsg = (d: Dict, c: unknown) => ({ sent: d.supportSent, reply: d.supportReplySent, closed: d.supportClosedOk, reopened: d.supportReopenedOk, deleted: d.supportDeletedOk } as Record<string, string>)[String(c)];
+/** Ligação ao formulário de contacto dentro de um texto (convidado sem convite ativo). */
+const contactLink = (label: string) => `<a href="/contact">${esc(label)}</a>`;
 const errMsg = (d: Dict, c: unknown) => ({ empty: d.supportEmpty, long: d.supportTooLong(SUPPORT_MAX_BODY), rate: d.supportRate, closed: d.supportClosedNote } as Record<string, string>)[String(c)];
 
 const HELP_CSS = SUPPORT_CSS + ASSISTANT_CSS;
@@ -60,13 +63,16 @@ ${o.noForm ?? (x ? `<p>${esc(x.note)}</p>${supportForm(`${x.action}#suporte`, o.
 <section id="pedidos" aria-labelledby="h-pedidos"><h2 id="h-pedidos">${esc(o.d.supportMine)}</h2>${threadList(o.rows, o.base, o.d, o.lang)}</section>`;
 };
 
-/** Pedido visto por quem o fez: mensagens, resposta, fechar/reabrir (só leitura para o convidado cujo convite deixou de valer). */
-const threadBody = (th: any, msgs: any[], base: string, d: Dict, lang: string, o: { ok?: string; e?: string; message?: string; readOnly?: string }) => {
+/**
+ * Pedido visto por quem o fez: mensagens, resposta, fechar/reabrir (só leitura para o convidado cujo convite deixou de valer;
+ * `readOnlyHtml` é o aviso já em HTML, com a ligação ao formulário de contacto).
+ */
+const threadBody = (th: any, msgs: any[], base: string, d: Dict, lang: string, o: { ok?: string; e?: string; message?: string; readOnlyHtml?: string }) => {
   const you = (m: any) => (m.author === 'admin' ? d.supportTeam : m.author === 'assistant' ? d.supportAssistant : d.supportYou);
   return `<p class="sans"><a href="${base}">← ${esc(d.supportBack)}</a></p>
 <h1 style="font-size:1.7rem">${esc(th.subject)}</h1><p>${statusPill(th.status, d)}</p>${flash(o.ok)}${flash(o.e, 'bad')}
 ${conversation(msgs, you, lang)}
-${o.readOnly ? `<div class="card"><p style="margin:0">${esc(o.readOnly)}</p></div>` : th.status === 'closed'
+${o.readOnlyHtml ? `<div class="card"><p style="margin:0">${o.readOnlyHtml}</p></div>` : th.status === 'closed'
     ? `<div class="card"><p style="margin-top:0">${esc(d.supportClosedNote)}</p><form method="post" action="${base}/${th.id}/reabrir"><button class="ghost">${esc(d.supportReopen)}</button></form></div>`
     : `<form method="post" action="${base}/${th.id}/responder" class="card"><label for="sp-r" style="margin-top:0">${esc(d.supportReply)}</label><textarea id="sp-r" name="message" required maxlength="${SUPPORT_MAX_BODY}" rows="5">${esc(o.message ?? '')}</textarea>
 <p class="hint">${esc(d.supportMaxHint(SUPPORT_MAX_BODY))}</p><p><button class="accent">${esc(d.supportReplyBtn)}</button></p></form>
@@ -259,7 +265,7 @@ export async function supportRoutes(app: FastifyInstance) {
     const q = req.query as any;
     const rows = await db.query('SELECT * FROM support_threads WHERE interview_id=$1 ORDER BY updated_at DESC LIMIT 100', [c.iv.id]);
     if (c.readOnly) return guestPage(req, reply, c.lang, c.d.helpTitle, helpBody({
-      d: c.d, lang: c.lang, intro: '', assistant: '', base: '/entrevista/ajuda', rows, noForm: `<p>${esc(c.d.supportReadOnly(config.supportEmail))}</p>`,
+      d: c.d, lang: c.lang, intro: '', assistant: '', base: '/entrevista/ajuda', rows, noForm: `<p>${c.d.supportReadOnly(contactLink)}</p>`,
     }), code);
     const as = await assistantSection(db, guestAs(c), o.as ?? asStateFrom(q));
     return guestPage(req, reply, c.lang, c.d.helpTitle, helpBody({
@@ -322,7 +328,7 @@ export async function supportRoutes(app: FastifyInstance) {
       c.g.supportUnread = Math.max(0, (c.g.supportUnread ?? 1) - 1);
     }
     return guestPage(req, reply, c.lang, th.subject, threadBody(th, await threadMessages(db, th.id), '/entrevista/ajuda', c.d, c.lang,
-      { ok: okMsg(c.d, q.ok), e: o.e ?? errMsg(c.d, q.e), message: o.message, readOnly: c.readOnly ? c.d.supportReadOnly(config.supportEmail) : undefined }), code);
+      { ok: okMsg(c.d, q.ok), e: o.e ?? errMsg(c.d, q.e), message: o.message, readOnlyHtml: c.readOnly ? c.d.supportReadOnly(contactLink) : undefined }), code);
   };
 
   app.get('/entrevista/ajuda/:id', async (req, reply) => {
@@ -356,6 +362,127 @@ export async function supportRoutes(app: FastifyInstance) {
     });
   }
 
+  // ================= visitantes sem conta: formulário público de contacto e link privado =================
+  // Página em inglês, como a landing. O pedido chega à caixa do administrador; o visitante segue a conversa num link
+  // privado que recebe por email. A proteção contra pedidos entre origens é a de todos os POST (gancho CSRF de app.ts).
+  const EN = t('en');
+  const CONTACT_CSS = `${SUPPORT_CSS}.hp{position:absolute!important;left:-10000px;top:auto;width:1px;height:1px;overflow:hidden}`;
+  const publicNav = '<a href="/">Home</a><a href="/podcasts">Gallery</a><a href="/entrar">Sign in</a>';
+  const publicPage = (reply: FastifyReply, title: string, body: string, code = 200, noindex = false) =>
+    reply.code(code).headers(HTML).send(page({ lang: 'en', title, desc: noindex ? undefined : `Write to the ${config.brand} team.`, noindex, nav: publicNav, styles: CONTACT_CSS, body: `<div class="narrow" style="padding-top:40px">${body}</div>` }));
+  type ContactForm = { name?: string; email?: string; topic?: string; episode?: string; message?: string };
+  /** Recusas pelo teto global desde o último aviso no registo, e quando foi esse aviso. */
+  let contactCapRefused = 0, contactCapWarned = 0;
+
+  /**
+   * Formulário de contacto; `v` traz o que já foi escrito (depois de um erro), sem a caixa de aceitação. Depois de um erro
+   * mantém-se o carimbo de quando foi aberto (quem corrige um campo não espera de novo o tempo mínimo).
+   */
+  const contactForm = (v: ContactForm, stamp = contactStamp()) => `<form method="post" action="/contact" class="card">
+<input type="hidden" name="ts" value="${esc(stamp)}">
+<div class="hp" aria-hidden="true"><label for="c-w">Website (leave empty)</label><input id="c-w" name="website" type="text" tabindex="-1" autocomplete="off"></div>
+<label for="c-n" style="margin-top:0">Your name</label><input id="c-n" name="name" type="text" required maxlength="${CONTACT_MAX_NAME}" autocomplete="name" value="${esc(v.name ?? '')}">
+<label for="c-e">Your email</label><input id="c-e" name="email" type="email" required maxlength="254" autocomplete="email" value="${esc(v.email ?? '')}" aria-describedby="c-e-h">
+<p class="hint" id="c-e-h" style="margin:4px 0 0">Only to send you the private link to the conversation and to tell you when there is a reply.</p>
+<label for="c-t">Topic</label><select id="c-t" name="topic">${CONTACT_TOPICS.map(k => `<option value="${k}" ${(v.topic || 'other') === k ? 'selected' : ''}>${esc(TOPIC_EN[k])}</option>`).join('')}</select>
+<label for="c-ep">Episode (optional)</label><input id="c-ep" name="episode" type="text" maxlength="${CONTACT_MAX_REF}" value="${esc(v.episode ?? '')}" aria-describedby="c-ep-h">
+<p class="hint" id="c-ep-h" style="margin:4px 0 0">The address or the title of the episode, if your message is about a published episode.</p>
+<label for="c-m">Message</label><textarea id="c-m" name="message" required maxlength="${SUPPORT_MAX_BODY}" rows="7">${esc(v.message ?? '')}</textarea>
+<p class="hint">${esc(EN.supportMaxHint(SUPPORT_MAX_BODY))}</p>
+<label class="check"><input type="checkbox" name="accept" value="1" required> <span>I agree that ${esc(config.brand)} uses these details only to answer this request, as described in the <a href="/privacy">privacy notice</a>.</span></label>
+<p><button class="accent">Send message</button></p></form>`;
+
+  /** Quem já tem sessão tem um caminho mais direto (com o contexto da conta ou da entrevista): diz-se, sem esconder o formulário. */
+  const signedInNote = (req: FastifyRequest) => req.user
+    ? `<div class="flash">${req.user.role === 'admin' ? 'You are signed in as an administrator: requests arrive in <a href="/admin/suporte">Suporte</a>.' : 'You are signed in: for questions about your account or your interviews, <a href="/ajuda">Help</a> answers inside the portal, with your account details.'}</div>`
+    : req.guest ? '<div class="flash">You are answering an interview: for questions about it, use <a href="/entrevista/ajuda">Help</a>, which reaches the team with the details of your interview.</div>' : '';
+
+  const contactPage = (req: FastifyRequest, reply: FastifyReply, v: ContactForm, e?: string, code = 200, stamp?: string) => publicPage(reply, 'Contact', `<h1>Contact us</h1>
+<p>Write to the ${esc(config.brand)} team about plans, an interview, a correction or the withdrawal of a published episode, or a privacy request. We reply on a private page and email you the link to it; we never copy your message into an email. <span class="hint" lang="pt-PT">Pode escrever em português.</span></p>
+${signedInNote(req)}${flash(e, 'bad')}${contactForm(v, stamp)}`, code);
+
+  app.get('/contact', async (req, reply) => {
+    const q = req.query as any;
+    if (q.ok === 'sent') return publicPage(reply, 'Message sent', `<h1>Message sent</h1>
+<div class="flash ok" role="status">Thank you. Your message has reached the ${esc(config.brand)} team.</div>
+<p>We have emailed you a private link where you can follow the conversation and reply. If it does not arrive within a few minutes, check your spam folder.</p>
+<p><a href="/">Back to the home page</a></p>`, 200, true);
+    // Tema e episódio vindos de uma ligação (por exemplo, da página de um episódio): o slug passa a endereço completo.
+    const ep = oneLine(q.episode, CONTACT_MAX_REF);
+    return contactPage(req, reply, { topic: topicOf(q.topic) || undefined, episode: /^[a-z0-9-]{1,100}$/.test(ep) ? `${config.baseUrl}/e/${ep}` : ep });
+  });
+
+  app.post('/contact', async (req, reply) => {
+    const b = (req.body ?? {}) as any;
+    const v: ContactForm = { name: oneLine(b.name, CONTACT_MAX_NAME * 2), email: String(b.email ?? '').trim().slice(0, 300), topic: topicOf(b.topic) || 'other', episode: oneLine(b.episode, CONTACT_MAX_REF), message: String(b.message ?? '').slice(0, SUPPORT_MAX_BODY * 2) };
+    // Campo-armadilha preenchido: um robô. Responde como se tivesse corrido bem, sem gravar nem enviar nada.
+    if (String(b.website ?? '').trim()) return reply.redirect('/contact?ok=sent', 303);
+    const age = contactStampAge(b.ts);
+    const valid = age !== null && age <= CONTACT_MAX_MS && age >= -60_000;
+    const again = (msg: string, code = 422) => contactPage(req, reply, v, msg, code, valid ? String(b.ts) : undefined);
+    if (!valid) return again('This form has expired. Please check your message and send it again.');
+    if (age < CONTACT_MIN_MS) return again('That was very quick. Please check your message and send it again.');
+    const name = oneLine(b.name, CONTACT_MAX_NAME), email = String(b.email ?? '').trim().toLowerCase(), body = cleanBody(b.message);
+    if (!name) return again('Please write your name.');
+    if (!isEmail(email)) return again('Please write a valid email address, so that we can send you the link to the conversation.');
+    if (!body.ok) return again(body.error === 'empty' ? EN.supportEmpty : EN.supportTooLong(SUPPORT_MAX_BODY));
+    if (b.accept !== '1') return again('Please tick the box to agree that we use these details to answer your request.');
+    const allowed = contactAllowed(email, req.ip);
+    if (allowed === 'global') {
+      // Teto global cheio (uma inundação, venha de onde vier): nada se grava nem se envia; aviso no registo, no máximo de
+      // 5 em 5 minutos, com o número de recusas desde o último (sem emails nem IP).
+      contactCapRefused++;
+      if (Date.now() - contactCapWarned > 300_000) {
+        req.log.warn({ refused: contactCapRefused, perHour: config.limits.contactPerHour, perDay: config.limits.contactPerDay }, 'formulário de contacto: teto global de pedidos novos atingido');
+        contactCapWarned = Date.now(); contactCapRefused = 0;
+      }
+      return again('We are receiving an unusually high number of messages right now. Please try again later.', 429);
+    }
+    if (allowed !== 'ok') return again('Too many messages have been sent from this email address or this network recently. Please try again later.', 429);
+    const topic = (topicOf(b.topic) || 'other') as ContactTopic;
+    const { id } = await openVisitorThread(db, { name, email, topic, episodeRef: v.episode || null, body: body.text });
+    // Na auditoria, só o pedido e o tema (nem o nome, nem o email, nem o texto).
+    await audit(db, 'visitor', 'support.thread_opened', null, { threadId: id, via: 'contact', topic });
+    return reply.redirect('/contact?ok=sent', 303);
+  });
+
+  // Link privado: quem o tem lê a conversa e responde. A página não mostra o nome nem o email do visitante.
+  const visitorPage = async (req: FastifyRequest, reply: FastifyReply, th: any, token: string, o: { e?: string; message?: string } = {}, code = 200) => {
+    const q = req.query as any;
+    if (th.unread_user) await db.query('UPDATE support_threads SET unread_user=false WHERE id=$1', [th.id]);
+    const label = (m: any) => (m.author === 'admin' ? EN.supportTeam : EN.supportYou);
+    const base = `/contact/t/${token}`;
+    return publicPage(reply, th.subject, `<p class="hint sans">Private conversation with the ${esc(config.brand)} team · ${esc(TOPIC_EN[th.topic as ContactTopic] ?? '')}</p>
+<h1 style="font-size:1.7rem">${esc(th.subject)}</h1><p>${statusPill(th.status, EN)}</p>${flash(q.ok === 'reply' ? EN.supportReplySent : undefined)}${flash(o.e ?? (q.e === 'closed' ? 'This request is closed.' : undefined), 'bad')}
+<p class="hint">This page is private: anyone with this link can read the conversation and reply. Do not share it.</p>
+${conversation(await threadMessages(db, th.id), label, 'en')}
+${th.status === 'closed'
+    ? `<div class="card"><p style="margin:0">This request is closed. If you need more help, send a new message through the <a href="/contact">contact form</a>.</p></div>`
+    : `<form method="post" action="${base}/responder" class="card"><label for="sp-r" style="margin-top:0">${esc(EN.supportReply)}</label><textarea id="sp-r" name="message" required maxlength="${SUPPORT_MAX_BODY}" rows="5">${esc(o.message ?? '')}</textarea>
+<p class="hint">${esc(EN.supportMaxHint(SUPPORT_MAX_BODY))}</p><p><button class="accent">${esc(EN.supportReplyBtn)}</button></p></form>`}`, code, true);
+  };
+  const notFound = (reply: FastifyReply) => publicPage(reply, 'Link not valid', `<h1>This link is not valid</h1>
+<p>The conversation may have been deleted, or the link was copied incompletely. You can send a new message through the <a href="/contact">contact form</a>.</p>`, 404, true);
+
+  app.get('/contact/t/:token', async (req, reply) => {
+    const token = (req.params as any).token, th = await visitorThread(db, token);
+    if (!th) return notFound(reply);
+    return visitorPage(req, reply, th, token);
+  });
+
+  app.post('/contact/t/:token/responder', async (req, reply) => {
+    const token = (req.params as any).token, th = await visitorThread(db, token);
+    if (!th) return notFound(reply);
+    // Pedido fechado: só leitura (o administrador pode reabri-lo; o visitante escreve um pedido novo).
+    if (th.status === 'closed') return reply.redirect(`/contact/t/${token}?e=closed`, 303);
+    const raw = (req.body as any)?.message, body = cleanBody(raw);
+    if (!body.ok) return visitorPage(req, reply, th, token, { e: body.error === 'empty' ? EN.supportEmpty : EN.supportTooLong(SUPPORT_MAX_BODY), message: String(raw ?? '').slice(0, SUPPORT_MAX_BODY * 2) }, 422);
+    if (!supportAllowed(`visitor:${th.id}`, req.ip)) return visitorPage(req, reply, th, token, { e: EN.supportRate, message: body.text }, 429);
+    await addMessage(db, th.id, 'visitor', body.text);
+    await audit(db, 'visitor', 'support.message', null, { threadId: th.id });
+    return reply.redirect(`/contact/t/${token}?ok=reply`, 303);
+  });
+
   // ================= administrador: caixa de entrada =================
   const guard = (req: FastifyRequest, reply: FastifyReply) => {
     if (!req.user) { reply.redirect('/entrar'); return false; }
@@ -364,27 +491,41 @@ export async function supportRoutes(app: FastifyInstance) {
   };
   const adminPage = (req: FastifyRequest, reply: FastifyReply, title: string, body: string, code = 200) =>
     reply.code(code).headers(HTML).send(page({ title, body: `<div class="wrap" style="padding-top:32px">${body}</div>`, nav: adminNav(req.user), noindex: true, styles: SUPPORT_CSS }));
-  const FILTERS: [string, string][] = [['open', 'Abertos'], ['unread', 'Por ler'], ['answered', 'Respondidos'], ['closed', 'Fechados'], ['all', 'Todos']];
+  const FILTERS: [string, string][] = [['open', 'Abertos'], ['unread', 'Por ler'], ['answered', 'Respondidos'], ['closed', 'Fechados'], ['visitor', 'Visitantes'], ['all', 'Todos']];
 
   app.get('/admin/suporte', async (req, reply) => {
     if (!guard(req, reply)) return;
     const q = req.query as any;
     const f = FILTERS.some(([k]) => k === q.estado) ? String(q.estado) : 'open';
     const n = await db.one(`SELECT count(*) FILTER (WHERE status='open')::int AS open, count(*) FILTER (WHERE unread_admin)::int AS unread,
-      count(*) FILTER (WHERE status='answered')::int AS answered, count(*) FILTER (WHERE status='closed')::int AS closed, count(*)::int AS "all" FROM support_threads`);
+      count(*) FILTER (WHERE status='answered')::int AS answered, count(*) FILTER (WHERE status='closed')::int AS closed,
+      count(*) FILTER (WHERE origin='visitor')::int AS visitor, count(*)::int AS "all" FROM support_threads`);
     const rows = await db.query(`SELECT t.*, u.name AS user_name, u.email AS user_email, i.title AS interview_title, i.guest_name, en.name AS entity_name
       FROM support_threads t LEFT JOIN users u ON u.id=t.user_id LEFT JOIN interviews i ON i.id=t.interview_id LEFT JOIN entities en ON en.id=t.entity_id
-      WHERE CASE $1 WHEN 'all' THEN true WHEN 'unread' THEN t.unread_admin ELSE t.status=$1 END
+      WHERE CASE $1 WHEN 'all' THEN true WHEN 'unread' THEN t.unread_admin WHEN 'visitor' THEN t.origin='visitor' ELSE t.status=$1 END
       ORDER BY t.unread_admin DESC, t.updated_at DESC LIMIT 200`, [f]);
-    const who = (r: any) => (r.user_id ? `${esc(r.user_name)}<br><span class="hint">${esc(r.user_email)}</span>` : `Convidado: ${esc(r.guest_name || '—')}<br><span class="hint">«${esc(r.interview_title)}»</span>`);
-    return adminPage(req, reply, 'Suporte', `<h1>Suporte</h1>
-<p class="hint sans">Pedidos feitos dentro do portal pelos utilizadores e pelos convidados. As respostas aparecem na página de ajuda de quem pediu; nenhum email é enviado.</p>
+    // O que vem dos visitantes (nome, email, assunto) é sempre escapado: chega de um formulário público.
+    const who = (r: any) => (r.user_id ? `${esc(r.user_name)}<br><span class="hint">${esc(r.user_email)}</span>`
+      : r.origin === 'visitor' ? `Visitante: ${esc(r.visitor_name)}<br><span class="hint">${esc(r.visitor_email)}</span>`
+        : `Convidado: ${esc(r.guest_name || '—')}<br><span class="hint">«${esc(r.interview_title)}»</span>`);
+    const topic = (r: any) => (r.topic ? `<br><span class="hint">${esc(TOPIC_PT[r.topic as ContactTopic] ?? r.topic)}</span>` : '');
+    return adminPage(req, reply, 'Suporte', `<h1>Suporte</h1>${flash(okMsg(PT, q.ok))}
+<p class="hint sans">Pedidos feitos dentro do portal pelos utilizadores e pelos convidados, e pelos visitantes sem conta no formulário de contacto (<a href="/contact">/contact</a>). As respostas aparecem na página de ajuda de quem pediu, sem email; o visitante lê-as numa página privada e recebe só um email curto com o link (sem o texto da resposta).</p>
 <nav class="filters" aria-label="Filtrar por estado">${FILTERS.map(([k, l]) => `<a href="/admin/suporte?estado=${k}" ${k === f ? 'aria-current="page"' : ''}>${esc(l)} (${Number(n?.[k] ?? 0)})</a>`).join('')}</nav>
 ${rows.length ? `<div class="card" style="overflow-x:auto"><table><thead><tr><th>Assunto</th><th>De</th><th>Entidade</th><th>Origem</th><th>Estado</th><th>Atualizado</th></tr></thead><tbody>
-${rows.map((r: any) => `<tr><td>${r.unread_admin ? '<strong>' : ''}<a href="/admin/suporte/${r.id}">${esc(r.subject)}</a>${r.unread_admin ? `</strong> ${pill('por ler', 'warn')}` : ''}</td><td>${who(r)}</td><td>${esc(r.entity_name ?? '—')}</td><td>${esc(ORIGIN_LABEL[r.origin] ?? r.origin)}</td><td>${statusPill(r.status, PT)}</td><td>${esc(when(r.updated_at, 'pt-PT'))}</td></tr>`).join('')}
+${rows.map((r: any) => `<tr><td>${r.unread_admin ? '<strong>' : ''}<a href="/admin/suporte/${r.id}">${esc(r.subject)}</a>${r.unread_admin ? `</strong> ${pill('por ler', 'warn')}` : ''}${topic(r)}</td><td>${who(r)}</td><td>${esc(r.entity_name ?? '—')}</td><td>${esc(ORIGIN_LABEL[r.origin] ?? r.origin)}</td><td>${statusPill(r.status, PT)}</td><td>${esc(when(r.updated_at, 'pt-PT'))}</td></tr>`).join('')}
 </tbody></table></div>` : '<div class="card"><p class="hint" style="margin:0">Sem pedidos neste filtro.</p></div>'}`);
   });
 
+  /** Episódio indicado por um visitante (o endereço /e/… ou só o slug), para o administrador o abrir; undefined se não houver. */
+  const episodeOfRef = async (ref: unknown) => {
+    const r = String(ref ?? '');
+    const slug = /\/e\/([A-Za-z0-9-]{1,100})/.exec(r)?.[1] ?? (/^[a-z0-9-]{1,100}$/.test(r) ? r : '');
+    if (!slug) return undefined;
+    return db.one(`SELECT e.slug, e.title, e.status, e.interview_id, i.title AS interview_title,
+        (e.status='published' AND e.visibility IN ('unlisted','public') AND e.withdrawn_at IS NULL) AS live
+      FROM episodes e JOIN interviews i ON i.id=e.interview_id WHERE e.slug=$1`, [slug]);
+  };
   const adminThread = async (req: FastifyRequest) => {
     const id = (req.params as any).id;
     return isUuid(id) ? db.one(`SELECT t.*, en.name AS entity_name FROM support_threads t LEFT JOIN entities en ON en.id=t.entity_id WHERE t.id=$1`, [id]) : undefined;
@@ -399,9 +540,16 @@ ${rows.map((r: any) => `<tr><td>${r.unread_admin ? '<strong>' : ''}<a href="/adm
       await db.query('UPDATE support_threads SET unread_admin=false WHERE id=$1', [th.id]);
       req.user!.support_inbox = Math.max(0, (req.user!.support_inbox ?? 1) - 1);
     }
-    // Contexto atual de quem pediu: o utilizador (perfil e entidade) ou a entrevista do convidado.
+    // Contexto atual de quem pediu: o utilizador (perfil e entidade), a entrevista do convidado ou o visitante do formulário.
     let ctx = '', who = 'Utilizador', warn = '';
-    if (th.user_id) {
+    const visitor = th.origin === 'visitor';
+    if (visitor) {
+      who = th.visitor_name;
+      const ep = await episodeOfRef(th.episode_ref);
+      ctx = `<strong>Visitante:</strong> ${esc(th.visitor_name)} &lt;${esc(th.visitor_email)}&gt;<br>
+<strong>Tema:</strong> ${esc(TOPIC_PT[th.topic as ContactTopic] ?? th.topic ?? '—')}${th.episode_ref ? ` · <strong>Episódio indicado:</strong> «${esc(th.episode_ref)}»${ep ? ` → <a href="/entrevistas/${ep.interview_id}">${esc(ep.interview_title)}</a> (episódio «${esc(ep.title)}», ${esc(STATUS_LABEL[ep.status] ?? ep.status)}${ep.live ? `, <a href="/e/${esc(ep.slug)}">página pública</a>` : ''})` : ' (não corresponde a nenhum episódio)'}` : ''}`;
+      warn = `<div class="flash">Pedido de um visitante sem conta, pelo formulário de contacto. O email não foi verificado (qualquer pessoa pode escrever o email de outra): num pedido sobre dados pessoais ou sobre um episódio, confirme a identidade antes de agir. As respostas ficam na página privada do visitante; cada resposta manda-lhe um email curto com o link, sem o texto.</div>`;
+    } else if (th.user_id) {
       const u = await db.one('SELECT u.id, u.name, u.email, u.role, u.active, e.name AS entity_name FROM users u LEFT JOIN entities e ON e.id=u.entity_id WHERE u.id=$1', [th.user_id]);
       who = u?.name ?? who;
       ctx = u ? `<strong>Utilizador:</strong> <a href="/admin/utilizadores/${u.id}">${esc(u.name)}</a> · ${esc(u.email)} ${u.active ? '' : pill('conta desativada', 'bad')}<br>
@@ -420,16 +568,18 @@ ${rows.map((r: any) => `<tr><td>${r.unread_admin ? '<strong>' : ''}<a href="/adm
         warn = `<div class="flash bad">O convidado já não tem um convite válido (${why}): só consegue ler as respostas no navegador onde abriu o convite, até ao fim do prazo desse convite, e não pode escrever. Se a resposta for importante (por exemplo, um pedido sobre os seus dados), contacte-o também por email${iv.guest_email ? `: ${esc(iv.guest_email)}` : ''}.</div>`;
       }
     }
-    const label = (m: any) => (m.author === 'admin' ? `Suporte${m.author_name ? ` (${m.author_name})` : ''}` : m.author === 'assistant' ? 'Assistente virtual' : m.author === 'guest' ? `Convidado (${who})` : who);
+    const label = (m: any) => (m.author === 'admin' ? `Suporte${m.author_name ? ` (${m.author_name})` : ''}` : m.author === 'assistant' ? 'Assistente virtual' : m.author === 'guest' ? `Convidado (${who})` : m.author === 'visitor' ? `Visitante (${who})` : who);
     const closed = th.status === 'closed';
     return adminPage(req, reply, th.subject, `<p class="sans"><a href="/admin/suporte">← Suporte</a></p>
 <h1 style="font-size:1.7rem">${esc(th.subject)}</h1>${flash(okMsg(PT, q.ok))}${flash(errMsg(PT, q.e), 'bad')}
-<div class="card sans"><p style="margin:0">${statusPill(th.status, PT)} · <strong>Origem:</strong> ${esc(ORIGIN_LABEL[th.origin] ?? th.origin)} · <strong>Língua:</strong> ${esc(LANG_LABEL[th.lang] ?? th.lang)} · <strong>Entidade:</strong> ${esc(th.entity_name ?? '—')} · aberto em ${esc(when(th.created_at, 'pt-PT'))}</p>
+<div class="card sans"><p style="margin:0">${statusPill(th.status, PT)} · <strong>Origem:</strong> ${esc(ORIGIN_LABEL[th.origin] ?? th.origin)} · <strong>Língua:</strong> ${visitor ? 'formulário em inglês' : esc(LANG_LABEL[th.lang] ?? th.lang)} · <strong>Entidade:</strong> ${esc(th.entity_name ?? '—')} · aberto em ${esc(when(th.created_at, 'pt-PT'))}</p>
 <p style="margin:8px 0 0">${ctx}</p></div>${warn}
 <div class="narrow" style="margin:0;padding:0">${conversation(await threadMessages(db, th.id), label, 'pt-PT')}</div>
-<form method="post" action="/admin/suporte/${th.id}/responder" class="card"><label for="sp-r" style="margin-top:0">Responder${th.lang === 'en' ? ' (em inglês, a língua de quem pediu)' : ''}</label><textarea id="sp-r" name="message" required maxlength="${SUPPORT_MAX_BODY}" rows="6"></textarea>
-<p class="hint">A resposta fica visível na página de ajuda de quem pediu, com o aviso de resposta por ler. Não é enviado email.${closed ? ' Responder reabre o pedido como «Respondido».' : ''} Não escreva palavras-passe nem chaves nas respostas: ficam guardadas no pedido, à vista de quem pediu e de todos os administradores.</p><p><button class="accent">Enviar resposta</button></p></form>
-<form method="post" action="/admin/suporte/${th.id}/${closed ? 'reabrir' : 'fechar'}"><button class="ghost">${closed ? 'Reabrir pedido' : 'Fechar pedido'}</button></form>`);
+<form method="post" action="/admin/suporte/${th.id}/responder" class="card"><label for="sp-r" style="margin-top:0">Responder${visitor ? ' (na língua em que o visitante escreveu)' : th.lang === 'en' ? ' (em inglês, a língua de quem pediu)' : ''}</label><textarea id="sp-r" name="message" required maxlength="${SUPPORT_MAX_BODY}" rows="6"></textarea>
+<p class="hint">${visitor ? 'A resposta fica visível na página privada do visitante; é-lhe enviado um email curto («You have a reply») com o link, sem o texto da resposta.' : 'A resposta fica visível na página de ajuda de quem pediu, com o aviso de resposta por ler. Não é enviado email.'}${closed ? ' Responder reabre o pedido como «Respondido».' : ''} Não escreva palavras-passe nem chaves nas respostas: ficam guardadas no pedido, à vista de quem pediu e de todos os administradores.</p><p><button class="accent">Enviar resposta</button></p></form>
+<div class="row"><form method="post" action="/admin/suporte/${th.id}/${closed ? 'reabrir' : 'fechar'}"><button class="ghost">${closed ? 'Reabrir pedido' : 'Fechar pedido'}</button></form>
+${visitor ? `<form method="post" action="/admin/suporte/${th.id}/apagar" onsubmit="return confirm('Apagar este pedido, as mensagens e os emails enviados ao visitante? O link privado deixa de funcionar.')"><button class="danger">Apagar pedido</button></form>` : ''}</div>
+${visitor ? '<p class="hint sans">Apagar remove o pedido, as mensagens e os emails do pedido (por exemplo, a pedido do visitante); o link privado deixa de funcionar. Os pedidos dos utilizadores e dos convidados apagam-se com a conta ou com a entrevista.</p>' : ''}`);
   });
 
   app.post('/admin/suporte/:id/responder', async (req, reply) => {
@@ -438,9 +588,21 @@ ${rows.map((r: any) => `<tr><td>${r.unread_admin ? '<strong>' : ''}<a href="/adm
     if (!th) return reply.code(404).send('Não encontrado');
     const body = cleanBody((req.body as any)?.message);
     if (!body.ok) return reply.redirect(`/admin/suporte/${th.id}?e=${body.error}`);
-    await addMessage(db, th.id, 'admin', body.text, req.user!.id);
+    const msgId = await addMessage(db, th.id, 'admin', body.text, req.user!.id);
+    // Só o visitante (sem conta nem sessão) é avisado por email, com o link privado; utilizadores e convidados veem-no no portal.
+    if (th.origin === 'visitor') await visitorEmail(db, th, 'reply', msgId);
     await audit(db, req.user!.email, 'support.admin_reply', th.interview_id ?? null, { threadId: th.id });
     return reply.redirect(`/admin/suporte/${th.id}?ok=reply`);
+  });
+
+  // Apagar um pedido de visitante (por exemplo, a pedido dele): mensagens e emails também; o link deixa de funcionar.
+  app.post('/admin/suporte/:id/apagar', async (req, reply) => {
+    if (!guard(req, reply)) return;
+    const th = await adminThread(req);
+    if (!th) return reply.code(404).send('Não encontrado');
+    if (th.origin !== 'visitor' || !(await deleteVisitorThread(db, th.id))) return reply.code(400).send('Só os pedidos de visitantes se apagam aqui');
+    await audit(db, req.user!.email, 'support.admin_deleted', null, { threadId: th.id, origin: 'visitor' });
+    return reply.redirect('/admin/suporte?ok=deleted');
   });
 
   for (const [action, close] of [['fechar', true], ['reabrir', false]] as const) {

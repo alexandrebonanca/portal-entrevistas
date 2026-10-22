@@ -6,7 +6,7 @@ import { sendAsset, audit } from '../app.ts';
 import { toVtt, toSrt, type Cue } from '../subtitles.ts';
 import { t, normLang } from '../i18n.ts';
 import { approvalScope, videoMeta, guestDecides, reviewCopy, coverWithdrawnSql } from '../approval.ts';
-import { guestHelpNav } from '../support.ts';
+import { guestHelpNav, contactHref } from '../support.ts';
 import { carriedTags, campaignQuery, ownHosts, withCampaign, fromOwnSite, trackVisit } from '../metrics.ts';
 
 export interface PlayerUrls { audio: string; cover: string; subs: (lang: string, ext: 'vtt' | 'srt') => string }
@@ -60,7 +60,8 @@ export async function episodeRoutes(app: FastifyInstance) {
     const s = ep.slug, showCover = !ep.cover_withdrawn;
     return send(reply, page({
       lang: 'en', title: ep.title, noindex: ep.visibility !== 'public', desc: ep.description || undefined,
-      body: `<div class="wrap" style="padding-top:28px">${ep.video_asset_id && showCover ? `<video controls preload="metadata" poster="/e/${s}/cover" src="/e/${s}/video" style="width:100%;border-radius:12px;background:#000;margin-bottom:18px"></video>` : ''}${playerHtml(ep, { audio: `/e/${s}/audio`, cover: showCover ? `/e/${s}/cover` : '', subs: (l, x) => `/e/${s}/subs/${l}.${x}` }, { host: ep.host_name, guest: ep.guest_name })}</div>`,
+      body: `<div class="wrap" style="padding-top:28px">${ep.video_asset_id && showCover ? `<video controls preload="metadata" poster="/e/${s}/cover" src="/e/${s}/video" style="width:100%;border-radius:12px;background:#000;margin-bottom:18px"></video>` : ''}${playerHtml(ep, { audio: `/e/${s}/audio`, cover: showCover ? `/e/${s}/cover` : '', subs: (l, x) => `/e/${s}/subs/${l}.${x}` }, { host: ep.host_name, guest: ep.guest_name })}
+<p class="hint sans" style="margin-top:28px">To ask for a correction or the withdrawal of this episode, use the <a href="${esc(contactHref('episode', s))}">contact form</a>.</p></div>`,
       script: '/static/player.js', nav: '',
     }));
   });
@@ -145,7 +146,7 @@ ${groups.size ? [...groups].map(([t, eps]) => `<section style="margin-top:28px">
       lang, title: d.episodePreview, noindex: true, nav: guestHelpNav(req.guest, lang), script: '/static/player.js',
       body: `<div class="wrap" style="padding-top:28px">${flash(q.ok)}${q.changed ? `<div class="flash bad">${esc(d.versionChanged)}</div>` : ''}<h1>${esc(d.episodePreview)}</h1>
 <p class="sans"><strong>${esc(c.title)}</strong></p><p>${esc(d.reviewIntro(ep.host_label ?? ''))} ${esc(c.steps)}</p>
-${review.published ? `<p class="hint">${pubDay ? `${esc(d.publishedOn(pubDay))} ` : ''}${esc(d.contact)} ${esc(config.supportEmail)}</p>` : ''}
+${review.published ? `<p class="hint">${pubDay ? `${esc(d.publishedOn(pubDay))} ` : ''}<a href="${esc(contactHref('episode', ep.slug))}">${esc(d.correctionsLink)}</a></p>` : ''}
 ${ep.video_asset_id ? `<video controls preload="metadata" poster="/api/g/media/${ep.cover_asset_id}" src="/api/g/media/${ep.video_asset_id}" style="width:100%;border-radius:12px;background:#000;margin-bottom:18px"></video>` : ''}
 ${playerHtml(ep, { audio: `/api/g/media/${ep.audio_asset_id}`, cover: `/api/g/media/${ep.cover_asset_id}`, subs: (l, x) => `/entrevista/subs/${l}.${x}` }, { host: ep.host_name, guest: ep.guest_name })}
 ${decides && dec ? `<div class="flash">${esc(dec.decision === 'approved' ? d.approve : d.requestChanges)} — ${esc(fmtDate(dec.created_at))}${dec.decision === 'approved' && String(dec.video_asset_id ?? '') !== String(ep.video_asset_id ?? '') ? ` (${esc(d.versionChanged)})` : ''}</div>` : ''}
