@@ -352,9 +352,11 @@ test('planos Start e Pro (só imagens) à venda; os antigos inativos, mas as sub
   assert.match(pg.body, /value="19\.00" aria-label="Preço mensal sem IVA \(EUR\)" style="width:110px">€\/mês \+ IVA/);
   assert.match(pg.body, /Planos inativos deixam de ser vendidos, mas quem já os tem continua com eles/);
   const home = await get('/');
-  assert.match(home.body, /€19<span class="hint"> \+ VAT \/ month<\/span>/); assert.match(home.body, /€49<span class="hint"> \+ VAT \/ month/);
-  assert.match(home.body, /Consumers: €23\.37 \/ month incl\. 23% VAT \(mainland Portugal\)[^<]*<span lang="pt-PT">consumidores: 23,37 €\/mês com IVA incluído/);
-  assert.match(home.body, /Start from €19 \+ VAT \/ month/);
+  // na apresentação comercial, o preço sem menção ao IVA (a taxa depende do país); o preço final aparece antes de pagar
+  assert.match(home.body, /€19<span class="hint"> \/ month<\/span>/); assert.match(home.body, /€49<span class="hint"> \/ month/);
+  assert.doesNotMatch(home.body, /\+ VAT|incl\. \d+% VAT|com IVA incluído|mainland Portugal/);
+  assert.match(home.body, /Start from €19 \/ month/);
+  assert.match(home.body, /VAT, where it applies, depends on your country; the final price is always shown before you pay\./);
   assert.match(home.body, /AI animation is never part of a plan: each animated production is quoted before anything is generated and paid with prepaid credits/);
   assert.match(home.body, /AI video \(optional, quoted separately\)/);
   // a landing mostra preços e a vendedora: com o acesso ao Livro de Reclamações Eletrónico (o rodapé fica só com a Certif)

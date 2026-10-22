@@ -4,8 +4,7 @@ import { config } from './config.ts';
 import { esc } from './lib.ts';
 import { page } from './views.ts';
 import { markSvg } from './brand.ts';
-import { seller, homeConsumerRate, complaintsLink } from './legal.ts';
-import { withVat, eurPt, fmtRate } from './vat.ts';
+import { seller, complaintsLink } from './legal.ts';
 
 const eur = (c: number) => `€${(c / 100).toFixed(c % 100 ? 2 : 0)}`;
 
@@ -67,9 +66,9 @@ export function landing(plans: any[], cq = '') {
   const b = esc(config.brand);
   const signup = (extra = '') => esc(`/registar${extra || cq ? '?' : ''}${extra}${extra && cq ? '&' : ''}${cq}`);
   const withTags = (path: string) => esc(cq ? `${path}?${cq}` : path);
-  // Preços sem IVA («+ VAT»); para os consumidores, também o preço com IVA (no continente, em Portugal).
-  const cheapest = plans[0] ? `${eur(plans[0].price_cents)} + VAT` : '';
-  const s = seller(), rate = homeConsumerRate(s);
+  // Preços sem menção ao IVA: a taxa depende do país de quem compra e o preço final, com IVA, aparece antes de pagar.
+  const cheapest = plans[0] ? eur(plans[0].price_cents) : '';
+  const s = seller();
   const img = (name: string, alt: string, eager = false) => {
     const lazy = eager ? 'fetchpriority="high"' : 'loading="lazy"';
     if (hasPhoto(name)) return `<img src="/static/img/photos/${name}.jpg" alt="${esc(alt)}" width="1200" height="900" ${lazy} decoding="async">`;
@@ -142,12 +141,11 @@ ${video ? `
 </section>
 
 <section class="wrap lp-section" id="pricing" aria-labelledby="prh"><h2 id="prh">Simple monthly pricing</h2>
-  <div class="grid3" style="max-width:760px">${plans.map(p => `<div class="card"><h3 style="margin-top:0">${esc(p.name)}</h3><p style="font-size:2.2rem;margin:.1em 0">${eur(p.price_cents)}<span class="hint"> + VAT / month</span></p>
-    ${rate ? `<p class="hint">Consumers: ${eur(withVat(p.price_cents, rate))} / month incl. ${fmtRate(rate)}% VAT${s.country === 'PT' ? ' (mainland Portugal)' : ''} · <span lang="pt-PT">consumidores: ${eurPt(withVat(p.price_cents, rate))}/mês com IVA incluído</span></p>` : ''}
+  <div class="grid3" style="max-width:760px">${plans.map(p => `<div class="card"><h3 style="margin-top:0">${esc(p.name)}</h3><p style="font-size:2.2rem;margin:.1em 0">${eur(p.price_cents)}<span class="hint"> / month</span></p>
     <p>Up to <strong>${p.interviews_per_month} interviews</strong> per month.</p><ul class="sans" style="padding-left:18px"><li>Invitations, recording and photos</li><li>Transcription, English script, narration</li><li>Subtitles, cover, player and video with photos</li><li>Cancel any time</li></ul>
     <a class="btn accent" href="${signup(`plan=${encodeURIComponent(p.id)}`)}">Choose ${esc(p.name)}</a></div>`).join('')}</div>
   <p class="hint">Plans include photos only. AI animation is never part of a plan: each animated production is quoted before anything is generated and paid with prepaid credits. · <span lang="pt-PT">A animação por IA é orçamentada à parte e paga com créditos.</span></p>
-  <p class="hint">Billing is monthly through Stripe, card only. Prices exclude VAT; the price with VAT is always shown before you pay.${s.tradeName || s.name ? ` Sold by ${esc(s.name || s.tradeName)}.` : ''} <a href="/termos">Terms of sale · Termos e condições</a> · ${complaintsLink(s)}. Plans and limits may change for new subscribers.</p>
+  <p class="hint">Billing is monthly through Stripe, card only. VAT, where it applies, depends on your country; the final price is always shown before you pay.${s.tradeName || s.name ? ` Sold by ${esc(s.name || s.tradeName)}.` : ''} <a href="/termos">Terms of sale · Termos e condições</a> · ${complaintsLink(s)}. Plans and limits may change for new subscribers.</p>
 </section>
 
 <section class="wrap lp-section"><div class="card lp-cta"><h2 style="margin-top:0">Your next great guest is one polite invitation away.</h2>
