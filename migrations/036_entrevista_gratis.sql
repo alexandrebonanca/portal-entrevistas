@@ -23,13 +23,25 @@ ALTER TABLE interviews ADD CONSTRAINT interviews_free_guest CHECK ((free_at IS N
 CREATE UNIQUE INDEX interviews_free_guest_hash ON interviews(free_guest_hash) WHERE free_guest_hash IS NOT NULL;
 -- Tetos diário e mensal (contados pela data do envio).
 CREATE INDEX interviews_free_at ON interviews(free_at) WHERE free_at IS NOT NULL;
--- Links de confirmação do email: na base fica só a impressão (sha256) do token; valem 48 h e uma só vez.
+-- Links de confirmação do email: na base fica só a impressão (sha256) do token; valem 48 h e uma só vez. Com cada link, a
+-- impressão (sha256) da caixa de correio do email da conta (normalizado como o do convidado): os emails de confirmação
+-- contam-se por conta e por caixa de correio (várias contas com variantes do mesmo endereço não os multiplicam).
 CREATE TABLE email_verifications (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   token_hash text NOT NULL UNIQUE CHECK (token_hash ~ '^[0-9a-f]{64}$'),
+  mailbox_hash text NOT NULL CHECK (mailbox_hash ~ '^[0-9a-f]{64}$'),
   created_at timestamptz NOT NULL DEFAULT now(),
   expires_at timestamptz NOT NULL,
   used_at timestamptz
 );
-CREATE INDEX email_verifications_user ON email_verifications(user_id, created_at)
+CREATE INDEX email_verifications_user ON email_verifications(user_id, created_at);
+CREATE INDEX email_verifications_mailbox ON email_verifications(mailbox_hash, created_at);
+-- Ações de IA opcionais e sem custo para o utilizador, pedidas numa entrevista grátis (verificação do guião, leitura das
+-- perguntas): quantas já foram usadas, contra o total por entrevista (free-interview.ts). Uma linha por entrevista e ação.
+CREATE TABLE ai_uses (
+  interview_id uuid NOT NULL REFERENCES interviews(id) ON DELETE CASCADE,
+  action text NOT NULL CHECK (action IN ('script_review', 'question_reading')),
+  used integer NOT NULL DEFAULT 0 CHECK (used >= 0),
+  PRIMARY KEY (interview_id, action)
+)

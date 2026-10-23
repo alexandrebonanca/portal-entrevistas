@@ -40,6 +40,21 @@ export function sign(value: string) {
 export const isEmail = (s: string) => s.length <= 254 && /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(s);
 /** Email que pode servir de contacto ou de Reply-To: válido e não um endereço de exemplo (de uma instalação de desenvolvimento). */
 export const isRealEmail = (s: string) => isEmail(s) && !/@example\.(com|org|net)$/i.test(s);
+/**
+ * Caixa de correio de um email (1.ª entrevista grátis: «uma por convidado» e «uma por caixa de correio»; e o total dos
+ * emails de confirmação por caixa): minúsculas e sem espaços, sem o sub-endereço («+…» antes da @, que a maioria dos
+ * fornecedores entrega na mesma caixa) e, no Gmail, sem pontos e com googlemail.com como gmail.com. Outros domínios mantêm
+ * os pontos (podem ser caixas diferentes).
+ */
+export function normMailbox(email: string) {
+  const e = String(email ?? '').trim().toLowerCase();
+  const at = e.lastIndexOf('@');
+  if (at < 1) return e;
+  let local = e.slice(0, at).split('+')[0], domain = e.slice(at + 1);
+  if (domain === 'googlemail.com') domain = 'gmail.com';
+  if (domain === 'gmail.com') local = local.replace(/\./g, '');
+  return `${local || e.slice(0, at)}@${domain}`;
+}
 
 /**
  * Limitador em memória (por processo): suficiente para o MVP de uma instância. Cada chave (IP, email, conta) guarda os

@@ -1,9 +1,11 @@
 import type { Db } from './db.ts';
 import { config } from './config.ts';
-import { esc, sha256, fmtDate } from './lib.ts';
-import { ACTIVE_STATUSES } from './billing.ts';
+import { esc, sha256, fmtDate, normMailbox } from './lib.ts';
+import { ACTIVE_STATUSES, quotaFor } from './billing.ts';
+import { enqueue, type EnqueueOpts } from './jobs.ts';
 import { inviteLimits, mmss } from './limits.ts';
-import { lastVerificationAt, verificationsSent, VERIFY_TOTAL } from './email-verify.ts';
+import { lastVerificationAt, verifySent, VERIFY_TOTAL } from './email-verify.ts';
+import { flash } from './views.ts';
 
 /**
  * 1.ª entrevista grátis: oferta do quietinterview a quem se regista, para experimentar o produto sem pagar. Só para o
@@ -27,19 +29,10 @@ const FREE_LOCK = 7710361;
 export const freeOfferOn = () => config.limits.freePerDay > 0 && config.limits.freePerMonth > 0;
 
 /**
- * Email normalizado para as regras «uma por convidado» e «uma por caixa de correio» (o email da conta): minúsculas e sem
- * espaços, sem o sub-endereço («+…» antes da @, que a maioria dos fornecedores entrega na mesma caixa) e, no Gmail, sem
- * pontos e com googlemail.com como gmail.com. Outros domínios mantêm os pontos (podem ser caixas diferentes).
+ * Email normalizado para as regras «uma por convidado» e «uma por caixa de correio» (o email da conta): a caixa de correio
+ * de `normMailbox` (lib.ts), a mesma do total dos emails de confirmação por caixa (email-verify.ts).
  */
-export function normGuestEmail(email: string) {
-  const e = String(email ?? '').trim().toLowerCase();
-  const at = e.lastIndexOf('@');
-  if (at < 1) return e;
-  let local = e.slice(0, at).split('+')[0], domain = e.slice(at + 1);
-  if (domain === 'googlemail.com') domain = 'gmail.com';
-  if (domain === 'gmail.com') local = local.replace(/\./g, '');
-  return `${local || e.slice(0, at)}@${domain}`;
-}
+export const normGuestEmail = normMailbox;
 /** Impressão guardada na entrevista grátis (o email em claro já está na entrevista; a impressão serve o índice único). */
 export const guestHash = (email: string) => sha256(`free-guest:${normGuestEmail(email)}`);
 /** Impressão do email da conta normalizado, guardada no envio (`users.free_owner_hash`): uma entrevista grátis por caixa de correio. */
@@ -138,6 +131,73 @@ export async function freeSendBlock(q: Db, interviewId: string, o: { resend?: bo
   return null;
 }
 
+/**
+ * Ações de IA opcionais e sem custo para o utilizador numa entrevista grátis: total por entrevista, contado na base (tabela
+ * `ai_uses`). Antes, a verificação do guião (gpt-4.1 a cada clique) só tinha o limite por hora em memória, e uma conta sem
+ * pagamento repetia-a sem fim; e a leitura sintética das perguntas ao convidado refazia-se a cada mudança da voz das
+ * perguntas, que o entrevistador pode alternar depois do convite. As outras ações de IA da produção já têm total: processar
+ * (o primeiro está incluído), regenerar o guião e gerar o episódio contam como regenerações (3 incluídas, depois 1 crédito
+ * cada); a animação pelo Google Veo paga-se por orçamento; a introdução animada não é oferecida à entrevista grátis; os
+ * retratos animados são só do administrador; as sugestões do assistente de composição e a resposta redigida pela IA na
+ * ajuda exigem uma subscrição. As entrevistas pagas ficam como estavam (decisão: quem paga está identificado pelo
+ * pagamento, tem a quota do plano e os limites por hora; o total serve a oferta sem pagamento). O administrador não conta
+ * nem fica bloqueado (como nas regenerações). A entrevista grátis mantém estes totais mesmo que a conta subscreva depois
+ * (como os limites do Start, ficam com ela).
+ */
+export const FREE_SCRIPT_REVIEWS = 6;
+/** Leituras sintéticas das perguntas ao convidado, por pergunta (uma para cada voz); a leitura guardada reaproveita-se sem contar. */
+export const FREE_READINGS_PER_QUESTION = 2;
+export type AiAction = 'script_review' | 'question_reading';
+export const FREE_REVIEWS_USED = `A 1.ª entrevista grátis inclui ${FREE_SCRIPT_REVIEWS} verificações de fidelidade por IA e já as usou todas: pode continuar a rever o guião à mão e aprová-lo. Com uma subscrição (Conta), as próximas entrevistas não têm este limite.`;
+
+/** Gasta uma vez da ação na entrevista, se ainda houver (atómico: dois pedidos em simultâneo na última vez não passam os dois). */
+export async function takeAiUse(db: Db, interviewId: string, action: AiAction, max: number): Promise<boolean> {
+  if (!(max >= 1)) return false;
+  return !!(await db.one(`INSERT INTO ai_uses(interview_id, action, used) VALUES ($1,$2,1)
+    ON CONFLICT (interview_id, action) DO UPDATE SET used = ai_uses.used + 1 WHERE ai_uses.used < $3 RETURNING used`, [interviewId, action, max]));
+}
+/** A ação falhou (nada foi feito pelo fornecedor de IA): a vez volta. */
+export const giveBackAiUse = (db: Db, interviewId: string, action: AiAction) =>
+  db.query('UPDATE ai_uses SET used = used - 1 WHERE interview_id=$1 AND action=$2 AND used > 0', [interviewId, action]);
+/** Vezes que a ação já foi usada na entrevista. */
+export async function aiUsed(db: Db, interviewId: string, action: AiAction): Promise<number> {
+  return Number((await db.one('SELECT used FROM ai_uses WHERE interview_id=$1 AND action=$2', [interviewId, action]))?.used ?? 0);
+}
+
+/**
+ * Contas sem pagamento (entrevistador sem entidade e sem subscrição em vigor: as da 1.ª entrevista grátis e as de quem deixou
+ * de pagar): transcrições automáticas das gravações do entrevistador no rascunho (objetivo, e perguntas sem texto) nas
+ * últimas 24 horas, contadas na fila de trabalhos com a conta bloqueada. Antes, só o limite de envios por minuto em memória:
+ * uma conta sem pagamento podia criar rascunhos e perguntas sem fim e mandar transcrever cada gravação (até 2 min por
+ * pergunta e 5 min no objetivo). Acima do total, a gravação é recusada com a explicação (com texto, uma pergunta gravada não
+ * é transcrita). As contas pagas, de entidade, os gestores e o administrador não mudam.
+ */
+export const UNPAID_TRANSCRIPTIONS_PER_DAY = 40;
+export async function unpaidAccount(db: Db, user: { id: string; role: string; entity_id?: string | null }): Promise<boolean> {
+  if (user.role !== 'interviewer' || user.entity_id) return false;
+  const q = await quotaFor(db, user);
+  return q.reason === 'no_subscription' || q.reason === 'expired';
+}
+async function hostTranscriptions(db: Db, userId: string): Promise<number> {
+  return Number((await db.one(`SELECT count(*)::int AS n FROM jobs j JOIN interviews i ON i.id=j.interview_id
+    WHERE i.owner_id=$1 AND j.kind='transcribe_asset' AND j.created_at > now() - interval '1 day'`, [userId]))?.n ?? 0);
+}
+/** Ainda há transcrições automáticas para a conta nas últimas 24 horas (sem as gastar; a contagem definitiva é a de enqueueHostTranscription). */
+export async function transcriptionRoom(db: Db, user: { id: string; role: string; entity_id?: string | null }): Promise<boolean> {
+  return !(await unpaidAccount(db, user)) || (await hostTranscriptions(db, user.id)) < UNPAID_TRANSCRIPTIONS_PER_DAY;
+}
+/** Põe na fila a transcrição de uma gravação do entrevistador; numa conta sem pagamento, só dentro do total (false: nada na fila). */
+export async function enqueueHostTranscription(db: Db, user: { id: string; role: string; entity_id?: string | null }, job: EnqueueOpts): Promise<boolean> {
+  if (!(await unpaidAccount(db, user))) { await enqueue(db, job); return true; }
+  return db.tx(async t => {
+    await t.query('SELECT 1 FROM users WHERE id=$1 FOR UPDATE', [user.id]);
+    if ((await hostTranscriptions(t, user.id)) >= UNPAID_TRANSCRIPTIONS_PER_DAY) return false;
+    await enqueue(t, job);
+    return true;
+  });
+}
+export const transcriptionsUsed = (what: 'question' | 'objective') => `Atingiu o limite de ${UNPAID_TRANSCRIPTIONS_PER_DAY} transcrições automáticas em 24 horas das contas sem subscrição. ${what === 'question' ? 'Escreva o texto da pergunta antes de a gravar (com texto, a gravação não é transcrita) ou grave-a mais tarde' : 'Grave o objetivo mais tarde ou escreva-o no campo «Objetivo»'}; com uma subscrição (Conta), não há este limite.`;
+
 /** Estado da oferta numa conta, para o administrador. */
 export const FREE_REASON_PT: Record<FreeReason, string> = {
   role: 'não se aplica (perfil)', entity: 'não se aplica (conta de uma entidade)', subscribed: 'não se aplica (subscrição ativa)', used: 'já usada por outra conta com o mesmo email (normalizado)',
@@ -163,7 +223,7 @@ const T = {
     eligible: (l: ReturnType<typeof inviteLimits>, where: 'painel' | 'convite') => `<strong>A sua 1.ª entrevista é grátis.</strong> ${where === 'convite' ? 'Este convite segue' : 'Envie o primeiro convite'} sem pagamento nem dados de cartão, ${T.pt.limits(l)}. É uma por pessoa e por organização${where === 'painel' ? ': crie a entrevista e, em «Rever e convidar», carregue em «Enviar convite grátis»' : ''}.`,
     unverified: (email: string, sent: Date | null) => `<strong>A sua 1.ª entrevista é grátis</strong>, depois de confirmar o email da sua conta. ${sent ? `Enviámos uma ligação para ${esc(email)} em ${esc(fmtDate(sent))} (válida 48 horas).` : `Ainda não foi possível enviar a ligação para ${esc(email)}: carregue em «Reenviar».`}`,
     resend: 'Reenviar',
-    noMore: `Já enviámos a esta conta o número máximo de ligações de confirmação (${VERIFY_TOTAL}): não é possível pedir outra.`,
+    noMore: `Já enviámos para o email desta conta o número máximo de ligações de confirmação (${VERIFY_TOTAL}): não é possível pedir outra.`,
     used: (at: Date | null) => `Já usou a sua entrevista grátis${at ? ` (enviada em ${esc(fmtDate(at))})` : ''}. Para enviar mais convites, escolha um plano em <a href="/account">Conta</a>.`,
     cap: 'A oferta da 1.ª entrevista grátis está temporariamente indisponível. Pode tentar mais tarde ou escolher um plano em <a href="/account">Conta</a>.',
   },
@@ -172,25 +232,40 @@ const T = {
     eligible: (l: ReturnType<typeof inviteLimits>) => `<strong>Your first interview is free.</strong> Send your first invitation with no payment and no card details, ${T.en.limits(l)}: create it on the dashboard (Painel) and press «Enviar convite grátis» (Send free invitation). One per person and organisation.`,
     unverified: (email: string, sent: Date | null) => `<strong>Your first interview is free</strong> once you confirm your account’s email. ${sent ? `We sent a link to ${esc(email)} on ${esc(fmtDate(sent))} (valid for 48 hours).` : `We could not send the link to ${esc(email)} yet: press «Resend».`}`,
     resend: 'Resend',
-    noMore: `We have already sent this account the maximum number of confirmation links (${VERIFY_TOTAL}), so no more can be requested.`,
+    noMore: `We have already sent the maximum number of confirmation links (${VERIFY_TOTAL}) to this account’s email address, so no more can be requested.`,
     used: (at: Date | null) => `You have used your free interview${at ? ` (sent on ${esc(fmtDate(at))})` : ''}. To send more invitations, choose a plan below.`,
     cap: 'The free first interview offer is temporarily unavailable. You can try again later or choose a plan below.',
   },
 };
 
+/** Resposta do «Reenviar» e da confirmação do email: parâmetros próprios do endereço (`gok`, `ge`), desenhados junto da caixa da oferta. */
+export interface FreeMsg { ok?: string; e?: string }
+export const freeMsg = (q: any): FreeMsg => ({ ok: typeof q?.gok === 'string' ? q.gok : undefined, e: typeof q?.ge === 'string' ? q.ge : undefined });
+/** Endereço de volta com a resposta para junto da caixa da oferta (#gratis). */
+export const freeMsgUrl = (back: string, kind: 'ok' | 'e', msg: string) => `${back}?g${kind}=${encodeURIComponent(msg)}#gratis`;
+
 /**
  * Aviso do estado da oferta (painel e página do convite em português; Conta em inglês): disponível, falta confirmar o email
- * (com «Reenviar»), usada ou indisponível por teto (texto neutro). Vazio quando a oferta não se aplica à conta.
- * `back`: a página para onde «Reenviar» volta.
+ * (com «Reenviar»), usada ou indisponível por teto (texto neutro). Vazio quando a oferta não se aplica à conta (ou `f` null).
+ * `back`: a página para onde «Reenviar» volta. `msg`: a resposta do «Reenviar» e da confirmação do email (freeMsg), logo
+ * acima da caixa e dentro da âncora `#gratis`, para onde as duas voltam: antes, a página saltava para a caixa e a resposta,
+ * desenhada com os outros avisos no topo, ficava acima do ecrã. Sem caixa, a resposta fica sozinha no lugar dela. Os outros
+ * avisos da página (`ok`, `e`) não mudam.
  */
-export async function freeNotice(db: Db, f: FreeState, user: { id: string; email: string }, o: { lang: 'pt' | 'en'; where?: 'painel' | 'convite'; back: string }): Promise<string> {
+export async function freeNotice(db: Db, f: FreeState | null, user: { id: string; email: string }, o: { lang: 'pt' | 'en'; where?: 'painel' | 'convite'; back: string; msg?: FreeMsg }): Promise<string> {
+  const m = `${flash(o.msg?.ok)}${flash(o.msg?.e, 'bad')}`;
+  const inner = f ? await freeBox(db, f, user, o) : '';
+  return m || inner ? `<div id="gratis">${m}${inner}</div>` : '';
+}
+
+async function freeBox(db: Db, f: FreeState, user: { id: string; email: string }, o: { lang: 'pt' | 'en'; where?: 'painel' | 'convite'; back: string }): Promise<string> {
   const d = T[o.lang];
-  const box = (inner: string, kind = '') => `<div class="flash${kind ? ` ${kind}` : ''}" id="gratis">${inner}</div>`;
+  const box = (inner: string, kind = '') => `<div class="flash${kind ? ` ${kind}` : ''}">${inner}</div>`;
   if (f.eligible) return box(o.lang === 'pt' ? T.pt.eligible(await freeLimits(db), o.where ?? 'painel') : T.en.eligible(await freeLimits(db)), 'ok');
   switch (f.reason) {
-    // Sem «Reenviar» quando a conta já recebeu todos os emails de confirmação a que tem direito (VERIFY_TOTAL).
+    // Sem «Reenviar» quando já não há mais emails de confirmação para esta conta (VERIFY_TOTAL, na conta ou na caixa de correio).
     case 'unverified': return box(`${d.unverified(user.email, await lastVerificationAt(db, user.id))}
-${(await verificationsSent(db, user.id)).total >= VERIFY_TOTAL ? `<p style="margin:8px 0 0">${d.noMore}</p>` : `<form method="post" action="/confirmar-email/reenviar" style="margin-top:8px"><input type="hidden" name="voltar" value="${esc(o.back)}"><button class="ghost" style="padding:6px 14px;min-height:0">${d.resend}</button></form>`}`);
+${(await verifySent(db, user)).total >= VERIFY_TOTAL ? `<p style="margin:8px 0 0">${d.noMore}</p>` : `<form method="post" action="/confirmar-email/reenviar" style="margin-top:8px"><input type="hidden" name="voltar" value="${esc(o.back)}"><button class="ghost" style="padding:6px 14px;min-height:0">${d.resend}</button></form>`}`);
     case 'used': return box(d.used(f.usedAt));
     case 'cap_day': case 'cap_month': return box(d.cap);
     default: return '';

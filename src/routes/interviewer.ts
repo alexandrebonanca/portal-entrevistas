@@ -6,7 +6,6 @@ import { page, flash, pill, STATUS_LABEL } from '../views.ts';
 import { requireUser, ownedInterview, audit, sendAsset } from '../app.ts';
 import { sniff, stripJpegMetadata, saveAsset, probeAudio } from '../media.ts';
 import { createInvitation } from '../invites.ts';
-import { enqueue } from '../jobs.ts';
 import { aiAvailable } from '../ai/openai.ts';
 import { quotaFor, vatForProfile } from '../billing.ts';
 import { inEntity, entityOfInterview } from '../settings.ts';
@@ -19,7 +18,7 @@ import { introCard } from './intro.ts';
 import { helpNav } from '../support.ts';
 import { assistantAiFor } from '../assistant.ts';
 import { composeAction, composeDraft, composeAssist, composeAvailable, composeHourFull, COMPOSE_MAX_REQUEST, COMPOSE_BODY_LIMIT, COMPOSE_RATE } from '../compose.ts';
-import { freeInterviewFor, freeLimits, claimFree, releaseFree, freeRefusal, freeNotice, freeSendBlock } from '../free-interview.ts';
+import { freeInterviewFor, freeLimits, claimFree, releaseFree, freeRefusal, freeNotice, freeSendBlock, freeMsg, transcriptionRoom, enqueueHostTranscription, transcriptionsUsed } from '../free-interview.ts';
 
 /** Envios grátis tentados por conta e por hora (cada recusa por convidado diz algo sobre esse email: o limite trava a sondagem). */
 const FREE_TRIES_PER_HOUR = 10;
@@ -94,8 +93,9 @@ export async function interviewerRoutes(app: FastifyInstance) {
       `SELECT i.*, (SELECT count(*)::int FROM questions q WHERE q.interview_id=i.id) AS nq,
          (SELECT count(*)::int FROM answers a WHERE a.interview_id=i.id) AS na FROM interviews i
        WHERE i.owner_id=$1 OR $2='admin' ORDER BY i.created_at DESC`, [req.user!.id, req.user!.role]);
-    // Estado da 1.ª entrevista grátis (só para o entrevistador a quem a oferta se aplica; vazio nos outros casos).
-    const free = req.user!.role === 'interviewer' ? await freeNotice(db, await freeInterviewFor(db, req.user!), req.user!, { lang: 'pt', where: 'painel', back: '/painel' }) : '';
+    // Estado da 1.ª entrevista grátis (só para o entrevistador a quem a oferta se aplica; vazio nos outros casos), com a
+    // resposta do «Reenviar» e da confirmação do email junto dela (#gratis).
+    const free = await freeNotice(db, req.user!.role === 'interviewer' ? await freeInterviewFor(db, req.user!) : null, req.user!, { lang: 'pt', where: 'painel', back: '/painel', msg: freeMsg(q) });
     const body = `<div class="wrap" style="padding-top:32px"><div class="row"><h1 class="grow" style="margin:0">Entrevistas</h1><a class="btn accent" href="/entrevistas/nova">Nova entrevista</a></div>
 ${flash(q.ok)}${flash(q.e, 'bad')}${free}
 ${rows.length ? `<div class="card" style="overflow-x:auto"><table><thead><tr><th>Título</th><th>Convidado</th><th>Recolha</th><th>Produção</th><th>Publicação</th><th>Respostas</th></tr></thead><tbody>
@@ -368,15 +368,18 @@ ${locked ? '' : composePanel(iv, quota!, !(await inEntity(await entityOfIntervie
     return { ok: true, assetId: id };
   });
 
+  // Transcrição automática das gravações do entrevistador: numa conta sem pagamento, um total em 24 horas (free-interview.ts);
+  // acima dele, a gravação que seria transcrita é recusada com a explicação (422: o gravador mostra-a e não repete).
   app.post('/api/entrevistas/:id/objetivo-audio', async (req, reply) => {
     const r = await rawUpload(req, reply, 'audio'); if (!r) return;
     if (r.iv.collection_status !== 'draft') return reply.code(409).send({ error: 'Bloqueado' });
+    if (aiAvailable() && !(await transcriptionRoom(db, req.user!))) return reply.code(422).send({ error: transcriptionsUsed('objective') });
     const p = await probeAudio(r.data, r.kind.ext);
     if (!p.ok || p.durationMs < 500) return reply.code(422).send({ error: 'Gravação inválida ou vazia' });
     if (tooLong(req, p.durationMs, config.limits.maxObjectiveAudioSec)) return reply.code(422).send({ error: `Gravação demasiado longa: o objetivo pode ter até ${mmss(config.limits.maxObjectiveAudioSec)} min.` });
     const id = await saveAsset(db, { interviewId: r.iv.id, kind: 'objective_audio', mime: r.kind.mime, ext: r.kind.ext, data: r.data, durationMs: p.durationMs });
     await db.query('UPDATE interviews SET objective_asset_id=$2 WHERE id=$1', [r.iv.id, id]);
-    if (aiAvailable()) await enqueue(db, { kind: 'transcribe_asset', interviewId: r.iv.id, input: { assetId: id, sourceKind: 'objective', sourceId: r.iv.id }, dedupe: `objective:${id}` });
+    if (aiAvailable()) await enqueueHostTranscription(db, req.user!, { kind: 'transcribe_asset', interviewId: r.iv.id, input: { assetId: id, sourceKind: 'objective', sourceId: r.iv.id }, dedupe: `objective:${id}` });
     return { ok: true, assetId: id };
   });
 
@@ -386,12 +389,13 @@ ${locked ? '' : composePanel(iv, quota!, !(await inEntity(await entityOfIntervie
     if (r.iv.collection_status !== 'draft') return reply.code(409).send({ error: 'Bloqueado' });
     const q = await db.one('SELECT * FROM questions WHERE id=$2 AND interview_id=$1', [r.iv.id, (req.params as any).qid]);
     if (!q) return reply.code(404).send({ error: 'Pergunta não encontrada' });
+    if (!q.text && aiAvailable() && !(await transcriptionRoom(db, req.user!))) return reply.code(422).send({ error: transcriptionsUsed('question') });
     const p = await probeAudio(r.data, r.kind.ext);
     if (!p.ok || p.durationMs < 500) return reply.code(422).send({ error: 'Gravação inválida ou vazia' });
     if (tooLong(req, p.durationMs, config.limits.maxQuestionAudioSec)) return reply.code(422).send({ error: `Gravação demasiado longa: cada pergunta pode ter até ${mmss(config.limits.maxQuestionAudioSec)} min.` });
     const id = await saveAsset(db, { interviewId: r.iv.id, kind: 'question_audio', mime: r.kind.mime, ext: r.kind.ext, data: r.data, durationMs: p.durationMs });
     await db.query('UPDATE questions SET audio_asset_id=$2 WHERE id=$1', [q.id, id]);
-    if (!q.text && aiAvailable()) await enqueue(db, { kind: 'transcribe_asset', interviewId: r.iv.id, input: { assetId: id, sourceKind: 'question', sourceId: q.id, fillQuestion: true }, dedupe: `qaudio:${id}` });
+    if (!q.text && aiAvailable()) await enqueueHostTranscription(db, req.user!, { kind: 'transcribe_asset', interviewId: r.iv.id, input: { assetId: id, sourceKind: 'question', sourceId: q.id, fillQuestion: true }, dedupe: `qaudio:${id}` });
     return { ok: true, assetId: id };
   });
 
@@ -433,7 +437,7 @@ ${locked ? '' : composePanel(iv, quota!, !(await inEntity(await entityOfIntervie
     const extra = !quota.allowed && quota.reason === 'quota' ? await extraOffer(req.user!) : null;
     // Falta só confirmar o email (a oferta está ao alcance): o aviso diz isso, e não que é precisa uma subscrição.
     if (!quota.allowed && !extra && !free?.eligible) problems.push(free?.reason === 'unverified' ? 'Confirme o email da sua conta para enviar a 1.ª entrevista grátis, ou escolha um plano em Conta.' : 'Precisa de uma subscrição ativa para enviar convites (Conta).');
-    const notice = free ? await freeNotice(db, free, req.user!, { lang: 'pt', where: 'convite', back: `/entrevistas/${iv.id}/convidar` }) : '';
+    const notice = await freeNotice(db, free, req.user!, { lang: 'pt', where: 'convite', back: `/entrevistas/${iv.id}/convidar`, msg: freeMsg(req.query) });
     // Sem subscrição não há período nem quota (o «0/0» não diz nada a quem ainda não subscreveu).
     const body = `<div class="narrow" style="padding-top:32px"><h1>Rever e convidar</h1>${flash((req.query as any).ok)}${flash((req.query as any).e, 'bad')}${req.user!.role === 'entity_admin' ? `<p class="hint sans">Gestor de entidade: convida sem subscrição e sem limite mensal de entrevistas (${quota.used} este mês); os limites de cada entrevista mantêm-se.</p>` : quota.unlimited || quota.reason === 'no_subscription' ? '' : `<p class="hint sans">Uso neste período: ${quota.used}/${quota.limit}</p>`}
 ${notice}${problems.length ? `<div class="flash bad"><strong>Antes de enviar:</strong><ul>${problems.map(p => `<li>${esc(p)}</li>`).join('')}</ul></div>` : ''}

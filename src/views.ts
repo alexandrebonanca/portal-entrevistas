@@ -51,7 +51,7 @@ video.cam{width:100%;max-height:60vh;border-radius:12px;background:#000;transfor
 .compose{position:fixed;right:16px;bottom:16px;width:min(380px,calc(100vw - 32px));max-height:min(60vh,760px);overflow:auto;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px;box-shadow:0 12px 32px rgba(0,0,0,.22);z-index:30;font-family:system-ui}
 .compose textarea{min-height:56px}.compose .row{gap:8px;flex-wrap:wrap}.compose button{font-size:.9rem;padding:9px 14px;min-height:40px}.compose h2{font-size:1.05rem;margin:0}
 .compose-tips{margin:10px 0;padding-left:18px;font-size:.9rem;color:var(--mute)}.compose-tips li{margin:4px 0}.compose-item{border-top:1px solid var(--line);padding:10px 0;font-size:.95rem}.compose-item p{margin:4px 0}.compose-item.used{border-left:3px solid var(--ok);padding-left:10px}
-#nq,#fq{scroll-margin-top:40vh}.compose-fab{position:fixed;right:16px;bottom:16px;z-index:29;box-shadow:0 6px 18px rgba(0,0,0,.22)}
+#nq,#fq{scroll-margin-top:40vh}#gratis{scroll-margin-top:12px}.compose-fab{position:fixed;right:16px;bottom:16px;z-index:29;box-shadow:0 6px 18px rgba(0,0,0,.22)}
 @media (min-width:1180px){.compose{top:88px;max-height:none}body.compose-open .editor{margin-left:max(0px,calc((100vw - 1440px)/2));max-width:min(1040px,calc(100vw - 420px))}}
 .badge{display:inline-block;min-width:1.5em;padding:0 .45em;border-radius:99px;background:var(--accent);color:var(--accent-ink);font:700 .75rem/1.6 system-ui,-apple-system,'Segoe UI',sans-serif;text-align:center;vertical-align:1px}
 .vh{position:absolute!important;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}

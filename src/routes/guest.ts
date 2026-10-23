@@ -15,6 +15,7 @@ import { storage } from '../storage.ts';
 import { inEntity, entityOfInterview } from '../settings.ts';
 import { answeredMs, secondsLeft, mmss, LIMIT_SLACK_MS } from '../limits.ts';
 import { guestHelpNav } from '../support.ts';
+import { takeAiUse, giveBackAiUse, FREE_READINGS_PER_QUESTION } from '../free-interview.ts';
 
 const H = { 'Content-Type': 'text/html; charset=utf-8' };
 
@@ -288,8 +289,13 @@ ${q.audio_asset_id ? `<p><audio controls preload="none" src="/api/g/media/${q.au
     if (asset && (asset.meta?.voice !== READING_VOICES[gender] || asset.meta?.text !== q.text)) asset = null;
     if (!asset) {
       if (!rateLimit(`tts:${iv.id}`, 30, 3600_000)) return reply.code(429).send();
+      // 1.ª entrevista grátis: leituras novas com total por entrevista, contado na base (a voz das perguntas pode mudar depois
+      // do convite, e cada mudança refaz as leituras); acima dele, 404 e a página usa a leitura do navegador.
+      const free = !!iv.free_at;
+      const nq = free ? Number((await db.one('SELECT count(*)::int AS n FROM questions WHERE interview_id=$1', [iv.id]))?.n ?? 0) : 0;
+      if (free && !(await takeAiUse(db, iv.id, 'question_reading', FREE_READINGS_PER_QUESTION * nq))) return reply.code(404).send();
       const s = await inEntity(ent, () => readQuestion(q.text, gender, iv.interaction_lang)).catch((e: any) => { req.log.error({ err: String(e?.message ?? e) }, 'leitura da pergunta falhou'); return null; });
-      if (!s) return reply.code(404).send();
+      if (!s) { if (free) await giveBackAiUse(db, iv.id, 'question_reading'); return reply.code(404).send(); }
       const id = await saveAsset(db, { interviewId: iv.id, kind: 'question_tts', mime: s.mime, ext: s.ext, data: s.data, meta: { voice: s.voice, text: q.text } });
       await db.query('UPDATE questions SET tts_asset_id=$2 WHERE id=$1', [q.id, id]);
       asset = await db.one('SELECT * FROM assets WHERE id=$1', [id]);

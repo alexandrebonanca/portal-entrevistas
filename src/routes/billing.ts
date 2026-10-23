@@ -11,7 +11,7 @@ import { withVat, eurEn, eurPt, fmtRate, normNif, normPostal, normVatNumber, isE
 import { queueEmail, emailShell } from '../mail.ts';
 import { rateForTier, quoteTier } from '../quotes.ts';
 import { helpNav } from '../support.ts';
-import { freeInterviewFor, freeNotice } from '../free-interview.ts';
+import { freeInterviewFor, freeNotice, freeMsg } from '../free-interview.ts';
 
 /** Mensagem nas duas línguas (a área de faturação é em inglês; o português é obrigatório para os consumidores). */
 const both = (m: { pt: string; en: string }) => `${m.en} · ${m.pt}`;
@@ -58,7 +58,7 @@ export async function billingRoutes(app: FastifyInstance) {
     const wallet = isAdmin ? null : await findWallet(db, req.user.id, req.user.entity_id);
     const home = homeConsumerRate(s);
     // 1.ª entrevista grátis (entrevistador sem entidade nem subscrição): disponível, falta confirmar o email, usada ou indisponível.
-    const freeBox = isAdmin || manager ? '' : await freeNotice(db, await freeInterviewFor(db, req.user), req.user, { lang: 'en', back: '/account' });
+    const freeBox = await freeNotice(db, isAdmin || manager ? null : await freeInterviewFor(db, req.user), req.user, { lang: 'en', back: '/account', msg: freeMsg(q) });
 
     // Preço: empresas «+ VAT»; consumidores o valor com IVA primeiro, também em português.
     const price = (p: any) => {

@@ -335,7 +335,7 @@ export const FAQ_VAR_HELP: Record<string, string> = {
   quoteValidDays: 'dias de validade de um orçamento', startDeadlineHours: 'horas para a produção de um orçamento aceite arrancar',
   ownerName: 'entidade gestora', sellerName: 'quem comercializa (Definições «Empresa vendedora»)',
   logDays: 'dias de conservação do registo das perguntas ao assistente',
-  verifyPerDay: 'emails de confirmação do email da conta em 24 horas (o do registo incluído)', verifyTotal: 'emails de confirmação do email da conta ao todo',
+  verifyPerDay: 'emails de confirmação do email da conta em 24 horas, por conta e por caixa de correio (o do registo incluído)', verifyTotal: 'emails de confirmação do email da conta ao todo, por conta e por caixa de correio',
 };
 /**
  * Blocos condicionais da base: o texto entre `{?nome}` e `{/nome}` só aparece com a condição verdadeira (por exemplo,

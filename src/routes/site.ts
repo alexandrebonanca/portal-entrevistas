@@ -7,8 +7,16 @@ import { landing } from '../landing.ts';
 import { S } from '../settings.ts';
 import { privacyBody } from '../privacy.ts';
 import { tagsFrom, ownHosts, trackVisit, campaignQuery, campaignInputs, fromOwnSite, carriedTags, withCampaign, type Tags } from '../metrics.ts';
-import { freeOfferOn, freeLimits } from '../free-interview.ts';
+import { freeOfferOn, freeLimits, freeMsgUrl } from '../free-interview.ts';
 import { sendVerification, verificationState, confirmEmail, VERIFY_HOURS, VERIFY_RESEND_PER_HOUR, VERIFY_PER_DAY, VERIFY_TOTAL } from '../email-verify.ts';
+
+/**
+ * Registos públicos (sem entidade) por IP em 24 horas, em memória, além dos 10 por hora de todos os registos. Cada registo
+ * público põe na fila um email de confirmação para um endereço qualquer (e até 2 reenvios por dia): com 10 por hora, um só
+ * IP abria 240 contas por dia e enchia sozinho o teto diário dos emails de confirmação (300). Os registos pelo link de uma
+ * entidade (sem email de confirmação nem oferta) e a primeira conta não contam. Volta a zero quando o servidor reinicia.
+ */
+export const PUBLIC_SIGNUPS_PER_IP_DAY = 20;
 
 /** Páginas para onde «Reenviar» (email de confirmação) pode voltar; outra qualquer volta ao painel. */
 const resendBack = (v: unknown) => (typeof v === 'string' && (v === '/painel' || v === '/account' || /^\/entrevistas\/[0-9a-f-]{36}\/convidar$/.test(v)) ? v : '/painel');
@@ -115,6 +123,7 @@ export async function siteRoutes(app: FastifyInstance) {
     if (await db.one('SELECT 1 FROM users WHERE email=$1', [email])) return again('That email is already registered.');
     const first = (await userCount()) === 0;
     const ent = !first && slug ? await db.one('SELECT id FROM entities WHERE slug=$1 AND active', [slug]) : null;
+    if (!first && !ent && !rateLimit(`signup-day:${req.ip}`, PUBLIC_SIGNUPS_PER_IP_DAY, 86400_000)) return again('Too many sign-ups from this address today. Please try again tomorrow.');
     // Email confirmado à partida: a primeira conta (administradora) e as de uma entidade (pelo link de registo da entidade,
     // que não têm a 1.ª entrevista grátis); o registo público recebe o email «Confirm your email».
     const verified = first || !!ent;
@@ -158,29 +167,33 @@ export async function siteRoutes(app: FastifyInstance) {
     if (r.result === 'ok' || r.result === 'already') {
       const u = await db.one('SELECT email FROM users WHERE id=$1', [r.userId]);
       if (r.result === 'ok' && u) await audit(db, u.email, 'email.verified', null);
-      if (req.user?.id === r.userId) return reply.redirect('/painel?ok=' + encodeURIComponent('Email confirmado.') + '#gratis');
+      if (req.user?.id === r.userId) return reply.redirect(freeMsgUrl('/painel', 'ok', 'Email confirmado.'));
       return verifyPage(reply, `<p>Your email is confirmed.</p>${signIn(req)}`);
     }
     return verifyPage(reply, `<p>${r.result === 'used' ? VERIFY_MSG.used(!!r.verified) : VERIFY_MSG[r.result]}</p>${signIn(req)}`, verifyCode(r.result));
   });
 
-  // «Reenviar» (painel, página do convite ou Conta): um link novo, dentro do total da conta (VERIFY_PER_DAY em 24 horas e
-  // VERIFY_TOTAL ao todo, o do registo incluído, contados na base) e do teto global dos emails de confirmação; em memória,
+  // «Reenviar» (painel, página do convite ou Conta): um link novo, dentro dos totais da conta e da caixa de correio do email
+  // dela (VERIFY_PER_DAY em 24 horas e VERIFY_TOTAL ao todo, o do registo incluído, contados na base) e do teto global dos
+  // emails de confirmação; em memória,
   // no máximo VERIFY_RESEND_PER_HOUR pedidos por conta e por hora. Com a oferta desligada, nenhum (o email fala da
   // entrevista grátis).
   app.post('/confirmar-email/reenviar', async (req, reply) => {
     if (!req.user) return reply.redirect('/entrar');
     const back = resendBack((req.body as any)?.voltar), en = back === '/account';
-    const go = (kind: 'ok' | 'e', pt: string, enMsg: string) => reply.redirect(`${back}?${kind}=${encodeURIComponent(en ? enMsg : pt)}#gratis`);
+    // A resposta vai para junto da caixa da oferta (#gratis, para onde a página salta), e não para o topo da página.
+    const go = (kind: 'ok' | 'e', pt: string, enMsg: string) => reply.redirect(freeMsgUrl(back, kind, en ? enMsg : pt));
     if (!freeOfferOn()) return go('e', 'A 1.ª entrevista grátis não está disponível neste momento: não é preciso confirmar o email.', 'The free first interview is not offered at the moment, so there is no need to confirm your email.');
     if (!rateLimit(`verify-resend:${req.user.id}`, VERIFY_RESEND_PER_HOUR, 3600_000))
       return go('e', 'Já pediu vários emails de confirmação nesta hora. Tente mais tarde.', 'You have asked for several confirmation emails this hour. Please try again later.');
     const r = await sendVerification(db, req.user.id);
     if (r === 'verified') return go('ok', 'O seu email já está confirmado.', 'Your email is already confirmed.');
-    if (r === 'total_limit') return go('e', `Já enviámos a esta conta o número máximo de emails de confirmação (${VERIFY_TOTAL}): não é possível pedir outro. Procure-os na sua caixa de correio (também no spam).`,
-      `We have already sent this account the maximum number of confirmation emails (${VERIFY_TOTAL}), so no more can be requested. Look for them in your inbox (and spam folder).`);
-    if (r === 'day_limit') return go('e', `Já enviámos ${VERIFY_PER_DAY} emails de confirmação a esta conta nas últimas 24 horas. Procure-os na sua caixa de correio (também no spam) ou peça outro mais tarde.`,
-      `We have sent ${VERIFY_PER_DAY} confirmation emails to this account in the last 24 hours. Look for them in your inbox (and spam folder) or ask for another one later.`);
+    // Totais da conta e da caixa de correio do email dela, com a mesma resposta (verdadeira nos dois casos): nada se diz a quem
+    // ainda não provou o endereço sobre outras contas com a mesma caixa.
+    if (r === 'total_limit') return go('e', `Já enviámos para o email desta conta o número máximo de emails de confirmação (${VERIFY_TOTAL}): não é possível pedir outro. Procure-os na sua caixa de correio (também no spam).`,
+      `We have already sent the maximum number of confirmation emails (${VERIFY_TOTAL}) to this account’s email address, so no more can be requested. Look for them in your inbox (and spam folder).`);
+    if (r === 'day_limit') return go('e', `Já enviámos ${VERIFY_PER_DAY} emails de confirmação para o email desta conta nas últimas 24 horas. Procure-os na sua caixa de correio (também no spam) ou peça outro mais tarde.`,
+      `We have sent ${VERIFY_PER_DAY} confirmation emails to this account’s email address in the last 24 hours. Look for them in your inbox (and spam folder) or ask for another one later.`);
     if (r !== 'sent') return go('e', 'Não foi possível enviar o email agora. Tente mais tarde.', 'We could not send the email right now. Please try again later.');
     await audit(db, req.user.email, 'email.verification_sent', null);
     return go('ok', `Enviámos uma ligação nova para ${req.user.email}.`, `We sent a new link to ${req.user.email}.`);

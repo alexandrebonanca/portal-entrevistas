@@ -23,6 +23,7 @@ import { withVat, eurPt } from '../vat.ts';
 import { quoteSection } from './quotes.ts';
 import { introProductionHint } from './intro.ts';
 import { helpNav } from '../support.ts';
+import { takeAiUse, giveBackAiUse, aiUsed, FREE_SCRIPT_REVIEWS, FREE_REVIEWS_USED } from '../free-interview.ts';
 
 /** Os retratos animados (Replicate) ficam reservados ao administrador. */
 const ANIMATE_ADMIN_ONLY = 'Os retratos animados por IA (Replicate) estão reservados ao administrador. A animação com o Google Veo faz-se por orçamento, na secção «Animação por IA».';
@@ -199,6 +200,8 @@ ${iv.production_status === 'failed' ? `<form method="post" action="/entrevistas/
       const trs = [];
       for (const it of items) trs.push({ it, a: it.selected_take_id ? await latestTranscript(db, 'answer_take', it.selected_take_id) : null });
       const editable = script.status === 'draft';
+      // 1.ª entrevista grátis: verificações de fidelidade por IA com total por entrevista (o administrador não conta).
+      const reviewsLeft = editable && iv.free_at && req.user!.role !== 'admin' ? FREE_SCRIPT_REVIEWS - await aiUsed(db, iv.id, 'script_review') : null;
       body += `<div class="card"><h2 style="margin-top:0">2. Transcrições (originais)</h2>${iv.production_status === 'stale' ? '<div class="flash bad">As respostas mudaram depois do guião: aprovações invalidadas. Regenere o guião.</div>' : ''}
 ${trs.map(({ it, a }) => `<div class="seg"><strong>${it.position}. ${esc(it.text)}</strong>${it.asset_id ? `<br><audio controls preload="none" src="/media/${it.asset_id}"></audio>` : ''}
 ${a ? `<form method="post" action="/entrevistas/${iv.id}/transcricoes/${it.selected_take_id}"><textarea name="text" aria-label="Transcrição">${esc(a.text)}</textarea><button class="ghost">Guardar nova revisão (r${a.revision + 1})</button> <span class="hint">r${a.revision} · ${esc(a.origin)}</span></form>` : '<span class="hint">sem transcrição</span>'}</div>`).join('')}
@@ -212,9 +215,9 @@ ${segs.map((s, i) => `<div class="seg ${s.speakerRole} ${flagged.has(s.id) ? 'fl
 ${flags.filter((f: any) => f.segmentId === s.id).map((f: any) => `<div class="hint" style="color:var(--warn)">⚑ ${esc(f.reason)}</div>`).join('')}
 <textarea name="seg_${i}" ${editable ? '' : 'readonly'} aria-label="Segmento ${esc(s.id)}">${esc(s.textEnglish)}</textarea></div>`).join('')}
 ${editable ? '<button class="ghost">Guardar como nova revisão (humana)</button>' : ''}</form>
-${editable ? `<div class="row" style="margin-top:12px"><form method="post" action="/entrevistas/${iv.id}/guiao/verificar"><button class="ghost" ${aiAvailable() ? '' : 'disabled'}>Verificação de fidelidade (assistente)</button></form>
+${editable ? `<div class="row" style="margin-top:12px"><form method="post" action="/entrevistas/${iv.id}/guiao/verificar"><button class="ghost" ${aiAvailable() && (reviewsLeft == null || reviewsLeft > 0) ? '' : 'disabled'}>Verificação de fidelidade (assistente)</button></form>
 <form method="post" action="/entrevistas/${iv.id}/guiao/aprovar" onsubmit="return confirm('Aprovar este guião para síntese de voz?')"><label class="check"><input type="checkbox" name="reviewed" value="1" required> Revi o guião contra as transcrições</label><button class="accent" ${blocking.length ? 'disabled' : ''}>Aprovar guião para síntese</button></form></div>
-<p class="hint">O assistente só assinala possíveis problemas; nunca aprova nem substitui a revisão humana.</p>` : ''}</div>`;
+<p class="hint">O assistente só assinala possíveis problemas; nunca aprova nem substitui a revisão humana.${reviewsLeft == null ? '' : reviewsLeft > 0 ? ` 1.ª entrevista grátis: <span id="verificacoes">${FREE_SCRIPT_REVIEWS - reviewsLeft} de ${FREE_SCRIPT_REVIEWS}</span> verificações usadas.` : ` ${esc(FREE_REVIEWS_USED)}`}</p>` : ''}</div>`;
 
       if (script.status === 'approved' && !running && !['ready', 'qc'].includes(iv.production_status)) {
         const photos = coverOk ? await db.query('SELECT p.id, p.asset_id FROM photos p WHERE p.interview_id=$1', [iv.id]) : [];
@@ -425,6 +428,9 @@ ${ep.visibility === 'public' ? `<form method="post" action="/entrevistas/${iv.id
     if (!rateLimit(`review:${iv.id}`, 6, 3600_000)) return back(reply, iv.id, undefined, 'Limite de verificações atingido.');
     const s = await db.one(`SELECT * FROM scripts WHERE interview_id=$1 AND status='draft' ORDER BY revision DESC LIMIT 1`, [iv.id]);
     if (!s) return back(reply, iv.id, undefined, 'Sem guião editável.');
+    // 1.ª entrevista grátis: total por entrevista, contado na base antes de chamar a IA; se a verificação falhar, a vez volta.
+    const counted = !!iv.free_at && req.user!.role !== 'admin';
+    if (counted && !(await takeAiUse(db, iv.id, 'script_review', FREE_SCRIPT_REVIEWS))) return back(reply, iv.id, undefined, FREE_REVIEWS_USED);
     const items = await db.query(`SELECT q.id, q.text, a.selected_take_id FROM questions q LEFT JOIN answers a ON a.question_id=q.id WHERE q.interview_id=$1 ORDER BY q.position`, [iv.id]);
     const tr = [];
     for (const it of items) tr.push({ questionId: it.id, question: it.text, answer: it.selected_take_id ? (await latestTranscript(db, 'answer_take', it.selected_take_id))?.text : null });
@@ -433,7 +439,10 @@ ${ep.visibility === 'public' ? `<form method="post" action="/entrevistas/${iv.id
       const flags = [...s.review_flags, ...r.issues.map((i: any) => ({ segmentId: String(i.scriptSegmentId), reason: `[${i.severity}] ${i.explanation}` }))];
       await db.query('UPDATE scripts SET review_flags=$2 WHERE id=$1', [s.id, JSON.stringify(flags)]);
       return back(reply, iv.id, r.issues.length ? `${r.issues.length} possíveis problemas assinalados.` : 'Sem alertas — isto não substitui a revisão humana.');
-    } catch (e: any) { return back(reply, iv.id, undefined, 'Falha na verificação: ' + String(e.message).slice(0, 120)); }
+    } catch (e: any) {
+      if (counted) await giveBackAiUse(db, iv.id, 'script_review');
+      return back(reply, iv.id, undefined, 'Falha na verificação: ' + String(e.message).slice(0, 120));
+    }
   });
 
   app.post('/entrevistas/:id/guiao/aprovar', async (req, reply) => {

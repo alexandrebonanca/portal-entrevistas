@@ -1,6 +1,6 @@
 import type { Db } from './db.ts';
 import { config } from './config.ts';
-import { esc, newToken, sha256 } from './lib.ts';
+import { esc, newToken, sha256, normMailbox } from './lib.ts';
 import { queueEmail, emailShell } from './mail.ts';
 
 /**
@@ -16,9 +16,12 @@ export const VERIFY_HOURS = 48;
 /** «Reenviar»: pedidos por conta e por hora (em memória, contra pedidos em série; os emails contam-se na base, abaixo). */
 export const VERIFY_RESEND_PER_HOUR = 10;
 /**
- * Emails de confirmação por conta, contados na base (`email_verifications`, o do registo incluído): no máximo
- * VERIFY_PER_DAY em 24 horas e VERIFY_TOTAL ao todo. O endereço nunca foi provado: sem este total, uma conta registada
- * com o email de outra pessoa mandava-lhe emails sem fim. Acima dele, nada se envia e o teto global não se gasta.
+ * Emails de confirmação por conta e por caixa de correio, contados na base (`email_verifications`, o do registo incluído):
+ * no máximo VERIFY_PER_DAY em 24 horas e VERIFY_TOTAL ao todo, em cada conta e, somadas todas as contas, em cada caixa de
+ * correio (o email normalizado como na 1.ª entrevista grátis, `normMailbox`: sem o «+…» e, no Gmail, sem pontos; a
+ * impressão fica em `mailbox_hash`). O endereço nunca foi provado: sem o total por conta, uma conta registada com o email
+ * de outra pessoa mandava-lhe emails sem fim; sem o da caixa, várias contas com variantes do mesmo endereço (vitima+1@…,
+ * vitima+2@…, v.i.tima@gmail.com) multiplicavam-nos. Acima deles, nada se envia e o teto global não se gasta.
  */
 export const VERIFY_PER_DAY = 3;
 export const VERIFY_TOTAL = 5;
@@ -38,6 +41,9 @@ async function capReached(t: Db) {
 }
 
 let lastCapWarn = 0;
+/** Impressão (sha256) da caixa de correio de um email, guardada com cada link enviado (`email_verifications.mailbox_hash`). */
+export const mailboxHash = (email: string) => sha256(`verify-mailbox:${normMailbox(email)}`);
+
 /** Emails de confirmação já enviados à conta: nas últimas 24 horas e ao todo (contra VERIFY_PER_DAY e VERIFY_TOTAL). */
 export async function verificationsSent(db: Db, userId: string): Promise<{ day: number; total: number }> {
   const r = await db.one(`SELECT count(*) FILTER (WHERE created_at > now() - interval '1 day')::int AS day, count(*)::int AS total
@@ -46,12 +52,24 @@ export async function verificationsSent(db: Db, userId: string): Promise<{ day: 
 }
 
 /**
+ * O que conta para o próximo email de confirmação da conta: o maior dos dois totais, o da conta e o da caixa de correio do
+ * email dela (todas as contas com o mesmo email normalizado), nas últimas 24 horas e ao todo.
+ */
+export async function verifySent(db: Db, user: { id: string; email: string }): Promise<{ day: number; total: number }> {
+  const a = await verificationsSent(db, user.id);
+  const m = await db.one(`SELECT count(*) FILTER (WHERE created_at > now() - interval '1 day')::int AS day, count(*)::int AS total
+    FROM email_verifications WHERE mailbox_hash=$1`, [mailboxHash(user.email)]);
+  return { day: Math.max(a.day, Number(m?.day ?? 0)), total: Math.max(a.total, Number(m?.total ?? 0)) };
+}
+
+/**
  * Põe na fila o email com um link novo (os anteriores continuam válidos até expirarem). 'verified': a conta já está
- * confirmada (nada a enviar); 'total_limit' e 'day_limit': a conta já recebeu VERIFY_TOTAL emails, ou VERIFY_PER_DAY nas
- * últimas 24 horas (nada enviado, e o teto global fica como estava); 'cap': teto global atingido (nada enviado; o painel
- * deixa pedir outro mais tarde). Os totais da conta contam-se com o mesmo bloqueio do teto global (dois pedidos em
- * simultâneo não passam os dois). O email é fixo: nunca leva texto escrito por quem se registou (nem o nome), porque o
- * endereço pode ser de outra pessoa.
+ * confirmada (nada a enviar); 'total_limit' e 'day_limit': a conta, ou a caixa de correio do email dela, já recebeu
+ * VERIFY_TOTAL emails, ou VERIFY_PER_DAY nas últimas 24 horas (nada enviado, e o teto global fica como estava; a mesma
+ * resposta nos dois casos, para nada se dizer a quem não provou o endereço sobre outras contas com a mesma caixa); 'cap':
+ * teto global atingido (nada enviado; o painel deixa pedir outro mais tarde). Os totais contam-se com o mesmo bloqueio do
+ * teto global (dois pedidos em simultâneo, da mesma conta ou de duas contas com a mesma caixa, não passam os dois). O email
+ * é fixo: nunca leva texto escrito por quem se registou (nem o nome), porque o endereço pode ser de outra pessoa.
  */
 export async function sendVerification(db: Db, userId: string): Promise<'sent' | 'verified' | 'day_limit' | 'total_limit' | 'cap' | 'gone'> {
   const r = await db.tx(async t => {
@@ -59,13 +77,13 @@ export async function sendVerification(db: Db, userId: string): Promise<'sent' |
     const u = await t.one('SELECT email, email_verified_at FROM users WHERE id=$1', [userId]);
     if (!u) return 'gone' as const;
     if (u.email_verified_at) return 'verified' as const;
-    const n = await verificationsSent(t, userId);
+    const n = await verifySent(t, { id: userId, email: u.email });
     if (n.total >= VERIFY_TOTAL) return 'total_limit' as const;
     if (n.day >= VERIFY_PER_DAY) return 'day_limit' as const;
     if (await capReached(t)) return 'cap' as const;
     const token = newToken(32);
-    const v = await t.one(`INSERT INTO email_verifications(user_id, token_hash, expires_at) VALUES ($1,$2, now() + ($3 || ' hours')::interval) RETURNING id`,
-      [userId, sha256(token), String(VERIFY_HOURS)]);
+    const v = await t.one(`INSERT INTO email_verifications(user_id, token_hash, mailbox_hash, expires_at) VALUES ($1,$2,$3, now() + ($4 || ' hours')::interval) RETURNING id`,
+      [userId, sha256(token), mailboxHash(u.email), String(VERIFY_HOURS)]);
     const url = `${config.baseUrl}/confirmar-email/${token}`;
     const b = config.brand;
     const lines = [

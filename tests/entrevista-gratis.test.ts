@@ -24,6 +24,8 @@ const A = await import('../src/assistant.ts');
 const F = await import('../src/free-interview.ts');
 const M = await import('../src/metrics.ts');
 const { VERIFY_PER_DAY, VERIFY_TOTAL } = await import('../src/email-verify.ts');
+const { makeToneWav } = await import('../src/media.ts');
+const { PUBLIC_SIGNUPS_PER_IP_DAY } = await import('../src/routes/site.ts');
 const sharp = (await import('sharp')).default;
 
 let db: any, app: any;
@@ -153,7 +155,7 @@ test('registo: email «Confirm your email» sem texto de quem se regista, token 
   // com a sessão da própria conta: volta ao painel
   const carla = await register('Carla', 'carla@example.com');
   r = await post('/confirmar-email', { token: tokenOf((await verifyMails('carla@example.com'))[0].text_body) }, carla.ck);
-  assert.equal(r.headers.location, '/painel?ok=Email%20confirmado.#gratis');
+  assert.equal(r.headers.location, '/painel?gok=Email%20confirmado.#gratis');
   assert.ok((await userOf(carla.id)).email_verified_at);
 });
 
@@ -163,17 +165,17 @@ test('«Reenviar»: link novo (o anterior continua válido), 3 em 24 horas com o
   assert.match(painel, /<strong>A sua 1\.ª entrevista é grátis<\/strong>, depois de confirmar o email da sua conta\. Enviámos uma ligação para bia@example\.com/);
   assert.match(painel, /<form method="post" action="\/confirmar-email\/reenviar"[^>]*><input type="hidden" name="voltar" value="\/painel"><button[^>]*>Reenviar<\/button>/);
   let r = await post('/confirmar-email/reenviar', { voltar: '/painel' }, bia.ck);
-  assert.match(msgOf(r), /^\/painel\?ok=Enviámos uma ligação nova para bia@example\.com\.#gratis$/);
+  assert.match(msgOf(r), /^\/painel\?gok=Enviámos uma ligação nova para bia@example\.com\.#gratis$/);
   assert.equal((await verifyMails('bia@example.com')).length, 2);
   // a página de origem: só as do portal (outra qualquer volta ao painel)
   r = await post('/confirmar-email/reenviar', { voltar: 'https://evil.example/x' }, bia.ck);
-  assert.match(msgOf(r), /^\/painel\?ok=/);
+  assert.match(msgOf(r), /^\/painel\?gok=/);
   assert.equal((await verifyMails('bia@example.com')).length, VERIFY_PER_DAY);
   // 3 emails em 24 horas, o do registo incluído: o pedido seguinte não envia (na Conta, em inglês, a mensagem em inglês)
   r = await post('/confirmar-email/reenviar', { voltar: '/account' }, bia.ck);
-  assert.match(msgOf(r), /^\/account\?e=We have sent 3 confirmation emails to this account in the last 24 hours\. Look for them in your inbox \(and spam folder\) or ask for another one later\.#gratis$/);
+  assert.match(msgOf(r), /^\/account\?ge=We have sent 3 confirmation emails to this account’s email address in the last 24 hours\. Look for them in your inbox \(and spam folder\) or ask for another one later\.#gratis$/);
   r = await post('/confirmar-email/reenviar', { voltar: '/painel' }, bia.ck);
-  assert.match(msgOf(r), /e=Já enviámos 3 emails de confirmação a esta conta nas últimas 24 horas\. Procure-os na sua caixa de correio \(também no spam\) ou peça outro mais tarde\./);
+  assert.match(msgOf(r), /ge=Já enviámos 3 emails de confirmação para o email desta conta nas últimas 24 horas\. Procure-os na sua caixa de correio \(também no spam\) ou peça outro mais tarde\./);
   assert.equal((await verifyMails('bia@example.com')).length, 3, 'o 4.º pedido em 24 horas não envia');
   // os links anteriores continuam válidos até expirarem (cada um uma vez)
   const mails = await verifyMails('bia@example.com');
@@ -185,7 +187,7 @@ test('«Reenviar»: link novo (o anterior continua válido), 3 em 24 horas com o
   assert.equal((await post('/confirmar-email/reenviar', { voltar: '/painel' })).headers.location, '/entrar');
   // já confirmada
   const carla = `sid=${cookies(await post('/entrar', { email: 'carla@example.com', password: PW })).sid}`;
-  assert.match(msgOf(await post('/confirmar-email/reenviar', { voltar: '/painel' }, carla)), /ok=O seu email já está confirmado/);
+  assert.match(msgOf(await post('/confirmar-email/reenviar', { voltar: '/painel' }, carla)), /gok=O seu email já está confirmado/);
 
   // teto global (contado na fila de emails): acima dele, a conta fica criada sem email e o painel deixa pedir outro
   const n = Number((await db.one(`SELECT count(*)::int n FROM emails WHERE starts_with(dedupe_key, 'verify:')`)).n);
@@ -194,14 +196,14 @@ test('«Reenviar»: link novo (o anterior continua válido), 3 em 24 horas com o
     assert.equal((await verifyMails('dora@example.com')).length, 0);
     assert.equal((await db.one(`SELECT meta FROM audit_events WHERE action='signup' AND actor='dora@example.com'`)).meta.emailVerification, 'cap');
     assert.match((await get('/painel', dora.ck)).body, /Ainda não foi possível enviar a ligação para dora@example\.com: carregue em «Reenviar»/);
-    assert.match(msgOf(await post('/confirmar-email/reenviar', { voltar: '/painel' }, dora.ck)), /e=Não foi possível enviar o email agora/);
+    assert.match(msgOf(await post('/confirmar-email/reenviar', { voltar: '/painel' }, dora.ck)), /ge=Não foi possível enviar o email agora/);
   });
   await withLimits({ verifyEmailsPerDay: 0 }, async () => {
     const dora = `sid=${cookies(await post('/entrar', { email: 'dora@example.com', password: PW })).sid}`;
-    assert.match(msgOf(await post('/confirmar-email/reenviar', { voltar: '/painel' }, dora)), /e=Não foi possível enviar/, '0 desliga os emails de confirmação');
+    assert.match(msgOf(await post('/confirmar-email/reenviar', { voltar: '/painel' }, dora)), /ge=Não foi possível enviar/, '0 desliga os emails de confirmação');
   });
   const dora = `sid=${cookies(await post('/entrar', { email: 'dora@example.com', password: PW })).sid}`;
-  assert.match(msgOf(await post('/confirmar-email/reenviar', { voltar: '/painel' }, dora)), /ok=Enviámos uma ligação nova/);
+  assert.match(msgOf(await post('/confirmar-email/reenviar', { voltar: '/painel' }, dora)), /gok=Enviámos uma ligação nova/);
   assert.equal((await verifyMails('dora@example.com')).length, 1);
 });
 
@@ -216,7 +218,7 @@ test('«Reenviar» do email de confirmação: total por conta contado na base (3
   try {
     for (let h = 1; h <= 72; h++) {
       t += 3600_000 + 5000;
-      for (let k = 0; k < 4; k++) if (/[?]ok=/.test(msgOf(await post('/confirmar-email/reenviar', { voltar: '/painel' }, vi.ck)))) ok++;
+      for (let k = 0; k < 4; k++) if (/[?]gok=/.test(msgOf(await post('/confirmar-email/reenviar', { voltar: '/painel' }, vi.ck)))) ok++;
     }
   } finally { Date.now = realNow; }
   const at = (await verifyMails('vitima.verif@victim.example')).map((m: any) => new Date(m.created_at).getTime());
@@ -227,25 +229,25 @@ test('«Reenviar» do email de confirmação: total por conta contado na base (3
   const wa = await register('Wanda', 'wanda@example.com');
   const allVerify = async () => Number((await db.one(`SELECT count(*)::int n FROM emails WHERE starts_with(dedupe_key, 'verify:')`)).n);
   const again = (voltar = '/painel') => post('/confirmar-email/reenviar', { voltar }, wa.ck);
-  for (let i = 1; i < VERIFY_PER_DAY; i++) assert.match(msgOf(await again()), /[?]ok=Enviámos uma ligação nova/);
+  for (let i = 1; i < VERIFY_PER_DAY; i++) assert.match(msgOf(await again()), /[?]gok=Enviámos uma ligação nova/);
   let before = await allVerify();
-  assert.match(msgOf(await again()), /e=Já enviámos 3 emails de confirmação a esta conta nas últimas 24 horas/);
+  assert.match(msgOf(await again()), /ge=Já enviámos 3 emails de confirmação para o email desta conta nas últimas 24 horas/);
   assert.equal(await allVerify(), before, 'a recusa não põe nada na fila (o teto global fica como estava)');
   await db.query(`UPDATE email_verifications SET created_at = created_at - interval '25 hours' WHERE user_id=$1`, [wa.id]);
-  for (let i = VERIFY_PER_DAY; i < VERIFY_TOTAL; i++) assert.match(msgOf(await again()), /[?]ok=Enviámos uma ligação nova/);
+  for (let i = VERIFY_PER_DAY; i < VERIFY_TOTAL; i++) assert.match(msgOf(await again()), /[?]gok=Enviámos uma ligação nova/);
   assert.equal((await verifyMails('wanda@example.com')).length, VERIFY_TOTAL);
   await db.query(`UPDATE email_verifications SET created_at = created_at - interval '30 days' WHERE user_id=$1`, [wa.id]);
   before = await allVerify();
-  assert.match(msgOf(await again()), /e=Já enviámos a esta conta o número máximo de emails de confirmação \(5\): não é possível pedir outro\. Procure-os na sua caixa de correio \(também no spam\)\./);
-  assert.match(msgOf(await again('/account')), /^\/account\?e=We have already sent this account the maximum number of confirmation emails \(5\), so no more can be requested\./);
+  assert.match(msgOf(await again()), /ge=Já enviámos para o email desta conta o número máximo de emails de confirmação \(5\): não é possível pedir outro\. Procure-os na sua caixa de correio \(também no spam\)\./);
+  assert.match(msgOf(await again('/account')), /^\/account\?ge=We have already sent the maximum number of confirmation emails \(5\) to this account’s email address, so no more can be requested\./);
   assert.equal(await allVerify(), before);
   assert.equal((await verifyMails('wanda@example.com')).length, VERIFY_TOTAL);
   // o painel e a Conta já não mostram «Reenviar»
   const painel = (await get('/painel', wa.ck)).body;
-  assert.match(painel, /Já enviámos a esta conta o número máximo de ligações de confirmação \(5\): não é possível pedir outra\./);
+  assert.match(painel, /Já enviámos para o email desta conta o número máximo de ligações de confirmação \(5\): não é possível pedir outra\./);
   assert.doesNotMatch(painel, /action="\/confirmar-email\/reenviar"/);
   const conta = (await get('/account', wa.ck)).body;
-  assert.match(conta, /We have already sent this account the maximum number of confirmation links \(5\), so no more can be requested\./);
+  assert.match(conta, /We have already sent the maximum number of confirmation links \(5\) to this account’s email address, so no more can be requested\./);
   assert.doesNotMatch(conta, /action="\/confirmar-email\/reenviar"/);
 });
 
@@ -449,8 +451,8 @@ test('tetos diário e mensal (0 desliga): textos neutros, nada enviado; landing 
     assert.equal(await db.one(`SELECT 1 FROM email_verifications WHERE user_id=$1`, [off.id]), undefined);
     assert.deepEqual((await db.one(`SELECT meta FROM audit_events WHERE action='signup' AND actor='desligada@example.com'`)).meta, { role: 'interviewer', emailVerification: 'off' });
     assert.doesNotMatch((await get('/painel', off.ck)).body, /grátis|Reenviar/);
-    assert.match(msgOf(await post('/confirmar-email/reenviar', { voltar: '/painel' }, off.ck)), /e=A 1\.ª entrevista grátis não está disponível neste momento: não é preciso confirmar o email\./);
-    assert.match(msgOf(await post('/confirmar-email/reenviar', { voltar: '/account' }, off.ck)), /e=The free first interview is not offered at the moment/);
+    assert.match(msgOf(await post('/confirmar-email/reenviar', { voltar: '/painel' }, off.ck)), /ge=A 1\.ª entrevista grátis não está disponível neste momento: não é preciso confirmar o email\./);
+    assert.match(msgOf(await post('/confirmar-email/reenviar', { voltar: '/account' }, off.ck)), /ge=The free first interview is not offered at the moment/);
     assert.equal((await verifyMails('desligada@example.com')).length, 0);
     // as páginas do link (expirado ou inválido) não mandam carregar num «Reenviar» que não aparece
     const inv = await post('/confirmar-email', { token: randomBytes(32).toString('base64url') });
@@ -851,3 +853,245 @@ test('uma por caixa de correio: eve+1@gmail.com usa-a; eve+2, e.v.e@gmail.com e 
   assert.equal([await ivOf(y1), await ivOf(y2)].filter(s => s.free_at).length, 1, 'uma por caixa, também em simultâneo');
   assert.equal(rs.filter(r => /Já usou a sua entrevista grátis/.test(msgOf(r))).length, 1);
 }));
+
+test('emails de confirmação por caixa de correio: várias contas com variantes do mesmo endereço não os multiplicam (3 em 24 horas e 5 ao todo, somadas); a resposta é a do total da conta; outra caixa não conta', async () => {
+  // Antes, contados só por conta: cada conta com uma variante (alvo+1@…, a.l.v.o@gmail.com, …) mandava mais 3 por dia e 5 ao todo à mesma caixa.
+  const variants = ['caixa.alvo+1@gmail.com', 'caixa.alvo+2@gmail.com', 'c.a.i.x.a.alvo@gmail.com', 'caixaalvo@googlemail.com'];
+  const accs: { ck: string; id: string }[] = [];
+  for (const [i, e] of variants.entries()) accs.push(await register(`Variante ${i}`, e));
+  const toMailbox = async () => (await db.query(`SELECT 1 FROM emails WHERE starts_with(dedupe_key, 'verify:') AND to_email = ANY($1)`, [variants])).length;
+  const allVerify = async () => Number((await db.one(`SELECT count(*)::int n FROM emails WHERE starts_with(dedupe_key, 'verify:')`)).n);
+  assert.equal(await toMailbox(), VERIFY_PER_DAY, 'só os 3 primeiros registos levam email (24 horas da caixa)');
+  assert.equal((await db.one(`SELECT meta FROM audit_events WHERE action='signup' AND actor=$1`, [variants[3]])).meta.emailVerification, 'day_limit');
+  // com cada link fica a impressão da caixa de correio (a mesma para as variantes)
+  const hashes = await db.query(`SELECT DISTINCT v.mailbox_hash FROM email_verifications v JOIN users u ON u.id=v.user_id WHERE u.email = ANY($1)`, [variants]);
+  assert.deepEqual(hashes.map((h: any) => h.mailbox_hash), [sha('verify-mailbox:caixaalvo@gmail.com')]);
+  // «Reenviar» de qualquer delas, também da que ainda não recebeu nenhum: a mesma resposta do total da conta (nada sobre as outras)
+  let before = await allVerify();
+  for (const a of accs) assert.match(msgOf(await post('/confirmar-email/reenviar', { voltar: '/painel' }, a.ck)), /[?]ge=Já enviámos 3 emails de confirmação para o email desta conta nas últimas 24 horas\./);
+  assert.equal(await allVerify(), before, 'nada na fila: o teto global não se gasta');
+  // 24 horas depois: mais 2, de contas diferentes (5 ao todo na caixa); depois, nenhum
+  await db.query(`UPDATE email_verifications SET created_at = created_at - interval '25 hours' WHERE mailbox_hash=$1`, [hashes[0].mailbox_hash]);
+  assert.match(msgOf(await post('/confirmar-email/reenviar', { voltar: '/painel' }, accs[3].ck)), /[?]gok=Enviámos uma ligação nova para caixaalvo@googlemail\.com/);
+  assert.match(msgOf(await post('/confirmar-email/reenviar', { voltar: '/painel' }, accs[0].ck)), /[?]gok=Enviámos uma ligação nova/);
+  assert.equal(await toMailbox(), VERIFY_TOTAL);
+  await db.query(`UPDATE email_verifications SET created_at = created_at - interval '30 days' WHERE mailbox_hash=$1`, [hashes[0].mailbox_hash]);
+  before = await allVerify();
+  for (const a of accs) {
+    assert.match(msgOf(await post('/confirmar-email/reenviar', { voltar: '/painel' }, a.ck)), /[?]ge=Já enviámos para o email desta conta o número máximo de emails de confirmação \(5\)/);
+    // e o painel deixa de mostrar «Reenviar» em todas, também nas que receberam menos
+    const pg = (await get('/painel', a.ck)).body;
+    assert.match(pg, /Já enviámos para o email desta conta o número máximo de ligações de confirmação \(5\)/);
+    assert.doesNotMatch(pg, /action="\/confirmar-email\/reenviar"/);
+  }
+  assert.equal(await allVerify(), before);
+  assert.equal(await toMailbox(), VERIFY_TOTAL, 'no máximo 5 para a caixa, somadas as 4 contas (antes, até 20)');
+  // os links enviados continuam a valer para a conta a que foram enviados
+  const last = (await db.query(`SELECT text_body FROM emails WHERE to_email=$1 AND starts_with(dedupe_key, 'verify:') ORDER BY created_at DESC LIMIT 1`, [variants[3]]))[0];
+  assert.equal((await post('/confirmar-email', { token: tokenOf(last.text_body) })).statusCode, 200);
+  assert.ok((await userOf(accs[3].id)).email_verified_at);
+  // outra caixa de correio (outro domínio: os pontos e o resto contam) não é afetada
+  await register('Outra caixa', 'caixa.alvo@example.net');
+  assert.equal((await verifyMails('caixa.alvo@example.net')).length, 1);
+});
+
+test(`registo público: no máximo ${PUBLIC_SIGNUPS_PER_IP_DAY} por IP em 24 horas (além dos 10 por hora); os da ligação de uma entidade não contam`, async () => {
+  const realNow = Date.now;
+  let t = realNow();
+  Date.now = () => t;
+  const reg = (email: string, extra: Record<string, string> = {}) => post('/registar', { name: 'Mesmo IP', email, password: PW, terms: 1, ...extra }, '', { 'x-forwarded-for': '10.77.0.1' });
+  try {
+    let n = 0;
+    while (n < PUBLIC_SIGNUPS_PER_IP_DAY) {
+      for (let i = 0; i < 10 && n < PUBLIC_SIGNUPS_PER_IP_DAY; i++) assert.equal((await reg(`ip-dia-${n++}@example.net`)).headers.location, '/account', `registo ${n}`);
+      t += 3600_000 + 5000; // o limite por hora (10) não interessa aqui
+    }
+    const r = await reg('ip-dia-extra@example.net');
+    assert.match(msgOf(r), /^\/registar\?e=Too many sign-ups from this address today\. Please try again tomorrow\.$/);
+    assert.equal(await db.one(`SELECT 1 FROM users WHERE email='ip-dia-extra@example.net'`), undefined);
+    // pelo link de uma entidade (sem email de confirmação nem oferta), o mesmo IP continua a registar
+    const slug = (await db.one(`SELECT slug FROM entities WHERE name='Entidade Teste'`)).slug;
+    assert.equal((await reg('ip-dia-entidade@example.net', { entidade: slug })).headers.location, '/account');
+    // outro IP não é afetado; 24 horas depois, o mesmo IP volta a poder
+    assert.equal((await post('/registar', { name: 'Outro IP', email: 'ip-dia-outro@example.net', password: PW, terms: 1 })).headers.location, '/account');
+    t += 86400_000;
+    assert.equal((await reg('ip-dia-amanha@example.net')).headers.location, '/account');
+  } finally { Date.now = realNow; }
+});
+
+/** Guião por rever (rascunho) numa entrevista, como depois do processamento. */
+const withDraftScript = async (id: string) => {
+  await db.query(`INSERT INTO scripts(interview_id, revision, title_en, segments, status, prompt_version, model) VALUES ($1, 1, 'Title', $2, 'draft', 'script-v1', 'mock')`,
+    [id, JSON.stringify([{ id: 'intro', speakerRole: 'host', textEnglish: 'Welcome.', sourceQuestionId: null, transformationType: 'editorial_intro' }])]);
+  await db.query(`UPDATE interviews SET production_status='editorial_review' WHERE id=$1`, [id]);
+};
+
+test('1.ª entrevista grátis: verificação do guião por IA com total por entrevista, contado na base (também em simultâneo); a vez volta se falhar; o administrador não conta; as pagas como antes', () => manyFree(async () => {
+  const fr = await created('Rita Verifica', 'rita.verifica@example.com');
+  const id = await draft(fr.ck, 'Verificar', 'conv-verifica@example.net');
+  assert.match(msgOf(await sendFree(fr.ck, id)), /ok=Convite enviado: usou a sua 1\.ª entrevista grátis/);
+  await withDraftScript(id);
+  const verify = (ck: string, ivId: string) => post(`/entrevistas/${ivId}/guiao/verificar`, {}, ck);
+  const OK = /[?]ok=Sem alertas/;
+  const USED = `/entrevistas/${id}/producao?e=${F.FREE_REVIEWS_USED}`;
+  assert.match((await get(`/entrevistas/${id}/producao`, fr.ck)).body, /1\.ª entrevista grátis: <span id="verificacoes">0 de 6<\/span> verificações usadas\./);
+  const realNow = Date.now;
+  let t = realNow();
+  Date.now = () => t;
+  try {
+    for (let i = 0; i < 4; i++) assert.match(msgOf(await verify(fr.ck, id)), OK);
+    t += 3600_000 + 5000; // o limite por hora (6, em memória) não interessa aqui: antes, a cada hora havia mais 6, sem fim
+    assert.match((await get(`/entrevistas/${id}/producao`, fr.ck)).body, /<span id="verificacoes">4 de 6<\/span>/);
+    // as duas últimas vezes com três pedidos em simultâneo: passam dois
+    const rs = await Promise.all([verify(fr.ck, id), verify(fr.ck, id), verify(fr.ck, id)]);
+    assert.equal(rs.filter(r => OK.test(msgOf(r))).length, 2);
+    assert.equal(rs.filter(r => msgOf(r) === USED).length, 1);
+    t += 3600_000 + 5000;
+    assert.equal(msgOf(await verify(fr.ck, id)), USED, 'acima do total, nada chega à IA, também noutra hora');
+    assert.equal(await F.aiUsed(db, id, 'script_review'), F.FREE_SCRIPT_REVIEWS);
+    const pg = (await get(`/entrevistas/${id}/producao`, fr.ck)).body;
+    assert.match(pg, /<button class="ghost" disabled>Verificação de fidelidade \(assistente\)<\/button>/);
+    assert.ok(pg.includes(F.FREE_REVIEWS_USED));
+    assert.match(F.FREE_REVIEWS_USED, /Com uma subscrição \(Conta\), as próximas entrevistas não têm este limite\./);
+    // o administrador não conta nem fica bloqueado
+    assert.match(msgOf(await verify(admin, id)), OK);
+    assert.equal(await F.aiUsed(db, id, 'script_review'), F.FREE_SCRIPT_REVIEWS);
+    // entrevista paga: só o limite por hora, como antes
+    const pa = await created('Paulo Pago', 'paulo.pago@example.com');
+    await db.query(`INSERT INTO subscriptions(user_id, plan_id, status, source) VALUES ($1,'start','active','manual')`, [pa.id]);
+    const pid = await draft(pa.ck, 'Paga', 'conv-paga@example.net');
+    assert.match(msgOf(await post(`/entrevistas/${pid}/convidar`, {}, pa.ck)), /ok=Convite enviado\./);
+    await withDraftScript(pid);
+    for (let h = 0; h < 2; h++) { for (let i = 0; i < 6; i++) assert.match(msgOf(await verify(pa.ck, pid)), OK); t += 3600_000 + 5000; }
+    assert.equal(await F.aiUsed(db, pid, 'script_review'), 0);
+    assert.doesNotMatch((await get(`/entrevistas/${pid}/producao`, pa.ck)).body, /verificações usadas/);
+  } finally { Date.now = realNow; }
+  // uma falha (nada feito pela IA) devolve a vez; nunca abaixo de 0
+  const g = await created('Gaspar Falha', 'gaspar.falha@example.com');
+  const gid = await draft(g.ck, 'Falha', 'conv-falha@example.net');
+  assert.match(msgOf(await sendFree(g.ck, gid)), /ok=/);
+  assert.equal(await F.takeAiUse(db, gid, 'script_review', 1), true);
+  assert.equal(await F.takeAiUse(db, gid, 'script_review', 1), false);
+  await F.giveBackAiUse(db, gid, 'script_review');
+  await F.giveBackAiUse(db, gid, 'script_review');
+  assert.equal(await F.aiUsed(db, gid, 'script_review'), 0);
+  assert.equal(await F.takeAiUse(db, gid, 'script_review', 0), false);
+}));
+
+test('1.ª entrevista grátis: leituras sintéticas das perguntas ao convidado com total por entrevista (2 por pergunta), contado na base; a guardada não conta; acima dele, a página usa a do navegador; as pagas como antes', () => manyFree(async () => {
+  const guestOf = async (email: string) => {
+    const m = (await db.query(`SELECT text_body FROM emails WHERE to_email=$1 ORDER BY created_at DESC LIMIT 1`, [email]))[0];
+    return `gs=${cookies(await post(`/i/${/\/i\/([A-Za-z0-9_-]{40,})/.exec(m.text_body)![1]}/abrir`, {}, '')).gs}`;
+  };
+  const qids = async (id: string) => (await db.query('SELECT id FROM questions WHERE interview_id=$1 ORDER BY position', [id])).map((x: any) => x.id as string);
+  const voice = (id: string, v: string) => db.query('UPDATE interviews SET question_voice=$2 WHERE id=$1', [id, v]);
+  const la = await created('Lia Leituras', 'lia.leituras@example.com');
+  const id = await draft(la.ck, 'Leituras', 'conv-leituras@example.net');
+  assert.match(msgOf(await sendFree(la.ck, id)), /ok=Convite enviado: usou a sua 1\.ª entrevista grátis/);
+  const gs = await guestOf('conv-leituras@example.net');
+  const [q1, q2] = await qids(id);
+  const read = async (q: string) => (await get(`/api/g/leitura/${q}`, gs)).statusCode;
+  assert.deepEqual([await read(q1), await read(q2), await read(q1)], [200, 200, 200]);
+  assert.equal(await F.aiUsed(db, id, 'question_reading'), 2, 'a leitura guardada reaproveita-se sem contar');
+  // o entrevistador muda a voz das perguntas depois do convite: cada mudança refazia as leituras, sem fim
+  await voice(id, 'male');
+  assert.deepEqual([await read(q1), await read(q2)], [200, 200]);
+  await voice(id, 'female');
+  assert.equal(await read(q1), 404, 'acima de 2 leituras por pergunta, nada chega à IA (o navegador lê)');
+  assert.equal(await F.aiUsed(db, id, 'question_reading'), F.FREE_READINGS_PER_QUESTION * 2);
+  assert.equal((await db.one(`SELECT count(*)::int n FROM assets WHERE interview_id=$1 AND kind='question_tts'`, [id])).n, 4);
+  // entrevista paga: como antes
+  const pb = await created('Pedro Pago', 'pedro.pago@example.com');
+  await db.query(`INSERT INTO subscriptions(user_id, plan_id, status, source) VALUES ($1,'start','active','manual')`, [pb.id]);
+  const pid = await draft(pb.ck, 'Paga leituras', 'conv-paga-leituras@example.net');
+  assert.match(msgOf(await post(`/entrevistas/${pid}/convidar`, {}, pb.ck)), /ok=Convite enviado\./);
+  const pgs = await guestOf('conv-paga-leituras@example.net');
+  const [p1] = await qids(pid);
+  for (const v of ['female', 'male', 'female', 'male']) { await voice(pid, v); assert.equal((await get(`/api/g/leitura/${p1}`, pgs)).statusCode, 200); }
+  assert.equal(await F.aiUsed(db, pid, 'question_reading'), 0);
+}));
+
+test(`contas sem pagamento: transcrições automáticas das gravações do entrevistador com total em 24 horas (${F.UNPAID_TRANSCRIPTIONS_PER_DAY}, contado na fila); acima dele, a gravação que seria transcrita é recusada com a explicação; as pagas como antes`, async () => {
+  const up = (url: string, ck: string) => app.inject({ method: 'POST', url, payload: makeToneWav(2), headers: { 'content-type': 'audio/wav', cookie: ck } });
+  const jobsOf = async (uid: string) => Number((await db.one(`SELECT count(*)::int n FROM jobs j JOIN interviews i ON i.id=j.interview_id WHERE i.owner_id=$1 AND j.kind='transcribe_asset'`, [uid])).n);
+  const newDraft = async (ck: string, title: string) => {
+    const c = await post('/entrevistas', { title }, ck);
+    const id = /entrevistas\/([0-9a-f-]{36})/.exec(c.headers.location as string)![1];
+    await post(`/entrevistas/${id}/perguntas`, { text: '' }, ck); // sem texto: o texto vem da transcrição
+    await post(`/entrevistas/${id}/perguntas`, { text: 'Com texto?' }, ck);
+    return { id, qs: (await db.query('SELECT id FROM questions WHERE interview_id=$1 ORDER BY position', [id])).map((x: any) => x.id as string) };
+  };
+  const fill = (id: string, n: number) => db.query(`INSERT INTO jobs(interview_id, kind, input, state) SELECT $1, 'transcribe_asset', '{}', 'done' FROM generate_series(1, $2::int)`, [id, n]);
+  const ua = await created('Ulisses Transcreve', 'ulisses.transcreve@example.com');
+  const d = await newDraft(ua.ck, 'Transcrições');
+  await fill(d.id, F.UNPAID_TRANSCRIPTIONS_PER_DAY - 1);
+  let r = await up(`/api/entrevistas/${d.id}/perguntas/${d.qs[0]}/audio`, ua.ck);
+  assert.equal(r.statusCode, 200, r.body);
+  assert.equal(await jobsOf(ua.id), F.UNPAID_TRANSCRIPTIONS_PER_DAY);
+  const before = (await db.one('SELECT audio_asset_id FROM questions WHERE id=$1', [d.qs[0]])).audio_asset_id;
+  // a seguinte que seria transcrita: recusada (422: o gravador mostra a explicação e não repete), nada guardado nem na fila
+  r = await up(`/api/entrevistas/${d.id}/perguntas/${d.qs[0]}/audio`, ua.ck);
+  assert.equal(r.statusCode, 422);
+  assert.equal(r.json().error, F.transcriptionsUsed('question'));
+  assert.match(r.json().error, /^Atingiu o limite de 40 transcrições automáticas em 24 horas das contas sem subscrição\. Escreva o texto da pergunta antes de a gravar/);
+  assert.equal((await db.one('SELECT audio_asset_id FROM questions WHERE id=$1', [d.qs[0]])).audio_asset_id, before);
+  r = await up(`/api/entrevistas/${d.id}/objetivo-audio`, ua.ck);
+  assert.equal(r.statusCode, 422);
+  assert.equal(r.json().error, F.transcriptionsUsed('objective'));
+  // noutro rascunho também (o total é da conta)
+  const d2 = await newDraft(ua.ck, 'Outro rascunho');
+  assert.equal((await up(`/api/entrevistas/${d2.id}/perguntas/${d2.qs[0]}/audio`, ua.ck)).statusCode, 422);
+  // uma pergunta com texto não é transcrita: grava-se
+  assert.equal((await up(`/api/entrevistas/${d.id}/perguntas/${d.qs[1]}/audio`, ua.ck)).statusCode, 200);
+  assert.equal(await jobsOf(ua.id), F.UNPAID_TRANSCRIPTIONS_PER_DAY);
+  // 24 horas depois, volta a haver
+  await db.query(`UPDATE jobs SET created_at = created_at - interval '25 hours' WHERE interview_id IN ($1, $2)`, [d.id, d2.id]);
+  assert.equal((await up(`/api/entrevistas/${d.id}/objetivo-audio`, ua.ck)).statusCode, 200);
+  assert.equal(await jobsOf(ua.id), F.UNPAID_TRANSCRIPTIONS_PER_DAY + 1);
+  // conta paga: como antes
+  const pc = await created('Clara Paga', 'clara.paga@example.com');
+  await db.query(`INSERT INTO subscriptions(user_id, plan_id, status, source) VALUES ($1,'start','active','manual')`, [pc.id]);
+  const dp = await newDraft(pc.ck, 'Paga transcrições');
+  await fill(dp.id, F.UNPAID_TRANSCRIPTIONS_PER_DAY + 5);
+  assert.equal((await up(`/api/entrevistas/${dp.id}/perguntas/${dp.qs[0]}/audio`, pc.ck)).statusCode, 200);
+  assert.equal((await up(`/api/entrevistas/${dp.id}/objetivo-audio`, pc.ck)).statusCode, 200);
+  assert.equal(await jobsOf(pc.id), F.UNPAID_TRANSCRIPTIONS_PER_DAY + 7);
+});
+
+test('resposta do «Reenviar» e da confirmação do email junto da caixa da oferta (#gratis) no painel, na Conta e na página do convite; os outros avisos ficam no topo; sem caixa, fica sozinha no lugar dela', async () => {
+  const za = await register('Zélia Aviso', 'zelia.aviso@example.net');
+  const pageOf = async (loc: string, ck: string) => (await get(loc.replace(/#.*$/, ''), ck)).body;
+  const order = (html: string, ...parts: string[]) => {
+    const at = parts.map(p => html.indexOf(p));
+    assert.ok(at.every(i => i >= 0) && at.every((i, k) => k === 0 || at[k - 1] < i), `${parts.join(' < ')}: ${at.join(', ')}`);
+  };
+  // painel (resposta de sucesso, logo acima da caixa)
+  let r = await post('/confirmar-email/reenviar', { voltar: '/painel' }, za.ck);
+  assert.match(msgOf(r), /^\/painel\?gok=Enviámos uma ligação nova para zelia\.aviso@example\.net\.#gratis$/);
+  order(await pageOf(String(r.headers.location), za.ck), '<div id="gratis"><div class="flash ok" role="status">Enviámos uma ligação nova', '<strong>A sua 1.ª entrevista é grátis</strong>, depois de confirmar', 'action="/confirmar-email/reenviar"');
+  // Conta (em inglês)
+  r = await post('/confirmar-email/reenviar', { voltar: '/account' }, za.ck);
+  assert.match(msgOf(r), /^\/account\?gok=We sent a new link to zelia\.aviso@example\.net\.#gratis$/);
+  order(await pageOf(String(r.headers.location), za.ck), '<div id="gratis"><div class="flash ok" role="status">We sent a new link', '<strong>Your first interview is free</strong> once you confirm');
+  // página do convite (resposta de erro: o total de 24 horas)
+  const id = await draft(za.ck, 'Aviso', 'conv-aviso@example.net');
+  r = await post('/confirmar-email/reenviar', { voltar: `/entrevistas/${id}/convidar` }, za.ck);
+  assert.match(msgOf(r), new RegExp(`^/entrevistas/${id}/convidar\\?ge=Já enviámos 3 emails de confirmação para o email desta conta nas últimas 24 horas\\..*#gratis$`));
+  order(await pageOf(String(r.headers.location), za.ck), '<h1>Rever e convidar</h1>', '<div id="gratis"><div class="flash bad" role="status">Já enviámos 3 emails', '<strong>A sua 1.ª entrevista é grátis</strong>, depois de confirmar', '<strong>Antes de enviar:</strong>');
+  // os outros avisos da página não mudam: no topo, fora da âncora
+  order(await pageOf('/painel?ok=Outro%20aviso&gok=Resposta', za.ck), '<div class="flash ok" role="status">Outro aviso</div>', '<div id="gratis"><div class="flash ok" role="status">Resposta</div>');
+  // confirmação do email com a sessão da própria conta: volta ao painel com a resposta junto da caixa (já sem o «Reenviar»)
+  const tk = tokenOf((await verifyMails('zelia.aviso@example.net')).at(-1).text_body);
+  r = await post('/confirmar-email', { token: tk }, za.ck);
+  assert.equal(r.headers.location, '/painel?gok=Email%20confirmado.#gratis');
+  const pc = await pageOf(String(r.headers.location), za.ck);
+  assert.match(pc, /<div id="gratis"><div class="flash ok" role="status">Email confirmado\.<\/div><div class="flash[^"]*">/);
+  assert.doesNotMatch(pc, /action="\/confirmar-email\/reenviar"/);
+  // sem caixa da oferta (administrador): a resposta fica sozinha no lugar dela
+  assert.match(await pageOf('/painel?gok=O%20seu%20email%20j%C3%A1%20est%C3%A1%20confirmado.', admin), /<div id="gratis"><div class="flash ok" role="status">O seu email já está confirmado\.<\/div><\/div>/);
+  assert.match(await pageOf('/account?ge=Recusado', admin), /<div id="gratis"><div class="flash bad" role="status">Recusado<\/div><\/div>/);
+  // valores repetidos no endereço não aparecem; e a âncora tem margem no topo
+  const html = await pageOf('/painel?gok=a&gok=b', za.ck);
+  assert.doesNotMatch(html, /role="status">a<|role="status">b</);
+  assert.match(html, /#gratis\{scroll-margin-top:12px\}/);
+});
