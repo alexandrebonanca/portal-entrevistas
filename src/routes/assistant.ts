@@ -8,7 +8,7 @@ import { adminNav } from './admin.ts';
 import { SUPPORT_CSS, isUuid } from '../support.ts';
 import {
   activeFaq, loadAnswer, assistantSig, assistantSigOk, fillVars, faqVars, faqLang, purgeAssistantLog, defaultAiEnabled,
-  FAQ_LANGS, FAQ_AUDIENCES, FAQ_LIMITS, FAQ_VAR_HELP, ASSISTANT_MAX_QUESTION, ASSISTANT_LOG_DAYS, type Audience, type FaqEntry,
+  FAQ_LANGS, FAQ_AUDIENCES, FAQ_LIMITS, FAQ_VAR_HELP, FAQ_FLAG_HELP, ASSISTANT_MAX_QUESTION, ASSISTANT_LOG_DAYS, type Audience, type FaqEntry,
 } from '../assistant.ts';
 import { seedState, seedIndex, resolveSeed, faqNorm } from '../assistant-faq.ts';
 
@@ -164,7 +164,7 @@ ${faq.map((e: any) => `<tr><td>${e.sort}</td><td><a href="/admin/assistente/${e.
 <label for="f-k">Palavras-chave</label><input id="f-k" name="keywords" type="text" maxlength="${FAQ_LIMITS.keywords}" value="${esc(e.keywords)}">
 <p class="hint">Separadas por vírgulas: as palavras que as pessoas usam ao perguntar (sinónimos, formas coloquiais). Contam mais do que o texto da pergunta e da resposta.</p>
 <label for="f-a">Resposta</label><textarea id="f-a" name="answer" required maxlength="${FAQ_LIMITS.answer}" rows="8">${esc(e.answer)}</textarea>
-<p class="hint">Só o que o portal faz hoje: o assistente não acrescenta nada. Marcadores substituídos pelos valores em vigor: ${Object.keys(vars).map(k => `<code>{${k}}</code> (${esc(FAQ_VAR_HELP[k] ?? '')}: ${esc(vars[k])})`).join(' · ')}.</p>
+<p class="hint">Só o que o portal faz hoje: o assistente não acrescenta nada. Marcadores substituídos pelos valores em vigor: ${Object.keys(vars).map(k => `<code>{${k}}</code> (${esc(FAQ_VAR_HELP[k] ?? '')}: ${esc(vars[k])})`).join(' · ')}. Texto que só aparece com uma condição: ${Object.keys(FAQ_FLAG_HELP).map(k => `<code>{?${k}}</code>…<code>{/${k}}</code> (${esc(FAQ_FLAG_HELP[k])})`).join(' · ')}.</p>
 <label class="check"><input type="checkbox" name="active" value="1" ${e.active ? 'checked' : ''}> Ativa (o assistente usa-a)</label>
 <p><button class="accent">Guardar entrada</button> <a class="btn ghost" href="/admin/assistente#base">Voltar</a></p></form>
 ${e.answer ? `<div class="card"><h2 style="margin-top:0;font-size:1.2rem">Pré-visualização</h2><p><strong>${esc(fillVars(e.question))}</strong></p><p class="msgbody">${esc(fillVars(e.answer))}</p></div>` : ''}`;

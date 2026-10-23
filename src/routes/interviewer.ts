@@ -19,7 +19,7 @@ import { introCard } from './intro.ts';
 import { helpNav } from '../support.ts';
 import { assistantAiFor } from '../assistant.ts';
 import { composeAction, composeDraft, composeAssist, composeAvailable, composeHourFull, COMPOSE_MAX_REQUEST, COMPOSE_BODY_LIMIT, COMPOSE_RATE } from '../compose.ts';
-import { freeInterviewFor, freeLimits, claimFree, releaseFree, freeRefusal, freeNotice } from '../free-interview.ts';
+import { freeInterviewFor, freeLimits, claimFree, releaseFree, freeRefusal, freeNotice, freeSendBlock } from '../free-interview.ts';
 
 /** Envios grátis tentados por conta e por hora (cada recusa por convidado diz algo sobre esse email: o limite trava a sondagem). */
 const FREE_TRIES_PER_HOUR = 10;
@@ -74,7 +74,10 @@ export async function interviewerRoutes(app: FastifyInstance) {
     const n = Number((await q.one('SELECT count(*)::int AS n FROM questions WHERE interview_id=$1', [iv.id]))?.n);
     const left = secondsLeft(iv.answer_limit_sec, await answeredMs(q, iv.id));
     const admin = user.role === 'admin'; // o administrador não tem limite
+    // Entrevista grátis recusada pelo convidado: não lhe vai mais nada (cada pergunta adicional seria outro email).
+    const declined = iv.free_at && iv.collection_status !== 'cancelled' ? await freeSendBlock(q, iv.id) : null;
     const reason = iv.collection_status === 'cancelled' ? 'A entrevista foi cancelada: não é possível acrescentar perguntas.'
+      : declined ? declined
       : iv.collection_status === 'expired' ? 'O convite expirou: reenvie o convite antes de acrescentar perguntas.'
       : !admin && iv.question_limit != null && n >= iv.question_limit ? `Atingiu o limite de ${iv.question_limit} perguntas desta entrevista (incluindo as adicionais).`
       : !admin && left != null && left < FOLLOWUP_MIN_LEFT_SEC ? `Restam ${mmss(left)} de tempo de resposta ao entrevistado (menos de ${FOLLOWUP_MIN_LEFT_SEC} s): não é possível acrescentar perguntas.`
@@ -124,19 +127,21 @@ ${rows.map((r: any) => `<tr><td><a href="/entrevistas/${r.id}">${esc(r.title)}</
     if (!iv) return reply.code(404).send('Não encontrada');
     const q = req.query as any;
     const locked = iv.collection_status !== 'draft';
+    // Entrevista grátis enviada: o nome do entrevistador (vai no assunto do convite) e a mensagem pessoal ficam como foram enviados.
+    const freeFixed = locked && !!iv.free_at;
     const qs = await db.query('SELECT * FROM questions WHERE interview_id=$1 ORDER BY position', [iv.id]);
     const objT = iv.objective_asset_id ? await db.one(`SELECT text FROM transcripts WHERE source_kind='objective' AND source_id=$1 ORDER BY revision DESC LIMIT 1`, [iv.id]) : null;
     const fu = locked ? await followupState(iv, req.user) : null;
     const quota = locked ? null : await quotaFor(db, req.user);
     const sel = (cur: string, opts: [string, string][]) => opts.map(([v, l]) => `<option value="${v}" ${v === cur ? 'selected' : ''}>${l}</option>`).join('');
     const body = `<div class="wrap editor" style="padding-top:32px" data-interview="${iv.id}"><h1>${esc(iv.title)} ${statusPill(iv.collection_status)}</h1>${flash(q.ok)}${flash(q.e, 'bad')}
-${locked ? '<div class="flash">Esta entrevista já foi enviada. Perguntas e objetivo estão bloqueados para não alterar o que o convidado vê; use “Pedido adicional” para acrescentar perguntas.</div>' : ''}
+${locked ? `<div class="flash">Esta entrevista já foi enviada. Perguntas e objetivo estão bloqueados para não alterar o que o convidado vê; use “Pedido adicional” para acrescentar perguntas.${freeFixed ? ' Na 1.ª entrevista grátis, o nome público do entrevistador e a mensagem pessoal também ficam como foram enviados.' : ''}</div>` : ''}
 <form method="post" action="/entrevistas/${iv.id}/guardar" class="card"><h2 style="margin-top:0">Dados gerais</h2>
 <label for="title">Título</label><input id="title" name="title" type="text" required value="${esc(iv.title)}" ${locked ? 'readonly' : ''}>
 <label for="obj">Objetivo da entrevista (texto)</label><textarea id="obj" name="objective_text" ${locked ? 'readonly' : ''}>${esc(iv.objective_text)}</textarea>
 ${objT && !iv.objective_text ? `<p class="hint">Transcrição do objetivo gravado (copie para o texto se estiver correta): <em>${esc(objT.text)}</em></p>` : ''}
 <label class="check"><input type="checkbox" name="objective_shared" value="1" ${iv.objective_shared ? 'checked' : ''}> Mostrar o objetivo ao entrevistado (caso contrário é interno)</label>
-<div class="row"><div class="grow"><label for="hn">Nome público do entrevistador</label><input id="hn" name="host_name" type="text" value="${esc(iv.host_name)}"></div>
+<div class="row"><div class="grow"><label for="hn">Nome público do entrevistador</label><input id="hn" name="host_name" type="text" value="${esc(iv.host_name)}" ${freeFixed ? 'readonly' : ''}></div>
 <div class="grow"><label for="gn">Nome do entrevistado</label><input id="gn" name="guest_name" type="text" value="${esc(iv.guest_name)}"></div></div>
 <div class="row"><div class="grow"><label for="ht">Função do entrevistador no vídeo (opcional)</label><input id="ht" name="host_title" type="text" maxlength="60" placeholder="Host" value="${esc(iv.host_title ?? '')}"></div>
 <div class="grow"><label for="gt">Função do entrevistado no vídeo (opcional)</label><input id="gt" name="guest_title" type="text" maxlength="60" placeholder="Guest" value="${esc(iv.guest_title ?? '')}"></div></div>
@@ -149,7 +154,7 @@ ${objT && !iv.objective_text ? `<p class="hint">Transcrição do objetivo gravad
 <label for="qv">Voz do entrevistador (leitura das perguntas e episódio)</label><select id="qv" name="question_voice"><option value="female" ${iv.question_voice !== 'male' ? 'selected' : ''}>Feminina</option><option value="male" ${iv.question_voice === 'male' ? 'selected' : ''}>Masculina</option></select>
 <label for="gv">Voz do entrevistado no episódio</label><select id="gv" name="guest_voice"><option value="female" ${iv.guest_voice !== 'male' ? 'selected' : ''}>Feminina</option><option value="male" ${iv.guest_voice === 'male' ? 'selected' : ''}>Masculina</option></select>
 <p class="hint">Vozes naturais geradas por IA (identificadas como tal), sempre diferentes para cada um. Para o convidado ouvir as perguntas na sua própria voz, grave-as em áudio.</p>
-<label for="pm">Mensagem pessoal no convite</label><textarea id="pm" name="personal_message">${esc(iv.personal_message)}</textarea>
+<label for="pm">Mensagem pessoal no convite</label><textarea id="pm" name="personal_message" ${freeFixed ? 'readonly' : ''}>${esc(iv.personal_message)}</textarea>
 <fieldset style="border:1px solid var(--line);border-radius:8px;margin-top:14px"><legend class="sans">Legendas previstas</legend>${SUBS.map(([v, l]) => `<label class="check"><input type="checkbox" name="subtitle_langs" value="${v}" ${(iv.subtitle_langs ?? []).includes(v) ? 'checked' : ''}> ${l}</label>`).join('')}</fieldset>
 <label for="rp">Política de revisão e publicação (comunicada no convite)</label><select id="rp" name="review_policy">${iv.collection_status !== 'draft' && iv.review_policy === 'guest_preview'
   ? `<option value="guest_preview" selected>O entrevistado vê e aprova a versão final antes de publicar</option>`
@@ -194,12 +199,14 @@ ${locked ? '' : composePanel(iv, quota!, !(await inEntity(await entityOfIntervie
     // Depois do convite, o título, o objetivo e o convidado ficam como foram enviados, e a aprovação prometida ao convidado
     // mantém-se (a política só pode passar a «o entrevistado aprova»). Decide-o o estado da linha no momento do UPDATE, e não
     // a leitura acima: um convite enviado entretanto (por exemplo, a 1.ª entrevista grátis, marcada com a impressão do
-    // convidado) não muda de convidado por um «Guardar» que começou antes dele.
+    // convidado) não muda de convidado por um «Guardar» que começou antes dele. Na entrevista grátis, também o nome do
+    // entrevistador (vai no assunto do email) e a mensagem pessoal ficam como no convite: os reenvios levam o texto enviado.
     const saved = await db.one(
       `UPDATE interviews SET title=CASE WHEN collection_status='draft' THEN COALESCE(NULLIF($2::text, ''), title) ELSE title END,
-        objective_text=CASE WHEN collection_status='draft' THEN $3 ELSE objective_text END, objective_shared=$4, host_name=$5, guest_name=$6,
-        guest_email=CASE WHEN collection_status='draft' THEN $7 ELSE guest_email END, interaction_lang=$8, answer_lang=$9,
-        deadline=$10, planned_visibility=$11, personal_message=$12, subtitle_langs=$13,
+        objective_text=CASE WHEN collection_status='draft' THEN $3 ELSE objective_text END, objective_shared=$4,
+        host_name=CASE WHEN collection_status='draft' OR free_at IS NULL THEN $5 ELSE host_name END, guest_name=$6,
+        guest_email=CASE WHEN collection_status='draft' THEN $7 ELSE guest_email END, interaction_lang=$8, answer_lang=$9, deadline=$10, planned_visibility=$11,
+        personal_message=CASE WHEN collection_status='draft' OR free_at IS NULL THEN $12 ELSE personal_message END, subtitle_langs=$13,
         review_policy=CASE WHEN collection_status<>'draft' AND review_policy='guest_preview' THEN 'guest_preview' ELSE $14::text END,
         host_photo_rights=$15, question_voice=$16, guest_voice=$17, host_animate=$18, host_ai_video=$19, host_title=$20, guest_title=$21 WHERE id=$1 RETURNING review_policy`,
       [iv.id, String(b.title ?? '').trim().slice(0, 140), String(b.objective_text ?? '').slice(0, 4000), !!b.objective_shared,
@@ -532,10 +539,21 @@ ${iv.objective_shared && iv.objective_text ? `<p class="hint">O entrevistado vê
     if (!requireUser(req, reply)) return;
     const iv = await ownedInterview(app, req, (req.params as any).id);
     if (!iv || !['invited', 'started', 'reopened', 'expired'].includes(iv.collection_status)) return reply.code(404).send('Indisponível');
-    if (!rateLimit(`resend:${iv.id}`, 1, config.limits.resendCooldownSec * 1000)) return reply.redirect(`/entrevistas/${iv.id}?e=` + encodeURIComponent('Aguarde antes de reenviar.'));
+    const no = (e: string) => reply.redirect(`/entrevistas/${iv.id}?e=` + encodeURIComponent(e));
+    // Entrevista grátis: nada depois da recusa do convidado e no máximo FREE_RESENDS reenvios (ver freeSendBlock). Verifica-se
+    // aqui, para a mensagem certa, e outra vez com a entrevista bloqueada, na transação que cria o link (dois pedidos em
+    // simultâneo não passam o total).
+    const block = iv.free_at ? await freeSendBlock(db, iv.id, { resend: true }) : null;
+    if (block) return no(block);
+    if (!rateLimit(`resend:${iv.id}`, 1, config.limits.resendCooldownSec * 1000)) return no('Aguarde antes de reenviar.');
     // Mantém a finalidade do convite em vigor (perguntas adicionais continuam a ser perguntas adicionais).
     const latest = (await db.one(`SELECT purpose FROM invitations WHERE interview_id=$1 AND purpose<>'preview' ORDER BY created_at DESC LIMIT 1`, [iv.id]))?.purpose;
-    await createInvitation(db, iv, { name: req.user!.name }, latest === 'followup' ? { followup: true } : {});
+    const guard = iv.free_at ? async (tx: Db) => {
+      await tx.query('SELECT id FROM interviews WHERE id=$1 FOR UPDATE', [iv.id]);
+      return freeSendBlock(tx, iv.id, { resend: true });
+    } : undefined;
+    const sent = await createInvitation(db, iv, { name: req.user!.name }, { ...(latest === 'followup' ? { followup: true } : {}), guard });
+    if (sent.refused) return no(sent.refused);
     if (iv.collection_status === 'expired') await db.query(`UPDATE interviews SET collection_status='reopened' WHERE id=$1`, [iv.id]);
     await audit(db, req.user!.email, 'invitation.resent', iv.id);
     return reply.redirect(`/entrevistas/${iv.id}?ok=` + encodeURIComponent('Novo convite enviado; o link anterior foi revogado.'));
@@ -589,13 +607,15 @@ ${iv.objective_shared && iv.objective_text ? `<p class="hint">O entrevistado vê
     const sub = iv.collection_status === 'submitted';
     const ep = await db.one('SELECT * FROM episodes WHERE interview_id=$1 ORDER BY created_at DESC LIMIT 1', [iv.id]);
     const lim = iv.collection_status !== 'draft' ? await followupState(iv, req.user) : null;
+    const resendable = ['invited', 'started', 'reopened', 'expired'].includes(iv.collection_status);
+    const resendBlock = resendable && iv.free_at ? await freeSendBlock(db, iv.id, { resend: true }) : null;
     const body = `<div class="wrap" style="padding-top:32px"><div class="row"><h1 class="grow" style="margin:0">${esc(iv.title)}</h1>${statusPill(iv.collection_status)}${statusPill(iv.production_status)}${statusPill(iv.publication_status)}</div>
 ${flash(q.ok)}${flash(q.e, 'bad')}
 <div class="card"><p class="sans"><strong>Convidado:</strong> ${esc(iv.guest_name)} &lt;${esc(iv.guest_email)}&gt; · <strong>Versão das perguntas:</strong> ${iv.version}${iv.free_at ? ` · ${pill('1.ª entrevista grátis', 'ok')}` : ''}
 ${inv ? `<br><strong>Convite:</strong> ${inv.revoked_at ? 'revogado' : inv.declined_at ? 'recusado pelo convidado' : new Date(inv.expires_at) < new Date() ? 'expirado' : 'válido até ' + new Date(new Date(inv.expires_at).getTime() - 12 * 3600_000).toLocaleDateString('pt-PT', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' })}${inv.first_opened_at ? ' · aberto em ' + fmtDate(inv.first_opened_at) : ''}` : ''}${lim?.info ? `<br><span class="hint">${esc(lim.info)}</span>` : ''}</p>
 <div class="row">${iv.collection_status === 'draft' ? `<a class="btn accent" href="/entrevistas/${iv.id}/convidar">Convidar</a>` : ''}
 <a class="btn ghost" href="/entrevistas/${iv.id}/editar">Editar</a>
-${['invited', 'started', 'reopened', 'expired'].includes(iv.collection_status) ? `<form method="post" action="/entrevistas/${iv.id}/reenviar"><button class="ghost">Reenviar convite (revoga o anterior)</button></form><form method="post" action="/entrevistas/${iv.id}/cancelar" onsubmit="return confirm('Cancelar a entrevista?')"><button class="danger">Cancelar</button></form>` : ''}
+${resendable ? `${resendBlock ? `<span class="hint sans">${esc(resendBlock)}</span>` : `<form method="post" action="/entrevistas/${iv.id}/reenviar"><button class="ghost">Reenviar convite (revoga o anterior)</button></form>`}<form method="post" action="/entrevistas/${iv.id}/cancelar" onsubmit="return confirm('Cancelar a entrevista?')"><button class="danger">Cancelar</button></form>` : ''}
 ${sub || iv.production_status !== 'not_requested' ? `<a class="btn accent" href="/entrevistas/${iv.id}/producao">Produção do podcast →</a>` : ''}</div></div>
 <div class="card"><h2 style="margin-top:0">Respostas</h2><table><thead><tr><th>#</th><th>Pergunta</th><th>Estado</th><th>Áudio</th></tr></thead><tbody>
 ${rows.map((r: any) => `<tr><td>${r.position}</td><td>${esc(r.text) || '(áudio)'}${r.followup ? ' ' + pill('adicional') : ''}</td><td>${r.ans_status === 'answered' ? pill('Respondida', 'ok') : r.ans_status === 'refused' ? pill('Recusada', 'warn') : pill('Pendente')}</td>

@@ -3,7 +3,7 @@ import { config } from './config.ts';
 import { esc, sha256, fmtDate } from './lib.ts';
 import { ACTIVE_STATUSES } from './billing.ts';
 import { inviteLimits, mmss } from './limits.ts';
-import { lastVerificationAt } from './email-verify.ts';
+import { lastVerificationAt, verificationsSent, VERIFY_TOTAL } from './email-verify.ts';
 
 /**
  * 1.ª entrevista grátis: oferta do quietinterview a quem se regista, para experimentar o produto sem pagar. Só para o
@@ -118,6 +118,26 @@ export async function releaseFree(db: Db, userId: string, interviewId: string) {
   });
 }
 
+/** «Reenviar convite» numa entrevista grátis: no máximo este número de links novos depois do primeiro convite. */
+export const FREE_RESENDS = 3;
+
+/**
+ * Razão para a entrevista grátis não mandar mais nada ao convidado por ação do entrevistador (null = pode), em português:
+ * o convidado recusou um convite dela («Reenviar convite» e perguntas adicionais deixam de sair), ou, com `resend`, o
+ * convite já teve FREE_RESENDS reenvios. Contado na tabela `invitations` (sem os links de validação do episódio): reenvios
+ * são os links novos com a mesma versão das perguntas que um anterior (o primeiro convite e o de cada pergunta adicional
+ * trazem uma versão nova); contam também os que o próprio convidado pede com «novo link». Sem isto, uma conta grátis,
+ * sem pagamento, mandava ao mesmo convidado um email a cada RESEND_COOLDOWN_SEC, mesmo depois de ele recusar. As
+ * entrevistas pagas continuam como antes (só o intervalo entre reenvios).
+ */
+export async function freeSendBlock(q: Db, interviewId: string, o: { resend?: boolean } = {}): Promise<string | null> {
+  const r = await q.one(`SELECT count(*) FILTER (WHERE declined_at IS NOT NULL)::int AS declined, (count(*) - count(DISTINCT question_version))::int AS resent
+    FROM invitations WHERE interview_id=$1 AND purpose<>'preview'`, [interviewId]);
+  if (Number(r?.declined ?? 0) > 0) return 'O entrevistado recusou o convite: a 1.ª entrevista grátis não lhe envia mais nada (nem reenvios, nem perguntas adicionais).';
+  if (o.resend && Number(r?.resent ?? 0) >= FREE_RESENDS) return `Este convite já foi reenviado ${FREE_RESENDS} vezes (contam também os links novos pedidos pelo entrevistado): a 1.ª entrevista grátis não permite mais reenvios.`;
+  return null;
+}
+
 /** Estado da oferta numa conta, para o administrador. */
 export const FREE_REASON_PT: Record<FreeReason, string> = {
   role: 'não se aplica (perfil)', entity: 'não se aplica (conta de uma entidade)', subscribed: 'não se aplica (subscrição ativa)', used: 'já usada por outra conta com o mesmo email (normalizado)',
@@ -143,6 +163,7 @@ const T = {
     eligible: (l: ReturnType<typeof inviteLimits>, where: 'painel' | 'convite') => `<strong>A sua 1.ª entrevista é grátis.</strong> ${where === 'convite' ? 'Este convite segue' : 'Envie o primeiro convite'} sem pagamento nem dados de cartão, ${T.pt.limits(l)}. É uma por pessoa e por organização${where === 'painel' ? ': crie a entrevista e, em «Rever e convidar», carregue em «Enviar convite grátis»' : ''}.`,
     unverified: (email: string, sent: Date | null) => `<strong>A sua 1.ª entrevista é grátis</strong>, depois de confirmar o email da sua conta. ${sent ? `Enviámos uma ligação para ${esc(email)} em ${esc(fmtDate(sent))} (válida 48 horas).` : `Ainda não foi possível enviar a ligação para ${esc(email)}: carregue em «Reenviar».`}`,
     resend: 'Reenviar',
+    noMore: `Já enviámos a esta conta o número máximo de ligações de confirmação (${VERIFY_TOTAL}): não é possível pedir outra.`,
     used: (at: Date | null) => `Já usou a sua entrevista grátis${at ? ` (enviada em ${esc(fmtDate(at))})` : ''}. Para enviar mais convites, escolha um plano em <a href="/account">Conta</a>.`,
     cap: 'A oferta da 1.ª entrevista grátis está temporariamente indisponível. Pode tentar mais tarde ou escolher um plano em <a href="/account">Conta</a>.',
   },
@@ -151,6 +172,7 @@ const T = {
     eligible: (l: ReturnType<typeof inviteLimits>) => `<strong>Your first interview is free.</strong> Send your first invitation with no payment and no card details, ${T.en.limits(l)}: create it on the dashboard (Painel) and press «Enviar convite grátis» (Send free invitation). One per person and organisation.`,
     unverified: (email: string, sent: Date | null) => `<strong>Your first interview is free</strong> once you confirm your account’s email. ${sent ? `We sent a link to ${esc(email)} on ${esc(fmtDate(sent))} (valid for 48 hours).` : `We could not send the link to ${esc(email)} yet: press «Resend».`}`,
     resend: 'Resend',
+    noMore: `We have already sent this account the maximum number of confirmation links (${VERIFY_TOTAL}), so no more can be requested.`,
     used: (at: Date | null) => `You have used your free interview${at ? ` (sent on ${esc(fmtDate(at))})` : ''}. To send more invitations, choose a plan below.`,
     cap: 'The free first interview offer is temporarily unavailable. You can try again later or choose a plan below.',
   },
@@ -166,8 +188,9 @@ export async function freeNotice(db: Db, f: FreeState, user: { id: string; email
   const box = (inner: string, kind = '') => `<div class="flash${kind ? ` ${kind}` : ''}" id="gratis">${inner}</div>`;
   if (f.eligible) return box(o.lang === 'pt' ? T.pt.eligible(await freeLimits(db), o.where ?? 'painel') : T.en.eligible(await freeLimits(db)), 'ok');
   switch (f.reason) {
+    // Sem «Reenviar» quando a conta já recebeu todos os emails de confirmação a que tem direito (VERIFY_TOTAL).
     case 'unverified': return box(`${d.unverified(user.email, await lastVerificationAt(db, user.id))}
-<form method="post" action="/confirmar-email/reenviar" style="margin-top:8px"><input type="hidden" name="voltar" value="${esc(o.back)}"><button class="ghost" style="padding:6px 14px;min-height:0">${d.resend}</button></form>`);
+${(await verificationsSent(db, user.id)).total >= VERIFY_TOTAL ? `<p style="margin:8px 0 0">${d.noMore}</p>` : `<form method="post" action="/confirmar-email/reenviar" style="margin-top:8px"><input type="hidden" name="voltar" value="${esc(o.back)}"><button class="ghost" style="padding:6px 14px;min-height:0">${d.resend}</button></form>`}`);
     case 'used': return box(d.used(f.usedAt));
     case 'cap_day': case 'cap_month': return box(d.cap);
     default: return '';

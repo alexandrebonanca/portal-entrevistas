@@ -8,7 +8,7 @@ import { S } from '../settings.ts';
 import { privacyBody } from '../privacy.ts';
 import { tagsFrom, ownHosts, trackVisit, campaignQuery, campaignInputs, fromOwnSite, carriedTags, withCampaign, type Tags } from '../metrics.ts';
 import { freeOfferOn, freeLimits } from '../free-interview.ts';
-import { sendVerification, verificationState, confirmEmail, VERIFY_HOURS, VERIFY_RESEND_PER_HOUR } from '../email-verify.ts';
+import { sendVerification, verificationState, confirmEmail, VERIFY_HOURS, VERIFY_RESEND_PER_HOUR, VERIFY_PER_DAY, VERIFY_TOTAL } from '../email-verify.ts';
 
 /** Páginas para onde «Reenviar» (email de confirmação) pode voltar; outra qualquer volta ao painel. */
 const resendBack = (v: unknown) => (typeof v === 'string' && (v === '/painel' || v === '/account' || /^\/entrevistas\/[0-9a-f-]{36}\/convidar$/.test(v)) ? v : '/painel');
@@ -164,8 +164,10 @@ export async function siteRoutes(app: FastifyInstance) {
     return verifyPage(reply, `<p>${r.result === 'used' ? VERIFY_MSG.used(!!r.verified) : VERIFY_MSG[r.result]}</p>${signIn(req)}`, verifyCode(r.result));
   });
 
-  // «Reenviar» (painel, página do convite ou Conta): um link novo, no máximo VERIFY_RESEND_PER_HOUR por conta e por hora,
-  // dentro do teto global dos emails de confirmação. Com a oferta desligada, nenhum (o email fala da entrevista grátis).
+  // «Reenviar» (painel, página do convite ou Conta): um link novo, dentro do total da conta (VERIFY_PER_DAY em 24 horas e
+  // VERIFY_TOTAL ao todo, o do registo incluído, contados na base) e do teto global dos emails de confirmação; em memória,
+  // no máximo VERIFY_RESEND_PER_HOUR pedidos por conta e por hora. Com a oferta desligada, nenhum (o email fala da
+  // entrevista grátis).
   app.post('/confirmar-email/reenviar', async (req, reply) => {
     if (!req.user) return reply.redirect('/entrar');
     const back = resendBack((req.body as any)?.voltar), en = back === '/account';
@@ -175,6 +177,10 @@ export async function siteRoutes(app: FastifyInstance) {
       return go('e', 'Já pediu vários emails de confirmação nesta hora. Tente mais tarde.', 'You have asked for several confirmation emails this hour. Please try again later.');
     const r = await sendVerification(db, req.user.id);
     if (r === 'verified') return go('ok', 'O seu email já está confirmado.', 'Your email is already confirmed.');
+    if (r === 'total_limit') return go('e', `Já enviámos a esta conta o número máximo de emails de confirmação (${VERIFY_TOTAL}): não é possível pedir outro. Procure-os na sua caixa de correio (também no spam).`,
+      `We have already sent this account the maximum number of confirmation emails (${VERIFY_TOTAL}), so no more can be requested. Look for them in your inbox (and spam folder).`);
+    if (r === 'day_limit') return go('e', `Já enviámos ${VERIFY_PER_DAY} emails de confirmação a esta conta nas últimas 24 horas. Procure-os na sua caixa de correio (também no spam) ou peça outro mais tarde.`,
+      `We have sent ${VERIFY_PER_DAY} confirmation emails to this account in the last 24 hours. Look for them in your inbox (and spam folder) or ask for another one later.`);
     if (r !== 'sent') return go('e', 'Não foi possível enviar o email agora. Tente mais tarde.', 'We could not send the email right now. Please try again later.');
     await audit(db, req.user.email, 'email.verification_sent', null);
     return go('ok', `Enviámos uma ligação nova para ${req.user.email}.`, `We sent a new link to ${req.user.email}.`);
