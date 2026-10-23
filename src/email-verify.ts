@@ -5,7 +5,8 @@ import { queueEmail, emailShell } from './mail.ts';
 
 /**
  * Confirmação do email da conta («Confirm your email»), exigida só para a 1.ª entrevista grátis (subscrever e pagar
- * continuam sem ela). O registo público (sem entidade) envia o link; as contas criadas pelo administrador, a primeira
+ * continuam sem ela). O registo público (sem entidade) envia o link, só com a oferta ligada (o email fala dela; ver
+ * routes/site.ts, que também não o reenvia com a oferta desligada); as contas criadas pelo administrador, a primeira
  * (administradora) e as de uma entidade ficam confirmadas. O token é aleatório (256 bits) e vai só no link: na base fica a
  * impressão (sha256); vale VERIFY_HOURS e uma só vez. O GET mostra a página e só o POST (botão) confirma, como nas outras
  * ações com efeitos (um leitor de links do correio não confirma nada sozinho).
