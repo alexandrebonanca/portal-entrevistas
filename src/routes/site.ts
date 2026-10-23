@@ -7,6 +7,11 @@ import { landing } from '../landing.ts';
 import { S } from '../settings.ts';
 import { privacyBody } from '../privacy.ts';
 import { tagsFrom, ownHosts, trackVisit, campaignQuery, campaignInputs, fromOwnSite, carriedTags, withCampaign, type Tags } from '../metrics.ts';
+import { freeOfferOn, freeLimits } from '../free-interview.ts';
+import { sendVerification, verificationState, confirmEmail, VERIFY_HOURS, VERIFY_RESEND_PER_HOUR } from '../email-verify.ts';
+
+/** Páginas para onde «Reenviar» (email de confirmação) pode voltar; outra qualquer volta ao painel. */
+const resendBack = (v: unknown) => (typeof v === 'string' && (v === '/painel' || v === '/account' || /^\/entrevistas\/[0-9a-f-]{36}\/convidar$/.test(v)) ? v : '/painel');
 
 export async function siteRoutes(app: FastifyInstance) {
   const db = app.db;
@@ -19,10 +24,12 @@ export async function siteRoutes(app: FastifyInstance) {
     const own = ownHosts(req.headers.host);
     const tags = tagsFrom(req.query, req.headers.referer, own);
     if (!fromOwnSite(req.headers.referer, own)) await trackVisit(req, db, '/', tags);
-    return reply.type('text/html; charset=utf-8').send(landing(await db.query('SELECT * FROM plans WHERE active ORDER BY sort'), campaignQuery(tags)));
+    // A 1.ª entrevista grátis só se anuncia com a oferta ligada (com os limites do plano Start, lidos da tabela).
+    const free = freeOfferOn() ? await freeLimits(db) : null;
+    return reply.type('text/html; charset=utf-8').send(landing(await db.query('SELECT * FROM plans WHERE active ORDER BY sort'), campaignQuery(tags), free));
   });
   app.get('/healthz', async () => ({ ok: true }));
-  app.get('/robots.txt', async (_req, reply) => reply.type('text/plain').send('User-agent: *\nAllow: /$\nAllow: /privacy\nAllow: /e/\nAllow: /podcasts\nDisallow: /i/\nDisallow: /entrevista\nDisallow: /painel\nDisallow: /entrevistas\nDisallow: /admin\nDisallow: /account\n'));
+  app.get('/robots.txt', async (_req, reply) => reply.type('text/plain').send('User-agent: *\nAllow: /$\nAllow: /privacy\nAllow: /e/\nAllow: /podcasts\nDisallow: /i/\nDisallow: /entrevista\nDisallow: /painel\nDisallow: /entrevistas\nDisallow: /admin\nDisallow: /account\nDisallow: /confirmar-email\n'));
 
   // Privacidade (RGPD, art. 13.º e 14.º): o texto está em src/privacy.ts.
   app.get('/privacy', async (_req, reply) => reply.type('text/html; charset=utf-8').send(page({
@@ -82,7 +89,9 @@ export async function siteRoutes(app: FastifyInstance) {
     if (!fromOwnSite(req.headers.referer, own)) await trackVisit(req, db, '/registar', tags);
     const first = (await userCount()) === 0;
     const ent = entitySlug(q.entidade) ? await db.one('SELECT slug, name FROM entities WHERE slug=$1 AND active', [entitySlug(q.entidade)]) : null;
-    return reply.type('text/html; charset=utf-8').send(authPage(first ? 'Create the administrator account' : 'Create your account', `${flash(q.e, 'bad')}
+    // A oferta é do registo público sem entidade (as entidades têm faturação própria), com o email confirmado.
+    const free = !first && !ent && freeOfferOn() ? `<p class="hint sans">Your first interview is free: after you sign up, we email you a link to confirm your email address (valid for ${VERIFY_HOURS} hours). Once it is confirmed, you can send your first invitation with no payment and no card details.</p>` : '';
+    return reply.type('text/html; charset=utf-8').send(authPage(first ? 'Create the administrator account' : 'Create your account', `${flash(q.e, 'bad')}${free}
 <form method="post" action="/registar" class="card">${campaignInputs(tags)}${ent ? `<input type="hidden" name="entidade" value="${esc(ent.slug)}"><p class="hint sans">Registering with <strong>${esc(ent.name)}</strong></p>` : ''}<label for="n">Name</label><input id="n" name="name" type="text" required>
 <label for="e">Email</label><input id="e" name="email" type="email" required autocomplete="username">
 <label for="p">Password (at least 12 characters)</label><input id="p" name="password" type="password" minlength="12" required autocomplete="new-password">
@@ -105,11 +114,65 @@ export async function siteRoutes(app: FastifyInstance) {
     if (await db.one('SELECT 1 FROM users WHERE email=$1', [email])) return again('That email is already registered.');
     const first = (await userCount()) === 0;
     const ent = !first && slug ? await db.one('SELECT id FROM entities WHERE slug=$1 AND active', [slug]) : null;
-    const u = await db.one(`INSERT INTO users(email, name, password_hash, role, entity_id, self_signup, utm_source, utm_medium, utm_campaign, utm_content, utm_term, signup_referrer_host)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id`, [email, name, await hashPassword(pw), first ? 'admin' : 'interviewer', ent?.id ?? null, !first, ...signupTags(tags)]);
-    await audit(db, email, 'signup', null, { role: first ? 'admin' : 'interviewer' });
+    // Email confirmado à partida: a primeira conta (administradora) e as de uma entidade (pelo link de registo da entidade,
+    // que não têm a 1.ª entrevista grátis); o registo público recebe o email «Confirm your email».
+    const verified = first || !!ent;
+    const u = await db.one(`INSERT INTO users(email, name, password_hash, role, entity_id, self_signup, utm_source, utm_medium, utm_campaign, utm_content, utm_term, signup_referrer_host, email_verified_at)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12, CASE WHEN $13::boolean THEN now() END) RETURNING id`, [email, name, await hashPassword(pw), first ? 'admin' : 'interviewer', ent?.id ?? null, !first, ...signupTags(tags), verified]);
+    // Uma falha a pôr o email na fila não desfaz o registo: a conta fica por confirmar e o painel deixa pedir outro.
+    const sent = verified ? null : await sendVerification(db, u.id).catch(e => { req.log.error({ err: String(e?.message ?? e) }, 'registo: email de confirmação não posto na fila'); return 'error' as const; });
+    await audit(db, email, 'signup', null, { role: first ? 'admin' : 'interviewer', ...(sent ? { emailVerification: sent } : {}) });
     await startSession(reply, u.id);
     return reply.redirect(first ? '/admin/definicoes' : '/account');
+  });
+
+  // ---- Confirmação do email da conta (link do email «Confirm your email») ----
+  // O GET só mostra o estado e o botão (um leitor de links do correio não confirma nada); o POST confirma. Sem sessão:
+  // o link pode ser aberto noutro aparelho. A página não guarda cache nem passa o endereço (com o token) a outros sites.
+  const verifyPage = (reply: any, body: string, code = 200) => reply.code(code).header('Cache-Control', 'no-store').type('text/html; charset=utf-8').send(authPage('Confirm your email', body));
+  const VERIFY_MSG = {
+    used: (verified: boolean) => `This link has already been used.${verified ? ' Your email is confirmed.' : ''}`,
+    expired: 'This link has expired. Sign in and press «Reenviar» (Resend) on your dashboard to receive a new one.',
+    invalid: 'This link is not valid. Check that you opened the whole address, or sign in and ask for a new link on your dashboard.',
+  };
+  // Link gasto: 200 (a página explica); expirado: 410; desconhecido: 404.
+  const verifyCode = (s: string) => (s === 'expired' ? 410 : s === 'invalid' ? 404 : 200);
+  const signIn = (req: any) => (req.user ? '<p><a class="btn accent" href="/painel">Go to your dashboard</a></p>' : '<p><a class="btn accent" href="/entrar">Sign in</a></p>');
+
+  app.get('/confirmar-email/:token', async (req, reply) => {
+    const token = (req.params as any).token;
+    const st = await verificationState(db, token);
+    if (st.state === 'valid' && !st.verified) return verifyPage(reply, `<p>Press the button to confirm the email address of your ${esc(config.brand)} account.</p>
+<form method="post" action="/confirmar-email" class="card"><input type="hidden" name="token" value="${esc(token)}"><button class="accent">Confirm my email</button></form>`);
+    if (st.state === 'valid') return verifyPage(reply, `<p>Your email is already confirmed.</p>${signIn(req)}`);
+    return verifyPage(reply, `<p>${st.state === 'used' ? VERIFY_MSG.used(st.verified) : VERIFY_MSG[st.state]}</p>${signIn(req)}`, verifyCode(st.state));
+  });
+
+  app.post('/confirmar-email', async (req, reply) => {
+    if (!rateLimit(`verify:${req.ip}`, 30, 10 * 60_000)) return verifyPage(reply, '<p>Too many attempts. Please wait a few minutes.</p>', 429);
+    const r = await confirmEmail(db, (req.body as any)?.token);
+    if (r.result === 'ok' || r.result === 'already') {
+      const u = await db.one('SELECT email FROM users WHERE id=$1', [r.userId]);
+      if (r.result === 'ok' && u) await audit(db, u.email, 'email.verified', null);
+      if (req.user?.id === r.userId) return reply.redirect('/painel?ok=' + encodeURIComponent('Email confirmado.') + '#gratis');
+      return verifyPage(reply, `<p>Your email is confirmed.</p>${signIn(req)}`);
+    }
+    return verifyPage(reply, `<p>${r.result === 'used' ? VERIFY_MSG.used(!!r.verified) : VERIFY_MSG[r.result]}</p>${signIn(req)}`, verifyCode(r.result));
+  });
+
+  // «Reenviar» (painel, página do convite ou Conta): um link novo, no máximo VERIFY_RESEND_PER_HOUR por conta e por hora,
+  // dentro do teto global dos emails de confirmação.
+  app.post('/confirmar-email/reenviar', async (req, reply) => {
+    if (!req.user) return reply.redirect('/entrar');
+    const back = resendBack((req.body as any)?.voltar), en = back === '/account';
+    const go = (kind: 'ok' | 'e', pt: string, enMsg: string) => reply.redirect(`${back}?${kind}=${encodeURIComponent(en ? enMsg : pt)}#gratis`);
+    if (!rateLimit(`verify-resend:${req.user.id}`, VERIFY_RESEND_PER_HOUR, 3600_000))
+      return go('e', 'Já pediu vários emails de confirmação nesta hora. Tente mais tarde.', 'You have asked for several confirmation emails this hour. Please try again later.');
+    const r = await sendVerification(db, req.user.id);
+    if (r === 'verified') return go('ok', 'O seu email já está confirmado.', 'Your email is already confirmed.');
+    if (r !== 'sent') return go('e', 'Não foi possível enviar o email agora. Tente mais tarde.', 'We could not send the email right now. Please try again later.');
+    await audit(db, req.user.email, 'email.verification_sent', null);
+    return go('ok', `Enviámos uma ligação nova para ${req.user.email}.`, `We sent a new link to ${req.user.email}.`);
   });
 }
 

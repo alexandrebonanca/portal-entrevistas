@@ -466,7 +466,7 @@ test('checkout: só cartão, morada obrigatória, NIF e taxa de IVA manual criad
     assert.equal(fs.find('POST', 'customers').length, 1, 'o mesmo cliente Stripe');
     assert.match(S('STRIPE_TAX_RATES'), /"PT:22":"txr_PT22_/);
     const a = await db.one(`SELECT meta FROM audit_events WHERE action='billing.checkout_started' ORDER BY created_at DESC LIMIT 1`);
-    assert.equal(a.meta.terms, '2026-10-21'); assert.equal(a.meta.regime, 'domestic');
+    assert.equal(a.meta.terms, '2026-10-23'); assert.equal(a.meta.regime, 'domestic');
     assert.ok((await db.one('SELECT last_checkout_ip FROM billing_profiles WHERE user_id=$1', [biz.id])).last_checkout_ip, 'IP guardado como prova');
   } finally { fs.restore(); }
 });

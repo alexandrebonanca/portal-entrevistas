@@ -20,11 +20,15 @@ import { INTRO_PHRASES, introPhrase, introKeyOf, introBlock, introState, introsT
  */
 
 export const INTRO_NOT_ENTITLED = 'A introdução animada é oferecida a quem produz vídeos: com uma subscrição ativa, numa entrevista já enviada ou como gestor de entidade. Veja os planos em Conta.';
+const INTRO_NOT_FREE = 'A introdução animada (gerada pelo Google Veo) não está incluída na 1.ª entrevista grátis: é oferecida a quem tem uma subscrição ativa. Veja os planos em Conta.';
 const INTRO_OPENAI = 'Falta a chave da OpenAI (transcrição para verificar a introdução) em Definições.';
 
-/** Quem tem direito à oferta: o administrador e os gestores de entidade, uma subscrição ativa ou uma entrevista já enviada. */
+/**
+ * Quem tem direito à oferta: o administrador e os gestores de entidade, uma subscrição ativa ou uma entrevista já enviada
+ * (paga: a 1.ª entrevista grátis não dá direito a ela, porque o Veo é um custo do portal e a oferta não inclui animação).
+ */
 async function introEntitled(db: Db, owner: { id: string; role: string }, iv: any) {
-  if (owner.role === 'admin' || owner.role === 'entity_admin' || iv.collection_status !== 'draft') return true;
+  if (owner.role === 'admin' || owner.role === 'entity_admin' || (iv.collection_status !== 'draft' && !iv.free_at)) return true;
   const q = await quotaFor(db, owner);
   return q.allowed || q.reason === 'quota';
 }
@@ -33,7 +37,7 @@ async function introEntitled(db: Db, owner: { id: string; role: string }, iv: an
 async function generateBlock(db: Db, iv: any, owner: any, user: any, ent: string | null | undefined) {
   const why = introBlock(iv);
   if (why) return `Para gerar a introdução, ${why}.`;
-  if (user.role !== 'admin' && !(await introEntitled(db, owner, iv))) return INTRO_NOT_ENTITLED;
+  if (user.role !== 'admin' && !(await introEntitled(db, owner, iv))) return iv.free_at ? INTRO_NOT_FREE : INTRO_NOT_ENTITLED;
   if (!config.openai.mock && !inEntity(ent, () => veoConfigured())) return VEO_NO_CREDENTIALS;
   if (!config.openai.mock && !inEntity(ent, () => aiAvailable())) return INTRO_OPENAI;
   return null;

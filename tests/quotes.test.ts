@@ -162,7 +162,7 @@ test('orçamento: o administrador prepara o rascunho; tabela por fala, total e s
   const ok = await post(aceitar, { start_now: '1', waiver: '1' }, cli.cookie);
   assert.match(msg(ok), new RegExp(`Orçamento aceite: ${W.cr(expected)} créditos cativos`));
   const qa = await quoteOf(q.id);
-  assert.deepEqual([qa.status, qa.accepted_by, qa.terms_version, qa.acceptance.startNow, qa.acceptance.consumer, qa.acceptance.second], ['accepted', 'cliente@example.com', '2026-10-21', true, false, 'conditions']);
+  assert.deepEqual([qa.status, qa.accepted_by, qa.terms_version, qa.acceptance.startNow, qa.acceptance.consumer, qa.acceptance.second], ['accepted', 'cliente@example.com', '2026-10-23', true, false, 'conditions']);
   assert.ok(qa.accepted_ip);
   const w = await walletOf(cli.id);
   assert.deepEqual([w.available_cents, w.reserved_cents], [10000 - expected, expected]);
@@ -171,7 +171,7 @@ test('orçamento: o administrador prepara o rascunho; tabela por fala, total e s
   const em = await db.one(`SELECT * FROM emails WHERE dedupe_key=$1`, [`quote:${q.id}`]);
   for (const s of [`Total: ${W.cr(expected)} créditos`, 'Peço que a produção comece já.', 'O orçamento aceite é o máximo', 'Empresa Vendedora de Teste, Lda.', 's0 · Entrevistador']) assert.ok(em.text_body.includes(s), s);
   const au = await db.one(`SELECT meta FROM audit_events WHERE action='animation.quote_accepted' AND interview_id=$1`, [ivId]);
-  assert.deepEqual([au.meta.quote, au.meta.terms, !!au.meta.ip], [q.id, '2026-10-21', true]);
+  assert.deepEqual([au.meta.quote, au.meta.terms, !!au.meta.ip], [q.id, '2026-10-23', true]);
   // duplo clique: um só trabalho e uma só cativação
   assert.match(msg(await post(aceitar, { start_now: '1', waiver: '1' }, cli.cookie)), /já não está por aceitar/);
   assert.equal(Number((await db.one(`SELECT count(*)::int n FROM wallet_entries WHERE kind='reserve' AND ref=$1`, [`quote:${q.id}`])).n), 1);

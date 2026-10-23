@@ -100,6 +100,15 @@ export const config = {
     // forjável, endereços diferentes); 0 fecha o formulário a pedidos novos.
     contactPerHour: positive(env.CONTACT_PER_HOUR, 30),
     contactPerDay: positive(env.CONTACT_PER_DAY, 100),
+    // 1.ª entrevista grátis: tetos de entrevistas grátis enviadas por dia e por mês (UTC), todas as contas juntas, contados
+    // na base; 0 em qualquer um desliga a oferta (a landing e o registo deixam de a anunciar).
+    freePerDay: positive(env.FREE_INTERVIEWS_PER_DAY, 10),
+    freePerMonth: positive(env.FREE_INTERVIEWS_PER_MONTH, 60),
+    // Emails «Confirm your email» (registo público e «Reenviar»): teto por hora e por dia, todas as contas juntas, contados
+    // na fila de emails. Como o /contact, o registo põe na fila um email para um endereço qualquer; acima do teto a conta
+    // fica criada sem email (o painel deixa pedir outro mais tarde).
+    verifyEmailsPerHour: positive(env.VERIFY_EMAILS_PER_HOUR, 60),
+    verifyEmailsPerDay: positive(env.VERIFY_EMAILS_PER_DAY, 300),
   },
   // Fila de trabalhos: uma via por omissão; WORKER_LANES=2 separa a curta e a dos vídeos (dois FFmpeg ao mesmo tempo não
   // cabem com folga nos 512 MB do Render starter, com o servidor web no mesmo processo). Batimento de quem corre um trabalho,

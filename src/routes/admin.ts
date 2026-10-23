@@ -11,6 +11,8 @@ import { REGIME_LABEL, regionalRate, countryName, eurPt, fmtRate } from '../vat.
 import { queueEmail, emailShell, flushOutbox, retryFailedEmails } from '../mail.ts';
 import { allRates, recommendedCentsPerMin, QUOTE_STATUS } from '../quotes.ts';
 import { helpNav } from '../support.ts';
+import { freeInterviewFor, FREE_REASON_PT } from '../free-interview.ts';
+import { lastVerificationAt } from '../email-verify.ts';
 
 /** Campo de uma definição: segredo (nunca devolvido), lista de opções ou texto. `blank` é a opção sem valor guardado. */
 export function settingInput(d: SettingDef, value: string, blank: string, blankLabel?: string) {
@@ -140,11 +142,12 @@ export async function adminRoutes(app: FastifyInstance) {
     const rows = [];
     for (const u of users) { const qt = await quotaFor(db, u); rows.push({ u, qt }); }
     return view(reply, 'Utilizadores', `<h1>Utilizadores</h1>${flash(q.ok)}${flash(q.e, 'bad')}
-<div class="card" style="overflow-x:auto"><table><thead><tr><th>Nome</th><th>Email</th><th>Perfil</th><th>Entidade</th><th>Conta</th><th>Subscrição</th><th>Uso</th><th></th></tr></thead><tbody>
+<div class="card" style="overflow-x:auto"><table><thead><tr><th>Nome</th><th>Email</th><th>Perfil</th><th>Entidade</th><th>Conta</th><th>Subscrição</th><th>Uso</th><th>1.ª grátis</th><th></th></tr></thead><tbody>
 ${rows.map(({ u, qt }) => `<tr><td><a href="/admin/utilizadores/${u.id}">${esc(u.name)}</a></td><td>${esc(u.email)}</td><td>${esc(u.role)}</td><td>${esc(u.entity_name ?? '—')}</td>
 <td>${u.active ? pill('ativa', 'ok') : pill('desativada', 'bad')}</td>
 <td>${u.role === 'admin' ? '—' : `${noSubscriptionNeeded(u.role) ? `${pill('sem subscrição necessária', 'ok')} ` : ''}${u.sub_status ? `${esc(u.plan_name ?? '—')} ${pill(u.sub_status, ACTIVE_STATUSES.includes(u.sub_status) ? 'ok' : 'warn')} <span class="hint">${esc(u.source)}</span>` : noSubscriptionNeeded(u.role) ? '' : pill('nenhuma')}`}</td>
 <td>${usage(u, qt)}</td>
+<td>${u.free_interview_at ? `usada em ${esc(fmtDate(u.free_interview_at))}` : '—'}<br><span class="hint">${u.email_verified_at ? 'email confirmado' : 'email por confirmar'}</span></td>
 <td><form method="post" action="/admin/utilizadores/${u.id}/estado"><input type="hidden" name="active" value="${u.active ? '0' : '1'}"><button class="${u.active ? 'danger' : 'accent'}" style="padding:6px 12px;min-height:0">${u.active ? 'Desativar' : 'Ativar'}</button></form></td></tr>`).join('')}</tbody></table></div>
 <div class="card"><h2 style="margin-top:0">Criar utilizador</h2><form method="post" action="/admin/utilizadores">
 <div class="row"><div class="grow"><label for="n">Nome</label><input id="n" name="name" type="text" required></div><div class="grow"><label for="e">Email</label><input id="e" name="email" type="email" required></div></div>
@@ -164,7 +167,8 @@ ${rows.map(({ u, qt }) => `<tr><td><a href="/admin/utilizadores/${u.id}">${esc(u
     const role = ['admin', 'entity_admin'].includes(b.role) ? b.role : 'interviewer';
     const ent = b.entity_id && /^[0-9a-f-]{36}$/i.test(b.entity_id) ? await db.one('SELECT id FROM entities WHERE id=$1', [b.entity_id]) : null;
     if (role === 'entity_admin' && !ent) return back(reply, '/admin/utilizadores', undefined, 'Um gestor de entidade precisa de uma entidade.');
-    const u = await db.one('INSERT INTO users(email, name, password_hash, role, entity_id) VALUES ($1,$2,$3,$4,$5) RETURNING id', [email, name, await hashPassword(pw), role, ent?.id ?? null]);
+    // Conta criada pelo administrador: email confirmado à partida (é ele quem a cria e comunica a palavra-passe).
+    const u = await db.one('INSERT INTO users(email, name, password_hash, role, entity_id, email_verified_at) VALUES ($1,$2,$3,$4,$5, now()) RETURNING id', [email, name, await hashPassword(pw), role, ent?.id ?? null]);
     const plan = b.plan_id && (await db.one('SELECT id FROM plans WHERE id=$1', [b.plan_id]));
     if (plan && role !== 'admin') await db.query(`INSERT INTO subscriptions(user_id, plan_id, status, source) VALUES ($1,$2,'comped','manual')`, [u.id, plan.id]);
     await audit(db, req.user!.email, 'admin.user_created', null, { userId: u.id, role });
@@ -199,8 +203,13 @@ ${rows.map(({ u, qt }) => `<tr><td><a href="/admin/utilizadores/${u.id}">${esc(u
     const iv = await db.query('SELECT id, title, collection_status, invited_at FROM interviews WHERE owner_id=$1 ORDER BY created_at DESC LIMIT 10', [u.id]);
     const wallets = await db.query('SELECT w.*, en.name AS entity_name FROM wallets w LEFT JOIN entities en ON en.id=w.entity_id WHERE w.user_id=$1 ORDER BY w.created_at', [u.id]);
     const date = (d: any) => (d ? new Date(d).toISOString().slice(0, 10) : '');
+    // Email confirmado (exigido só para a 1.ª entrevista grátis) e o estado da oferta nesta conta.
+    const free = await freeInterviewFor(db, u), sentAt = u.email_verified_at ? null : await lastVerificationAt(db, u.id);
+    const freeLine = `Email ${u.email_verified_at ? `confirmado em ${fmtDate(u.email_verified_at)}` : `por confirmar (${sentAt ? `último link enviado em ${fmtDate(sentAt)}` : 'nenhum link enviado'})`}
+ · 1.ª entrevista grátis: ${u.free_interview_at ? `usada em ${fmtDate(u.free_interview_at)}${u.free_interview_id ? ` (<a href="/entrevistas/${esc(u.free_interview_id)}">ver a entrevista</a>)` : ''}` : free.eligible ? 'disponível' : `por usar — ${esc(FREE_REASON_PT[free.reason!])}`}`;
     return view(reply, u.name, `<p><a href="/admin/utilizadores">← Utilizadores</a></p><h1>${esc(u.name)} ${u.active ? pill('ativa', 'ok') : pill('desativada', 'bad')}</h1>${flash(q.ok)}${flash(q.e, 'bad')}
 <div class="card"><h2 style="margin-top:0">Conta</h2><p class="sans">${esc(u.email)} · criada em ${fmtDate(u.created_at)}${u.stripe_customer_id ? ' · Stripe: ' + esc(u.stripe_customer_id) : ''}</p>
+<p class="sans">${freeLine}</p>
 <form method="post" action="/admin/utilizadores/${u.id}/perfil" class="row"><select name="role" aria-label="Perfil" style="width:auto"><option value="interviewer" ${u.role === 'interviewer' ? 'selected' : ''}>Entrevistador</option><option value="entity_admin" ${u.role === 'entity_admin' ? 'selected' : ''}>Gestor de entidade (chaves; sem subscrição)</option><option value="admin" ${u.role === 'admin' ? 'selected' : ''}>Administrador</option></select>
 <select name="entity_id" aria-label="Entidade" style="width:auto"><option value="">Sem entidade</option>${entities.map((e: any) => `<option value="${e.id}" ${u.entity_id === e.id ? 'selected' : ''}>${esc(e.name)}</option>`).join('')}</select><button class="ghost">Guardar perfil</button></form>
 <form method="post" action="/admin/utilizadores/${u.id}/palavra-passe"><label for="np">Redefinir palavra-passe (mín. 12; termina as sessões)</label><div class="row"><input id="np" name="password" type="password" minlength="12" autocomplete="new-password" style="max-width:320px"><button class="ghost">Redefinir</button></div></form></div>

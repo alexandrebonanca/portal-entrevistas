@@ -19,6 +19,10 @@ import { introCard } from './intro.ts';
 import { helpNav } from '../support.ts';
 import { assistantAiFor } from '../assistant.ts';
 import { composeAction, composeDraft, composeAssist, composeAvailable, composeHourFull, COMPOSE_MAX_REQUEST, COMPOSE_BODY_LIMIT, COMPOSE_RATE } from '../compose.ts';
+import { freeInterviewFor, freeLimits, claimFree, releaseFree, freeRefusal, freeNotice } from '../free-interview.ts';
+
+/** Envios grátis tentados por conta e por hora (cada recusa por convidado diz algo sobre esse email: o limite trava a sondagem). */
+const FREE_TRIES_PER_HOUR = 10;
 
 const H = { 'Content-Type': 'text/html; charset=utf-8' };
 export const nav = (u: any) => `<a href="/painel">Painel</a><a href="/entrevistas/nova">Nova entrevista</a><a href="/account">Conta</a>${u.role === 'admin' ? '' : '<a href="/conta/creditos">Créditos</a>'}${helpNav(u)}${u.role === 'admin' ? '<a href="/admin/entidades">Entidades</a><a href="/admin/utilizadores">Utilizadores</a><a href="/admin/definicoes">Definições</a>' : u.role === 'entity_admin' ? '<a href="/entidade">Entidade</a>' : ''}<form method="post" action="/sair" style="display:inline"><button class="ghost" style="padding:6px 12px;min-height:0;margin-left:16px">Sair (${esc(u.name)})</button></form>`;
@@ -82,11 +86,15 @@ export async function interviewerRoutes(app: FastifyInstance) {
 
   app.get('/painel', async (req, reply) => {
     if (!requireUser(req, reply)) return;
+    const q = req.query as any;
     const rows = await db.query(
       `SELECT i.*, (SELECT count(*)::int FROM questions q WHERE q.interview_id=i.id) AS nq,
          (SELECT count(*)::int FROM answers a WHERE a.interview_id=i.id) AS na FROM interviews i
        WHERE i.owner_id=$1 OR $2='admin' ORDER BY i.created_at DESC`, [req.user!.id, req.user!.role]);
+    // Estado da 1.ª entrevista grátis (só para o entrevistador a quem a oferta se aplica; vazio nos outros casos).
+    const free = req.user!.role === 'interviewer' ? await freeNotice(db, await freeInterviewFor(db, req.user!), req.user!, { lang: 'pt', where: 'painel', back: '/painel' }) : '';
     const body = `<div class="wrap" style="padding-top:32px"><div class="row"><h1 class="grow" style="margin:0">Entrevistas</h1><a class="btn accent" href="/entrevistas/nova">Nova entrevista</a></div>
+${flash(q.ok)}${flash(q.e, 'bad')}${free}
 ${rows.length ? `<div class="card" style="overflow-x:auto"><table><thead><tr><th>Título</th><th>Convidado</th><th>Recolha</th><th>Produção</th><th>Publicação</th><th>Respostas</th></tr></thead><tbody>
 ${rows.map((r: any) => `<tr><td><a href="/entrevistas/${r.id}">${esc(r.title)}</a></td><td>${esc(r.guest_name || '—')}</td><td>${statusPill(r.collection_status)}</td><td>${statusPill(r.production_status)}</td><td>${statusPill(r.publication_status)}</td><td>${r.na}/${r.nq}</td></tr>`).join('')}
 </tbody></table></div>` : '<div class="card"><p>Ainda não tem entrevistas. Crie a primeira.</p></div>'}</div>`;
@@ -385,10 +393,10 @@ ${locked ? '' : composePanel(iv, quota!, !(await inEntity(await entityOfIntervie
   });
 
   // ---------- convite ----------
-  const readiness = async (iv: any, lim: ReturnType<typeof inviteLimits>) => {
+  const readiness = async (iv: any, lim: ReturnType<typeof inviteLimits>, free = false) => {
     const qs = await db.query('SELECT * FROM questions WHERE interview_id=$1 ORDER BY position', [iv.id]);
     const problems: string[] = [];
-    if (lim.questionLimit != null && qs.length > lim.questionLimit) problems.push(`Tem ${qs.length} perguntas; o seu plano permite até ${lim.questionLimit} por entrevista (incluindo as adicionais).`);
+    if (lim.questionLimit != null && qs.length > lim.questionLimit) problems.push(`Tem ${qs.length} perguntas; ${free ? 'a entrevista grátis' : 'o seu plano'} permite até ${lim.questionLimit} por entrevista (incluindo as adicionais).`);
     if (!iv.title) problems.push('Falta o título.');
     if (!iv.objective_text && !iv.objective_asset_id) problems.push('Falta o objetivo (texto ou áudio).');
     if (!qs.length) problems.push('Falta pelo menos uma pergunta.');
@@ -404,13 +412,16 @@ ${locked ? '' : composePanel(iv, quota!, !(await inEntity(await entityOfIntervie
     const iv = await ownedInterview(app, req, (req.params as any).id);
     if (!iv) return reply.code(404).send('Não encontrada');
     const quota = await quotaFor(db, req.user!);
-    const lim = inviteLimits(quota);
-    const { qs, problems } = await readiness(iv, lim);
+    // Sem subscrição: a 1.ª entrevista grátis, se a conta ainda a puder usar (os limites passam a ser os do plano Start).
+    const free = !quota.allowed && quota.reason === 'no_subscription' ? await freeInterviewFor(db, req.user!) : null;
+    const lim = free?.eligible ? await freeLimits(db) : inviteLimits(quota);
+    const { qs, problems } = await readiness(iv, lim, !!free?.eligible);
     // Quota do plano esgotada (com subscrição ativa): pode convidar como entrevista extra, paga com créditos.
     const extra = !quota.allowed && quota.reason === 'quota' ? await extraOffer(req.user!) : null;
-    if (!quota.allowed && !extra) problems.push('Precisa de uma subscrição ativa para enviar convites (Conta).');
-    const body = `<div class="narrow" style="padding-top:32px"><h1>Rever e convidar</h1>${flash((req.query as any).e, 'bad')}${req.user!.role === 'entity_admin' ? `<p class="hint sans">Gestor de entidade: convida sem subscrição e sem limite mensal de entrevistas (${quota.used} este mês); os limites de cada entrevista mantêm-se.</p>` : quota.unlimited ? '' : `<p class="hint sans">Uso neste período: ${quota.used}/${quota.limit}</p>`}
-${problems.length ? `<div class="flash bad"><strong>Antes de enviar:</strong><ul>${problems.map(p => `<li>${esc(p)}</li>`).join('')}</ul></div>` : ''}
+    if (!quota.allowed && !extra && !free?.eligible) problems.push('Precisa de uma subscrição ativa para enviar convites (Conta).');
+    const notice = free ? await freeNotice(db, free, req.user!, { lang: 'pt', where: 'convite', back: `/entrevistas/${iv.id}/convidar` }) : '';
+    const body = `<div class="narrow" style="padding-top:32px"><h1>Rever e convidar</h1>${flash((req.query as any).ok)}${flash((req.query as any).e, 'bad')}${req.user!.role === 'entity_admin' ? `<p class="hint sans">Gestor de entidade: convida sem subscrição e sem limite mensal de entrevistas (${quota.used} este mês); os limites de cada entrevista mantêm-se.</p>` : quota.unlimited || free?.eligible ? '' : `<p class="hint sans">Uso neste período: ${quota.used}/${quota.limit}</p>`}
+${notice}${problems.length ? `<div class="flash bad"><strong>Antes de enviar:</strong><ul>${problems.map(p => `<li>${esc(p)}</li>`).join('')}</ul></div>` : ''}
 ${extra ? `<div class="flash bad" id="extra">Atingiu o limite de ${quota.limit} entrevistas deste período (${quota.used}/${quota.limit}). Pode mudar de plano em <a href="/account">Conta</a>, ou enviar este convite como <strong>entrevista extra por ${cr(EXTRA_INTERVIEW_CENTS)} créditos</strong> (saldo: ${cr(extra.available)} créditos). A entrevista extra tem os mesmos limites do plano.${extra.block ? `<br>${esc(extra.block)}` : extra.missing ? ` <a href="/conta/creditos/carregar?falta=${extra.missing}&amp;voltar=${encodeURIComponent(`/entrevistas/${iv.id}/convidar`)}">Carregar o que falta</a>` : ''}</div>` : ''}
 <div class="card"><p class="sans"><strong>Para:</strong> ${esc(iv.guest_name)} &lt;${esc(iv.guest_email)}&gt;<br><strong>Título:</strong> ${esc(iv.title)}<br><strong>Perguntas:</strong> ${qs.length}<br>
 <strong>Objetivo visível ao entrevistado:</strong> ${iv.objective_shared ? 'Sim' : 'Não (interno)'}<br><strong>Política de revisão:</strong> ${iv.review_policy === 'guest_preview' ? 'o entrevistado aprova a versão final' : 'só o entrevistador aprova'}<br>
@@ -418,7 +429,7 @@ ${extra ? `<div class="flash bad" id="extra">Atingiu o limite de ${quota.limit} 
 <ol>${qs.map((x: any) => `<li>${esc(x.text) || '<em>(pergunta em áudio)</em>'}</li>`).join('')}</ol>
 ${iv.objective_shared && iv.objective_text ? `<p class="hint">O entrevistado vê: <em>${esc(iv.objective_text)}</em></p>` : ''}</div>
 <p class="hint">Ao enviar, a versão ${iv.version} das perguntas fica fixa. O convite chega por email e o link permanece válido até ${config.limits.inviteDays} dias (ou ao prazo definido).</p>
-<form method="post" action="/entrevistas/${iv.id}/convidar" onsubmit="return confirm('Enviar o convite agora?')">${extra ? `<input type="hidden" name="extra" value="1">${paidConsentHtml(extra.consumer)}` : ''}<button class="accent" ${problems.length || (extra && !extra.canPay) ? 'disabled' : ''}>${extra ? esc(extra.button) : 'Enviar convite'}</button> <a class="btn ghost" href="/entrevistas/${iv.id}/editar">Voltar</a></form></div>`;
+<form method="post" action="/entrevistas/${iv.id}/convidar" onsubmit="return confirm('${free?.eligible ? 'Enviar o convite agora, como a sua 1.ª entrevista grátis (só uma por conta)?' : 'Enviar o convite agora?'}')">${extra ? `<input type="hidden" name="extra" value="1">${paidConsentHtml(extra.consumer)}` : ''}${free?.eligible ? '<input type="hidden" name="free" value="1">' : ''}<button class="accent" ${problems.length || (extra && !extra.canPay) ? 'disabled' : ''}>${extra ? esc(extra.button) : free?.eligible ? 'Enviar convite grátis' : 'Enviar convite'}</button> <a class="btn ghost" href="/entrevistas/${iv.id}/editar">Voltar</a></form></div>`;
     return view(req, reply, 'Convidar', body);
   });
 
@@ -428,15 +439,32 @@ ${iv.objective_shared && iv.objective_text ? `<p class="hint">O entrevistado vê
     if (!iv) return reply.code(404).send('Não encontrada');
     if (iv.collection_status !== 'draft') return reply.redirect(`/entrevistas/${iv.id}`); // duplo clique / reenvio de formulário
     const quota = await quotaFor(db, req.user!);
-    const lim = inviteLimits(quota);
-    const { problems } = await readiness(iv, lim);
+    const b = (req.body ?? {}) as any;
+    // 1.ª entrevista grátis: só sem subscrição e com o pedido explícito do botão «Enviar convite grátis» (uma página antiga
+    // sem ele não gasta a oferta); os limites são os do plano Start.
+    const wantsFree = !quota.allowed && quota.reason === 'no_subscription' && b.free === '1';
+    const lim = wantsFree ? await freeLimits(db) : inviteLimits(quota);
+    const { problems } = await readiness(iv, lim, wantsFree);
     if (problems.length) return reply.redirect(`/entrevistas/${iv.id}/convidar`);
     const again = (e: string) => reply.redirect(`/entrevistas/${iv.id}/convidar?e=` + encodeURIComponent(e));
+    if (wantsFree) {
+      if (!rateLimit(`free-invite:${req.user!.id}`, FREE_TRIES_PER_HOUR, 3600_000)) return again('Demasiadas tentativas de envio grátis nesta hora. Tente mais tarde.');
+      // Numa só transação, com bloqueios: elegibilidade e tetos contados de novo, entrevista convidada e marcada como grátis
+      // e a oferta da conta dada como usada (claimFree). O convite sai depois; se falhar, tudo volta atrás (releaseFree).
+      const claim = await db.tx(t => claimFree(t, req.user!.id, iv.id));
+      if (!claim.ok) {
+        if (claim.reason === 'done') return reply.redirect(`/entrevistas/${iv.id}`);
+        return again(freeRefusal(claim.reason) ?? 'Precisa de uma subscrição ativa para enviar convites (Conta).');
+      }
+      try { await createInvitation(db, iv, { name: req.user!.name }); }
+      catch (e) { await releaseFree(db, req.user!.id, iv.id); throw e; }
+      await audit(db, req.user!.email, 'invitation.sent', iv.id, { free: true });
+      return reply.redirect(`/entrevistas/${iv.id}?ok=` + encodeURIComponent('Convite enviado: usou a sua 1.ª entrevista grátis.'));
+    }
     if (!quota.allowed) {
       if (quota.reason !== 'quota') return again('Precisa de uma subscrição ativa para enviar convites (Conta).');
       // Entrevista extra: os créditos cobram-se com a entrevista bloqueada e uma só vez (a cobrança é única por entrevista,
       // por isso um duplo clique ou uma repetição depois de uma falha no envio não cobram outra vez); depois segue o convite.
-      const b = (req.body ?? {}) as any;
       const offer = await extraOffer(req.user!);
       if (b.extra !== '1') return again(`Atingiu o limite de ${quota.limit} entrevistas deste período. Mude de plano em Conta, ou envie como entrevista extra por ${cr(EXTRA_INTERVIEW_CENTS)} créditos.`);
       if (!paidConsentOk(b, offer.consumer)) return again('Para começar já, confirme o pedido de início imediato do serviço e o reconhecimento sobre a livre resolução.');
@@ -548,7 +576,7 @@ ${iv.objective_shared && iv.objective_text ? `<p class="hint">O entrevistado vê
     const lim = iv.collection_status !== 'draft' ? await followupState(iv, req.user) : null;
     const body = `<div class="wrap" style="padding-top:32px"><div class="row"><h1 class="grow" style="margin:0">${esc(iv.title)}</h1>${statusPill(iv.collection_status)}${statusPill(iv.production_status)}${statusPill(iv.publication_status)}</div>
 ${flash(q.ok)}${flash(q.e, 'bad')}
-<div class="card"><p class="sans"><strong>Convidado:</strong> ${esc(iv.guest_name)} &lt;${esc(iv.guest_email)}&gt; · <strong>Versão das perguntas:</strong> ${iv.version}
+<div class="card"><p class="sans"><strong>Convidado:</strong> ${esc(iv.guest_name)} &lt;${esc(iv.guest_email)}&gt; · <strong>Versão das perguntas:</strong> ${iv.version}${iv.free_at ? ` · ${pill('1.ª entrevista grátis', 'ok')}` : ''}
 ${inv ? `<br><strong>Convite:</strong> ${inv.revoked_at ? 'revogado' : inv.declined_at ? 'recusado pelo convidado' : new Date(inv.expires_at) < new Date() ? 'expirado' : 'válido até ' + new Date(new Date(inv.expires_at).getTime() - 12 * 3600_000).toLocaleDateString('pt-PT', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' })}${inv.first_opened_at ? ' · aberto em ' + fmtDate(inv.first_opened_at) : ''}` : ''}${lim?.info ? `<br><span class="hint">${esc(lim.info)}</span>` : ''}</p>
 <div class="row">${iv.collection_status === 'draft' ? `<a class="btn accent" href="/entrevistas/${iv.id}/convidar">Convidar</a>` : ''}
 <a class="btn ghost" href="/entrevistas/${iv.id}/editar">Editar</a>

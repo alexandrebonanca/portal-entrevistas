@@ -11,6 +11,7 @@ import { withVat, eurEn, eurPt, fmtRate, normNif, normPostal, normVatNumber, isE
 import { queueEmail, emailShell } from '../mail.ts';
 import { rateForTier, quoteTier } from '../quotes.ts';
 import { helpNav } from '../support.ts';
+import { freeInterviewFor, freeNotice } from '../free-interview.ts';
 
 /** Mensagem nas duas línguas (a área de faturação é em inglês; o português é obrigatório para os consumidores). */
 const both = (m: { pt: string; en: string }) => `${m.en} · ${m.pt}`;
@@ -56,6 +57,8 @@ export async function billingRoutes(app: FastifyInstance) {
     const customerId = await customerFor(db, req.user.id);
     const wallet = isAdmin ? null : await findWallet(db, req.user.id, req.user.entity_id);
     const home = homeConsumerRate(s);
+    // 1.ª entrevista grátis (entrevistador sem entidade nem subscrição): disponível, falta confirmar o email, usada ou indisponível.
+    const freeBox = isAdmin || manager ? '' : await freeNotice(db, await freeInterviewFor(db, req.user), req.user, { lang: 'en', back: '/account' });
 
     // Preço: empresas «+ VAT»; consumidores o valor com IVA primeiro, também em português.
     const price = (p: any) => {
@@ -114,7 +117,7 @@ ${q.checkout === 'success' ? flash('Thank you! Your subscription will be active 
 ${isAdmin ? 'Administrator — no interview limit.' : manager ? `Entity manager — no subscription needed and no monthly interview limit (${quota.used} invited this month). · <span lang="pt-PT">Gestor de entidade: sem subscrição necessária.</span>${active ? `<br>You still have the ${esc(sub.plan_name ?? '—')} plan ${pill(sub.status, 'ok')}: you do not need it${customerId ? ' and can cancel it below (Manage card, Stripe receipts &amp; cancellation)' : ''}.` : ''}` : active ? `Plan: <strong>${esc(sub.plan_name ?? '—')}</strong> ${pill(sub.status, 'ok')}<br>Interviews this period: <strong>${quota.used} / ${quota.limit}</strong>${sub.current_period_end ? `<br>Renews / ends: ${fmtDate(sub.current_period_end)}${sub.cancel_at_period_end ? ' (cancels at period end)' : ''}` : ''}` : `No active subscription ${sub ? pill(sub.status, 'bad') : ''}`}
 ${legacy ? '<br><span class="hint">This plan is no longer offered to new customers; it continues as it is until you change it.</span>' : ''}
 ${isAdmin ? '' : `<br>Credits: <strong>${crEn(wallet?.available_cents ?? 0)}</strong> available${wallet?.reserved_cents ? ` · ${crEn(wallet.reserved_cents)} on hold` : ''} · <a href="/conta/creditos">Top up and statement · Créditos</a>`}</div>
-${isAdmin ? '' : `${withdrawCard}
+${freeBox}${isAdmin ? '' : `${withdrawCard}
 ${manager ? '' : `<h2>${active ? 'Change plan' : 'Choose a plan'}</h2>
 <p class="hint">Plans include photos, narration, subtitles and the video with photos. AI animation is never included in a plan: each animated production is quoted before anything is generated and paid with prepaid credits. Card payments only, through Stripe. · <span lang="pt-PT">A animação por IA não está incluída em nenhum plano: é orçamentada antes de gerar e paga com créditos.</span></p>
 ${problem ? flash(problem, 'bad') : ''}

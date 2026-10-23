@@ -37,8 +37,8 @@ export async function quotaFor(db: Db, user: { id: string; role: string }) {
   const now = new Date();
   const start = sub.current_period_start ? new Date(sub.current_period_start) : new Date(now.getFullYear(), now.getMonth(), 1);
   const limit = sub.interviews_override ?? sub.interviews_per_month ?? 0;
-  // As entrevistas extra (pagas com créditos) não contam para a quota do plano.
-  const used = Number((await db.one(`SELECT count(*)::int AS n FROM interviews WHERE owner_id=$1 AND invited_at >= $2 AND extra_cents IS NULL`, [user.id, start])).n);
+  // As entrevistas extra (pagas com créditos) e a 1.ª entrevista grátis não contam para a quota do plano.
+  const used = Number((await db.one(`SELECT count(*)::int AS n FROM interviews WHERE owner_id=$1 AND invited_at >= $2 AND extra_cents IS NULL AND free_at IS NULL`, [user.id, start])).n);
   return { allowed: used < limit, unlimited: false, exempt: false, used, limit, plan: sub, sub, reason: used < limit ? '' : 'quota' };
 }
 
