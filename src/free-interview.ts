@@ -119,9 +119,10 @@ export const FREE_RESENDS = 3;
  * o convidado recusou um convite dela («Reenviar convite» e perguntas adicionais deixam de sair), ou, com `resend`, o
  * convite já teve FREE_RESENDS reenvios. Contado na tabela `invitations` (sem os links de validação do episódio): reenvios
  * são os links novos com a mesma versão das perguntas que um anterior (o primeiro convite e o de cada pergunta adicional
- * trazem uma versão nova); contam também os que o próprio convidado pede com «novo link». Sem isto, uma conta grátis,
- * sem pagamento, mandava ao mesmo convidado um email a cada RESEND_COOLDOWN_SEC, mesmo depois de ele recusar. As
- * entrevistas pagas continuam como antes (só o intervalo entre reenvios).
+ * trazem uma versão nova); contam também os que o próprio convidado pede com «novo link», que têm o mesmo total (guard do
+ * POST /i/:token/novo-link; antes, o «novo link» contava só contra o entrevistador e não verificava o total). Sem isto, uma
+ * conta grátis, sem pagamento, mandava ao mesmo convidado um email a cada RESEND_COOLDOWN_SEC, mesmo depois de ele recusar.
+ * As entrevistas pagas continuam como antes (só o intervalo entre reenvios).
  */
 export async function freeSendBlock(q: Db, interviewId: string, o: { resend?: boolean } = {}): Promise<string | null> {
   const r = await q.one(`SELECT count(*) FILTER (WHERE declined_at IS NOT NULL)::int AS declined, (count(*) - count(DISTINCT question_version))::int AS resent
@@ -135,11 +136,16 @@ export async function freeSendBlock(q: Db, interviewId: string, o: { resend?: bo
  * Ações de IA opcionais e sem custo para o utilizador numa entrevista grátis: total por entrevista, contado na base (tabela
  * `ai_uses`). Antes, a verificação do guião (gpt-4.1 a cada clique) só tinha o limite por hora em memória, e uma conta sem
  * pagamento repetia-a sem fim; e a leitura sintética das perguntas ao convidado refazia-se a cada mudança da voz das
- * perguntas, que o entrevistador pode alternar depois do convite. As outras ações de IA da produção já têm total: processar
- * (o primeiro está incluído), regenerar o guião e gerar o episódio contam como regenerações (3 incluídas, depois 1 crédito
- * cada); a animação pelo Google Veo paga-se por orçamento; a introdução animada não é oferecida à entrevista grátis; os
- * retratos animados são só do administrador; as sugestões do assistente de composição e a resposta redigida pela IA na
- * ajuda exigem uma subscrição. As entrevistas pagas ficam como estavam (decisão: quem paga está identificado pelo
+ * perguntas, que o entrevistador pode alternar depois do convite. As outras ações de IA da produção (processar, regenerar
+ * o guião, verificá-lo e gerar o episódio) só correm depois da submissão do convidado e com a autorização de processamento
+ * dele (routes/production.ts; antes, regenerar e verificar o guião aceitavam um rascunho nunca enviado, de qualquer conta,
+ * também sem pagamento, sem total por conta: a 3.ª revisão dizia ter procurado todas as rotas e não o viu); processar (o
+ * primeiro está incluído), regenerar o guião e gerar o episódio contam como regenerações (3 incluídas, depois 1 crédito
+ * cada) e, na entrevista grátis, para o total FREE_PRODUCTION_JOBS (uma regeneração que falha deixa de contar como
+ * regeneração, mas conta para esse total); a animação pelo Google Veo paga-se por orçamento; a introdução animada não é
+ * oferecida à entrevista grátis; os retratos animados são só do administrador; as sugestões do assistente de composição e
+ * a resposta redigida pela IA na ajuda exigem uma subscrição. A vez gasta só volta quando a OpenAI não respondeu
+ * (aiNotAnswered, em ai/openai.ts). As entrevistas pagas ficam como estavam (decisão: quem paga está identificado pelo
  * pagamento, tem a quota do plano e os limites por hora; o total serve a oferta sem pagamento). O administrador não conta
  * nem fica bloqueado (como nas regenerações). A entrevista grátis mantém estes totais mesmo que a conta subscreva depois
  * (como os limites do Start, ficam com ela).
@@ -156,12 +162,33 @@ export async function takeAiUse(db: Db, interviewId: string, action: AiAction, m
   return !!(await db.one(`INSERT INTO ai_uses(interview_id, action, used) VALUES ($1,$2,1)
     ON CONFLICT (interview_id, action) DO UPDATE SET used = ai_uses.used + 1 WHERE ai_uses.used < $3 RETURNING used`, [interviewId, action, max]));
 }
-/** A ação falhou (nada foi feito pelo fornecedor de IA): a vez volta. */
+/** A ação falhou sem resposta do fornecedor de IA (nada foi feito nem pago; ver aiNotAnswered): a vez volta. */
 export const giveBackAiUse = (db: Db, interviewId: string, action: AiAction) =>
   db.query('UPDATE ai_uses SET used = used - 1 WHERE interview_id=$1 AND action=$2 AND used > 0', [interviewId, action]);
 /** Vezes que a ação já foi usada na entrevista. */
 export async function aiUsed(db: Db, interviewId: string, action: AiAction): Promise<number> {
   return Number((await db.one('SELECT used FROM ai_uses WHERE interview_id=$1 AND action=$2', [interviewId, action]))?.used ?? 0);
+}
+
+/**
+ * 1.ª entrevista grátis: trabalhos de produção por entrevista (processar, regenerar o guião e gerar o episódio, também cada
+ * «Tentar de novo»), contados quando entram na fila e sem devolução quando falham. Antes, só contavam as regenerações que
+ * não falharam, «Tentar de novo» depois de uma geração falhada não contava enquanto não houvesse episódio e o crédito de
+ * uma regeneração paga voltava: uma falha tardia (depois de pagas a voz, os tempos das legendas, as traduções e a capa, ou
+ * o guião do gpt-4.1), provocada de propósito, repetia o trabalho pago sem fim e sem contar (no teste do revisor, com uma
+ * fotografia de capa forjada, 7 gerações do episódio e 21 tentativas, 0 regenerações e 0 créditos). Com este total, a
+ * próxima falha tardia por descobrir também pára. As regenerações pagas com 1 crédito só contam se falharem (o crédito
+ * volta); as que terminam foram pagas. Os trabalhos do administrador não contam e ele não fica bloqueado. Uso normal: 1
+ * processamento, 1 episódio e as 3 regenerações incluídas (5); ficam 3 para tentar de novo depois de falhas. Acima, nada
+ * entra na fila, pago ou não. Número escolhido sem dados de uso (com o tamanho do guião da entrevista grátis, cerca de 1 USD
+ * por geração do episódio, no pior caso).
+ */
+export const FREE_PRODUCTION_JOBS = 8;
+export const FREE_JOBS_USED = `A 1.ª entrevista grátis inclui ${FREE_PRODUCTION_JOBS} trabalhos de produção (processar, regenerar o guião e gerar o episódio, contando os que falharam e cada «Tentar de novo») e já os usou todos. Com uma subscrição (Conta), as próximas entrevistas não têm este limite.`;
+/** Trabalhos de produção que contam para FREE_PRODUCTION_JOBS na entrevista (ver acima). */
+export async function freeProductionJobs(q: Db, interviewId: string): Promise<number> {
+  return Number((await q.one(`SELECT count(*)::int AS n FROM jobs WHERE interview_id=$1 AND kind IN ('process_submission','prepare_script','generate_episode')
+    AND input->>'admin' IS NULL AND (input->>'paidCents' IS NULL OR state='failed')`, [interviewId]))?.n ?? 0);
 }
 
 /**

@@ -6,14 +6,29 @@ import { SCRIPT_SEGMENT_MAX, milhares } from '../limits.ts';
 
 /** Todo o acesso à OpenAI está aqui, só no servidor. Com AI_MOCK=1 nada sai da máquina. */
 let client: any, clientKey = '';
+/** Nada foi pedido à OpenAI (modo simulado ou sem chave). */
+class AiNotCalled extends Error {}
 async function openai() {
-  if (config.openai.mock) throw new Error('mock');
+  if (config.openai.mock) throw new AiNotCalled('mock');
   const key = S('OPENAI_API_KEY');
-  if (!key) throw new Error('OPENAI_API_KEY não configurada');
+  if (!key) throw new AiNotCalled('OPENAI_API_KEY não configurada');
   if (!client || clientKey !== key) { const { default: OpenAI } = await import('openai'); client = new OpenAI({ apiKey: key, maxRetries: 0, timeout: 180_000 }); clientKey = key; }
   return client;
 }
 export const aiAvailable = () => config.openai.mock || !!S('OPENAI_API_KEY');
+
+/**
+ * A chamada falhou sem resposta do fornecedor, e por isso sem custo: sem ligação (ou sem resposta no tempo do pedido),
+ * limite de pedidos (429) ou erro 5xx da OpenAI, ou nada chegou a ser pedido (modo simulado, sem chave). Só nestes casos
+ * uma vez gasta de uma ação com total (a verificação do guião da entrevista grátis) volta: uma resposta que chegou e falhou
+ * depois (JSON cortado ou inválido, conteúdo inesperado) já foi paga, e o texto do pedido, escrito por quem pede, serve
+ * para a provocar.
+ */
+export async function aiNotAnswered(e: unknown): Promise<boolean> {
+  if (e instanceof AiNotCalled) return true;
+  const { APIConnectionError, RateLimitError, InternalServerError } = await import('openai');
+  return e instanceof APIConnectionError || e instanceof RateLimitError || e instanceof InternalServerError;
+}
 
 async function toFile(data: Buffer, name: string, type: string) {
   const { toFile } = await import('openai');
@@ -57,13 +72,16 @@ export async function transcribeClip(data: Buffer, ext: string): Promise<{ words
   return { words: (r.words ?? []).map((w: any) => ({ word: w.word, start: w.start, end: w.end })), text: String(r.text ?? '') };
 }
 
-async function chatJson(system: string, user: string): Promise<any> {
+async function chatJson(system: string, user: string, maxTokens?: number): Promise<any> {
   const c = await openai();
   const r = await c.chat.completions.create({
-    model: config.openai.models.text, temperature: 0.2, response_format: { type: 'json_object' },
+    model: config.openai.models.text, temperature: 0.2, response_format: { type: 'json_object' }, ...(maxTokens ? { max_completion_tokens: maxTokens } : {}),
     messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
   });
-  return JSON.parse(r.choices[0].message.content ?? '{}');
+  const ch = r?.choices?.[0];
+  // Resposta cortada pelo teto de tokens (ou pelo máximo do modelo): o JSON vem incompleto; falha com a causa.
+  if (ch?.finish_reason === 'length') throw new Error('resposta da IA cortada pelo teto de tokens');
+  return JSON.parse(ch?.message?.content ?? '{}');
 }
 
 export interface ScriptInput {
@@ -163,10 +181,16 @@ export function parseHelp(r: any): { answer: string; answered: boolean } {
   return { answer: String(j.answer ?? '').trim(), answered: j.answered !== false };
 }
 
+/** Teto de tokens da verificação do guião (dezenas de problemas assinalados, em JSON, cabem com folga): nunca se paga uma resposta longa. */
+export const REVIEW_MAX_TOKENS = 4000;
+/**
+ * Verificação de fidelidade do guião. Só ficam os problemas que são objetos: antes, com issues=[null] (ou um número), o
+ * mapeamento da rota lançava um TypeError depois de a resposta ser paga, e a vez da entrevista grátis voltava.
+ */
 export async function reviewScript(transcriptSummary: unknown, script: unknown) {
   if (config.openai.mock) return { issues: [] as any[] };
-  const r = await chatJson(REVIEW_SYSTEM, `<interview_data>\n${JSON.stringify({ transcript: transcriptSummary, script })}\n</interview_data>`);
-  return { issues: Array.isArray(r.issues) ? r.issues : [] };
+  const r = await chatJson(REVIEW_SYSTEM, `<interview_data>\n${JSON.stringify({ transcript: transcriptSummary, script })}\n</interview_data>`, REVIEW_MAX_TOKENS);
+  return { issues: Array.isArray(r?.issues) ? r.issues.filter((i: unknown) => !!i && typeof i === 'object' && !Array.isArray(i)) : [] };
 }
 
 export async function translateSubtitleCues(cues: { id: string; text: string }[], target: string) {

@@ -63,6 +63,23 @@ export const SCRIPT_TOTAL_MAX = 60_000;
  */
 export const FREE_SCRIPT_BASE = 3000, FREE_SCRIPT_PER_MIN = 2000;
 
+/**
+ * 1.ª entrevista grátis: máximo de caracteres de uma transcrição de resposta editada à mão, pela duração da gravação (com
+ * folga: uma base e cerca do dobro do que se diz num minuto). Antes, cada transcrição editada ia até 20 000 caracteres, para
+ * qualquer gravação: com elas, o guião do gpt-4.1 (processar ou regenerar) e a verificação recebiam texto sem relação com a
+ * gravação, e uma saída cortada (JSON incompleto) falhava depois de paga. Nunca abaixo da transcrição automática (a 1.ª
+ * revisão). null: sem este máximo (entrevista paga, administrador).
+ */
+export const FREE_TRANSCRIPT_BASE = 300, FREE_TRANSCRIPT_PER_MIN = 2000;
+export async function transcriptMax(db: Db, iv: { id: string; free_at?: unknown }, takeId: string, admin: boolean): Promise<{ max: number; minutes: number } | null> {
+  if (admin || !iv.free_at) return null;
+  const r = await db.one(`SELECT COALESCE(ast.duration_ms,0)::bigint AS ms,
+      (SELECT length(tr.text) FROM transcripts tr WHERE tr.source_kind='answer_take' AND tr.source_id=t.id ORDER BY tr.revision LIMIT 1) AS first
+    FROM answer_takes t JOIN answers a ON a.id=t.answer_id JOIN assets ast ON ast.id=t.asset_id WHERE t.id=$1 AND a.interview_id=$2`, [takeId, iv.id]);
+  const ms = Number(r?.ms ?? 0);
+  return { max: Math.max(Math.ceil(FREE_TRANSCRIPT_BASE + (FREE_TRANSCRIPT_PER_MIN * ms) / 60000), Number(r?.first ?? 0)), minutes: ms / 60000 };
+}
+
 /** Inteiro com espaço a separar os milhares («28 120»). */
 export const milhares = (n: number) => String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
 

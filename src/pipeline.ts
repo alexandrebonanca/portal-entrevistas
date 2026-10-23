@@ -16,6 +16,8 @@ import { PermanentError, type Handler } from './jobs.ts';
 import { renderVeoVideo, releaseQuoteOfJob, VIDEO_ONLY_PREVIEW } from './veo-episode.ts';
 import { renderHostIntro, failIntro } from './veo-intro.ts';
 import { reverseDebit } from './wallet.ts';
+import { isUuid } from './support.ts';
+import { SCRIPT_SEGMENT_MAX } from './limits.ts';
 
 const usage = (db: Db, interviewId: string, kind: string, quantity: number, cost: number) =>
   db.query('INSERT INTO usage_ledger(interview_id, kind, quantity, cost_usd, estimated) VALUES ($1,$2,$3,$4,true)', [interviewId, kind, quantity, cost]);
@@ -99,6 +101,9 @@ export const handlers: Record<string, Handler> = {
   },
 
   async prepare_script(job, { db }) {
+    // Como no processamento: sem a autorização do convidado (retirada depois do pedido), nada vai à IA.
+    const processingOk = (await db.one(`SELECT granted FROM consents WHERE interview_id=$1 AND purpose='processing' ORDER BY created_at DESC LIMIT 1`, [job.interview_id]))?.granted;
+    if (!processingOk) throw new PermanentError('Sem autorização de processamento por IA');
     await prepareScript(db, job.interview_id);
   },
 
@@ -110,10 +115,19 @@ export const handlers: Record<string, Handler> = {
     if (script.status !== 'approved') throw new PermanentError('O guião já não está aprovado (foi alterado ou substituído)');
     const consent = async (p: string) => !!(await db.one(`SELECT granted FROM consents WHERE interview_id=$1 AND purpose=$2 ORDER BY created_at DESC LIMIT 1`, [iv.id, p]))?.granted;
     if (!(await consent('processing'))) throw new PermanentError('Autorização de processamento retirada');
-    await db.query(`UPDATE interviews SET production_status='generating' WHERE id=$1`, [iv.id]);
-
     const segments: ScriptSegment[] = script.segments;
     const opts = job.input as { subtitleLangs?: string[]; coverPhotoIds?: string[] };
+    // Entradas verificadas antes da primeira chamada paga, com erro permanente (não se repete): antes, uma fotografia de
+    // capa forjada ('-' × 36 passava o filtro da rota) só falhava na consulta da capa, depois de pagas a voz, os tempos das
+    // legendas, as traduções e a capa, e o erro (não permanente) repetia tudo três vezes.
+    if (opts.coverPhotoIds !== undefined && (!Array.isArray(opts.coverPhotoIds) || opts.coverPhotoIds.length > 2 || !opts.coverPhotoIds.every(isUuid)))
+      throw new PermanentError('Fotografias da capa inválidas');
+    if (opts.subtitleLangs !== undefined && (!Array.isArray(opts.subtitleLangs) || !opts.subtitleLangs.every(l => typeof l === 'string' && /^[a-z]{2}(-[A-Z]{2})?$/.test(l))))
+      throw new PermanentError('Línguas das legendas inválidas');
+    const long = (Array.isArray(segments) ? segments : []).find(s => typeof s?.textEnglish !== 'string' || s.textEnglish.length > SCRIPT_SEGMENT_MAX);
+    if (!Array.isArray(segments) || !segments.length || long) throw new PermanentError(`Guião inválido${long ? `: o segmento ${String(long.id)} passa o limite da síntese de voz (${SCRIPT_SEGMENT_MAX} caracteres)` : ''}`);
+    await db.query(`UPDATE interviews SET production_status='generating' WHERE id=$1`, [iv.id]);
+
     const subLangs: string[] = opts.subtitleLangs?.length ? opts.subtitleLangs : iv.subtitle_langs;
 
     // 1. Áudio por segmento (com cache por texto+papel+voz+modelo), incluindo o aviso inicial.

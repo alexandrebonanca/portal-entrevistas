@@ -5,9 +5,9 @@ import { page, flash, pill, STATUS_LABEL } from '../views.ts';
 import { requireUser, ownedInterview, audit, sendAsset } from '../app.ts';
 import { enqueue, videoQueue, laneOf, type EnqueueOpts } from '../jobs.ts';
 import type { Db } from '../db.ts';
-import { regenerationsUsed, REGEN_BLOCKED, scriptSizeError, scriptTotalMax, SCRIPT_SEGMENT_MAX, milhares } from '../limits.ts';
+import { regenerationsUsed, REGEN_BLOCKED, scriptSizeError, scriptTotalMax, SCRIPT_SEGMENT_MAX, milhares, transcriptMax } from '../limits.ts';
 import { estimateCost, latestTranscript, animationEstimate } from '../pipeline.ts';
-import { aiAvailable, reviewScript, validateScript, episodeVoice } from '../ai/openai.ts';
+import { aiAvailable, aiNotAnswered, reviewScript, validateScript, episodeVoice } from '../ai/openai.ts';
 import { playerHtml } from './episode.ts';
 import { createInvitation } from '../invites.ts';
 import { queueEmail, emailShell } from '../mail.ts';
@@ -22,8 +22,8 @@ import { seller } from '../legal.ts';
 import { withVat, eurPt } from '../vat.ts';
 import { quoteSection } from './quotes.ts';
 import { introProductionHint } from './intro.ts';
-import { helpNav } from '../support.ts';
-import { takeAiUse, giveBackAiUse, aiUsed, FREE_SCRIPT_REVIEWS, FREE_REVIEWS_USED } from '../free-interview.ts';
+import { helpNav, isUuid } from '../support.ts';
+import { takeAiUse, giveBackAiUse, aiUsed, FREE_SCRIPT_REVIEWS, FREE_REVIEWS_USED, FREE_PRODUCTION_JOBS, FREE_JOBS_USED, freeProductionJobs } from '../free-interview.ts';
 
 /** Os retratos animados (Replicate) ficam reservados ao administrador. */
 const ANIMATE_ADMIN_ONLY = 'Os retratos animados por IA (Replicate) estão reservados ao administrador. A animação com o Google Veo faz-se por orçamento, na secção «Animação por IA».';
@@ -115,17 +115,42 @@ export async function productionRoutes(app: FastifyInstance) {
   };
   /** Regenerações esgotadas para quem pede (o administrador nunca fica bloqueado). */
   const regenExhausted = async (req: any, id: string) => req.user.role !== 'admin' && (await regenerationsUsed(db, id)) >= INCLUDED;
+  /** 1.ª entrevista grátis: trabalhos de produção já contados (FREE_PRODUCTION_JOBS) para quem pede (null: não se aplica, também ao administrador). */
+  const freeJobsFor = async (req: any, iv: any) => (iv.free_at && req.user.role !== 'admin' ? freeProductionJobs(db, iv.id) : null);
+  /** O convidado já submeteu a entrevista (agora, ou antes de uma pergunta adicional que a reabriu). */
+  const submittedOnce = async (iv: any) => iv.collection_status === 'submitted' || !!(await db.one('SELECT 1 FROM submissions WHERE interview_id=$1 LIMIT 1', [iv.id]));
+  /**
+   * Porque é que o guião não se pode regenerar nem verificar (null = pode): como o /processar, só depois da submissão do
+   * convidado e com a autorização de processamento dele. Antes, o /guiao/regenerar e o /guiao/verificar aceitavam um
+   * rascunho nunca enviado: o primeiro guião não contava (ainda não havia nenhum), havia mais 3 regenerações incluídas por
+   * rascunho, sem limite de rascunhos, e o guião criado era verificado — também numa conta sem pagamento (sonda do juiz: 4
+   * guiões do gpt-4.1 e uma verificação num rascunho de uma conta do registo público, com o email por confirmar).
+   */
+  const scriptAiBlock = async (iv: any): Promise<string | null> =>
+    !(await submittedOnce(iv)) ? 'A entrevista não foi submetida.' : !(await consent(iv.id, 'processing')) ? 'Sem autorização de processamento por IA.' : null;
+  /**
+   * Fotografias da capa pedidas (`ids`) que são desta entrevista, pela ordem pedida, no máximo 2. Antes, o /gerar aceitava
+   * qualquer cadeia /^[0-9a-f-]{36}$/ ('-' × 36 também), que só falhava dentro do trabalho, depois das etapas pagas.
+   */
+  const ownPhotos = async (ivId: string, ids: unknown[]): Promise<string[]> => {
+    const asked = [...new Set(ids.filter(isUuid).map(x => (x as string).toLowerCase()))].slice(0, 2);
+    if (!asked.length) return [];
+    const own = new Set((await db.query('SELECT id FROM photos WHERE interview_id=$1 AND id = ANY($2::uuid[])', [ivId, asked])).map((p: any) => String(p.id)));
+    return asked.filter(x => own.has(x));
+  };
   /**
    * Põe um trabalho de produção na fila com a entrevista bloqueada (dois cliques em simultâneo não passam o limite).
    * Se for uma regeneração pedida por quem não é administrador, conta para as incluídas; a partir da 4.ª só com o pedido
-   * expresso de pagar 1 crédito, cobrado na mesma transação (e devolvido se o trabalho falhar).
+   * expresso de pagar 1 crédito, cobrado na mesma transação (e devolvido se o trabalho falhar). Na 1.ª entrevista grátis,
+   * conta também para o total de trabalhos de produção (FREE_PRODUCTION_JOBS), que não volta quando o trabalho falha.
    */
   const enqueueProduction = (req: any, id: string, kind: string, isRegen: (tx: Db, iv: any) => Promise<boolean>, opts: (tx: Db) => Promise<Omit<EnqueueOpts, 'kind' | 'interviewId'>>) =>
     db.tx(async (tx): Promise<{ id?: string; blocked?: string; busy?: boolean; paid?: boolean }> => {
       const iv = await tx.one('SELECT * FROM interviews WHERE id=$1 FOR UPDATE', [id]);
       // Um de cada vez: um segundo clique não cria (nem conta) outra regeneração.
       if (await tx.one(`SELECT 1 FROM jobs WHERE interview_id=$1 AND kind=$2 AND state IN ('queued','running') LIMIT 1`, [id, kind])) return { busy: true };
-      const counted = req.user.role !== 'admin' && await isRegen(tx, iv);
+      const admin = req.user.role === 'admin';
+      const counted = !admin && await isRegen(tx, iv);
       let w: Wallet | null = null;
       if (counted && (await regenerationsUsed(tx, id)) >= INCLUDED) {
         // Para além das incluídas: 1 crédito do dono, cobrado na mesma transação e só com o pedido expresso de pagar.
@@ -137,8 +162,11 @@ export async function productionRoutes(app: FastifyInstance) {
         if (blk) return { blocked: blk.pt };
         if (w.available_cents < EXTRA_REGEN_CENTS) return { blocked: `${REGEN_BLOCKED()} Saldo insuficiente (${cr(w.available_cents)} créditos): carregue créditos em Créditos.` };
       }
+      // 1.ª entrevista grátis: acima do total, nada entra na fila (pago ou não), contado com a entrevista bloqueada.
+      if (iv.free_at && !admin && (await freeProductionJobs(tx, id)) >= FREE_PRODUCTION_JOBS) return { blocked: FREE_JOBS_USED };
       const o = await opts(tx);
-      const jobId = await enqueue(tx, { ...o, kind, interviewId: id, input: { ...(o.input ?? {}), ...(counted ? { regen: true } : {}), ...(w ? { paidCents: EXTRA_REGEN_CENTS } : {}) } });
+      // `admin`: o trabalho do administrador não conta para o total da entrevista grátis (freeProductionJobs).
+      const jobId = await enqueue(tx, { ...o, kind, interviewId: id, input: { ...(o.input ?? {}), ...(counted ? { regen: true } : {}), ...(w ? { paidCents: EXTRA_REGEN_CENTS } : {}), ...(admin && iv.free_at ? { admin: true } : {}) } });
       // Cobrança única por trabalho; se o trabalho falhar, o crédito volta (pipeline __onFail e trabalho periódico das carteiras).
       if (jobId && w && !(await spend(tx, w.id, EXTRA_REGEN_CENTS, { ref: `regen:${jobId}`, note: REGEN_NOTE[kind] ?? 'Regeneração extra', interviewId: id, jobId, actor: req.user.email }))) throw new NoFunds();
       return { id: jobId, paid: !!(jobId && w) };
@@ -166,10 +194,14 @@ export async function productionRoutes(app: FastifyInstance) {
     const regenHint = pay ? `<p class="hint">${esc(REGEN_BLOCKED())} Saldo: ${cr(pay.available)} créditos.${pay.block ? ` ${esc(pay.block)}` : !pay.canPay ? ` <a href="/conta/creditos/carregar?falta=${pay.missing}&amp;voltar=${encodeURIComponent(`/entrevistas/${iv.id}/producao`)}">Carregar créditos</a>` : ''}</p>` : '';
     const payFields = pay?.canPay ? `<input type="hidden" name="pagar" value="1">${paidConsentHtml(pay.consumer)}` : '';
     const PAY = ` — ${pay?.label ?? `pagar ${cr(EXTRA_REGEN_CENTS)} crédito`}`;
-    const canRegen = !exhausted || !!pay?.canPay;
+    // 1.ª entrevista grátis: total de trabalhos de produção; esgotado, nenhum botão de produção põe nada na fila.
+    const freeJobs = await freeJobsFor(req, iv);
+    const jobsOut = freeJobs != null && freeJobs >= FREE_PRODUCTION_JOBS;
+    const canRegen = (!exhausted || !!pay?.canPay) && !jobsOut;
     let body = `<div class="wrap" style="padding-top:32px"><p><a href="/entrevistas/${iv.id}">← ${esc(iv.title)}</a></p><h1>Produção do podcast</h1>${flash(q.ok)}${flash(q.e, 'bad')}
 <p class="sans">${pill(STATUS_LABEL[iv.production_status] ?? iv.production_status)} ${pill(STATUS_LABEL[iv.publication_status] ?? iv.publication_status)} · Utilização registada (estimativa): <strong>$${ledger.usd.toFixed(2)}</strong>
-· Regenerações do guião e do episódio: <strong id="regen">${regen} de ${INCLUDED}</strong> incluídas${req.user!.role === 'admin' ? ' (o administrador não tem limite e as dele não contam)' : ''}</p>`;
+· Regenerações do guião e do episódio: <strong id="regen">${regen} de ${INCLUDED}</strong> incluídas${req.user!.role === 'admin' ? ' (o administrador não tem limite e as dele não contam)' : ''}${freeJobs != null ? `
+· 1.ª entrevista grátis: <strong id="trabalhos">${Math.min(freeJobs, FREE_PRODUCTION_JOBS)} de ${FREE_PRODUCTION_JOBS}</strong> trabalhos de produção usados (contam também os que falharam)` : ''}</p>${jobsOut && !q.e ? `<div class="flash bad">${esc(FREE_JOBS_USED)}</div>` : ''}`;
 
     if (!submitted) body += `<div class="flash">A entrevista ainda não foi submetida pelo entrevistado.</div>`;
 
@@ -184,7 +216,7 @@ ${!aiAvailable() ? '<div class="flash bad">OPENAI_API_KEY não está configurada
 <p class="sans">Estimativa (não é custo final): ~$${est!.usd.toFixed(2)} para ${est!.minutes.toFixed(1)} min de respostas (transcrição $${est!.parts.transcription.toFixed(2)}, voz $${est!.parts.speech.toFixed(2)}, texto $${est!.parts.text.toFixed(2)}, capa $${est!.parts.cover.toFixed(2)}). Duração estimada do episódio: ~${est!.estimatedAudioMin.toFixed(1)} min.</p>
 <form method="post" action="/entrevistas/${iv.id}/processar" onsubmit="return confirm('Iniciar o processamento (operações pagas)?')">
 <p class="hint">O processamento gera transcrições e um guião para revisão. O áudio final e a publicação são passos posteriores.</p>
-${scriptBefore ? payFields : ''}<button class="accent" ${procOk && aiAvailable() && (!scriptBefore || canRegen) ? '' : 'disabled'}>Processar podcast${scriptBefore ? PAY : ''}</button></form>${scriptBefore ? regenHint : ''}</div>`;
+${scriptBefore ? payFields : ''}<button class="accent" ${procOk && aiAvailable() && (!scriptBefore || canRegen) && !jobsOut ? '' : 'disabled'}>Processar podcast${scriptBefore ? PAY : ''}</button></form>${scriptBefore ? regenHint : ''}</div>`;
     }
 
     // 2. Progresso
@@ -202,11 +234,12 @@ ${scriptBefore ? payFields : ''}<button class="accent" ${procOk && aiAvailable()
       const retryGen = await failedGeneration(db, iv.id);
       const retryRegen = retryGen ? await hadEpisode(db, iv.id) : await hadScript(db, iv.id);
       const retryPay = exhausted && retryRegen;
-      const retryNote = retryGen ? ` «Tentar de novo» volta a gerar o episódio do guião aprovado, com as mesmas legendas e fotografias${retryRegen ? ': conta como uma regeneração (já houve um episódio).' : ' (não conta como regeneração).'}`
-        : retryRegen ? ' «Tentar de novo» processa a entrevista outra vez e refaz o guião: conta como uma regeneração.' : '';
+      const freeNote = freeJobs != null ? ` Na 1.ª entrevista grátis, conta para os ${FREE_PRODUCTION_JOBS} trabalhos de produção.` : '';
+      const retryNote = retryGen ? ` «Tentar de novo» volta a gerar o episódio do guião aprovado, com as mesmas legendas e fotografias${retryRegen ? ': conta como uma regeneração (já houve um episódio).' : ' (não conta como regeneração).'}${freeNote}`
+        : retryRegen ? ` «Tentar de novo» processa a entrevista outra vez e refaz o guião: conta como uma regeneração.${freeNote}` : freeNote;
       body += `<div class="card"><h2 style="margin-top:0">Trabalhos</h2><table><tbody>${jobs.map((j: any) => `<tr><td>${esc(j.kind)}</td><td>${pill(j.state, j.state === 'done' ? 'ok' : j.state === 'failed' ? 'bad' : '')}</td><td>${j.progress_total ? `${j.progress_done}/${j.progress_total}` : ''}</td><td class="hint">${esc(j.error ?? '')}</td></tr>`).join('')}</tbody></table>
 
-<form method="post" action="/entrevistas/${iv.id}/${retryGen ? 'gerar/repetir' : 'processar'}"><p class="hint">Falhou. Os erros permanentes exigem revisão; pode tentar novamente depois de corrigir a causa.${esc(retryNote)}</p>${retryPay ? payFields : ''}<button class="ghost" ${retryPay && !canRegen ? 'disabled' : ''}>Tentar de novo${retryPay ? PAY : ''}</button></form>${retryPay ? regenHint : ''}</div>`;
+<form method="post" action="/entrevistas/${iv.id}/${retryGen ? 'gerar/repetir' : 'processar'}"><p class="hint">Falhou. Os erros permanentes exigem revisão; pode tentar novamente depois de corrigir a causa.${esc(retryNote)}</p>${retryPay ? payFields : ''}<button class="ghost" ${(retryPay && !canRegen) || jobsOut ? 'disabled' : ''}>Tentar de novo${retryPay ? PAY : ''}</button></form>${retryPay ? regenHint : ''}</div>`;
     }
 
     // 3. Revisão editorial
@@ -215,7 +248,8 @@ ${scriptBefore ? payFields : ''}<button class="accent" ${procOk && aiAvailable()
       const flagged = new Set(flags.map((f: any) => f.segmentId));
       const items = await db.query(`SELECT q.id, q.position, q.text, a.selected_take_id, t.asset_id FROM questions q LEFT JOIN answers a ON a.question_id=q.id LEFT JOIN answer_takes t ON t.id=a.selected_take_id WHERE q.interview_id=$1 ORDER BY q.position`, [iv.id]);
       const trs = [];
-      for (const it of items) trs.push({ it, a: it.selected_take_id ? await latestTranscript(db, 'answer_take', it.selected_take_id) : null });
+      // Na 1.ª entrevista grátis, cada transcrição editada vai até um máximo pela duração da gravação (transcriptMax).
+      for (const it of items) trs.push({ it, a: it.selected_take_id ? await latestTranscript(db, 'answer_take', it.selected_take_id) : null, max: it.selected_take_id ? await transcriptMax(db, iv, it.selected_take_id, req.user!.role === 'admin') : null });
       const editable = script.status === 'draft';
       // 1.ª entrevista grátis: verificações de fidelidade por IA com total por entrevista (o administrador não conta).
       const reviewsLeft = editable && iv.free_at && req.user!.role !== 'admin' ? FREE_SCRIPT_REVIEWS - await aiUsed(db, iv.id, 'script_review') : null;
@@ -223,8 +257,8 @@ ${scriptBefore ? payFields : ''}<button class="accent" ${procOk && aiAvailable()
       const sizeLim = editable ? await scriptTotalMax(db, iv, req.user!.role === 'admin') : null;
       const sizeNote = `Cada segmento pode ter até ${milhares(SCRIPT_SEGMENT_MAX)} caracteres${sizeLim ? ` e o guião até ${milhares(sizeLim.max)}${sizeLim.free ? ' na 1.ª entrevista grátis' : ''} (tem ${milhares(segs.reduce((a, s) => a + String(s.textEnglish ?? '').length, 0))})` : ''}.`;
       body += `<div class="card"><h2 style="margin-top:0">2. Transcrições (originais)</h2>${iv.production_status === 'stale' ? '<div class="flash bad">As respostas mudaram depois do guião: aprovações invalidadas. Regenere o guião.</div>' : ''}
-${trs.map(({ it, a }) => `<div class="seg"><strong>${it.position}. ${esc(it.text)}</strong>${it.asset_id ? `<br><audio controls preload="none" src="/media/${it.asset_id}"></audio>` : ''}
-${a ? `<form method="post" action="/entrevistas/${iv.id}/transcricoes/${it.selected_take_id}"><textarea name="text" aria-label="Transcrição">${esc(a.text)}</textarea><button class="ghost">Guardar nova revisão (r${a.revision + 1})</button> <span class="hint">r${a.revision} · ${esc(a.origin)}</span></form>` : '<span class="hint">sem transcrição</span>'}</div>`).join('')}
+${trs.map(({ it, a, max }) => `<div class="seg"><strong>${it.position}. ${esc(it.text)}</strong>${it.asset_id ? `<br><audio controls preload="none" src="/media/${it.asset_id}"></audio>` : ''}
+${a ? `<form method="post" action="/entrevistas/${iv.id}/transcricoes/${it.selected_take_id}"><textarea name="text"${max ? ` maxlength="${max.max}"` : ''} aria-label="Transcrição">${esc(a.text)}</textarea><button class="ghost">Guardar nova revisão (r${a.revision + 1})</button> <span class="hint">r${a.revision} · ${esc(a.origin)}</span></form>` : '<span class="hint">sem transcrição</span>'}</div>`).join('')}
 <form method="post" action="/entrevistas/${iv.id}/guiao/regenerar">${exhausted ? payFields : ''}<button class="ghost" ${aiAvailable() && canRegen ? '' : 'disabled'}>Regenerar guião a partir das transcrições${exhausted ? PAY : ''}</button></form>${exhausted ? regenHint : ''}</div>
 
 <div class="card"><h2 style="margin-top:0">3. Guião inglês — revisão ${script.revision} ${pill(script.status, script.status === 'approved' ? 'ok' : script.status === 'stale' ? 'bad' : '')}</h2>
@@ -247,7 +281,7 @@ ${editable ? `<div class="row" style="margin-top:12px"><form method="post" actio
 ${photos.length ? `<fieldset style="border:1px solid var(--line);border-radius:8px"><legend class="sans">Fotografias na capa (autorizadas; máx. 2)</legend><div class="thumbs">${photos.map((p: any) => `<label class="check"><input type="checkbox" name="cover_photo" value="${p.id}"><img alt="" src="/media/${p.asset_id}"></label>`).join('')}</div></fieldset>` : '<p class="hint">Sem fotografias autorizadas para a capa: será usada capa tipográfica sobre fundo ilustrado.</p>'}
 <p class="hint">Vozes: entrevistador ${iv.question_voice === 'male' ? 'masculina' : 'feminina'} (“${esc(episodeVoice('host', iv.question_voice))}”), entrevistado ${iv.guest_voice === 'male' ? 'masculina' : 'feminina'} (“${esc(episodeVoice('guest', iv.guest_voice))}”) — altere em Editar. Vozes sintéticas de catálogo; sem clonagem. Será acrescentado o aviso audível: “${esc(config.aiDisclosure)}”</p>
 ${!procOk ? '<div class="flash bad">O entrevistado retirou a autorização de processamento por IA: não é possível gerar o episódio.</div>' : ''}
-${episodeBefore ? payFields : ''}<button class="accent" ${(episodeBefore && !canRegen) || !procOk ? 'disabled' : ''}>Gerar episódio${episodeBefore ? PAY : ''}</button>${episodeBefore ? regenHint : ''}</form></div>`;
+${episodeBefore ? payFields : ''}<button class="accent" ${(episodeBefore && !canRegen) || !procOk || jobsOut ? 'disabled' : ''}>Gerar episódio${episodeBefore ? PAY : ''}</button>${episodeBefore ? regenHint : ''}</form></div>`;
       }
     }
 
@@ -335,7 +369,7 @@ ${ep.visibility === 'public' ? `<form method="post" action="/entrevistas/${iv.id
     if (!live && (script || ep || ['failed', 'stale', 'editorial_review', 'ready', 'qc'].includes(iv.production_status))) {
       body += `<div class="card"><h2 style="margin-top:0">Recomeçar a produção</h2>
 <p class="hint">Arquiva o guião e o episódio atuais (não são eliminados) e volta ao passo «Processar podcast». As gravações e as transcrições originais mantêm-se. Se o episódio estiver publicado, é retirado e sai da galeria.</p>
-<form method="post" action="/entrevistas/${iv.id}/producao/recomecar" onsubmit="return confirm('Arquivar o guião e o episódio atuais e recomeçar a produção?')"><button class="danger" ${scriptBefore && !canRegen ? 'disabled' : ''}>Recomeçar produção</button></form>${scriptBefore ? `${regenHint}${canRegen ? `<p class="hint">Depois de recomeçar, processar de novo custa ${cr(EXTRA_REGEN_CENTS)} crédito.</p>` : ''}` : ''}</div>`;
+<form method="post" action="/entrevistas/${iv.id}/producao/recomecar" onsubmit="return confirm('Arquivar o guião e o episódio atuais e recomeçar a produção?')"><button class="danger" ${(scriptBefore && !canRegen) || jobsOut ? 'disabled' : ''}>Recomeçar produção</button></form>${scriptBefore ? `${regenHint}${canRegen ? `<p class="hint">Depois de recomeçar, processar de novo custa ${cr(EXTRA_REGEN_CENTS)} crédito.</p>` : ''}` : ''}</div>`;
     }
     body += '</div>';
     return reply.type('text/html; charset=utf-8').send(page({ title: 'Produção', body, noindex: true, script: live ? '/static/progress.js' : '/static/player.js', nav: `<a href="/painel">Painel</a>${helpNav(req.user)}` }));
@@ -368,6 +402,9 @@ ${ep.visibility === 'public' ? `<form method="post" action="/entrevistas/${iv.id
     // Processar de novo seria uma regeneração: com as incluídas esgotadas e sem crédito para a pagar, a produção atual não se arquiva.
     const paidNext = await hadScript(db, iv.id) && await regenExhausted(req, iv.id);
     if (paidNext && !(await regenPayment(req.user)).canPay) return back(reply, iv.id, undefined, `${REGEN_BLOCKED()} Sem crédito para processar de novo, não é possível recomeçar a produção.`);
+    // Entrevista grátis sem trabalhos de produção: processar de novo seria recusado, e a produção atual não se arquiva.
+    const freeJobs = await freeJobsFor(req, iv);
+    if (freeJobs != null && freeJobs >= FREE_PRODUCTION_JOBS) return back(reply, iv.id, undefined, `${FREE_JOBS_USED} Não é possível recomeçar a produção.`);
     await db.tx(async tx => {
       await tx.query(`UPDATE scripts SET status='superseded' WHERE interview_id=$1 AND status<>'superseded'`, [iv.id]);
       await tx.query(`UPDATE episodes SET status=CASE WHEN status='published' THEN 'withdrawn' ELSE 'superseded' END, withdrawn_at=CASE WHEN status='published' THEN now() ELSE withdrawn_at END, gallery=false, stale=true WHERE interview_id=$1 AND status NOT IN ('superseded','withdrawn')`, [iv.id]);
@@ -407,7 +444,12 @@ ${ep.visibility === 'public' ? `<form method="post" action="/entrevistas/${iv.id
     const takeId = (req.params as any).takeId;
     const own = await db.one(`SELECT 1 FROM answer_takes t JOIN answers a ON a.id=t.answer_id WHERE t.id=$1 AND a.interview_id=$2`, [takeId, iv.id]);
     const cur = own && await latestTranscript(db, 'answer_take', takeId);
-    const text = String((req.body as any)?.text ?? '').trim().slice(0, 20000);
+    const raw = String((req.body as any)?.text ?? '').trim();
+    const text = raw.slice(0, 20000);
+    // 1.ª entrevista grátis: até um máximo pela duração da gravação (transcriptMax); acima, nada se grava.
+    const lim = cur && text && text !== cur.text ? await transcriptMax(db, iv, takeId, req.user!.role === 'admin') : null;
+    if (lim && raw.length > lim.max)
+      return back(reply, iv.id, undefined, `Transcrição não guardada. Na 1.ª entrevista grátis, a transcrição desta resposta pode ter até ${milhares(lim.max)} caracteres (calculado a partir de ${lim.minutes.toFixed(1).replace('.', ',')} min de gravação) e tem ${milhares(raw.length)}. Encurte o texto.`);
     if (cur && text && text !== cur.text) {
       await db.query(`INSERT INTO transcripts(interview_id, source_kind, source_id, revision, text, language, origin) VALUES ($1,'answer_take',$2,$3,$4,$5,'human')`, [iv.id, takeId, cur.revision + 1, text, cur.language]);
       // Alteração material: invalida aprovações e marca derivados como desatualizados (sem apagar versões).
@@ -421,6 +463,8 @@ ${ep.visibility === 'public' ? `<form method="post" action="/entrevistas/${iv.id
 
   app.post('/entrevistas/:id/guiao/regenerar', async (req, reply) => {
     const iv = await guard(req, reply); if (!iv) return;
+    const blocked = await scriptAiBlock(iv);
+    if (blocked) return back(reply, iv.id, undefined, blocked);
     if (!aiAvailable()) return back(reply, iv.id, undefined, 'Serviço de IA não configurado.');
     const r = await enqueueProduction(req, iv.id, 'prepare_script', (tx, cur) => hadScript(tx, cur.id), async tx => {
       const n = Number((await tx.one(`SELECT count(*)::int AS n FROM jobs WHERE interview_id=$1 AND kind='prepare_script'`, [iv.id])).n);
@@ -453,10 +497,12 @@ ${ep.visibility === 'public' ? `<form method="post" action="/entrevistas/${iv.id
 
   app.post('/entrevistas/:id/guiao/verificar', async (req, reply) => {
     const iv = await guard(req, reply); if (!iv) return;
+    const blocked = await scriptAiBlock(iv);
+    if (blocked) return back(reply, iv.id, undefined, blocked);
     if (!rateLimit(`review:${iv.id}`, 6, 3600_000)) return back(reply, iv.id, undefined, 'Limite de verificações atingido.');
     const s = await db.one(`SELECT * FROM scripts WHERE interview_id=$1 AND status='draft' ORDER BY revision DESC LIMIT 1`, [iv.id]);
     if (!s) return back(reply, iv.id, undefined, 'Sem guião editável.');
-    // 1.ª entrevista grátis: total por entrevista, contado na base antes de chamar a IA; se a verificação falhar, a vez volta.
+    // 1.ª entrevista grátis: total por entrevista, contado na base antes de chamar a IA; a vez só volta se a OpenAI não respondeu.
     const counted = !!iv.free_at && req.user!.role !== 'admin';
     if (counted && !(await takeAiUse(db, iv.id, 'script_review', FREE_SCRIPT_REVIEWS))) return back(reply, iv.id, undefined, FREE_REVIEWS_USED);
     const items = await db.query(`SELECT q.id, q.text, a.selected_take_id FROM questions q LEFT JOIN answers a ON a.question_id=q.id WHERE q.interview_id=$1 ORDER BY q.position`, [iv.id]);
@@ -468,8 +514,10 @@ ${ep.visibility === 'public' ? `<form method="post" action="/entrevistas/${iv.id
       await db.query('UPDATE scripts SET review_flags=$2 WHERE id=$1', [s.id, JSON.stringify(flags)]);
       return back(reply, iv.id, r.issues.length ? `${r.issues.length} possíveis problemas assinalados.` : 'Sem alertas — isto não substitui a revisão humana.');
     } catch (e: any) {
-      if (counted) await giveBackAiUse(db, iv.id, 'script_review');
-      return back(reply, iv.id, undefined, 'Falha na verificação: ' + String(e.message).slice(0, 120));
+      // Antes, a vez voltava em qualquer erro, também depois de uma resposta paga que falhava aqui (JSON cortado, um problema
+      // null): com o guião e as transcrições, escritos pelo próprio entrevistador, provocava-se a falha e o total deixava de contar.
+      if (counted && await aiNotAnswered(e)) await giveBackAiUse(db, iv.id, 'script_review');
+      return back(reply, iv.id, undefined, 'Falha na verificação: ' + String(e?.message ?? e).slice(0, 120));
     }
   });
 
@@ -477,6 +525,7 @@ ${ep.visibility === 'public' ? `<form method="post" action="/entrevistas/${iv.id
     const iv = await guard(req, reply); if (!iv) return;
     const s = await db.one(`SELECT * FROM scripts WHERE interview_id=$1 AND status='draft' ORDER BY revision DESC LIMIT 1`, [iv.id]);
     if (!s || s.blocking_issues.length || !(req.body as any)?.reviewed) return back(reply, iv.id, undefined, 'Não é possível aprovar (bloqueios ou revisão não confirmada).');
+    if (!(await submittedOnce(iv))) return back(reply, iv.id, undefined, 'A entrevista não foi submetida.');
     if (!(await consent(iv.id, 'processing'))) return back(reply, iv.id, undefined, 'Autorização de processamento retirada.');
     const big = await scriptSizeError(db, iv, s.segments, req.user!.role === 'admin');
     if (big) return back(reply, iv.id, undefined, `Não é possível aprovar. ${big}`);
@@ -492,7 +541,8 @@ ${ep.visibility === 'public' ? `<form method="post" action="/entrevistas/${iv.id
    * tamanhos (scriptSizeError). O primeiro episódio da entrevista está incluído; gerar outro é uma regeneração.
    */
   const queueGeneration = async (req: any, reply: any, iv: any, s: any, o: { langs: string[]; photos: string[]; dedupe: (tx: Db) => Promise<string>; retry?: boolean }) => {
-    if (!(await consent(iv.id, 'processing'))) return back(reply, iv.id, undefined, 'Sem autorização de processamento por IA.');
+    const blocked = await scriptAiBlock(iv);
+    if (blocked) return back(reply, iv.id, undefined, blocked);
     // Só com «o entrevistado aprova» o pedido de alterações do convidado trava uma nova geração do mesmo guião (como no main com host_only).
     if (iv.review_policy === 'guest_preview' && await db.one(`SELECT 1 FROM approvals a JOIN episodes e ON e.id=a.episode_id WHERE e.script_id=$1 AND a.actor='guest' AND a.valid AND a.decision='changes' LIMIT 1`, [s.id]))
       return back(reply, iv.id, undefined, 'O convidado pediu alterações a um episódio deste guião: reveja o guião e aprove uma nova revisão antes de gerar.');
@@ -515,7 +565,7 @@ ${ep.visibility === 'public' ? `<form method="post" action="/entrevistas/${iv.id
     if (!s) return back(reply, iv.id, undefined, 'Aprove primeiro o guião.');
     const b = req.body as any;
     const langs = ([] as string[]).concat(b.subtitle_langs ?? []).filter(l => SUBS.some(x => x[0] === l));
-    const photos = ([] as string[]).concat(b.cover_photo ?? []).filter(x => /^[0-9a-f-]{36}$/i.test(x)).slice(0, 2);
+    const photos = await ownPhotos(iv.id, ([] as unknown[]).concat(b.cover_photo ?? []));
     const cfg = sha256(JSON.stringify([langs.sort(), photos.sort(), config.openai.voices, config.openai.models]));
     return queueGeneration(req, reply, iv, s, { langs, photos, dedupe: async () => `gen:${s.id}:${cfg}` });
   });
@@ -530,7 +580,7 @@ ${ep.visibility === 'public' ? `<form method="post" action="/entrevistas/${iv.id
     if (!prev) return back(reply, iv.id, undefined, 'Não há nenhuma geração do episódio falhada para repetir com o guião aprovado.');
     const s = await db.one('SELECT * FROM scripts WHERE id=$1 AND interview_id=$2', [prev.scriptId, iv.id]);
     const langs = (Array.isArray(prev.subtitleLangs) ? prev.subtitleLangs : []).filter(l => SUBS.some(x => x[0] === l));
-    const photos = (Array.isArray(prev.coverPhotoIds) ? prev.coverPhotoIds : []).filter(x => /^[0-9a-f-]{36}$/i.test(x)).slice(0, 2);
+    const photos = await ownPhotos(iv.id, Array.isArray(prev.coverPhotoIds) ? prev.coverPhotoIds : []);
     return queueGeneration(req, reply, iv, s, { langs, photos, retry: true, dedupe: async tx =>
       `gen:${s.id}:tentativa:${Number((await tx.one(`SELECT count(*)::int AS n FROM jobs WHERE interview_id=$1 AND kind='generate_episode'`, [iv.id])).n)}` });
   });
