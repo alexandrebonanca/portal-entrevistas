@@ -5,7 +5,7 @@ import { page, flash, pill, STATUS_LABEL } from '../views.ts';
 import { requireUser, ownedInterview, audit, sendAsset } from '../app.ts';
 import { enqueue, videoQueue, laneOf, type EnqueueOpts } from '../jobs.ts';
 import type { Db } from '../db.ts';
-import { regenerationsUsed, REGEN_BLOCKED } from '../limits.ts';
+import { regenerationsUsed, REGEN_BLOCKED, scriptSizeError, scriptTotalMax, SCRIPT_SEGMENT_MAX, milhares } from '../limits.ts';
 import { estimateCost, latestTranscript, animationEstimate } from '../pipeline.ts';
 import { aiAvailable, reviewScript, validateScript, episodeVoice } from '../ai/openai.ts';
 import { playerHtml } from './episode.ts';
@@ -103,6 +103,16 @@ export async function productionRoutes(app: FastifyInstance) {
   const hadScript = async (q: Db, id: string) => !!(await q.one('SELECT 1 FROM scripts WHERE interview_id=$1 LIMIT 1', [id]));
   /** Já houve um episódio gerado (ou a gerar) nesta entrevista. */
   const hadEpisode = async (q: Db, id: string) => !!(await q.one(`SELECT 1 FROM jobs WHERE interview_id=$1 AND kind='generate_episode' AND state<>'failed' LIMIT 1`, [id]));
+  /**
+   * Geração do episódio que falhou e que «Tentar de novo» repete (null = não há): o último trabalho de produção é um
+   * generate_episode falhado e o guião dele continua aprovado. Repeti-la não conta como regeneração quando ainda não houve
+   * episódio (hadEpisode ignora os falhados), como o primeiro «Gerar episódio»; processar de novo refaria o guião e contaria.
+   */
+  const failedGeneration = async (q: Db, id: string) => {
+    const j = await q.one(`SELECT kind, state, input FROM jobs WHERE interview_id=$1 AND kind IN ('process_submission','prepare_script','generate_episode') ORDER BY created_at DESC LIMIT 1`, [id]);
+    if (j?.kind !== 'generate_episode' || j.state !== 'failed' || typeof j.input?.scriptId !== 'string') return null;
+    return (await q.one(`SELECT 1 FROM scripts WHERE id=$1 AND interview_id=$2 AND status='approved'`, [j.input.scriptId, id])) ? j.input as { scriptId: string; subtitleLangs?: string[]; coverPhotoIds?: string[] } : null;
+  };
   /** Regenerações esgotadas para quem pede (o administrador nunca fica bloqueado). */
   const regenExhausted = async (req: any, id: string) => req.user.role !== 'admin' && (await regenerationsUsed(db, id)) >= INCLUDED;
   /**
@@ -187,9 +197,16 @@ ${scriptBefore ? payFields : ''}<button class="accent" ${procOk && aiAvailable()
 <p class="hint">Pode fechar esta página: o processamento continua no servidor.</p></div>`;
     }
     if (!live && iv.production_status === 'failed') {
+      // «Tentar de novo»: se falhou a geração do episódio e o guião dela continua aprovado, repete-a (como «Gerar episódio»:
+      // só conta se já houve episódio); senão, processa de novo, o que refaz o guião e conta como regeneração se já houve um.
+      const retryGen = await failedGeneration(db, iv.id);
+      const retryRegen = retryGen ? await hadEpisode(db, iv.id) : await hadScript(db, iv.id);
+      const retryPay = exhausted && retryRegen;
+      const retryNote = retryGen ? ` «Tentar de novo» volta a gerar o episódio do guião aprovado, com as mesmas legendas e fotografias${retryRegen ? ': conta como uma regeneração (já houve um episódio).' : ' (não conta como regeneração).'}`
+        : retryRegen ? ' «Tentar de novo» processa a entrevista outra vez e refaz o guião: conta como uma regeneração.' : '';
       body += `<div class="card"><h2 style="margin-top:0">Trabalhos</h2><table><tbody>${jobs.map((j: any) => `<tr><td>${esc(j.kind)}</td><td>${pill(j.state, j.state === 'done' ? 'ok' : j.state === 'failed' ? 'bad' : '')}</td><td>${j.progress_total ? `${j.progress_done}/${j.progress_total}` : ''}</td><td class="hint">${esc(j.error ?? '')}</td></tr>`).join('')}</tbody></table>
 
-${iv.production_status === 'failed' ? `<form method="post" action="/entrevistas/${iv.id}/processar"><p class="hint">Falhou. Os erros permanentes exigem revisão; pode tentar novamente depois de corrigir a causa.</p><button class="ghost">Tentar de novo</button></form>` : ''}</div>`;
+<form method="post" action="/entrevistas/${iv.id}/${retryGen ? 'gerar/repetir' : 'processar'}"><p class="hint">Falhou. Os erros permanentes exigem revisão; pode tentar novamente depois de corrigir a causa.${esc(retryNote)}</p>${retryPay ? payFields : ''}<button class="ghost" ${retryPay && !canRegen ? 'disabled' : ''}>Tentar de novo${retryPay ? PAY : ''}</button></form>${retryPay ? regenHint : ''}</div>`;
     }
 
     // 3. Revisão editorial
@@ -202,6 +219,9 @@ ${iv.production_status === 'failed' ? `<form method="post" action="/entrevistas/
       const editable = script.status === 'draft';
       // 1.ª entrevista grátis: verificações de fidelidade por IA com total por entrevista (o administrador não conta).
       const reviewsLeft = editable && iv.free_at && req.user!.role !== 'admin' ? FREE_SCRIPT_REVIEWS - await aiUsed(db, iv.id, 'script_review') : null;
+      // Tamanho do guião editável: cada segmento abaixo do limite da síntese de voz e o total (na entrevista grátis, pelas respostas).
+      const sizeLim = editable ? await scriptTotalMax(db, iv, req.user!.role === 'admin') : null;
+      const sizeNote = `Cada segmento pode ter até ${milhares(SCRIPT_SEGMENT_MAX)} caracteres${sizeLim ? ` e o guião até ${milhares(sizeLim.max)}${sizeLim.free ? ' na 1.ª entrevista grátis' : ''} (tem ${milhares(segs.reduce((a, s) => a + String(s.textEnglish ?? '').length, 0))})` : ''}.`;
       body += `<div class="card"><h2 style="margin-top:0">2. Transcrições (originais)</h2>${iv.production_status === 'stale' ? '<div class="flash bad">As respostas mudaram depois do guião: aprovações invalidadas. Regenere o guião.</div>' : ''}
 ${trs.map(({ it, a }) => `<div class="seg"><strong>${it.position}. ${esc(it.text)}</strong>${it.asset_id ? `<br><audio controls preload="none" src="/media/${it.asset_id}"></audio>` : ''}
 ${a ? `<form method="post" action="/entrevistas/${iv.id}/transcricoes/${it.selected_take_id}"><textarea name="text" aria-label="Transcrição">${esc(a.text)}</textarea><button class="ghost">Guardar nova revisão (r${a.revision + 1})</button> <span class="hint">r${a.revision} · ${esc(a.origin)}</span></form>` : '<span class="hint">sem transcrição</span>'}</div>`).join('')}
@@ -213,8 +233,8 @@ ${blocking.length ? `<div class="flash bad"><strong>Bloqueios editoriais:</stron
 <form method="post" action="/entrevistas/${iv.id}/guiao">
 ${segs.map((s, i) => `<div class="seg ${s.speakerRole} ${flagged.has(s.id) ? 'flag' : ''}"><span class="hint sans">${esc(s.id)} · ${esc(s.speakerRole)} · ${esc(s.transformationType)}${s.sourceQuestionId ? '' : ' · editorial'}</span>
 ${flags.filter((f: any) => f.segmentId === s.id).map((f: any) => `<div class="hint" style="color:var(--warn)">⚑ ${esc(f.reason)}</div>`).join('')}
-<textarea name="seg_${i}" ${editable ? '' : 'readonly'} aria-label="Segmento ${esc(s.id)}">${esc(s.textEnglish)}</textarea></div>`).join('')}
-${editable ? '<button class="ghost">Guardar como nova revisão (humana)</button>' : ''}</form>
+<textarea name="seg_${i}" ${editable ? `maxlength="${SCRIPT_SEGMENT_MAX}"` : 'readonly'} aria-label="Segmento ${esc(s.id)}">${esc(s.textEnglish)}</textarea></div>`).join('')}
+${editable ? `<p class="hint">${esc(sizeNote)}</p><button class="ghost">Guardar como nova revisão (humana)</button>` : ''}</form>
 ${editable ? `<div class="row" style="margin-top:12px"><form method="post" action="/entrevistas/${iv.id}/guiao/verificar"><button class="ghost" ${aiAvailable() && (reviewsLeft == null || reviewsLeft > 0) ? '' : 'disabled'}>Verificação de fidelidade (assistente)</button></form>
 <form method="post" action="/entrevistas/${iv.id}/guiao/aprovar" onsubmit="return confirm('Aprovar este guião para síntese de voz?')"><label class="check"><input type="checkbox" name="reviewed" value="1" required> Revi o guião contra as transcrições</label><button class="accent" ${blocking.length ? 'disabled' : ''}>Aprovar guião para síntese</button></form></div>
 <p class="hint">O assistente só assinala possíveis problemas; nunca aprova nem substitui a revisão humana.${reviewsLeft == null ? '' : reviewsLeft > 0 ? ` 1.ª entrevista grátis: <span id="verificacoes">${FREE_SCRIPT_REVIEWS - reviewsLeft} de ${FREE_SCRIPT_REVIEWS}</span> verificações usadas.` : ` ${esc(FREE_REVIEWS_USED)}`}</p>` : ''}</div>`;
@@ -226,7 +246,8 @@ ${editable ? `<div class="row" style="margin-top:12px"><form method="post" actio
 <fieldset style="border:1px solid var(--line);border-radius:8px"><legend class="sans">Línguas das legendas</legend>${SUBS.map(([v, l]) => `<label class="check"><input type="checkbox" name="subtitle_langs" value="${v}" ${iv.subtitle_langs.includes(v) ? 'checked' : ''}> ${l}</label>`).join('')}</fieldset>
 ${photos.length ? `<fieldset style="border:1px solid var(--line);border-radius:8px"><legend class="sans">Fotografias na capa (autorizadas; máx. 2)</legend><div class="thumbs">${photos.map((p: any) => `<label class="check"><input type="checkbox" name="cover_photo" value="${p.id}"><img alt="" src="/media/${p.asset_id}"></label>`).join('')}</div></fieldset>` : '<p class="hint">Sem fotografias autorizadas para a capa: será usada capa tipográfica sobre fundo ilustrado.</p>'}
 <p class="hint">Vozes: entrevistador ${iv.question_voice === 'male' ? 'masculina' : 'feminina'} (“${esc(episodeVoice('host', iv.question_voice))}”), entrevistado ${iv.guest_voice === 'male' ? 'masculina' : 'feminina'} (“${esc(episodeVoice('guest', iv.guest_voice))}”) — altere em Editar. Vozes sintéticas de catálogo; sem clonagem. Será acrescentado o aviso audível: “${esc(config.aiDisclosure)}”</p>
-${episodeBefore ? payFields : ''}<button class="accent" ${episodeBefore && !canRegen ? 'disabled' : ''}>Gerar episódio${episodeBefore ? PAY : ''}</button>${episodeBefore ? regenHint : ''}</form></div>`;
+${!procOk ? '<div class="flash bad">O entrevistado retirou a autorização de processamento por IA: não é possível gerar o episódio.</div>' : ''}
+${episodeBefore ? payFields : ''}<button class="accent" ${(episodeBefore && !canRegen) || !procOk ? 'disabled' : ''}>Gerar episódio${episodeBefore ? PAY : ''}</button>${episodeBefore ? regenHint : ''}</form></div>`;
       }
     }
 
@@ -365,8 +386,12 @@ ${ep.visibility === 'public' ? `<form method="post" action="/entrevistas/${iv.id
     if (!aiAvailable()) return back(reply, iv.id, undefined, 'Serviço de IA não configurado.');
     const sub = await db.one('SELECT id FROM submissions WHERE interview_id=$1 ORDER BY created_at DESC LIMIT 1', [iv.id]);
     const est = await estimateCost(db, iv.id, iv.subtitle_langs);
-    // Processar de novo depois de «Recomeçar» refaz o guião: é uma regeneração (tentar de novo depois de uma falha não conta).
-    const r = await enqueueProduction(req, iv.id, 'process_submission', async (tx, cur) => cur.production_status !== 'failed' && await hadScript(tx, cur.id), async tx => {
+    // Processar quando já houve um guião (depois de «Recomeçar» ou de uma falha) refaz o guião: é uma regeneração. O trabalho
+    // que falhou não conta (regenerationsUsed), conta o que o refaz. Antes, «Tentar de novo» depois de qualquer falha não
+    // contava: uma geração do episódio que falhava logo ao início e sem custo (autorização retirada pelo convidado,
+    // transcrição editada antes de o trabalho começar) tornava gratuito o guião seguinte, sem fim. Depois de uma geração do
+    // episódio que falhou, «Tentar de novo» repete-a (/gerar/repetir) em vez de processar.
+    const r = await enqueueProduction(req, iv.id, 'process_submission', (tx, cur) => hadScript(tx, cur.id), async tx => {
       // Deduplica por submissão; "tentar de novo" após falha usa nova chave com o nº de tentativas anteriores.
       const prior = Number((await tx.one(`SELECT count(*)::int AS n FROM jobs WHERE interview_id=$1 AND kind='process_submission'`, [iv.id])).n);
       return { dedupe: `process:${sub.id}:${prior}`, costUsd: est.usd };
@@ -414,6 +439,9 @@ ${ep.visibility === 'public' ? `<form method="post" action="/entrevistas/${iv.id
     const b = req.body as any;
     const segs = (s.segments as any[]).map((x, i) => ({ ...x, textEnglish: String(b[`seg_${i}`] ?? x.textEnglish).trim() }));
     if (segs.every((x, i) => x.textEnglish === s.segments[i].textEnglish)) return back(reply, iv.id, 'Sem alterações.');
+    // Tamanho: cada segmento abaixo do limite da síntese de voz e o guião abaixo do total (na entrevista grátis, pelas respostas).
+    const big = await scriptSizeError(db, iv, segs, req.user!.role === 'admin');
+    if (big) return back(reply, iv.id, undefined, `Revisão não guardada. ${big}`);
     const v = validateScript({ titleEnglish: s.title_en, segments: segs, reviewFlags: s.review_flags, blockingIssues: [] });
     await db.query(`UPDATE scripts SET status='superseded' WHERE id=$1`, [s.id]);
     await db.query(`INSERT INTO scripts(interview_id, revision, title_en, segments, review_flags, blocking_issues, status, prompt_version, model, origin) VALUES ($1,$2,$3,$4,$5,$6,'draft',$7,$8,'human')`,
@@ -450,34 +478,61 @@ ${ep.visibility === 'public' ? `<form method="post" action="/entrevistas/${iv.id
     const s = await db.one(`SELECT * FROM scripts WHERE interview_id=$1 AND status='draft' ORDER BY revision DESC LIMIT 1`, [iv.id]);
     if (!s || s.blocking_issues.length || !(req.body as any)?.reviewed) return back(reply, iv.id, undefined, 'Não é possível aprovar (bloqueios ou revisão não confirmada).');
     if (!(await consent(iv.id, 'processing'))) return back(reply, iv.id, undefined, 'Autorização de processamento retirada.');
+    const big = await scriptSizeError(db, iv, s.segments, req.user!.role === 'admin');
+    if (big) return back(reply, iv.id, undefined, `Não é possível aprovar. ${big}`);
     await db.query(`UPDATE scripts SET status='approved', approved_at=now() WHERE id=$1`, [s.id]);
     await db.query(`INSERT INTO approvals(interview_id, kind, actor, script_id, decision) VALUES ($1,'script','interviewer',$2,'approved')`, [iv.id, s.id]);
     await audit(db, req.user!.email, 'script.approved', iv.id, { revision: s.revision });
     return back(reply, iv.id, 'Guião aprovado para síntese.');
   });
 
+  /**
+   * Põe na fila a geração do episódio do guião aprovado `s` («Gerar episódio» e «Tentar de novo»). Com a autorização de
+   * processamento do convidado (antes, o /gerar não a verificava e o trabalho falhava logo ao início) e o guião dentro dos
+   * tamanhos (scriptSizeError). O primeiro episódio da entrevista está incluído; gerar outro é uma regeneração.
+   */
+  const queueGeneration = async (req: any, reply: any, iv: any, s: any, o: { langs: string[]; photos: string[]; dedupe: (tx: Db) => Promise<string>; retry?: boolean }) => {
+    if (!(await consent(iv.id, 'processing'))) return back(reply, iv.id, undefined, 'Sem autorização de processamento por IA.');
+    // Só com «o entrevistado aprova» o pedido de alterações do convidado trava uma nova geração do mesmo guião (como no main com host_only).
+    if (iv.review_policy === 'guest_preview' && await db.one(`SELECT 1 FROM approvals a JOIN episodes e ON e.id=a.episode_id WHERE e.script_id=$1 AND a.actor='guest' AND a.valid AND a.decision='changes' LIMIT 1`, [s.id]))
+      return back(reply, iv.id, undefined, 'O convidado pediu alterações a um episódio deste guião: reveja o guião e aprove uma nova revisão antes de gerar.');
+    const big = await scriptSizeError(db, iv, s.segments, req.user.role === 'admin');
+    if (big) return back(reply, iv.id, undefined, `Não é possível gerar o episódio. ${big}`);
+    const est = await estimateCost(db, iv.id, o.langs.length ? o.langs : iv.subtitle_langs);
+    const r = await enqueueProduction(req, iv.id, 'generate_episode', (tx, cur) => hadEpisode(tx, cur.id), async tx =>
+      ({ input: { scriptId: s.id, subtitleLangs: o.langs, coverPhotoIds: o.photos }, dedupe: await o.dedupe(tx), costUsd: est.parts.speech + est.parts.text + est.parts.cover }));
+    if (r.blocked) return back(reply, iv.id, undefined, r.blocked);
+    if (r.busy) return back(reply, iv.id, undefined, BUSY);
+    if (!r.id) return back(reply, iv.id, undefined, 'Já existe uma geração com esta configuração para este guião. Altere o guião ou a configuração.');
+    await db.query(`UPDATE interviews SET production_status='queued' WHERE id=$1`, [iv.id]);
+    await audit(db, req.user.email, 'episode.generate', iv.id, o.retry ? { retry: true } : undefined);
+    return back(reply, iv.id, o.retry ? 'Geração iniciada de novo.' : 'Geração iniciada.');
+  };
+
   app.post('/entrevistas/:id/gerar', async (req, reply) => {
     const iv = await guard(req, reply); if (!iv) return;
     const s = await db.one(`SELECT * FROM scripts WHERE interview_id=$1 AND status='approved' ORDER BY revision DESC LIMIT 1`, [iv.id]);
     if (!s) return back(reply, iv.id, undefined, 'Aprove primeiro o guião.');
-    // Só com «o entrevistado aprova» o pedido de alterações do convidado trava uma nova geração do mesmo guião (como no main com host_only).
-    if (iv.review_policy === 'guest_preview' && await db.one(`SELECT 1 FROM approvals a JOIN episodes e ON e.id=a.episode_id WHERE e.script_id=$1 AND a.actor='guest' AND a.valid AND a.decision='changes' LIMIT 1`, [s.id]))
-      return back(reply, iv.id, undefined, 'O convidado pediu alterações a um episódio deste guião: reveja o guião e aprove uma nova revisão antes de gerar.');
     const b = req.body as any;
     const langs = ([] as string[]).concat(b.subtitle_langs ?? []).filter(l => SUBS.some(x => x[0] === l));
     const photos = ([] as string[]).concat(b.cover_photo ?? []).filter(x => /^[0-9a-f-]{36}$/i.test(x)).slice(0, 2);
     const cfg = sha256(JSON.stringify([langs.sort(), photos.sort(), config.openai.voices, config.openai.models]));
-    const est = await estimateCost(db, iv.id, langs.length ? langs : iv.subtitle_langs);
-    // O primeiro episódio da entrevista está incluído; gerar outro (outra revisão ou configuração) é uma regeneração.
-    const r = await enqueueProduction(req, iv.id, 'generate_episode', (tx, cur) => hadEpisode(tx, cur.id), async () =>
-      ({ input: { scriptId: s.id, subtitleLangs: langs, coverPhotoIds: photos }, dedupe: `gen:${s.id}:${cfg}`, costUsd: est.parts.speech + est.parts.text + est.parts.cover }));
-    if (r.blocked) return back(reply, iv.id, undefined, r.blocked);
-    if (r.busy) return back(reply, iv.id, undefined, BUSY);
-    const id = r.id;
-    if (!id) return back(reply, iv.id, undefined, 'Já existe uma geração com esta configuração para este guião. Altere o guião ou a configuração.');
-    await db.query(`UPDATE interviews SET production_status='queued' WHERE id=$1`, [iv.id]);
-    await audit(db, req.user!.email, 'episode.generate', iv.id);
-    return back(reply, iv.id, 'Geração iniciada.');
+    return queueGeneration(req, reply, iv, s, { langs, photos, dedupe: async () => `gen:${s.id}:${cfg}` });
+  });
+
+  // «Tentar de novo» depois de uma geração do episódio que falhou, com o guião dela ainda aprovado: a mesma geração (legendas e
+  // fotografias), com uma chave nova que leva o número da tentativa (a anterior ficou com a dela). Não conta como regeneração
+  // enquanto não houver episódio (hadEpisode ignora os falhados), como o primeiro «Gerar episódio»; antes, «Tentar de novo»
+  // processava de novo (transcrições e guião).
+  app.post('/entrevistas/:id/gerar/repetir', async (req, reply) => {
+    const iv = await guard(req, reply); if (!iv) return;
+    const prev = await failedGeneration(db, iv.id);
+    if (!prev) return back(reply, iv.id, undefined, 'Não há nenhuma geração do episódio falhada para repetir com o guião aprovado.');
+    const s = await db.one('SELECT * FROM scripts WHERE id=$1 AND interview_id=$2', [prev.scriptId, iv.id]);
+    const langs = (Array.isArray(prev.subtitleLangs) ? prev.subtitleLangs : []).filter(l => SUBS.some(x => x[0] === l));
+    const photos = (Array.isArray(prev.coverPhotoIds) ? prev.coverPhotoIds : []).filter(x => /^[0-9a-f-]{36}$/i.test(x)).slice(0, 2);
+    return queueGeneration(req, reply, iv, s, { langs, photos, retry: true, dedupe: async tx =>
+      `gen:${s.id}:tentativa:${Number((await tx.one(`SELECT count(*)::int AS n FROM jobs WHERE interview_id=$1 AND kind='generate_episode'`, [iv.id])).n)}` });
   });
 
   const epGuard = async (req: any, reply: any) => {

@@ -23,7 +23,11 @@ const { FAQ_SEED } = await import('../src/assistant-faq.ts');
 const A = await import('../src/assistant.ts');
 const F = await import('../src/free-interview.ts');
 const M = await import('../src/metrics.ts');
-const { VERIFY_PER_DAY, VERIFY_TOTAL } = await import('../src/email-verify.ts');
+const { VERIFY_PER_DAY, VERIFY_TOTAL, mailboxHash } = await import('../src/email-verify.ts');
+const { runOne } = await import('../src/jobs.ts');
+const { handlers } = await import('../src/pipeline.ts');
+const { regenerationsUsed, REGEN_BLOCKED, SCRIPT_SEGMENT_MAX, FREE_SCRIPT_BASE, FREE_SCRIPT_PER_MIN } = await import('../src/limits.ts');
+const { validateScript } = await import('../src/ai/openai.ts');
 const { makeToneWav } = await import('../src/media.ts');
 const { PUBLIC_SIGNUPS_PER_IP_DAY } = await import('../src/routes/site.ts');
 const sharp = (await import('sharp')).default;
@@ -1095,3 +1099,195 @@ test('resposta do «Reenviar» e da confirmação do email junto da caixa da ofe
   assert.doesNotMatch(html, /role="status">a<|role="status">b</);
   assert.match(html, /#gratis\{scroll-margin-top:12px\}/);
 });
+
+// ---- produção da entrevista grátis ----
+const drain = async () => { while (await runOne(db, handlers)) { /* */ } await flushOutbox(db); };
+/** Entrevista grátis (ou paga) enviada, respondida e submetida pelo convidado, com a autorização de processamento; `consent` muda-a. */
+const submitted = async (ck: string, title: string, guestEmail: string, paid = false) => {
+  const id = await draft(ck, title, guestEmail);
+  if (paid) assert.match(msgOf(await post(`/entrevistas/${id}/convidar`, {}, ck)), /ok=Convite enviado\./);
+  else assert.match(msgOf(await sendFree(ck, id)), /ok=Convite enviado: usou a sua 1\.ª entrevista grátis/);
+  await flushOutbox(db);
+  const m = (await db.query(`SELECT text_body FROM emails WHERE to_email=$1 ORDER BY created_at DESC LIMIT 1`, [guestEmail]))[0];
+  const gs = `gs=${cookies(await post(`/i/${/\/i\/([A-Za-z0-9_-]{40,})/.exec(m.text_body)![1]}/abrir`, {})).gs}`;
+  const consent = (processing: boolean) => post('/entrevista/consentimentos', { participation: '1', adult: '1', ...(processing ? { processing: '1' } : {}), publish: '1' }, gs);
+  await consent(true);
+  for (const q of await db.query('SELECT id FROM questions WHERE interview_id=$1 ORDER BY position', [id]))
+    assert.equal((await app.inject({ method: 'POST', url: `/api/g/respostas/${q.id}`, payload: makeToneWav(2), headers: { 'content-type': 'audio/wav', cookie: gs } })).statusCode, 200);
+  await post('/entrevista/submeter', {}, gs);
+  assert.equal((await db.one('SELECT collection_status s FROM interviews WHERE id=$1', [id])).s, 'submitted');
+  return { id, consent };
+};
+const statusOf = async (id: string) => (await db.one('SELECT production_status s FROM interviews WHERE id=$1', [id])).s;
+const jobsOf = async (id: string, kind: string, state = '') => Number((await db.one(`SELECT count(*)::int n FROM jobs WHERE interview_id=$1 AND kind=$2 AND ($3='' OR state=$3)`, [id, kind, state])).n);
+
+test('1.ª entrevista grátis: depois de uma geração do episódio que falhou sem custo, processar de novo conta como regeneração (o ciclo pára na 4.ª volta com REGEN_BLOCKED); o /gerar verifica a autorização de processamento; «Tentar de novo» repete a geração sem refazer o guião', () => manyFree(async () => {
+  // Antes: «Tentar de novo» (POST /processar) não contava depois de qualquer falha, e o /gerar não verificava a autorização.
+  // Uma geração que falhava logo ao início (transcrição editada antes de o trabalho começar, ou autorização retirada pelo
+  // convidado) tornava gratuito o guião seguinte (gpt-4.1), sem fim (6 voltas no teste do revisor, 0 regenerações).
+  const ce = await created('Ciro Ciclo', 'ciro.ciclo@example.com');
+  const { id } = await submitted(ce.ck, 'Ciclo', 'conv-ciclo@example.net');
+  const take = (await db.one(`SELECT t.id FROM answer_takes t JOIN answers a ON a.id=t.answer_id WHERE a.interview_id=$1 LIMIT 1`, [id])).id;
+  /** Aprova o guião, pede o episódio e edita uma transcrição antes de o trabalho começar: a geração falha logo ao início. */
+  const failGeneration = async (k: number) => {
+    assert.match(msgOf(await post(`/entrevistas/${id}/guiao/aprovar`, { reviewed: '1' }, ce.ck)), /ok=Guião aprovado/, `volta ${k}`);
+    assert.match(msgOf(await post(`/entrevistas/${id}/gerar`, { subtitle_langs: 'en' }, ce.ck)), /ok=Geração iniciada/, `volta ${k}`);
+    await post(`/entrevistas/${id}/transcricoes/${take}`, { text: `Texto revisto ${k}` }, ce.ck);
+    await drain();
+    assert.equal(await statusOf(id), 'failed', `volta ${k}`);
+  };
+  assert.match(msgOf(await post(`/entrevistas/${id}/processar`, {}, ce.ck)), /ok=Processamento iniciado/);
+  await drain();
+  await failGeneration(0);
+  assert.equal(await regenerationsUsed(db, id), 0, 'o primeiro processamento e a geração falhada não contam');
+  // o guião ficou desatualizado: «Tentar de novo» processa de novo e diz que conta
+  const pg = (await get(`/entrevistas/${id}/producao`, ce.ck)).body;
+  assert.match(pg, new RegExp(`<form method="post" action="/entrevistas/${id}/processar"><p class="hint">Falhou\\.[^<]*«Tentar de novo» processa a entrevista outra vez e refaz o guião: conta como uma regeneração\\.</p><button class="ghost" >Tentar de novo</button>`));
+  for (let k = 1; k <= 3; k++) {
+    assert.match(msgOf(await post(`/entrevistas/${id}/processar`, {}, ce.ck)), /ok=Processamento iniciado/, `volta ${k}`);
+    await drain();
+    assert.equal(await regenerationsUsed(db, id), k, `volta ${k}: conta como regeneração`);
+    await failGeneration(k);
+  }
+  // a 4.ª volta pára: nada na fila, nenhum guião novo
+  assert.equal(msgOf(await post(`/entrevistas/${id}/processar`, {}, ce.ck)), `/entrevistas/${id}/producao?e=${REGEN_BLOCKED()} Saldo: 0 créditos.`);
+  assert.deepEqual([await jobsOf(id, 'process_submission'), await jobsOf(id, 'process_submission', 'done')], [4, 4]);
+  assert.equal(await regenerationsUsed(db, id), 3);
+  assert.match((await get(`/entrevistas/${id}/producao`, ce.ck)).body, /<button class="ghost" disabled>Tentar de novo — pagar 1 crédito<\/button>/);
+
+  // o /gerar verifica a autorização de processamento; «Tentar de novo» depois de uma geração falhada repete-a
+  const ga = await created('Gil Autoriza', 'gil.autoriza@example.com');
+  const g = await submitted(ga.ck, 'Autorização', 'conv-autoriza@example.net');
+  assert.match(msgOf(await post(`/entrevistas/${g.id}/processar`, {}, ga.ck)), /ok=Processamento iniciado/);
+  await drain();
+  assert.match(msgOf(await post(`/entrevistas/${g.id}/guiao/aprovar`, { reviewed: '1' }, ga.ck)), /ok=Guião aprovado/);
+  await g.consent(false); // o convidado retira a autorização de processamento depois de submeter
+  assert.match(msgOf(await post(`/entrevistas/${g.id}/gerar`, { subtitle_langs: 'en' }, ga.ck)), /e=Sem autorização de processamento por IA\./);
+  assert.equal(await jobsOf(g.id, 'generate_episode'), 0, 'nada na fila');
+  const p0 = (await get(`/entrevistas/${g.id}/producao`, ga.ck)).body;
+  assert.match(p0, /O entrevistado retirou a autorização de processamento por IA: não é possível gerar o episódio\.<\/div>\s*<button class="accent" disabled>Gerar episódio<\/button>/);
+  // retirada entre o pedido e o trabalho: a geração falha logo ao início (sem custo)
+  await g.consent(true);
+  assert.match(msgOf(await post(`/entrevistas/${g.id}/gerar`, { subtitle_langs: 'en' }, ga.ck)), /ok=Geração iniciada/);
+  await g.consent(false);
+  await drain();
+  assert.equal(await statusOf(g.id), 'failed');
+  const p1 = (await get(`/entrevistas/${g.id}/producao`, ga.ck)).body;
+  assert.match(p1, new RegExp(`<form method="post" action="/entrevistas/${g.id}/gerar/repetir"><p class="hint">Falhou\\.[^<]*«Tentar de novo» volta a gerar o episódio do guião aprovado, com as mesmas legendas e fotografias \\(não conta como regeneração\\)\\.</p><button class="ghost" >Tentar de novo</button>`));
+  assert.match(msgOf(await post(`/entrevistas/${g.id}/gerar/repetir`, {}, ga.ck)), /e=Sem autorização de processamento por IA\./);
+  await g.consent(true);
+  assert.match(msgOf(await post(`/entrevistas/${g.id}/gerar/repetir`, {}, ga.ck)), /ok=Geração iniciada de novo\./);
+  await drain();
+  assert.equal(await statusOf(g.id), 'ready');
+  assert.ok(await db.one('SELECT 1 FROM episodes WHERE interview_id=$1', [g.id]), 'episódio gerado');
+  assert.deepEqual([await jobsOf(g.id, 'process_submission'), await jobsOf(g.id, 'generate_episode'), await regenerationsUsed(db, g.id)], [1, 2, 0], 'o guião não foi refeito e nada contou');
+  const jobs = await db.query(`SELECT input, dedupe_key FROM jobs WHERE interview_id=$1 AND kind='generate_episode' ORDER BY created_at`, [g.id]);
+  assert.deepEqual(jobs[1].input, jobs[0].input, 'a mesma geração (guião, legendas e fotografias)');
+  assert.match(jobs[1].dedupe_key, /:tentativa:1$/);
+  assert.match(msgOf(await post(`/entrevistas/${g.id}/gerar/repetir`, {}, ga.ck)), /e=Não há nenhuma geração do episódio falhada para repetir/);
+}));
+
+test('guião editado à mão: cada segmento até 4 000 caracteres (limite da síntese de voz) e um total — na 1.ª entrevista grátis, pelas perguntas e pelos minutos de resposta —, recusados ao gravar, ao aprovar e ao gerar; as pagas com o total geral; o administrador só com o do segmento', () => manyFree(async () => {
+  // Antes: o POST /guiao aceitava qualquer texto (até ao limite do pedido, MAX_UPLOAD_MB) e o episódio incluído sintetizava
+  // tudo (no teste do revisor, um guião de 143 caracteres, com 0,07 min de respostas, mandou 28 120 caracteres à TTS); um
+  // segmento acima do limite de entrada da TTS só falhava dentro do trabalho, depois de pagos os anteriores.
+  const total = (segs: any[]) => segs.reduce((a, x) => a + x.textEnglish.length, 0);
+  const sa = await created('Sara Tamanho', 'sara.tamanho@example.com');
+  const { id } = await submitted(sa.ck, 'Tamanho', 'conv-tamanho@example.net');
+  await post(`/entrevistas/${id}/processar`, {}, sa.ck); await drain();
+  const draftScript = (ivId = id) => db.one(`SELECT * FROM scripts WHERE interview_id=$1 AND status='draft' ORDER BY revision DESC LIMIT 1`, [ivId]);
+  const s1 = await draftScript();
+  const ms = Number((await db.one(`SELECT COALESCE(sum(ast.duration_ms),0)::int ms FROM answers an JOIN answer_takes t ON t.id=an.selected_take_id JOIN assets ast ON ast.id=t.asset_id WHERE an.interview_id=$1`, [id])).ms);
+  const budget = Math.ceil(FREE_SCRIPT_BASE + 1.5 * 'Primeira?Segunda?'.length + FREE_SCRIPT_PER_MIN * ms / 60000);
+  const sp = (n: number) => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
+  assert.ok(budget > 3000 && budget < 3300, String(budget));
+  const save = (texts: Record<number, string>, ck = sa.ck, ivId = id) => post(`/entrevistas/${ivId}/guiao`, Object.fromEntries(Object.entries(texts).map(([i, t]) => [`seg_${i}`, t])), ck);
+  // a página diz os máximos, e cada caixa tem o do segmento
+  const pg = (await get(`/entrevistas/${id}/producao`, sa.ck)).body;
+  assert.ok(pg.includes(`Cada segmento pode ter até 4 000 caracteres e o guião até ${sp(budget)} na 1.ª entrevista grátis (tem ${sp(total(s1.segments))}).`));
+  assert.equal((pg.match(/<textarea name="seg_\d+" maxlength="4000"/g) ?? []).length, s1.segments.length);
+  // um segmento acima do limite da síntese de voz: nada gravado, com a mensagem
+  assert.equal(msgOf(await save({ 1: 'x'.repeat(SCRIPT_SEGMENT_MAX + 1) })), `/entrevistas/${id}/producao?e=Revisão não guardada. O segmento ${s1.segments[1].id} tem 4 001 caracteres: cada segmento pode ter até 4 000 (limite da síntese de voz). Encurte-o.`);
+  // o total da entrevista grátis, com cada segmento dentro do limite
+  const over = { 1: 'y'.repeat(2000), 2: 'z'.repeat(2000) };
+  assert.equal(msgOf(await save(over)), `/entrevistas/${id}/producao?e=Revisão não guardada. O guião tem ${sp(total(s1.segments) - s1.segments[1].textEnglish.length - s1.segments[2].textEnglish.length + 4000)} caracteres e, na 1.ª entrevista grátis, pode ter até ${sp(budget)} (calculado a partir das perguntas e de 0,1 min de respostas). Encurte o texto dos segmentos.`);
+  assert.equal((await draftScript()).revision, s1.revision, 'nada gravado');
+  // dentro do total: grava
+  assert.match(msgOf(await save({ 1: 'w'.repeat(1500) })), /ok=Revisão \d+ guardada/);
+  // a aprovação verifica outra vez (um guião que já está acima, por exemplo vindo da IA), e a geração também
+  const s2 = await draftScript();
+  await db.query('UPDATE scripts SET segments=$2 WHERE id=$1', [s2.id, JSON.stringify(s2.segments.map((x: any, i: number) => (i < 2 ? { ...x, textEnglish: 'v'.repeat(SCRIPT_SEGMENT_MAX) } : x)))]);
+  assert.match(msgOf(await post(`/entrevistas/${id}/guiao/aprovar`, { reviewed: '1' }, sa.ck)), /[?]e=Não é possível aprovar\. O guião tem [\d ]+ caracteres e, na 1\.ª entrevista grátis, pode ter até /);
+  assert.equal((await db.one('SELECT status FROM scripts WHERE id=$1', [s2.id])).status, 'draft');
+  await db.query(`UPDATE scripts SET status='approved' WHERE id=$1`, [s2.id]);
+  assert.match(msgOf(await post(`/entrevistas/${id}/gerar`, { subtitle_langs: 'en' }, sa.ck)), /[?]e=Não é possível gerar o episódio\. O guião tem [\d ]+ caracteres e, na 1\.ª entrevista grátis/);
+  assert.equal(await jobsOf(id, 'generate_episode'), 0, 'nada na fila');
+  // o guião da IA com um segmento acima do limite fica com um bloqueio editorial (não se aprova nem chega à síntese de voz)
+  const v = validateScript({ titleEnglish: 'T', segments: [{ id: 'a1', speakerRole: 'guest', textEnglish: 'u'.repeat(SCRIPT_SEGMENT_MAX + 1), sourceQuestionId: 'q1', transformationType: 'translated_answer' }], reviewFlags: [], blockingIssues: [] });
+  assert.deepEqual(v.blockingIssues, ['Segmento a1: 4 001 caracteres, acima do máximo de 4 000 da síntese de voz: encurte-o']);
+
+  // entrevista paga: o total geral (não o da entrevista grátis); o limite do segmento, como em todas
+  const pa = await created('Paula Tamanho', 'paula.tamanho@example.com');
+  await db.query(`INSERT INTO subscriptions(user_id, plan_id, status, source) VALUES ($1,'start','active','manual')`, [pa.id]);
+  const p = await submitted(pa.ck, 'Tamanho pago', 'conv-tamanho-pago@example.net', true);
+  await post(`/entrevistas/${p.id}/processar`, {}, pa.ck); await drain();
+  assert.match((await get(`/entrevistas/${p.id}/producao`, pa.ck)).body, /Cada segmento pode ter até 4 000 caracteres e o guião até 60 000 \(tem \d+\)\./);
+  assert.match(msgOf(await save({ 1: 'p'.repeat(3500), 2: 'q'.repeat(3500) }, pa.ck, p.id)), /ok=Revisão \d+ guardada/, 'acima do total da entrevista grátis, dentro do geral');
+  assert.match(msgOf(await save({ 3: 'r'.repeat(SCRIPT_SEGMENT_MAX + 1) }, pa.ck, p.id)), /[?]e=Revisão não guardada\. O segmento \S+ tem 4 001 caracteres: cada segmento pode ter até 4 000/);
+  const ps = await draftScript(p.id);
+  const many = Array.from({ length: 16 }, (_, k) => ({ id: `m${k}`, speakerRole: 'host', textEnglish: 'm'.repeat(SCRIPT_SEGMENT_MAX), sourceQuestionId: null, transformationType: 'editorial_transition' }));
+  await db.query('UPDATE scripts SET segments=$2 WHERE id=$1', [ps.id, JSON.stringify(many)]);
+  assert.equal(msgOf(await post(`/entrevistas/${p.id}/guiao/aprovar`, { reviewed: '1' }, pa.ck)), `/entrevistas/${p.id}/producao?e=Não é possível aprovar. O guião tem 64 000 caracteres e pode ter até 60 000. Encurte o texto dos segmentos.`);
+  // o administrador não fica bloqueado pelo total (o limite do segmento vale para todos)
+  assert.match(msgOf(await post(`/entrevistas/${p.id}/guiao/aprovar`, { reviewed: '1' }, admin)), /ok=Guião aprovado/);
+}));
+
+test('caixa da oferta com o email por confirmar, numa conta que nunca recebeu a ligação: com a caixa de correio sem mais emails de confirmação (gastos por outras contas) ou no limite de 24 horas, uma frase sem «carregue em Reenviar» nem o botão, e nada sobre outras contas (painel e Conta); sem maneira de confirmar, o título já não promete a entrevista grátis', () => withLimits({ verifyEmailsPerHour: 100000, verifyEmailsPerDay: 100000 }, async () => {
+  // Antes: «Ainda não foi possível enviar a ligação para …: carregue em «Reenviar».» e logo a seguir «Já enviámos para o email
+  // desta conta o número máximo de ligações de confirmação (5): não é possível pedir outra.», sem nenhum botão; no limite de
+  // 24 horas, a caixa mandava carregar em «Reenviar», e o «Reenviar» recusava até ao dia seguinte.
+  const box = (html: string) => /<div id="gratis">([\s\S]*?)<\/div><\/div>/.exec(html)?.[1] ?? '';
+  let k = 0;
+  /** Emails de confirmação já enviados à caixa de correio por outra conta (com uma variante do endereço). */
+  const spent = async (userId: string, mailbox: string, n: number, ago: string) => {
+    for (let i = 0; i < n; i++)
+      await db.query(`INSERT INTO email_verifications(user_id, token_hash, mailbox_hash, expires_at, created_at) VALUES ($1,$2,$3, now() - interval '${ago}' + interval '48 hours', now() - interval '${ago}')`,
+        [userId, sha(`caixa-gasta-${k++}`), mailboxHash(mailbox)]);
+  };
+  // a caixa já recebeu os 5 (de outra conta)
+  const outra = await register('Outra conta', 'dona.caixa+1@gmail.com');
+  await spent(outra.id, 'dona.caixa@gmail.com', VERIFY_TOTAL, '4 days');
+  const dona = await register('Dona da caixa', 'dona.caixa@gmail.com');
+  assert.equal((await verifyMails('dona.caixa@gmail.com')).length, 0, 'nenhuma ligação para esta conta');
+  const pt = box((await get('/painel', dona.ck)).body);
+  assert.match(pt, /<strong>A 1\.ª entrevista grátis exige o email da conta confirmado\.<\/strong> Não é possível enviar mais emails de confirmação para o email desta conta\./);
+  assert.match(pt, /Para enviar convites, escolha um plano em <a href="\/account">Conta<\/a>\./);
+  assert.doesNotMatch(pt, /Reenviar|reenviar|número máximo|outra conta|depois de confirmar/);
+  const en = box((await get('/account', dona.ck)).body);
+  assert.match(en, /<strong>The free first interview needs a confirmed account email\.<\/strong> No more confirmation emails can be sent to this account’s email address\./);
+  assert.match(en, /To send invitations, choose a plan below\./);
+  assert.doesNotMatch(en, /Resend|reenviar|maximum number|other account|once you confirm/);
+  // a conta que tem uma ligação ainda válida continua a poder confirmar: o título fica, sem o convite a escolher um plano
+  const viva = await register('Ainda vale', 'ainda.vale@example.org');
+  await spent(viva.id, 'ainda.vale@example.org', VERIFY_TOTAL - 1, '1 hour');
+  const pv = box((await get('/painel', viva.ck)).body);
+  assert.match(pv, /<strong>A sua 1\.ª entrevista é grátis<\/strong>, depois de confirmar o email da sua conta\. Enviámos uma ligação para ainda\.vale@example\.org/);
+  assert.match(pv, /número máximo de ligações de confirmação \(5\)/);
+  assert.doesNotMatch(pv, /escolha um plano|action="\/confirmar-email\/reenviar"/);
+
+  // no limite de 24 horas (3 emails de outra conta para a caixa): pode pedir mais tarde, sem o botão
+  const outraDia = await register('Outra do dia', 'dia.caixa+1@gmail.com');
+  await spent(outraDia.id, 'dia.caixa@gmail.com', VERIFY_PER_DAY, '1 hour');
+  const dd = await register('Dona do dia', 'dia.caixa@gmail.com');
+  assert.equal((await verifyMails('dia.caixa@gmail.com')).length, 0);
+  const pd = box((await get('/painel', dd.ck)).body);
+  assert.match(pd, /<strong>A sua 1\.ª entrevista é grátis<\/strong>, depois de confirmar o email da sua conta\. Ainda não foi possível enviar a ligação para dia\.caixa@gmail\.com\. Pode pedir uma ligação mais tarde\./);
+  assert.doesNotMatch(pd, /carregue em «Reenviar»|action="\/confirmar-email\/reenviar"|outra conta/);
+  const ed = box((await get('/account', dd.ck)).body);
+  assert.match(ed, /We could not send the link to dia\.caixa@gmail\.com yet\. You can ask for a link later\./);
+  assert.doesNotMatch(ed, /press «Resend»|action="\/confirmar-email\/reenviar"|other account/);
+  // 24 horas depois, o «Reenviar» volta e envia
+  await db.query(`UPDATE email_verifications SET created_at = created_at - interval '25 hours' WHERE mailbox_hash=$1`, [mailboxHash('dia.caixa@gmail.com')]);
+  assert.match(box((await get('/painel', dd.ck)).body), /: carregue em «Reenviar»\.[\s\S]*action="\/confirmar-email\/reenviar"/);
+  assert.match(msgOf(await post('/confirmar-email/reenviar', { voltar: '/painel' }, dd.ck)), /gok=Enviámos uma ligação nova para dia\.caixa@gmail\.com/);
+}));

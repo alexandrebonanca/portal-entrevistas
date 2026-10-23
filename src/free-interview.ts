@@ -4,7 +4,7 @@ import { esc, sha256, fmtDate, normMailbox } from './lib.ts';
 import { ACTIVE_STATUSES, quotaFor } from './billing.ts';
 import { enqueue, type EnqueueOpts } from './jobs.ts';
 import { inviteLimits, mmss } from './limits.ts';
-import { lastVerificationAt, verifySent, VERIFY_TOTAL } from './email-verify.ts';
+import { lastVerificationAt, verifySent, VERIFY_TOTAL, VERIFY_PER_DAY, VERIFY_HOURS } from './email-verify.ts';
 import { flash } from './views.ts';
 
 /**
@@ -217,22 +217,33 @@ export function freeRefusal(reason: FreeReason | 'done' | null): string | null {
   }
 }
 
+/**
+ * Confirmação do email por fazer: a última ligação enviada a esta conta (`sent`), se a caixa de correio ainda pode receber
+ * emails de confirmação (`more`: VERIFY_TOTAL, na conta ou na caixa), se só daqui a umas horas (`later`: VERIFY_PER_DAY em 24
+ * horas) e se ainda é possível confirmar (`canConfirm`: há mais emails ou a última ligação ainda vale).
+ */
+interface UnverifiedState { sent: Date | null; more: boolean; later: boolean; canConfirm: boolean }
+
 const T = {
   pt: {
     limits: (l: ReturnType<typeof inviteLimits>) => `com os limites do plano Start (até ${l.questionLimit} perguntas, incluindo as adicionais, e até ${mmss(l.answerLimitSec!)} min de respostas do entrevistado)`,
     eligible: (l: ReturnType<typeof inviteLimits>, where: 'painel' | 'convite') => `<strong>A sua 1.ª entrevista é grátis.</strong> ${where === 'convite' ? 'Este convite segue' : 'Envie o primeiro convite'} sem pagamento nem dados de cartão, ${T.pt.limits(l)}. É uma por pessoa e por organização${where === 'painel' ? ': crie a entrevista e, em «Rever e convidar», carregue em «Enviar convite grátis»' : ''}.`,
-    unverified: (email: string, sent: Date | null) => `<strong>A sua 1.ª entrevista é grátis</strong>, depois de confirmar o email da sua conta. ${sent ? `Enviámos uma ligação para ${esc(email)} em ${esc(fmtDate(sent))} (válida 48 horas).` : `Ainda não foi possível enviar a ligação para ${esc(email)}: carregue em «Reenviar».`}`,
+    unverified: (email: string, s: UnverifiedState) => `${s.canConfirm ? '<strong>A sua 1.ª entrevista é grátis</strong>, depois de confirmar o email da sua conta.' : '<strong>A 1.ª entrevista grátis exige o email da conta confirmado.</strong>'} ${s.sent ? `Enviámos uma ligação para ${esc(email)} em ${esc(fmtDate(s.sent))} (válida 48 horas).`
+      : !s.more ? 'Não é possível enviar mais emails de confirmação para o email desta conta.' : s.later ? `Ainda não foi possível enviar a ligação para ${esc(email)}. Pode pedir uma ligação mais tarde.` : `Ainda não foi possível enviar a ligação para ${esc(email)}: carregue em «Reenviar».`}`,
     resend: 'Reenviar',
     noMore: `Já enviámos para o email desta conta o número máximo de ligações de confirmação (${VERIFY_TOTAL}): não é possível pedir outra.`,
+    plans: 'Para enviar convites, escolha um plano em <a href="/account">Conta</a>.',
     used: (at: Date | null) => `Já usou a sua entrevista grátis${at ? ` (enviada em ${esc(fmtDate(at))})` : ''}. Para enviar mais convites, escolha um plano em <a href="/account">Conta</a>.`,
     cap: 'A oferta da 1.ª entrevista grátis está temporariamente indisponível. Pode tentar mais tarde ou escolher um plano em <a href="/account">Conta</a>.',
   },
   en: {
     limits: (l: ReturnType<typeof inviteLimits>) => `with the Start plan limits (up to ${l.questionLimit} questions, additional ones included, and ${mmss(l.answerLimitSec!)} min of answers)`,
     eligible: (l: ReturnType<typeof inviteLimits>) => `<strong>Your first interview is free.</strong> Send your first invitation with no payment and no card details, ${T.en.limits(l)}: create it on the dashboard (Painel) and press «Enviar convite grátis» (Send free invitation). One per person and organisation.`,
-    unverified: (email: string, sent: Date | null) => `<strong>Your first interview is free</strong> once you confirm your account’s email. ${sent ? `We sent a link to ${esc(email)} on ${esc(fmtDate(sent))} (valid for 48 hours).` : `We could not send the link to ${esc(email)} yet: press «Resend».`}`,
+    unverified: (email: string, s: UnverifiedState) => `${s.canConfirm ? '<strong>Your first interview is free</strong> once you confirm your account’s email.' : '<strong>The free first interview needs a confirmed account email.</strong>'} ${s.sent ? `We sent a link to ${esc(email)} on ${esc(fmtDate(s.sent))} (valid for 48 hours).`
+      : !s.more ? 'No more confirmation emails can be sent to this account’s email address.' : s.later ? `We could not send the link to ${esc(email)} yet. You can ask for a link later.` : `We could not send the link to ${esc(email)} yet: press «Resend».`}`,
     resend: 'Resend',
     noMore: `We have already sent the maximum number of confirmation links (${VERIFY_TOTAL}) to this account’s email address, so no more can be requested.`,
+    plans: 'To send invitations, choose a plan below.',
     used: (at: Date | null) => `You have used your free interview${at ? ` (sent on ${esc(fmtDate(at))})` : ''}. To send more invitations, choose a plan below.`,
     cap: 'The free first interview offer is temporarily unavailable. You can try again later or choose a plan below.',
   },
@@ -264,8 +275,19 @@ async function freeBox(db: Db, f: FreeState, user: { id: string; email: string }
   if (f.eligible) return box(o.lang === 'pt' ? T.pt.eligible(await freeLimits(db), o.where ?? 'painel') : T.en.eligible(await freeLimits(db)), 'ok');
   switch (f.reason) {
     // Sem «Reenviar» quando já não há mais emails de confirmação para esta conta (VERIFY_TOTAL, na conta ou na caixa de correio).
-    case 'unverified': return box(`${d.unverified(user.email, await lastVerificationAt(db, user.id))}
-${(await verifySent(db, user)).total >= VERIFY_TOTAL ? `<p style="margin:8px 0 0">${d.noMore}</p>` : `<form method="post" action="/confirmar-email/reenviar" style="margin-top:8px"><input type="hidden" name="voltar" value="${esc(o.back)}"><button class="ghost" style="padding:6px 14px;min-height:0">${d.resend}</button></form>`}`);
+    // A conta que nunca recebeu uma ligação, com a caixa de correio sem mais emails (gastos por outras contas com o mesmo email
+    // normalizado) ou no limite de 24 horas, não lê «carregue em Reenviar» sem o botão, nem um botão que recusa até ao dia
+    // seguinte; e nada se diz sobre outras contas. Sem maneira de confirmar, o título já não promete a entrevista grátis.
+    case 'unverified': {
+      const sent = await lastVerificationAt(db, user.id), n = await verifySent(db, user);
+      const more = n.total < VERIFY_TOTAL, later = more && n.day >= VERIFY_PER_DAY;
+      const live = !!sent && Date.now() - sent.getTime() < VERIFY_HOURS * 3600_000;
+      const s: UnverifiedState = { sent, more, later, canConfirm: more || live };
+      const action = !more ? `${sent ? `<p style="margin:8px 0 0">${d.noMore}</p>` : ''}${live ? '' : `<p style="margin:8px 0 0">${d.plans}</p>`}`
+        : later && !sent ? '' : `<form method="post" action="/confirmar-email/reenviar" style="margin-top:8px"><input type="hidden" name="voltar" value="${esc(o.back)}"><button class="ghost" style="padding:6px 14px;min-height:0">${d.resend}</button></form>`;
+      return box(`${d.unverified(user.email, s)}
+${action}`);
+    }
     case 'used': return box(d.used(f.usedAt));
     case 'cap_day': case 'cap_month': return box(d.cap);
     default: return '';

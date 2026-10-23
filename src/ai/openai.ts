@@ -2,6 +2,7 @@ import { config } from '../config.ts';
 import { S } from '../settings.ts';
 import { makeToneWav, toMp3ForTranscription } from '../media.ts';
 import { SCRIPT_SYSTEM, SUBTITLE_SYSTEM, COVER_SYSTEM, REVIEW_SYSTEM, PROMPT_VERSIONS } from './prompts.ts';
+import { SCRIPT_SEGMENT_MAX, milhares } from '../limits.ts';
 
 /** Todo o acesso à OpenAI está aqui, só no servidor. Com AI_MOCK=1 nada sai da máquina. */
 let client: any, clientKey = '';
@@ -108,6 +109,8 @@ export function validateScript(raw: any, input?: ScriptInput) {
     seen.add(seg.id);
     if (!TYPES.has(seg.transformationType)) { blocking.push(`Segmento ${seg.id}: tipo inválido`); continue; }
     if (!seg.textEnglish) { blocking.push(`Segmento ${seg.id}: texto vazio`); continue; }
+    // Acima do limite de entrada da síntese de voz, o segmento falharia só no trabalho do episódio (depois de pagos os anteriores).
+    if (seg.textEnglish.length > SCRIPT_SEGMENT_MAX) blocking.push(`Segmento ${seg.id}: ${milhares(seg.textEnglish.length)} caracteres, acima do máximo de ${milhares(SCRIPT_SEGMENT_MAX)} da síntese de voz: encurte-o`);
     const editorial = seg.transformationType.startsWith('editorial_');
     if (editorial && seg.speakerRole === 'guest') { blocking.push(`Segmento ${seg.id}: texto editorial atribuído ao convidado`); seg.speakerRole = 'host'; }
     if (!editorial && (!seg.sourceQuestionId || (known.size && !known.has(seg.sourceQuestionId)))) {

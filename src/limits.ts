@@ -43,3 +43,51 @@ export async function regenerationsUsed(db: Db, interviewId: string): Promise<nu
 }
 
 export const REGEN_BLOCKED = () => `Já usou as ${config.limits.includedRegenerations} regenerações incluídas nesta entrevista (guião e episódio). Cada regeneração seguinte custa 1 crédito.`;
+
+// ---- tamanho do guião (síntese de voz) ----
+/**
+ * Máximo de caracteres de cada segmento do guião, abaixo do limite de entrada da síntese de voz da OpenAI (4096 por pedido):
+ * antes, um segmento maior só falhava dentro do trabalho do episódio, depois de pagos os anteriores.
+ */
+export const SCRIPT_SEGMENT_MAX = 4000;
+/**
+ * Máximo de caracteres do guião inteiro (cerca de uma hora de voz). Antes, o guião editado à mão não tinha limite (só o do
+ * pedido, MAX_UPLOAD_MB): cada geração pagava a voz, os tempos das legendas e as traduções de todo o texto escrito, e a
+ * estimativa só olha para os minutos de resposta.
+ */
+export const SCRIPT_TOTAL_MAX = 60_000;
+/**
+ * 1.ª entrevista grátis (sem pagamento): o total acompanha a entrevista, com folga — o texto editorial (apresentação,
+ * transições, agradecimento), uma vez e meia o texto das perguntas e, por minuto de resposta, cerca do dobro do que se diz
+ * num minuto (~900 caracteres, como em estimateCost).
+ */
+export const FREE_SCRIPT_BASE = 3000, FREE_SCRIPT_PER_MIN = 2000;
+
+/** Inteiro com espaço a separar os milhares («28 120»). */
+export const milhares = (n: number) => String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
+
+/** Máximo de caracteres do guião inteiro para quem pede (null: o administrador, que não fica bloqueado). */
+export async function scriptTotalMax(db: Db, iv: { id: string; free_at?: unknown }, admin: boolean): Promise<{ max: number; free: boolean; minutes: number } | null> {
+  if (admin) return null;
+  if (!iv.free_at) return { max: SCRIPT_TOTAL_MAX, free: false, minutes: 0 };
+  const minutes = (await answeredMs(db, iv.id)) / 60000;
+  const q = await db.one(`SELECT COALESCE(sum(length(COALESCE(NULLIF(q.text,''), (SELECT t.text FROM transcripts t WHERE t.source_kind='question' AND t.source_id=q.id ORDER BY t.revision DESC LIMIT 1), ''))),0)::int AS n
+    FROM questions q WHERE q.interview_id=$1`, [iv.id]);
+  const max = Math.ceil(FREE_SCRIPT_BASE + 1.5 * Number(q?.n ?? 0) + FREE_SCRIPT_PER_MIN * minutes);
+  return { max: Math.min(SCRIPT_TOTAL_MAX, max), free: true, minutes };
+}
+
+/**
+ * Porque é que o guião não se pode gravar, aprovar ou gerar (null = pode), em português: um segmento acima de
+ * SCRIPT_SEGMENT_MAX (para todos: é o limite da síntese de voz) ou o guião acima do total de scriptTotalMax.
+ */
+export async function scriptSizeError(db: Db, iv: { id: string; free_at?: unknown }, segments: { id: string; textEnglish: string }[], admin: boolean): Promise<string | null> {
+  const long = segments.filter(s => s.textEnglish.length > SCRIPT_SEGMENT_MAX);
+  if (long.length) return `${long.map(s => `O segmento ${s.id} tem ${milhares(s.textEnglish.length)} caracteres`).join('; ')}: cada segmento pode ter até ${milhares(SCRIPT_SEGMENT_MAX)} (limite da síntese de voz). Encurte-o${long.length > 1 ? 's' : ''}.`;
+  const lim = await scriptTotalMax(db, iv, admin);
+  const total = segments.reduce((a, s) => a + s.textEnglish.length, 0);
+  if (!lim || total <= lim.max) return null;
+  return lim.free
+    ? `O guião tem ${milhares(total)} caracteres e, na 1.ª entrevista grátis, pode ter até ${milhares(lim.max)} (calculado a partir das perguntas e de ${lim.minutes.toFixed(1).replace('.', ',')} min de respostas). Encurte o texto dos segmentos.`
+    : `O guião tem ${milhares(total)} caracteres e pode ter até ${milhares(lim.max)}. Encurte o texto dos segmentos.`;
+}
