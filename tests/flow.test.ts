@@ -96,7 +96,7 @@ test('criar entrevista, perguntas e convite', async () => {
   assert.match(mail.text_body, /quietinterview — interviews recorded in your own time · test\.local/);
   assert.doesNotMatch(mail.html + mail.text_body, /convida-o\(a\)|Conversations/);
   const { replyTo } = await import('../src/mail.ts');
-  assert.equal(replyTo(), 'certifinternational@gmail.com', 'Reply-To: o email da entidade gestora, nunca o SUPPORT_EMAIL');
+  assert.equal(replyTo(), 'comercial@quietinterview.com', 'Reply-To: a caixa comercial do próprio domínio, nunca o SUPPORT_EMAIL');
   // perguntas bloqueadas depois do convite
   const edit = await post(`/entrevistas/${ivId}/perguntas`, { text: 'extra' }, owner);
   assert.match(edit.headers.location as string, /e=/);

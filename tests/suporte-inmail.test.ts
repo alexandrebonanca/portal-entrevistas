@@ -448,7 +448,7 @@ test('sentinela: o SUPPORT_EMAIL não aparece em nenhuma página nem em nenhum e
   assert.match(inv.html, /<a href="http:\/\/test\.local\/privacy" style="color:#b4691f">Privacy<\/a><\/p>/);
   assert.match(inv.text_body, /\nPrivacy: http:\/\/test\.local\/privacy$/);
   for (const m of mails) assert.ok(m.html.includes('http://test.local/privacy'), `email ${m.dedupe_key} sem a ligação à privacidade`);
-  assert.equal(replyTo(), 'certifinternational@gmail.com', 'Reply-To: o email da entidade gestora');
+  assert.equal(replyTo(), 'comercial@quietinterview.com', 'Reply-To: a caixa comercial do próprio domínio');
 
   // vendedora: sem email definido, o da entidade gestora, com aviso nas Definições
   assert.equal(seller().email, 'certifinternational@gmail.com');

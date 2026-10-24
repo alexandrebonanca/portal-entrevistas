@@ -49,7 +49,7 @@ export async function flushOutbox(db: Db) {
  * Endereço de resposta: o email da entidade gestora (config.owner), se for um email real (não o de exemplo). Nunca o
  * SUPPORT_EMAIL, que é só configuração interna: as dúvidas seguem pela ajuda do portal ou pelo formulário de contacto.
  */
-export const replyTo = () => (isRealEmail(config.owner.email) ? config.owner.email : '');
+export const replyTo = () => (isRealEmail(config.owner.replyTo) ? config.owner.replyTo : isRealEmail(config.owner.email) ? config.owner.email : '');
 
 /**
  * Seguimento desligado em cada envio, seja qual for a configuração do domínio no painel da MailerSend: sem píxel de

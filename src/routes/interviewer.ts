@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import type { Db } from '../db.ts';
 import { config } from '../config.ts';
-import { esc, isEmail, fmtDate, fmtDuration, rateLimit } from '../lib.ts';
+import { esc, oneSpace, isEmail, fmtDate, fmtDuration, rateLimit } from '../lib.ts';
 import { page, flash, pill, STATUS_LABEL } from '../views.ts';
 import { requireUser, ownedInterview, audit, sendAsset } from '../app.ts';
 import { sniff, stripJpegMetadata, saveAsset, probeAudio } from '../media.ts';
@@ -189,8 +189,8 @@ ${locked ? '' : composePanel(iv, quota!, !(await inEntity(await entityOfIntervie
     await db.query(
       `UPDATE interviews SET title=$2, objective_text=$3, objective_shared=$4, host_name=$5, guest_name=$6, guest_email=$7, interaction_lang=$8, answer_lang=$9,
         deadline=$10, planned_visibility=$11, personal_message=$12, subtitle_langs=$13, review_policy=$14, host_photo_rights=$15, question_voice=$16, guest_voice=$17, host_animate=$18, host_ai_video=$19, host_title=$20, guest_title=$21 WHERE id=$1`,
-      [iv.id, locked ? iv.title : String(b.title ?? '').trim().slice(0, 140) || iv.title, locked ? iv.objective_text : String(b.objective_text ?? '').slice(0, 4000), !!b.objective_shared,
-        String(b.host_name ?? '').slice(0, 100), String(b.guest_name ?? '').slice(0, 100), locked ? iv.guest_email : email, b.interaction_lang === 'en' ? 'en' : 'pt-PT',
+      [iv.id, locked ? iv.title : oneSpace(b.title).slice(0, 140) || iv.title, locked ? iv.objective_text : String(b.objective_text ?? '').slice(0, 4000), !!b.objective_shared,
+        oneSpace(b.host_name).slice(0, 100), oneSpace(b.guest_name).slice(0, 100), locked ? iv.guest_email : email, b.interaction_lang === 'en' ? 'en' : 'pt-PT',
         ['auto', 'pt', 'en', 'es', 'fr', 'de'].includes(b.answer_lang) ? b.answer_lang : 'auto', b.deadline || null,
         ['private', 'unlisted', 'public'].includes(b.planned_visibility) ? b.planned_visibility : 'private', String(b.personal_message ?? '').slice(0, 1500),
         subs.length ? subs : ['en'], policy, !!b.host_photo_rights, b.question_voice === 'male' ? 'male' : 'female', b.guest_voice === 'male' ? 'male' : 'female', !!b.host_animate && !!b.host_photo_rights, !!b.host_ai_video && !!b.host_photo_rights,

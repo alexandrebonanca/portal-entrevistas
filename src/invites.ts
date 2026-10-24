@@ -1,6 +1,6 @@
 import type { Db } from './db.ts';
 import { config } from './config.ts';
-import { esc, newToken, sha256, lisbonDay, addDays } from './lib.ts';
+import { esc, oneSpace, newToken, sha256, lisbonDay, addDays } from './lib.ts';
 import { queueEmail, emailShell, emailPrivacyLink } from './mail.ts';
 import { t, normLang } from './i18n.ts';
 import { guestReview, reviewCopy } from './approval.ts';
@@ -73,7 +73,7 @@ ${steps.length ? `<p style="margin:18px 0 6px"><strong>${esc(d.howTitle(config.b
     until, `${d.open}: ${url}`, followup ? help : `${d.emailDecline}\n${help}`, footerText].filter(Boolean).join('\n\n');
   await queueEmail(db, {
     key: `invite:${inv.id}`, interviewId: interview.id, to: interview.guest_email,
-    subject: followup ? d.followupSubject(hostName, interview.title, nOpen) : d.emailSubject(hostName, interview.title),
+    subject: followup ? d.followupSubject(oneSpace(hostName), oneSpace(interview.title), nOpen) : d.emailSubject(oneSpace(hostName), oneSpace(interview.title)),
     html: emailShell(heading, body, { label: d.open, url }, { footer, after: small(followup ? help : `${d.emailDecline} ${help}`) }), text,
   });
   return { invitationId: inv.id, url, expires: exp };

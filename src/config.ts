@@ -39,6 +39,8 @@ export const config = {
     country: env.OWNER_COUNTRY ?? 'EE',
     site: env.OWNER_SITE ?? 'https://www.certifinternational.com',
     email: env.OWNER_EMAIL ?? 'certifinternational@gmail.com',
+    // Morada para onde vão as respostas aos emails do portal (Reply-To): uma caixa do próprio domínio ajuda a entrega.
+    replyTo: env.REPLY_TO_EMAIL ?? 'comercial@quietinterview.com',
     // Morada e número de IVA dados pelo dono (identificação na página de privacidade).
     address: env.OWNER_ADDRESS ?? 'Järvevana tee 9, 11314 Tallinn',
     vat: env.OWNER_VAT ?? 'EE103004149',

@@ -413,3 +413,11 @@ test('resumo do vídeo Veo: modelos dos clipes que entram no vídeo (os reaprove
   assert.equal(clipModelsNote({ model: FAST, clipModels: { [LITE]: 3 } }), 'clipes no vídeo: 3 do Google Veo 3.1 Lite (veo-3.1-lite-generate-001), de gerações anteriores');
   assert.match(clipModelsNote({ model: FAST, clipModels: { [FAST]: 1, desconhecido: 2 } }), /2 do modelo não registado, de gerações anteriores/);
 });
+
+test('nomes e títulos numa linha: espaços seguidos e quebras passam a um só, sem espaços nas pontas', async () => {
+  const { oneSpace } = await import('../src/lib.ts');
+  assert.equal(oneSpace('  Engº José Faria  '), 'Engº José Faria');
+  assert.equal(oneSpace('Ana\t\n  Lopes'), 'Ana Lopes');
+  assert.equal(oneSpace(null), '');
+  assert.equal(oneSpace('ss'), 'ss', 'as letras «s» ficam');
+});
