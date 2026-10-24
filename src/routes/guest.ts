@@ -200,7 +200,7 @@ ${left != null ? `<p class="hint sans">${esc(d.answerTime(mmss(iv.answer_limit_s
       overTotal: d.overTotal, noTimeLeft: d.noTimeLeft, limitReached: d.limitReached, maxSec: base == null ? config.limits.maxAnswerSeconds : Math.min(config.limits.maxAnswerSeconds, base), base, saved: Math.round(savedMs / 1000) });
     return gpage(reply, lang, `${d.question} ${n}`, `<p class="qnum">${esc(d.question)} ${n} ${esc(d.of)} ${total}${q.followup ? ' · +' : ''}</p>
 <h1 style="font-size:1.6rem">${esc(q.text) || ''}</h1>
-${q.audio_asset_id ? `<p><audio controls preload="none" src="/api/g/media/${q.audio_asset_id}"></audio></p>` : ''}
+${q.audio_asset_id ? `<p><audio id="qaudio" controls preload="none" src="/api/g/media/${q.audio_asset_id}"></audio></p>` : ''}
 <p><button type="button" class="ghost" id="listen" data-q="${q.id}" data-text="${esc(q.text)}" data-lang="${lang}">🔊 ${esc(d.listen)}</button>${q.audio_asset_id ? '' : `<br><span class="hint">${esc(d.listenSynth)}</span>`}</p>
 <div class="card"><div class="rec" id="guestrec" data-upload="/api/g/respostas/${q.id}" data-msg='${esc(msg)}'>
 <div class="timer" id="timer" aria-live="off">0:00</div>${left != null ? `<p class="sans" id="left" style="margin:0">${esc(d.timeLeft)} <strong>${mmss(left)}</strong> <span class="hint">${esc(d.timeLeftNote)}</span></p>` : ''}<button type="button" id="recBtn" class="recbtn" aria-label="${esc(d.record)}" ${noTime ? 'disabled' : ''}>${esc(d.record)}</button>
@@ -295,7 +295,8 @@ ${q.audio_asset_id ? `<p><audio controls preload="none" src="/api/g/media/${q.au
     const iv = await needApi(req, reply); if (!iv) return;
     const q = await db.one('SELECT * FROM questions WHERE id=$2 AND interview_id=$1', [iv.id, (req.params as any).qid]);
     const ent = await entityOfInterview(db, iv.id);
-    if (!q || !q.text || !inEntity(ent, () => aiAvailable())) return reply.code(404).send();
+    // Pergunta gravada pelo entrevistador: ouve-se a gravação, nunca uma leitura sintética por cima ou em vez dela.
+    if (!q || !q.text || q.audio_asset_id || !inEntity(ent, () => aiAvailable())) return reply.code(404).send();
     const gender = iv.question_voice === 'male' ? 'male' : 'female';
     let asset = q.tts_asset_id && await db.one('SELECT * FROM assets WHERE id=$1', [q.tts_asset_id]);
     // A leitura guardada só serve se foi feita com a voz atual e para o texto atual.

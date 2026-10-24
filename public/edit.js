@@ -16,6 +16,7 @@
     let ctl = null, blob = null;
     bRec.onclick = async () => {
       if (ctl) { const c = ctl; ctl = null; bRec.textContent = '🎙 Regravar'; blob = await c.stop(); au.src = URL.createObjectURL(blob); au.hidden = false; bSave.hidden = false; return; }
+      PE.solo.stop(); // o microfone não pode apanhar outra pergunta a tocar
       try { ctl = await PE.startRecording((s) => (timer.textContent = PE.fmt(s)), maxSec, () => { if (ctl) bRec.click(); }); bRec.textContent = '■ Parar'; st.textContent = ''; }
       catch (e) { ctl = null; st.textContent = e.code === 'none' ? 'Microfone não encontrado.' : 'Acesso ao microfone recusado.'; }
     };
