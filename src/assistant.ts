@@ -8,7 +8,7 @@ import { S, inEntity, entityOfInterview } from './settings.ts';
 import { seller, WITHDRAWAL_DAYS } from './legal.ts';
 import { cr, EXTRA_INTERVIEW_CENTS, EXTRA_REGEN_CENTS, TOPUP_MIN_CENTS, TOPUP_MAX_CENTS, CREDIT_VALID_MONTHS, REFUND_WINDOW_DAYS } from './wallet.ts';
 import { QUOTE_VALID_DAYS, START_DEADLINE_HOURS } from './quotes.ts';
-import { FOLLOWUP_MIN_LEFT_SEC, inviteLimits } from './limits.ts';
+import { FOLLOWUP_MIN_LEFT_SEC, inviteLimits, maxAnswerWords } from './limits.ts';
 import { freeOfferOn, FREE_PRODUCTION_JOBS, FREE_JOBS_FOR_SCRIPT, FREE_VIDEO_RENDERS } from './free-interview.ts';
 import { VERIFY_PER_DAY, VERIFY_TOTAL } from './email-verify.ts';
 
@@ -299,6 +299,7 @@ const baseFaqVars = (): Record<string, string> => ({
   brand: config.brand,
   brandSite: config.brandSite,
   maxAnswerMin: num(config.limits.maxAnswerSeconds / 60),
+  maxAnswerWords: String(maxAnswerWords()),
   maxAnswerTotalMin: num(config.limits.maxAnswerTotalSec / 60),
   maxQuestions: String(config.limits.maxQuestions),
   questionAudioMin: num(config.limits.maxQuestionAudioSec / 60),
@@ -327,7 +328,7 @@ const baseFaqVars = (): Record<string, string> => ({
   freeVideos: String(FREE_VIDEO_RENDERS),
 });
 export const FAQ_VAR_HELP: Record<string, string> = {
-  brand: 'nome do portal', brandSite: 'endereço no cartão final dos vídeos', maxAnswerMin: 'minutos máximos por resposta',
+  brand: 'nome do portal', brandSite: 'endereço no cartão final dos vídeos', maxAnswerMin: 'minutos máximos por resposta', maxAnswerWords: 'palavras máximas por resposta escrita',
   maxAnswerTotalMin: 'minutos de respostas por entrevista (por omissão do plano)', maxQuestions: 'número máximo de perguntas',
   questionAudioMin: 'minutos de áudio por pergunta gravada', objectiveAudioMin: 'minutos de áudio do objetivo',
   followupMinSec: 'segundos de resposta mínimos para uma pergunta adicional', includedRegens: 'regenerações incluídas por entrevista',

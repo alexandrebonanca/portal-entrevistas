@@ -9,6 +9,9 @@
   const redo = document.getElementById('redoBtn');
   const next = document.getElementById('next');
   const fileIn = document.getElementById('fileIn');
+  const docIn = document.getElementById('docIn');
+  const textReview = document.getElementById('textReview');
+  const textOut = document.getElementById('textOut');
   const listen = document.getElementById('listen');
   const left = document.getElementById('left'); // «Tempo restante» (só quando a entrevista tem tempo total)
   let ctl = null, pending = null, objUrl = null, hitLimit = false;
@@ -40,19 +43,23 @@
     } finally { loading = false; }
   });
 
+  // via 'document': ficheiro Word/texto, enviado à rota própria; o servidor devolve o texto lido para o convidado o confirmar.
   async function send(blob, via) {
     pending = { blob, via };
     say(msg.stUp);
+    const doc = via === 'document';
     try {
-      const j = await PE.upload(rec.dataset.upload, blob, { 'X-Upload-Via': via });
+      const j = await PE.upload(doc ? docIn.dataset.upload : rec.dataset.upload, blob, { 'X-Upload-Via': via });
       say(msg.stSaved + (hitLimit ? ' — ' + msg.limitReached : '') + (j.silent ? ' — ' + msg.silent : ''));
+      if (doc) showText(j.text || '');
       pending = null; enableNext();
       if (redo) redo.hidden = false;
       saved = (j.durationMs || 0) / 1000;
       showLeft(j.remainingSec != null ? j.remainingSec : msg.base - saved);
     } catch (e) {
-      disableNext();
-      say(e.code === 'empty' ? msg.empty : e.code === 'tooLong' ? msg.tooLong
+      if (!doc) disableNext(); // um ficheiro recusado não mexe na resposta já guardada (que continua à vista)
+      if (doc) say(e.serverMessage || (e.code === 'empty' ? msg.docEmpty : e.code === 'format' ? msg.docFormat : e.code === 'tooBig' || e.code === 'Payload Too Large' ? msg.docTooBig : msg.stFail));
+      else say(e.code === 'empty' ? msg.empty : e.code === 'tooLong' ? msg.tooLong
         : e.code === 'overTotal' ? (e.serverMessage || msg.overTotal.replace('{t}', PE.fmt(e.remainingSec || 0))) : msg.stFail);
       showLeft(msg.base - saved); // a resposta guardada antes continua a valer
       if (!e.permanent) addRetry();
@@ -70,6 +77,12 @@
     if (objUrl) URL.revokeObjectURL(objUrl);
     objUrl = URL.createObjectURL(blob);
     player.src = objUrl; review.hidden = false;
+    if (textReview) textReview.hidden = true;
+  }
+  function showText(text) {
+    if (objUrl) { URL.revokeObjectURL(objUrl); objUrl = null; }
+    player.removeAttribute('src'); review.hidden = true;
+    textOut.textContent = text; textReview.hidden = false;
   }
 
   if (btn) btn.addEventListener('click', async () => {
@@ -94,10 +107,18 @@
     }
   });
 
-  if (redo) redo.addEventListener('click', () => { review.hidden = true; player.removeAttribute('src'); redo.hidden = true; timer.textContent = '0:00'; say(''); disableNext(); showLeft(msg.base); });
+  if (redo) redo.addEventListener('click', () => { review.hidden = true; player.removeAttribute('src'); if (textReview) textReview.hidden = true; redo.hidden = true; timer.textContent = '0:00'; say(''); disableNext(); showLeft(msg.base); });
 
   if (fileIn) fileIn.addEventListener('change', () => {
     const f = fileIn.files[0]; if (!f) return;
     show(f); say(msg.stLocal); send(f, 'upload');
+  });
+
+  if (docIn) docIn.addEventListener('change', () => {
+    const f = docIn.files[0]; if (!f) return;
+    docIn.value = ''; // o mesmo ficheiro, corrigido, pode voltar a ser escolhido
+    if (f.size > msg.docMaxBytes) { say(msg.docTooBig); return; }
+    document.querySelectorAll('audio').forEach((a) => a.pause());
+    send(new Blob([f], { type: 'application/octet-stream' }), 'document');
   });
 })();

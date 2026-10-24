@@ -119,7 +119,7 @@ test('«Rever e submeter» mostra o texto das autorizações tal como foi aceite
     assert.doesNotMatch(page.body, /after I have seen and approved it/, 'o texto atual (v2) não substitui o aceite');
     assert.doesNotMatch(page.body, /Old background information/);
     // participação: só a frase da caixa (o retrato guarda também a informação de base)
-    assert.match(page.body, /✔ Taking part and recording my answers \(needed to answer\)\./);
+    assert.match(page.body, /✔ Taking part and recording or writing my answers \(needed to answer\)\./);
     assert.doesNotMatch(page.body, /Organiser: the interviewer/);
   });
   pubId = r.id; pubEp = r.ep;
