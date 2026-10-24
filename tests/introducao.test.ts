@@ -168,7 +168,8 @@ test('Editar: escolha da frase e «Gerar introdução» só com as autorizaçõe
   const prod = (await get(`/entrevistas/${ivId}/producao`, cli.cookie)).body;
   assert.match(prod, /Introdução animada do entrevistador \(oferecida\): pronta: entra nos vídeos com animação do Google Veo/);
   const use = Number((await db.one(`SELECT COALESCE(sum(cost_usd),0)::float AS s FROM usage_ledger WHERE interview_id=$1 AND kind NOT IN ('veo_usd_failed','veo_usd_intro','veo_usd_intro_failed')`, [ivId])).s);
-  assert.ok(prod.includes(`Utilização registada (estimativa): <strong>$${use.toFixed(2)}</strong>`));
+  assert.doesNotMatch(prod, /Utilização registada/, 'o cliente não vê custos internos');
+  assert.ok((await get(`/entrevistas/${ivId}/producao`, admin)).body.includes(`Utilização registada (estimativa): <strong>$${use.toFixed(2)}</strong>`), 'o administrador vê-os');
 });
 
 /** Fotograma em tons de cinzento (luma) no instante t (ms). */

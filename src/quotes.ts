@@ -53,7 +53,7 @@ export class QuoteError extends Error {}
  * Nível do Veo de um orçamento: o das Definições globais. Um orçamento é pago com créditos e gera-se sempre com as
  * credenciais Google do portal (veo-episode.ts), mesmo para um entrevistador de uma entidade com credenciais próprias.
  */
-export const quoteTier = (): VeoTier => inEntity(null, () => veoTier());
+export const quoteTier = (): VeoTier => 'fast'; // o Premium vende-se sempre com o Fast (o Lite pôs texto inventado no ecrã no Laboratório)
 /** Entrevista do gestor de uma entidade com credenciais Google próprias: o Veo gera-se sem orçamento nem créditos. */
 export const ENTITY_VEO_NO_QUOTE = 'A entidade tem credenciais Google próprias: o gestor gera o vídeo do Google Veo sem orçamento nem créditos (a Google cobra no projeto Google da entidade), na opção do vídeo acima.';
 const guestAskedChanges = async (db: Db, scriptId: string) => !!(await db.one(`SELECT 1 FROM approvals a JOIN episodes e ON e.id=a.episode_id WHERE e.script_id=$1 AND a.actor='guest' AND a.valid AND a.decision='changes' LIMIT 1`, [scriptId]));

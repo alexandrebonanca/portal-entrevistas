@@ -24,6 +24,7 @@ import { quoteSection } from './quotes.ts';
 import { introProductionHint } from './intro.ts';
 import { helpNav, isUuid } from '../support.ts';
 import { purgeUnpublishedPhotoVideos } from '../uploads.ts';
+import { videoSummary, VIDEO_NORMAL, VIDEO_PREMIUM } from '../video-offer.ts';
 import { takeAiUse, giveBackAiUse, aiUsed, FREE_SCRIPT_REVIEWS, FREE_REVIEWS_USED, FREE_PRODUCTION_JOBS, FREE_JOBS_USED, FREE_JOBS_USED_HTML, FREE_JOBS_LOW, FREE_JOBS_LOW_HTML, FREE_JOBS_LOW_NO_SCRIPT_HTML, FREE_JOBS_FOR_SCRIPT, freeJobsBlock, freeJobsDoneHtml, freeProductionJobs, FREE_VIDEO_RENDERS, FREE_VIDEOS_USED, FREE_VIDEOS_USED_HTML, freeVideoRenders } from '../free-interview.ts';
 
 /** Os retratos animados (Replicate) ficam reservados ao administrador. */
@@ -230,7 +231,7 @@ export async function productionRoutes(app: FastifyInstance) {
     }
     const eMsg = typeof q.e === 'string' && ((freeHtml && (q.e.startsWith(FREE_JOBS_USED) || q.e.startsWith(FREE_JOBS_LOW))) || (videosOut && q.e.startsWith(FREE_VIDEOS_USED))) ? undefined : q.e;
     let body = `<div class="wrap" style="padding-top:32px"><p><a href="/entrevistas/${iv.id}">← ${esc(iv.title)}</a></p><h1>Produção do podcast</h1>${flash(q.ok)}${flash(eMsg, 'bad')}
-<p class="sans">${pill(STATUS_LABEL[iv.production_status] ?? iv.production_status)} ${pill(STATUS_LABEL[iv.publication_status] ?? iv.publication_status)} · Utilização registada (estimativa): <strong>$${ledger.usd.toFixed(2)}</strong>
+<p class="sans">${pill(STATUS_LABEL[iv.production_status] ?? iv.production_status)} ${pill(STATUS_LABEL[iv.publication_status] ?? iv.publication_status)} ${req.user!.role === 'admin' ? ` · Utilização registada (estimativa): <strong>$${ledger.usd.toFixed(2)}</strong>` : ''}
 · Regenerações do guião e do episódio: <strong id="regen">${regen} de ${INCLUDED}</strong> incluídas${req.user!.role === 'admin' ? ' (o administrador não tem limite e as dele não contam)' : ''}${freeJobs != null ? `
 · 1.ª entrevista grátis: <strong id="trabalhos">${Math.min(freeJobs, FREE_PRODUCTION_JOBS)} de ${FREE_PRODUCTION_JOBS}</strong> trabalhos de produção usados (contam também os que falharam; restam ${jobsLeft})` : ''}${freeVideos != null ? `
 · Vídeo com fotografias: <strong id="videos">${Math.min(freeVideos, FREE_VIDEO_RENDERS)} de ${FREE_VIDEO_RENDERS}</strong> gerações usadas (contam também as que falharam)` : ''}</p>${freeHtml ? `<div class="flash${freeBad ? ' bad' : ''}" id="trabalhos-aviso">${freeHtml}</div>` : ''}`;
@@ -246,7 +247,7 @@ export async function productionRoutes(app: FastifyInstance) {
 <p class="sans">Autorização de processamento por IA: ${procOk ? pill('concedida', 'ok') : pill('não concedida', 'bad')} · capa com fotografia: ${coverOk ? pill('sim', 'ok') : pill('não', 'warn')} · publicação: ${pubOk ? pill('sim', 'ok') : pill('não', 'bad')}</p>
 ${!procOk ? '<div class="flash bad">O entrevistado não autorizou o processamento por IA. Não é possível processar; não existe forma de contornar esta decisão. Contacte o entrevistado.</div>' : ''}
 ${!aiAvailable() ? '<div class="flash bad">OPENAI_API_KEY não está configurada neste ambiente.</div>' : ''}
-<p class="sans">Estimativa (não é custo final): ~$${est!.usd.toFixed(2)} para ${est!.minutes.toFixed(1)} min de respostas (transcrição $${est!.parts.transcription.toFixed(2)}, voz $${est!.parts.speech.toFixed(2)}, texto $${est!.parts.text.toFixed(2)}, capa $${est!.parts.cover.toFixed(2)}). Duração estimada do episódio: ~${est!.estimatedAudioMin.toFixed(1)} min.</p>
+<p class="sans">${req.user!.role === 'admin' ? `Estimativa interna (não é custo final, só o administrador a vê): ~$${est!.usd.toFixed(2)} para ${est!.minutes.toFixed(1)} min de respostas (transcrição $${est!.parts.transcription.toFixed(2)}, voz $${est!.parts.speech.toFixed(2)}, texto $${est!.parts.text.toFixed(2)}, capa $${est!.parts.cover.toFixed(2)}). ` : `Incluído no plano: ${est!.minutes.toFixed(1)} min de respostas. `}Duração estimada do episódio: ~${est!.estimatedAudioMin.toFixed(1)} min.</p>
 <form method="post" action="/entrevistas/${iv.id}/processar" onsubmit="return confirm('Iniciar o processamento (operações pagas)?')">
 <p class="hint">O processamento gera transcrições e um guião para revisão. O áudio final e a publicação são passos posteriores.</p>
 ${scriptPay ? payFields : ''}<button class="accent" ${procOk && aiAvailable() && (!scriptBefore || canRegen) && !jobsLow ? '' : 'disabled'}>Processar podcast${scriptPay ? PAY : ''}</button></form>${scriptPay ? regenHint : ''}</div>`;
@@ -258,7 +259,7 @@ ${scriptPay ? payFields : ''}<button class="accent" ${procOk && aiAvailable() &&
 <div class="pbar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div class="pfill"></div></div>
 <p class="sans" style="margin:.6em 0 0"><strong class="ppct">0%</strong> · <span class="pstep">${esc(live.state === 'queued' ? (paused(live) ? live.progress_label : 'Em fila') : live.progress_label || 'A iniciar')}</span></p>
 <p class="hint sans" style="margin:.2em 0 0"><span class="pelapsed"></span> <span class="peta"></span></p>
-<p class="hint">Pode fechar esta página: o processamento continua no servidor.</p></div>`;
+<p class="hint">${['render_video', 'generate_episode'].includes(live.kind) ? `<strong>Pode fechar esta página: enviamos-lhe um email quando ${live.kind === 'render_video' ? 'o vídeo' : 'o episódio'} estiver pronto.</strong>${live.kind === 'render_video' ? ' Um vídeo de um episódio longo (15 min ou mais) pode levar bastante tempo a montar.' : ''}` : 'Pode fechar esta página: o processamento continua no servidor.'}</p></div>`;
     }
     if (!live && iv.production_status === 'failed') {
       // «Tentar de novo»: se falhou a geração do episódio e o guião dela continua aprovado, repete-a (como «Gerar episódio»:
@@ -372,7 +373,7 @@ ${needGuest ? `<tr><td>Entrevistado</td><td>${guestAp ? (guestAp.decision === 'a
 <td>${previewBlock(iv, ep, videoMeta) ? `<span class="hint">${esc(previewBlock(iv, ep, videoMeta)!)}</span>` : `<form method="post" action="/entrevistas/${iv.id}/episodio/${ep.id}/enviar-previa"><button class="ghost">Enviar pré-visualização</button></form>`}</td></tr>` : ''}</tbody></table>
 <h3>Vídeo do podcast</h3>
 ${ep.video_asset_id ? `<video controls preload="metadata" poster="/media/${ep.cover_asset_id}" src="/media/${ep.video_asset_id}" style="width:100%;max-width:720px;border-radius:10px;background:#000"></video>
-<p class="sans"><a class="btn" href="/entrevistas/${iv.id}/episodio/${ep.id}/video.mp4" download>Descarregar vídeo (MP4)</a> <span class="hint">Legendas: ${esc(ep.video_lang ?? 'sem legendas')}${videoMeta?.animatedSegments ? ` · ${videoMeta.animatedSegments} falas animadas${videoMeta.failedAnimations ? `, ${videoMeta.failedAnimations} com imagem fixa por falha` : ''} · custo da animação ~$${Number(videoMeta.lipsyncUsd ?? 0).toFixed(2)}` : ''}${videoMeta?.engine === 'veo' ? ` · ${clipModelsNote(videoMeta) ? 'pedido ao ' : ''}${esc(videoMeta.tier ? veoLabel(videoMeta.tier === 'lite' ? 'lite' : 'fast') : 'Google Veo')}${videoMeta.model ? ` (${esc(videoMeta.model)})` : ''}: ${videoMeta.veoClips} clipes (${videoMeta.generatedClips} gerados nesta vez${videoMeta.failedUsd !== undefined ? `, ~$${Number(videoMeta.spentUsd ?? 0).toFixed(2)} pagos nesta geração${videoMeta.failedUsd ? `, ~$${Number(videoMeta.failedUsd).toFixed(2)} em operações que falharam na Google` : ''}` : ''})${clipModelsNote(videoMeta) ? ` · ${esc(clipModelsNote(videoMeta))}` : ''} · clipes deste vídeo ~$${Number(videoMeta.veoUsd ?? 0).toFixed(2)}${videoMeta.fallbackSegments?.length ? ` · ${videoMeta.fallbackSegments.length} falas com imagem fixa` : ''}${videoMeta.paidBy === 'entity' ? ' · pago pela entidade, no projeto Google dela (sem créditos)' : ''}${videoMeta.intro ? ' · com a introdução animada do entrevistador (oferecida)' : ''}` : ''}${veoSpent ? ` · total pago ao Google Veo nesta entrevista ~$${veoSpent.toFixed(2)}` : ''}${veoFailed ? ` · operações falhadas na Google ~$${veoFailed.toFixed(2)} (normalmente não cobradas; confirme no painel da Google)` : ''}</span></p>
+<p class="sans"><a class="btn" href="/entrevistas/${iv.id}/episodio/${ep.id}/video.mp4" download>Descarregar vídeo (MP4)</a> <span class="hint">${isAdmin ? `Legendas: ${esc(ep.video_lang ?? 'sem legendas')}${videoMeta?.animatedSegments ? ` · ${videoMeta.animatedSegments} falas animadas${videoMeta.failedAnimations ? `, ${videoMeta.failedAnimations} com imagem fixa por falha` : ''} · custo da animação ~$${Number(videoMeta.lipsyncUsd ?? 0).toFixed(2)}` : ''}${videoMeta?.engine === 'veo' ? ` · ${clipModelsNote(videoMeta) ? 'pedido ao ' : ''}${esc(videoMeta.tier ? veoLabel(videoMeta.tier === 'lite' ? 'lite' : 'fast') : 'Google Veo')}${videoMeta.model ? ` (${esc(videoMeta.model)})` : ''}: ${videoMeta.veoClips} clipes (${videoMeta.generatedClips} gerados nesta vez${videoMeta.failedUsd !== undefined ? `, ~$${Number(videoMeta.spentUsd ?? 0).toFixed(2)} pagos nesta geração${videoMeta.failedUsd ? `, ~$${Number(videoMeta.failedUsd).toFixed(2)} em operações que falharam na Google` : ''}` : ''})${clipModelsNote(videoMeta) ? ` · ${esc(clipModelsNote(videoMeta))}` : ''} · clipes deste vídeo ~$${Number(videoMeta.veoUsd ?? 0).toFixed(2)}${videoMeta.fallbackSegments?.length ? ` · ${videoMeta.fallbackSegments.length} falas com imagem fixa` : ''}${videoMeta.paidBy === 'entity' ? ' · pago pela entidade, no projeto Google dela (sem créditos)' : ''}${videoMeta.intro ? ' · com a introdução animada do entrevistador (oferecida)' : ''}` : ''}${veoSpent ? ` · total pago ao Google Veo nesta entrevista ~$${veoSpent.toFixed(2)}` : ''}${veoFailed ? ` · operações falhadas na Google ~$${veoFailed.toFixed(2)} (normalmente não cobradas; confirme no painel da Google)` : ''}` : videoSummary(ep, videoMeta)}</span></p>
 ${videoMeta?.googleBusy ? '<div class="flash">O Google Veo estava com procura elevada: algumas falas ficaram com a fotografia fixa. Gere de novo mais tarde; os clipes já obtidos são reaproveitados e só se pagam os que faltam.</div>' : ''}
 ${videoMeta?.engine === 'veo' ? `<details ${videoMeta.fidelityIssues || videoMeta.fallbackSegments?.length ? 'open' : ''}><summary class="sans">Fidelidade ao guião: ${videoMeta.fidelityIssues ? `${videoMeta.fidelityIssues} pedaço(s) sem clipe aprovado (não disseram o texto aprovado ou não foi possível verificar); essas falas ficaram com a fotografia fixa e a voz do episódio` : 'todos os clipes dizem o texto aprovado'}</summary>
 <table class="sans"><thead><tr><th>Fala</th><th>Guião</th><th>Ouvido no vídeo</th><th>Resultado</th></tr></thead><tbody>${(videoMeta.fidelity ?? []).map((f: any) => `<tr><td>${esc(f.segmentId)}</td><td>${esc(f.expected)}</td><td>${esc(f.heard || '—')}</td><td>${f.ok ? pill(f.edits ? 'coincide (grafia de nome)' : 'coincide', 'ok') : f.problem === 'busy' ? pill('Google indisponível (procura elevada): fotografia fixa', 'warn') : f.problem === 'busycap' ? pill('em pausa após 4 falhas da Google em 36 h (gere de novo mais tarde): fotografia fixa', 'warn') : f.problem === 'filtered' ? pill('bloqueado pelos filtros da Google: fotografia fixa', 'warn') : f.problem === 'capped' ? pill(`limite de tentativas esgotado${f.cause ? ` (${f.cause})` : ''}: fotografia fixa`, 'warn') : f.problem === 'capped_budget' ? pill('teto do orçamento atingido: fotografia fixa, não cobrada', 'warn') : f.problem === 'breaker' ? pill('disjuntor (demasiadas repetições falhadas): fotografia fixa, não cobrada', 'warn') : f.problem === 'no_clips' ? pill('clipes já pagos indisponíveis: fotografia fixa', 'warn') : f.problem === 'unchecked' ? pill('não verificado: fotografia fixa', 'warn') : f.problem === 'error' ? pill('falhou na Google: fotografia fixa', 'warn') : !f.checked ? pill('não verificado: fotografia fixa', 'warn') : pill(`${f.edits ?? '?'} diferença(s): fotografia fixa`, 'bad')}${f.ok && !f.used ? ' <span class="hint">(outra parte da fala falhou: fala em fotografia fixa)</span>' : ''}${f.attempts > 1 ? ` <span class="hint">${f.attempts} tentativas</span>` : ''}${f.reused ? ' <span class="hint">(reaproveitado: fala já paga)</span>' : ''}</td></tr>`).join('')}</tbody></table></details>` : ''}` : '<p class="hint">Ainda não foi gerado.</p>'}
@@ -383,13 +384,13 @@ ${(() => { const est = animationEstimate(ep, iv, animOk, !!(iv.host_photo_rights
   const ve = veoEstimate(ep.technical?.timing ?? [], epSegs, hostVeo, guestVeo, tier);
   const veoBlock = epScript?.status !== 'approved' ? VEO_SCRIPT_REPLACED : guestAp?.decision === 'changes' ? VEO_CHANGES : !veoKey ? VEO_NO_CREDENTIALS : !openaiKey ? 'Falta a chave da OpenAI (transcrição para verificar os clipes) em Definições.' : '';
   return `<fieldset style="flex-basis:100%;border:1px solid var(--line);border-radius:8px"><legend class="sans">Imagem e voz do vídeo</legend>
-<label class="check"><input type="radio" name="engine" value="still" checked> Fotografias fixas com a voz do episódio</label>
-${!freeVeo ? `<p class="hint" style="margin:0 0 8px 30px">A animação por IA (Google Veo) faz-se por orçamento, na secção «Animação por IA» abaixo: aceita antes de gerar e paga só as falas animadas e verificadas.</p></fieldset>` : `${!isAdmin ? '' : `<label class="check"><input type="radio" name="engine" value="lipsync" ${est.sec ? '' : 'disabled'}> Retratos com sincronização labial (Replicate), aviso visível «AI-animated portrait»</label>
+<label class="check"><input type="radio" name="engine" value="still" checked> ${VIDEO_NORMAL}: fotografias fixas com a voz do episódio, incluído no plano</label>
+${!freeVeo ? `<p class="hint" style="margin:0 0 8px 30px">O ${VIDEO_PREMIUM.charAt(0).toLowerCase() + VIDEO_PREMIUM.slice(1)} faz-se por orçamento, na secção «${VIDEO_PREMIUM}» abaixo: vê o máximo em créditos antes de aceitar e paga só as falas animadas e verificadas.</p></fieldset>` : `${!isAdmin ? '' : `<label class="check"><input type="radio" name="engine" value="lipsync" ${est.sec ? '' : 'disabled'}> Retratos com sincronização labial (Replicate), aviso visível «AI-animated portrait»</label>
 <p class="hint" style="margin:0 0 8px 30px">Entrevistador: ${iv.host_animate && iv.host_photo_rights && iv.host_photo_asset_id ? 'autorizado' : 'sem autorização ou sem fotografia (em Editar)'} · Convidado: ${animOk && guestHasPhoto ? 'autorizado' : 'sem autorização específica (o convidado pode dá-la em «Autorizações das fotografias», a partir do link do convite ou da pré-visualização)'}.
 ${est.sec ? `Fala a animar: ${Math.round(est.sec)} s · custo estimado ~$${est.usd.toFixed(2)} (Replicate) · demora ~${est.minutes} min.` : ''} Se alguma animação falhar, essa fala fica com a imagem fixa.</p>`}
-<label class="check"><input type="radio" name="engine" value="veo" ${ve.clips && !veoBlock ? '' : 'disabled'}> ${esc(veoLabel(tier))}: vídeo e voz gerados pelo modelo a partir da fotografia e do texto aprovado, aviso visível «AI-generated video · AI voice»</label>
+<label class="check"><input type="radio" name="engine" value="veo" ${ve.clips && !veoBlock ? '' : 'disabled'}> ${isAdmin ? esc(veoLabel(tier)) : VIDEO_PREMIUM}: vídeo e voz gerados pelo modelo a partir da fotografia e do texto aprovado, aviso visível «AI-generated video · AI voice»</label>
 <p class="hint" style="margin:0 0 8px 30px">${veoBlock ? `<strong>${esc(veoBlock)}</strong> ` : ''}Entrevistador: ${hostVeo ? 'autorizado' : !iv.host_photo_asset_id ? 'sem fotografia (em Editar)' : 'sem autorização para o Veo (em Editar)'} · Convidado: ${guestVeo ? 'autorizado' : iv.review_policy !== 'guest_preview' ? 'não entra no Veo com a política «só o entrevistador aprova» (não veria o vídeo antes de publicar)' : !guestHasPhoto ? 'sem fotografia' : 'sem autorização para o Veo (o convidado pode dá-la em «Autorizações das fotografias», a partir do link do convite ou da pré-visualização)'}.
-${ve.clips ? `${ve.clips} clipes, ${ve.sec} s faturados a ~$${ve.usdPerSec.toFixed(2)}/s · custo estimado ~$${ve.usd.toFixed(2)}, até ~$${ve.usdMax.toFixed(2)} se todos precisarem de nova tentativa · demora ~${ve.minutes} min.` : ''}
+${ve.clips && !isAdmin ? `${ve.clips} clipes · demora ~${ve.minutes} min. ` : ''}${ve.clips && isAdmin ? `${ve.clips} clipes, ${ve.sec} s faturados a ~$${ve.usdPerSec.toFixed(2)}/s · custo estimado ~$${ve.usd.toFixed(2)}, até ~$${ve.usdMax.toFixed(2)} se todos precisarem de nova tentativa · demora ~${ve.minutes} min.` : ''}
 A voz é a do modelo (não a do episódio) e pode variar entre clipes. Cada clipe é transcrito e comparado palavra a palavra com o guião; se não coincidir, é gerado de novo uma vez, e se continuar a não coincidir essa fala fica com a fotografia fixa e a voz do episódio (nunca entra um clipe que diga outra coisa). O mesmo para quem não autorizou. Só antes de publicar; o vídeo novo exige nova aprovação${iv.review_policy === 'guest_preview' ? ' (o convidado vê-o na pré-visualização)' : ''}. ${isAdmin ? 'Pedido pelo administrador: custo interno, sem orçamento.' : 'Pedido pelo gestor da entidade, com as credenciais Google dela: sem orçamento nem créditos (a Google cobra no projeto Google da entidade).'}</p></fieldset>`}`; })()}<label for="vl" style="margin:0">Legendas no vídeo</label><select id="vl" name="lang" style="width:auto">${Object.keys(ep.subtitles ?? {}).map(l => `<option value="${esc(l)}" ${l === (ep.video_lang ?? 'pt-PT') ? 'selected' : ''}>${esc(l)}</option>`).join('')}<option value="">Sem legendas</option></select><button class="ghost">${ep.video_asset_id ? 'Gerar de novo' : 'Gerar vídeo'}</button>${ep.video_asset_id || hostAp || guestAp ? '<span class="hint" style="flex-basis:100%">Um vídeo novo exige nova aprovação de quem já aprovou.</span>' : ''}</form>`}
 ${introHint}
 ${quoteHtml}
@@ -424,14 +425,19 @@ ${ep.visibility === 'public' ? `<form method="post" action="/entrevistas/${iv.id
     if (!req.user) return reply.code(401).send({ error: 'session' });
     const iv = await ownedInterview(app, req, (req.params as any).id);
     if (!iv) return reply.code(404).send({ error: 'not found' });
-    const j = await db.one(`SELECT id, kind, state, progress_done, progress_total, progress_label, started_at, created_at, run_after, error, now() AS server_now FROM jobs
+    const j = await db.one(`SELECT id, kind, state, input, progress_done, progress_total, progress_label, started_at, created_at, run_after, error, now() AS server_now FROM jobs
       WHERE interview_id=$1 ORDER BY (state IN ('queued','running')) DESC, created_at DESC LIMIT 1`, [iv.id]); // o que está a correr ou em fila primeiro (um trabalho por entrevista de cada vez)
     reply.header('Cache-Control', 'no-store');
     if (!j) return { active: false };
     const total = Number(j.progress_total) || 0, done = Math.min(Number(j.progress_done) || 0, total);
     const elapsedSec = j.started_at ? Math.max(0, (new Date(j.server_now).getTime() - new Date(j.started_at).getTime()) / 1000) : 0;
     // Estimativa pelo ritmo observado; só a partir de 5% feito, para não dar números absurdos no arranque.
-    const etaSec = j.state === 'running' && total && done / total >= 0.05 ? Math.round((elapsedSec / done) * (total - done)) : null;
+    // Antes disso (ou num trabalho cujo progresso avança aos saltos, como o vídeo), a estimativa inicial do tipo de trabalho
+    // (expectedSec: o orçamento, o histórico do servidor ou o valor por omissão), descontado o tempo decorrido.
+    const byPace = j.state === 'running' && total && done / total >= 0.05 ? Math.round((elapsedSec / done) * (total - done)) : null;
+    const expected = j.state === 'running' ? await expectedSec(db, j) : null;
+    const byExpected = expected != null ? Math.max(30, Math.round(expected - elapsedSec)) : null;
+    const etaSec = byPace != null && byExpected != null ? Math.round((byPace + byExpected) / 2) : byPace ?? byExpected;
     // Vídeo à espera na via dos vídeos: quantos estão à frente e quanto falta para a via ficar livre.
     const fila = j.state === 'queued' && laneOf(j.kind) === 'video' && !paused(j) ? await videoQueue(db, j.id) : null;
     const queued = fila ? (fila.ahead ? `Em fila: ${fila.ahead} vídeo(s) à frente (~${fila.minutes} min)` : 'Em fila: é o próximo vídeo') : 'Em fila';
@@ -731,7 +737,7 @@ ${ep.visibility === 'public' ? `<form method="post" action="/entrevistas/${iv.id
     });
     if (r.blocked) return back(reply, c.iv.id, undefined, r.blocked);
     await audit(db, req.user!.email, 'episode.video_requested', c.iv.id, { lang, engine });
-    return back(reply, c.iv.id, 'Geração do vídeo iniciada.');
+    return back(reply, c.iv.id, 'Geração do vídeo iniciada: pode fechar esta página, enviamos-lhe um email quando o vídeo estiver pronto.');
   });
 
   app.post('/entrevistas/:id/episodio/:eid/video/retirar', async (req, reply) => {
@@ -766,4 +772,29 @@ ${ep.visibility === 'public' ? `<form method="post" action="/entrevistas/${iv.id
     return back(reply, c.iv.id, 'Episódio retirado.');
   });
   void queueEmail; void emailShell; void fmtDuration;
+}
+
+/**
+ * Duração esperada de um trabalho (segundos), para a barra mostrar o tempo restante desde o início: o vídeo de um
+ * orçamento usa a estimativa do orçamento; os outros, o ritmo dos últimos trabalhos iguais concluídos neste servidor
+ * (segundos por minuto de episódio, no vídeo), ou um valor por omissão prudente enquanto não há histórico.
+ */
+export async function expectedSec(db: Db, j: { kind: string; input?: any }): Promise<number | null> {
+  if (j.kind === 'render_video' && j.input?.quoteId) {
+    const q = await db.one('SELECT est_minutes FROM animation_quotes WHERE id::text=$1', [String(j.input.quoteId)]);
+    if (q?.est_minutes != null) return Number(q.est_minutes) * 60;
+  }
+  const veo = j.kind === 'render_video' && j.input?.engine === 'veo';
+  if (j.kind === 'render_video') {
+    const ep = j.input?.episodeId ? await db.one('SELECT duration_ms FROM episodes WHERE id::text=$1', [String(j.input.episodeId)]) : null;
+    const epMin = Math.max(1, Number(ep?.duration_ms ?? 0) / 60000);
+    const h = await db.one(`SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY extract(epoch FROM (j.finished_at - j.started_at)) / GREATEST(1, e.duration_ms / 60000.0)) AS spm, count(*)::int AS n
+      FROM (SELECT * FROM jobs WHERE kind='render_video' AND state='done' AND started_at IS NOT NULL AND finished_at IS NOT NULL AND (COALESCE(input->>'engine', '') = 'veo') = $1 ORDER BY finished_at DESC LIMIT 10) j
+      JOIN episodes e ON e.id::text = j.input->>'episodeId' WHERE e.duration_ms > 0`, [veo]);
+    const perMin = h?.n >= 2 && Number(h.spm) > 0 ? Number(h.spm) : veo ? 150 : 40; // por omissão: ~2,5 min (Veo) ou ~40 s (fotografias) por minuto de episódio
+    return Math.round(perMin * epMin);
+  }
+  const h = await db.one(`SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY extract(epoch FROM (finished_at - started_at))) AS s, count(*)::int AS n
+    FROM (SELECT * FROM jobs WHERE kind=$1 AND state='done' AND started_at IS NOT NULL AND finished_at IS NOT NULL ORDER BY finished_at DESC LIMIT 10) x`, [j.kind]);
+  return h?.n >= 2 && Number(h.s) > 0 ? Math.round(Number(h.s)) : null;
 }

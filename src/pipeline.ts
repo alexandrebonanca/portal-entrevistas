@@ -18,6 +18,7 @@ import { renderHostIntro, failIntro } from './veo-intro.ts';
 import { reverseDebit } from './wallet.ts';
 import { isUuid } from './support.ts';
 import { purgeUnpublishedPhotoVideos } from './uploads.ts';
+import { notifyJob } from './notify.ts';
 import { SCRIPT_SEGMENT_MAX, SUBTITLE_LANGS } from './limits.ts';
 
 const usage = (db: Db, interviewId: string, kind: string, quantity: number, cost: number) =>
@@ -290,6 +291,7 @@ export const handlers: Record<string, Handler> = {
     });
     // Os vídeos com fotografias das versões substituídas, que nunca foram para o ar, saem do disco (uploads.ts).
     await purgeUnpublishedPhotoVideos(db, iv.id);
+    await notifyJob(db, job, 'episode_ready');
     await progress(total, total, 'Concluído');
     return { episodeId: ep.id, qcIssues: issues };
   },
@@ -405,6 +407,7 @@ export const handlers: Record<string, Handler> = {
       [ep.id, id, lang, !!hostPhoto, hostAnimated, !!guestPhoto, guestAnimated]);
     if (!linked) throw new PermanentError('Uma autorização foi retirada ou o episódio mudou durante a geração (publicado, retirado ou substituído): o vídeo não foi ligado ao episódio e fica privado. Um vídeo novo só entra num episódio em pré-visualização, para ser visto e aprovado antes de ir para o ar.');
     if (before && before !== id) await purgeUnpublishedPhotoVideos(db, iv.id, before);
+    await notifyJob(db, job, 'video_ready');
     await progress(100, 100, 'Concluído');
     return { videoAssetId: id, shots: shots.length, animated, failed, lipsyncUsd: gpuUsd };
   },
@@ -497,6 +500,8 @@ export const handlers: Record<string, Handler> = {
     if (job.input?.paidCents) await db.tx(t => reverseDebit(t, `regen:${job.id}`, 'a regeneração falhou: crédito devolvido'));
     // Vídeo de um orçamento que falhou de vez: os créditos cativos voltam todos ao saldo.
     if (job.kind === 'render_video' && job.input?.quoteId) await releaseQuoteOfJob(db, job);
+    // Quem pediu o vídeo pode ter fechado a página (diz-se que recebe um email): o motivo vai por email.
+    if (job.kind === 'render_video') await notifyJob(db, job, 'video_failed', String((await db.one('SELECT error FROM jobs WHERE id=$1', [job.id]))?.error ?? ''));
     // Introdução que falhou de vez (passageiros esgotados ou interrupções): o motivo fica à vista do entrevistador.
     if (job.kind === 'render_intro' && typeof job.input?.introId === 'string') {
       const err = (await db.one('SELECT error FROM jobs WHERE id=$1', [job.id]))?.error;

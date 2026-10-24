@@ -621,7 +621,8 @@ test('vídeo IA: o Veo de quem não é administrador só por orçamento; os retr
   try {
     const pg = await get(`/entrevistas/${ivId}/producao`, owner);
     assert.doesNotMatch(pg.body, /value="lipsync"/); assert.doesNotMatch(pg.body, /value="veo"/);
-    assert.match(pg.body, /A animação por IA \(Google Veo\) faz-se por orçamento/);
+    assert.match(pg.body, /O vídeo premium \(animação por IA\) faz-se por orçamento, na secção «Vídeo premium \(animação por IA\)» abaixo/);
+    assert.doesNotMatch(pg.body, /Google Veo 3\.1|Utilização registada|custo estimado/, 'sem modelos nem custos internos para o cliente');
     assert.match(pg.body, /id="orcamento"/, 'secção do orçamento');
     const before = await jobs();
     for (const [body, re] of [[{ lang: 'en', engine: 'veo' }, /faz-se por orçamento/], [{ lang: 'en', engine: 'lipsync' }, /reservados ao administrador/], [{ lang: 'en', animate: '1' }, /reservados ao administrador/]] as const) {

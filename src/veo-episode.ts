@@ -11,6 +11,7 @@ import { ownsAny, entityOfInterview, inEntity, VEO_CRED_KEYS } from './settings.
 import { PermanentError, JobPaused, type Handler } from './jobs.ts';
 import type { Db } from './db.ts';
 import { purgeUnpublishedPhotoVideos } from './uploads.ts';
+import { notifyJob } from './notify.ts';
 import { flushOutbox, queueEmail, emailShell } from './mail.ts';
 import { release, settle, cr } from './wallet.ts';
 import { introPhrase, introKeyOf, readyIntro, INTRO_SPAN_ID } from './intro.ts';
@@ -1129,6 +1130,7 @@ export async function renderVeoVideo(job: any, { db, progress }: Parameters<Hand
   if (!linked) throw new PermanentError('Uma autorização foi retirada, o convidado pediu alterações ou o episódio mudou durante a geração: o vídeo não foi ligado ao episódio e fica privado. Os clipes pagos ficam guardados.');
   if (before && before !== id) await purgeUnpublishedPhotoVideos(db, iv.id, before);
   if (quote && settled) await quoteSettledEmail(db, quote, settled, iv);
+  else await notifyJob(db, job, 'video_ready');
   await progress(100, 100, 'Concluído');
   return { videoAssetId: id, veoClips: meta.veoClips, generatedClips: generated, spentUsd, veoUsd: costUsd, fallbackSegments: fallbackSegs, fidelityIssues: meta.fidelityIssues, ...(settled ? { chargedCents: (settled as any).charged, releasedCents: (settled as any).released } : {}) };
 }

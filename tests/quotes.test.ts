@@ -121,7 +121,7 @@ test('orçamento: o administrador prepara o rascunho; tabela por fala, total e s
   // página de produção do cliente: sem Veo direto nem retratos animados; secção do orçamento com as falas
   const pg = (await get(`/entrevistas/${ivId}/producao`, cli.cookie)).body;
   assert.doesNotMatch(pg, /value="veo"/); assert.doesNotMatch(pg, /value="lipsync"/);
-  assert.match(pg, /Animação por IA \(Google Veo 3\.1 Fast\), por orçamento/);
+  assert.match(pg, /Vídeo premium \(animação por IA\), por orçamento/);
   assert.match(pg, /≈ 30 créditos por minuto de fala/);
   for (const id of ALL) assert.match(pg, new RegExp(`name="fala" value="${id}" checked`));
   // o administrador prepara o rascunho (grátis, não cativa nada)
@@ -147,8 +147,8 @@ test('orçamento: o administrador prepara o rascunho; tabela por fala, total e s
   assert.match(msg(await post(aceitar, { start_now: '1', waiver: '1' }, admin)), /Só o titular da entrevista aceita o orçamento/);
   // o que o cliente vê antes de aceitar
   const pc = (await get(page, cli.cookie)).body;
-  for (const s of ['Google Veo 3.1 Fast, 720p', `${W.cr(expected)} créditos (= ${eurPt(expected)} + IVA, já pago no carregamento)`, '≈ 30 créditos por minuto de fala', '0 créditos → 0 créditos depois de aceitar (insuficiente)',
-    'nomes de pessoas reais (rui): risco de recusa pelo filtro da Google; se recusar, fica em fotografia e não paga', 'Peço que a produção comece já.', 'Aceito este orçamento e as condições acima',
+  for (const s of ['Vídeo premium (animação por IA), 720p', `${W.cr(expected)} créditos (= ${eurPt(expected)} + IVA, já pago no carregamento)`, '≈ 30 créditos por minuto de fala', '0 créditos → 0 créditos depois de aceitar (insuficiente)',
+    'nomes de pessoas reais (rui): risco de recusa pelo filtro do fornecedor de IA; se recusar, fica em fotografia e não paga', 'Peço que a produção comece já.', 'Aceito este orçamento e as condições acima',
     `<button class="accent" disabled>Aceitar e pagar ${W.cr(expected)} créditos</button>`, `/conta/creditos/carregar?falta=${expected}&amp;voltar=${encodeURIComponent(page)}`,
     'O orçamento aceite é o máximo', 'AI-generated video · AI voice', 'Empresa Vendedora de Teste, Lda.', 'Livro de Reclamações Eletrónico', 'Até '])
     assert.ok(pc.includes(s), s);
@@ -241,7 +241,8 @@ test('reaproveitamento: falas pagas a 0 créditos; a que esgotou as tentativas p
   assert.ok(vm.fidelity.filter((f: any) => f.reused).length > 0);
   assert.equal(vm.model, FAST);
   assert.deepEqual(vm.clipModels, { [FAST]: (by.get('q1') as any).chunks, [LITE]: vm.veoClips - (by.get('q1') as any).chunks }, 'modelo de cada clipe que entrou no vídeo');
-  const prod = (await get(`/entrevistas/${ivId}/producao`, cli.cookie)).body;
+  assert.match((await get(`/entrevistas/${ivId}/producao`, cli.cookie)).body, /Vídeo premium \(animação por IA\)/, 'o cliente vê só o Premium');
+  const prod = (await get(`/entrevistas/${ivId}/producao`, admin)).body; // modelos e clipes: só o administrador
   assert.match(prod, /pedido ao Google Veo 3\.1 Fast \(veo-3\.1-fast-generate-preview\): \d+ clipes/);
   assert.match(prod, new RegExp(`clipes no vídeo: [^<]*${vm.clipModels[LITE]} do Google Veo 3\\.1 Lite \\(veo-3\\.1-lite-generate-preview\\), de gerações anteriores`));
   assert.match(prod, new RegExp(`clipes no vídeo: [^<]*${vm.clipModels[FAST]} do Google Veo 3\\.1 Fast \\(veo-3\\.1-fast-generate-preview\\)(?!, de gerações)`));
@@ -536,7 +537,8 @@ test('tarifas: editáveis pelo administrador só para orçamentos novos; o Omni 
   assert.equal((await db.one(`SELECT active FROM animation_rates WHERE id='veo-lite'`)).active, false);
   await saveSetting(db, 'VEO_TIER', 'lite');
   try {
-    assert.match(msg(await post(`/entrevistas/${ivId}/episodio/${epId}/orcamento`, { fala: HOST, lang: 'en' }, cli.cookie)), /Google Veo 3\.1 Lite não está disponível de momento/);
+    // o Premium vende-se sempre com o Fast: o Lite nas Definições não muda o orçamento do cliente
+    assert.equal(Q.quoteTier(), 'fast');
     assert.equal(await Q.rateForTier(db, 'lite'), null);
   } finally { await saveSetting(db, 'VEO_TIER', ''); }
   // motor desativado: nada se orçamenta
@@ -618,7 +620,7 @@ test('gestor de entidade: o Veo sem créditos só com credenciais Google própri
     // a entidade usa as credenciais do portal: o gestor anima por orçamento, com créditos, como os outros
     let pg = (await get(`/entrevistas/${ivId}/producao`, cli.cookie)).body;
     assert.doesNotMatch(pg, /value="veo"/); assert.doesNotMatch(pg, /value="lipsync"/);
-    assert.match(pg, /Animação por IA \(Google Veo 3\.1 Fast\), por orçamento/);
+    assert.match(pg, /Vídeo premium \(animação por IA\), por orçamento/);
     const n0 = await videoJobs();
     assert.match(msg(await post(`/entrevistas/${ivId}/episodio/${epId}/video`, { engine: 'veo', lang: 'en' }, cli.cookie)), /faz-se por orçamento[\s\S]*gestor de uma entidade com credenciais Google próprias/);
     assert.equal(await videoJobs(), n0);
@@ -665,7 +667,7 @@ test('gestor de entidade: o Veo sem créditos só com credenciais Google própri
     assert.match(msg(await post(`/entrevistas/${ivId}/episodio/${epId}/video`, { engine: 'veo', lang: 'en' }, cli.cookie)), /faz-se por orçamento/);
     // ... e o orçamento (pago com créditos) usa o nível e as credenciais Google do portal, nunca os da entidade:
     // a entidade não paga à Google o que o cliente paga em créditos
-    assert.match(pg, /Animação por IA \(Google Veo 3\.1 Fast\), por orçamento/, 'o nível das Definições globais, não o Lite da entidade');
+    assert.match(pg, /Vídeo premium \(animação por IA\), por orçamento/, 'o nível das Definições globais, não o Lite da entidade');
     const w = await W.walletFor(db, cli.id, ent);
     const tp = await db.one(`INSERT INTO credit_topups(wallet_id, user_id, entity_id, net_cents, vat_cents, gross_cents, vat_rate, vat_regime, customer_kind, customer_country) VALUES ($1,$2,$3,10000,2300,12300,23,'domestic','business','PT') RETURNING id`, [w.id, cli.id, ent]);
     await db.tx((t: any) => W.creditTopup(t, tp.id, { paymentIntent: `pi_ent_${tp.id}` }));

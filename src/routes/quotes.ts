@@ -8,7 +8,7 @@ import { inEntity } from '../settings.ts';
 import { seller, complaintsLink, TERMS_VERSION, WITHDRAWAL_DAYS } from '../legal.ts';
 import { findWallet, spendBlock, cr } from '../wallet.ts';
 import { VEO_NOTICE, veoWithoutQuote } from '../veo-episode.ts';
-import { veoLabel } from '../talking.ts';
+import { VIDEO_PREMIUM } from '../video-offer.ts';
 import { quoteTier, createQuote, acceptQuote, cancelQuote, quoteProblem, quoteBlock, rateForTier, candidateFalas, consumerVatRate, vatRegimeOf, isConsumerOwner,
   priceLabel, perMinuteLabel, acceptLabel, roleLabel, reasonLabel, GUARANTEES, QUOTE_STATUS, QuoteError, START_DEADLINE_HOURS, ENTITY_VEO_NO_QUOTE } from '../quotes.ts';
 import { helpNav } from '../support.ts';
@@ -28,12 +28,12 @@ const consent = async (db: Db, id: string, p: string) => !!(await db.one(`SELECT
 export async function quoteSection(db: Db, iv: any, ep: any): Promise<string> {
   const owner = await db.one('SELECT id, role, entity_id FROM users WHERE id=$1', [iv.owner_id]);
   if (!owner || owner.role === 'admin') return '';
-  if (veoWithoutQuote(owner, owner.entity_id)) return `<h3 id="orcamento">Animação por IA</h3><p class="hint">${esc(ENTITY_VEO_NO_QUOTE)}</p>`;
+  if (veoWithoutQuote(owner, owner.entity_id)) return `<h3 id="orcamento">${VIDEO_PREMIUM}</h3><p class="hint">${esc(ENTITY_VEO_NO_QUOTE)}</p>`;
   const quotes = await db.query(`SELECT * FROM animation_quotes WHERE episode_id=$1 ORDER BY created_at DESC LIMIT 5`, [ep.id]);
   return inEntity(owner.entity_id, async () => {
     const tier = quoteTier(), rate = await rateForTier(db, tier);
     const vatRate = await consumerVatRate(db, owner.id, seller()), regime = await vatRegimeOf(db, owner.id, seller());
-    const block = rate ? await quoteBlock(db, iv, ep) : `A animação com o ${veoLabel(tier)} não está disponível de momento.`;
+    const block = rate ? await quoteBlock(db, iv, ep) : 'O vídeo premium não está disponível de momento.';
     const open = quotes.find((q: any) => ['accepted', 'running'].includes(q.status));
     // Quem autorizou (sem carregar as fotografias; o orçamento confirma tudo).
     const allowed = {
@@ -42,7 +42,7 @@ export async function quoteSection(db: Db, iv: any, ep: any): Promise<string> {
     };
     const script = await db.one('SELECT segments FROM scripts WHERE id=$1', [ep.script_id]);
     const falas = rate ? candidateFalas(ep, script?.segments ?? [], allowed, rate) : [];
-    let html = `<h3 id="orcamento">Animação por IA (${esc(veoLabel(tier))}), por orçamento</h3>
+    let html = `<h3 id="orcamento">${VIDEO_PREMIUM}, por orçamento</h3>
 <p class="hint">${rate ? `Tarifa: ${esc(perMinuteLabel(rate.cents_per_min, vatRate, regime))}, medidos no áudio do episódio (cada fala conta pelo menos 4 s). ` : ''}1 crédito = 1 € sem IVA. O orçamento é grátis e não cativa nada; só o titular da entrevista o aceita. Paga apenas as falas que saírem animadas e verificadas.</p>`;
     if (quotes.length) html += `<ul class="sans">${quotes.map((q: any) => { const [l, k] = QUOTE_STATUS[q.status] ?? [q.status, '']; return `<li><a href="/entrevistas/${iv.id}/orcamentos/${q.id}">Orçamento de ${fmtDate(q.created_at)}</a> · ${pill(l, k)} · ${esc(priceLabel(q.price_cents, vatRate, regime))}${q.status === 'settled' ? ` · cobrados ${cr(q.charged_cents ?? 0)}, libertados ${cr(q.released_cents ?? 0)}` : ''}</li>`; }).join('')}</ul>`;
     if (block) return `${html}<p class="hint"><strong>${esc(block)}</strong></p>`;
@@ -50,7 +50,7 @@ export async function quoteSection(db: Db, iv: any, ep: any): Promise<string> {
       const fila = open.status === 'accepted' ? await videoQueue(db, open.job_id) : null;
       return `${html}<p class="hint">Há um orçamento aceite em curso para este episódio: aguarde que a produção termine.${fila && !fila.running ? ` ${esc(queueLabel(fila, false))}.` : ''}</p>`;
     }
-    if (!falas.length) return `${html}<p class="hint">Sem falas autorizadas para animar: o entrevistador autoriza o Google Veo em Editar; o convidado em «Autorizações das fotografias», e só com a política «o entrevistado aprova».</p>`;
+    if (!falas.length) return `${html}<p class="hint">Sem falas autorizadas para animar: o entrevistador autoriza o vídeo por IA em Editar; o convidado em «Autorizações das fotografias», e só com a política «o entrevistado aprova».</p>`;
     return `${html}<form method="post" action="/entrevistas/${iv.id}/episodio/${ep.id}/orcamento"><div style="overflow-x:auto"><table class="sans"><thead><tr><th>Animar</th><th>Fala</th><th>Segundos</th><th>Créditos</th></tr></thead><tbody>
 ${falas.map(f => `<tr><td><input type="checkbox" name="fala" value="${esc(f.id)}" checked aria-label="Animar a fala ${esc(f.id)}"></td><td>${esc(roleLabel(f.role))} · ${esc(excerpt(f.text))}</td><td>${f.sec} s</td><td>${cr(f.cents)}</td></tr>`).join('')}</tbody></table></div>
 <p class="hint">Preço de cada fala antes do reaproveitamento: no orçamento, as falas já pagas passam a 0 créditos. As falas que tirar ficam em fotografia com a voz do episódio.</p>
@@ -114,7 +114,7 @@ export async function quoteRoutes(app: FastifyInstance) {
       const settlement = new Map<string, any>(((q.settlement?.segments ?? []) as any[]).map(x => [x.segmentId, x]));
       const settled = q.status === 'settled';
       const note = (x: any) => [x.reused ? '<strong>reaproveitado: 0 cr</strong> (fala já paga)' : '', x.dup ? 'igual a outra fala deste orçamento: incluída' : '',
-        x.realNames?.length ? `<span style="color:var(--warn)">nomes de pessoas reais (${esc(x.realNames.join(', '))}): risco de recusa pelo filtro da Google; se recusar, fica em fotografia e não paga</span>` : ''].filter(Boolean).join('<br>');
+        x.realNames?.length ? `<span style="color:var(--warn)">nomes de pessoas reais (${esc(x.realNames.join(', '))}): risco de recusa pelo filtro do fornecedor de IA; se recusar, fica em fotografia e não paga</span>` : ''].filter(Boolean).join('<br>');
       const result = (x: any) => { const r = settlement.get(x.segmentId); if (!r) return ''; return r.status === 'charged' ? pill(`animada: ${cr(r.cents)} cr`, 'ok') : r.status === 'reused' ? pill('animada: reaproveitada, 0 cr', 'ok') : r.status === 'included' ? pill('animada: incluída', 'ok') : `${pill('fotografia: 0 cr', 'warn')} <span class="hint">${esc(reasonLabel(r.reason))}</span>`; };
       const rows = (q.selection as any[]).map(x => `<tr><td>${esc(x.segmentId)} · ${esc(roleLabel(x.role))}<br><span class="hint">${esc(excerpt(x.text ?? '', 140))}</span></td><td>${x.sec} s</td><td>${x.reused || x.dup ? '0' : cr(x.cents)}</td><td>${note(x)}</td>${settled ? `<td>${result(x)}</td>` : ''}</tr>`).join('');
       const after = avail - q.price_cents;
@@ -143,7 +143,7 @@ ${settled ? `<div class="flash ok">Produção concluída: cobrados <strong>${cr(
 <tr><th>Total</th><td><strong id="total">${esc(priceLabel(q.price_cents, vatRate, regime))}</strong><br><span class="hint">É o máximo que paga. ${q.speech_sec} s de fala no total.</span></td></tr>
 <tr><th>Tarifa</th><td>${esc(perMinuteLabel(q.rate.cents_per_min, vatRate, regime))}</td></tr>
 ${q.status === 'draft' ? `<tr><th>Saldo</th><td id="saldo">${cr(avail)} créditos → ${cr(Math.max(0, after))} créditos depois de aceitar${after < 0 ? ' (insuficiente)' : ''} <span class="hint">(o valor fica cativo até ao fim da produção)</span></td></tr>` : ''}
-<tr><th>Motor</th><td>${esc(q.rate.label)}, ${esc(q.rate.resolution)}, com imagem e voz geradas pelo modelo a partir da fotografia e do texto aprovado</td></tr>
+<tr><th>Vídeo</th><td>${VIDEO_PREMIUM}, ${esc(q.rate.resolution)}, com imagem e voz geradas por IA a partir da fotografia e do texto aprovado</td></tr>
 <tr><th>Validade</th><td>Até ${fmtDate(q.valid_until)}, com o preço fixo</td></tr>
 <tr><th>Prazo estimado</th><td id="prazo">~${q.est_minutes ?? 2} min de geração depois de começar${fila ? `; ${esc(queueLabel(fila, q.status === 'draft'))}` : ''}<br><span class="hint">O prazo de ${START_DEADLINE_HOURS} h para começar conta a partir do momento em que a produção pode arrancar: a espera pelos vídeos à frente na fila não conta.</span></td></tr>
 </tbody></table></div>

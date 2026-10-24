@@ -384,7 +384,7 @@ test('com JavaScript: resposta, «ajudou» e erros em JSON, sem recarregar', asy
   const j = r.json();
   assert.match(j.url, new RegExp(`^/ajuda\\?r=${UUID}&s=`));
   assert.match(j.html, /<div id="as-resposta" class="as-res" tabindex="-1">/);
-  assert.match(j.html, /Utilização registada/);
+  assert.match(j.html, /vídeo premium \(animação por IA\)/);
   const id = logOf(j.url), s = decodeURIComponent(/[?&]s=([^&#]+)/.exec(j.url)![1]);
   const yes = (await post(`/ajuda/assistente/${id}/ajudou`, { s, v: 'sim' }, ana, '10.0.0.1', true)).json();
   assert.match(yes.html, /Obrigado pela resposta\./);

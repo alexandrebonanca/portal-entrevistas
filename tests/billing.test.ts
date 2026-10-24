@@ -361,7 +361,7 @@ test('planos Start e Pro (só imagens) à venda; os antigos inativos, mas as sub
   assert.match(home.body, /Start from €19 \/ month/);
   assert.match(home.body, /VAT, where it applies, depends on your country; the final price is always shown before you pay\./);
   assert.match(home.body, /AI animation is never part of a plan: each animated production is quoted before anything is generated and paid with prepaid credits/);
-  assert.match(home.body, /AI video \(optional, quoted separately\)/);
+  assert.match(home.body, /Premium video: AI animation \(optional, quoted separately\)/);
   // a landing mostra preços e a vendedora: com o acesso ao Livro de Reclamações Eletrónico (o rodapé fica só com a Certif)
   assert.match(home.body, /Sold by [^<]+\. <a href="\/termos">Terms of sale · Termos e condições<\/a> · (<a href="https:\/\/[^"]+" rel="noopener" target="_blank">)?Livro de Reclamações Eletrónico/);
   assert.doesNotMatch(home.body, /€12\.50|€10<|Starter/);

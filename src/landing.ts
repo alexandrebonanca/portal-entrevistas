@@ -125,8 +125,8 @@ ${video ? `
   <div><h2 id="fmh">One interview, three ways to share it</h2>
     <ul class="lp-formats">
       <li><strong>Audio podcast</strong><span>A clear English episode with chapters, transcript and an audible AI disclosure.</span></li>
-      <li><strong>Video with photos and subtitles</strong><span>Authorized photos, close-ups of whoever is speaking and subtitles in English, Portuguese, Spanish, French or German.</span></li>
-      <li><strong>AI video (optional, quoted separately)</strong><span>Presenters animated from authorized photos, with a visible “AI-generated video” notice, only with each person’s specific consent. Not included in any plan: each animated production is quoted before anything is generated and paid with prepaid credits.</span></li>
+      <li><strong>Standard video: photos and subtitles</strong><span>Authorized photos, close-ups of whoever is speaking and subtitles in English, Portuguese, Spanish, French or German.</span></li>
+      <li><strong>Premium video: AI animation (optional, quoted separately)</strong><span>Presenters animated from authorized photos, with a visible “AI-generated video” notice, only with each person’s specific consent. Not included in any plan: each animated production is quoted before anything is generated and paid with prepaid credits.</span></li>
     </ul>
     ${covers.length ? `<div class="lp-covers">${covers.map(([f, c]) => `<img src="/static/img/${f}.svg" alt="Sample podcast cover: ${esc(c)}" width="400" height="400" loading="lazy">`).join('')}</div>` : ''}
   </div>
