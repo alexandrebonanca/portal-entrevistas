@@ -19,18 +19,25 @@ export function inviteLastDay(deadline: unknown, preview: boolean, days = config
   return deadline && !preview && /^\d{4}-\d{2}-\d{2}$/.test(dl) && dl >= today ? dl : addDays(today, days);
 }
 
-/** Revoga convites anteriores e cria um novo; o email vai para a outbox (deduplicado por convite). */
-export async function createInvitation(db: Db, interview: any, host: { name: string }, opts: { followup?: boolean; preview?: boolean } = {}) {
+/**
+ * Revoga convites anteriores e cria um novo; o email vai para a outbox (deduplicado por convite). `guard`: verificação na
+ * mesma transação, antes de revogar e de criar (por exemplo, com a entrevista bloqueada, o total de reenvios da entrevista
+ * grátis): se devolver uma razão, nada muda e a função devolve-a em `refused`.
+ */
+export async function createInvitation(db: Db, interview: any, host: { name: string }, opts: { followup?: boolean; preview?: boolean; guard?: (tx: Db) => Promise<string | null> } = {}) {
   const token = newToken(32);
   // O link vale até ao fim do último dia em qualquer fuso (UTC−12), e é esse dia que o email mostra.
   const endOfDay = (day: string) => new Date(`${day}T23:59:59Z`).getTime() + 12 * 3600_000;
   const lastDay = inviteLastDay(interview.deadline, !!opts.preview);
   const exp = new Date(endOfDay(lastDay));
   const inv = await db.tx(async tx => {
+    const refused = opts.guard ? await opts.guard(tx) : null;
+    if (refused) return { refused };
     await tx.query(`UPDATE invitations SET revoked_at=now() WHERE interview_id=$1 AND revoked_at IS NULL`, [interview.id]);
     return tx.one(`INSERT INTO invitations(interview_id, token_hash, question_version, expires_at, purpose) VALUES ($1,$2,$3,$4,$5) RETURNING id`,
       [interview.id, sha256(token), interview.version, exp, opts.preview ? 'preview' : opts.followup ? 'followup' : 'invite']);
   });
+  if (inv.refused) return { refused: inv.refused as string };
   const nQ = Number((await db.one('SELECT count(*)::int AS n FROM questions WHERE interview_id=$1', [interview.id]))?.n);
   const lang = normLang(interview.interaction_lang);
   const d = t(lang);

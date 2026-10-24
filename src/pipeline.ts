@@ -2,9 +2,9 @@ import { randomBytes } from 'node:crypto';
 import type { Db } from './db.ts';
 import { config } from './config.ts';
 import { storage } from './storage.ts';
-import { sha256, slugify } from './lib.ts';
+import { sha256, slugify, firstChars } from './lib.ts';
 import { saveAsset, assembleEpisode, probeAudio } from './media.ts';
-import { transcribeAudio, transcribeWords, prepareEnglishScript, translateSubtitleCues, synthesizeSpeech, coverBriefing, generateCoverBackground, episodeVoice, type ScriptSegment } from './ai/openai.ts';
+import { transcribeAudio, transcribeWords, prepareEnglishScript, translateSubtitleCues, synthesizeSpeech, coverBriefing, generateCoverBackground, episodeVoice, newMeter, meterUsd, AiCutError, UNTRANSLATED, type ScriptSegment, type TokenMeter } from './ai/openai.ts';
 import { planShots, renderBases, subtitleFrame, encodeVideo, encodeComposite, splitParts, shotsWithin, sliceAudio, stillClip, buildAudioTrack, type Part } from './video.ts';
 import { photoTimeline, peopleOf } from './graphics.ts';
 import { lipsync, lipsyncMock, estimateLipsyncUsd } from './lipsync.ts';
@@ -16,9 +16,19 @@ import { PermanentError, type Handler } from './jobs.ts';
 import { renderVeoVideo, releaseQuoteOfJob, VIDEO_ONLY_PREVIEW } from './veo-episode.ts';
 import { renderHostIntro, failIntro } from './veo-intro.ts';
 import { reverseDebit } from './wallet.ts';
+import { isUuid } from './support.ts';
+import { SCRIPT_SEGMENT_MAX, SUBTITLE_LANGS } from './limits.ts';
 
 const usage = (db: Db, interviewId: string, kind: string, quantity: number, cost: number) =>
   db.query('INSERT INTO usage_ledger(interview_id, kind, quantity, cost_usd, estimated) VALUES ($1,$2,$3,$4,true)', [interviewId, kind, quantity, cost]);
+/**
+ * Tokens de texto medidos numa chamada (ou num bloco de chamadas) à IA, no usage_ledger: o guião ('text_tokens'), as
+ * traduções das legendas ('subtitle_tokens'), o resumo da capa ('cover_tokens') e a verificação do guião ('review_tokens').
+ * Grava-se também quando a resposta falhou depois de chegar (foi paga). Antes, só o guião ficava registado, e por estimativa.
+ */
+export const recordTextUsage = async (db: Db, interviewId: string, kind: string, m: TokenMeter) => {
+  if (m.input + m.output > 0) await usage(db, interviewId, kind, m.input + m.output, meterUsd(m));
+};
 
 export const latestTranscript = (db: Db, kind: string, sourceId: string) =>
   db.one('SELECT * FROM transcripts WHERE source_kind=$1 AND source_id=$2 ORDER BY revision DESC LIMIT 1', [kind, sourceId]);
@@ -43,7 +53,12 @@ export async function prepareScript(db: Db, interviewId: string) {
     const at = q.status === 'answered' && q.selected_take_id ? (await latestTranscript(db, 'answer_take', q.selected_take_id))?.text ?? '' : '';
     items.push({ questionId: q.id, question: qt, status: q.status === 'answered' ? 'answered' : 'refused', answer: at });
   }
-  const r = await prepareEnglishScript({ title: iv.title, objective: iv.objective_text, items });
+  // Uma resposta cortada pelo teto (proporcional à entrevista) voltaria a cortar-se com a mesma entrada: erro permanente,
+  // uma tentativa e não três. Os tokens ficam registados também quando falha (a resposta foi paga).
+  const meter = newMeter();
+  const r = await prepareEnglishScript({ title: iv.title, objective: iv.objective_text, items }, meter)
+    .catch((e: any) => { throw e instanceof AiCutError || e instanceof SyntaxError ? new PermanentError(`O guião da IA não pôde ser lido: ${String(e?.message ?? e).slice(0, 120)}`) : e; })
+    .finally(() => recordTextUsage(db, interviewId, 'text_tokens', meter));
   // Garante a apresentação (onde o vídeo mostra os dois) e o agradecimento final do entrevistador — textos editoriais do anfitrião.
   if (!r.segments.some(x => x.transformationType === 'editorial_intro')) {
     r.segments.unshift({ id: 'intro', speakerRole: 'host', textEnglish: `Welcome. Today${iv.guest_name ? ` ${iv.guest_name} joins us` : ' we have a guest with us'} to talk about ${r.titleEnglish}.`, sourceQuestionId: null, transformationType: 'editorial_intro' });
@@ -54,8 +69,6 @@ export async function prepareScript(db: Db, interviewId: string) {
   }
   const rev = Number((await db.one('SELECT COALESCE(max(revision),0)+1 AS n FROM scripts WHERE interview_id=$1', [interviewId])).n);
   await db.query(`UPDATE scripts SET status='superseded' WHERE interview_id=$1 AND status IN ('draft','approved','stale')`, [interviewId]);
-  const chars = JSON.stringify(items).length;
-  await usage(db, interviewId, 'text_tokens', chars / 3, (chars / 3 / 1000) * config.prices.textPer1kTokens);
   const row = await db.one(
     `INSERT INTO scripts(interview_id, revision, title_en, segments, review_flags, blocking_issues, status, prompt_version, model) VALUES ($1,$2,$3,$4,$5,$6,'draft',$7,$8) RETURNING id`,
     [interviewId, rev, r.titleEnglish, JSON.stringify(r.segments), JSON.stringify(r.reviewFlags), JSON.stringify(r.blockingIssues), r.promptVersion, r.model]);
@@ -99,6 +112,9 @@ export const handlers: Record<string, Handler> = {
   },
 
   async prepare_script(job, { db }) {
+    // Como no processamento: sem a autorização do convidado (retirada depois do pedido), nada vai à IA.
+    const processingOk = (await db.one(`SELECT granted FROM consents WHERE interview_id=$1 AND purpose='processing' ORDER BY created_at DESC LIMIT 1`, [job.interview_id]))?.granted;
+    if (!processingOk) throw new PermanentError('Sem autorização de processamento por IA');
     await prepareScript(db, job.interview_id);
   },
 
@@ -110,11 +126,22 @@ export const handlers: Record<string, Handler> = {
     if (script.status !== 'approved') throw new PermanentError('O guião já não está aprovado (foi alterado ou substituído)');
     const consent = async (p: string) => !!(await db.one(`SELECT granted FROM consents WHERE interview_id=$1 AND purpose=$2 ORDER BY created_at DESC LIMIT 1`, [iv.id, p]))?.granted;
     if (!(await consent('processing'))) throw new PermanentError('Autorização de processamento retirada');
-    await db.query(`UPDATE interviews SET production_status='generating' WHERE id=$1`, [iv.id]);
-
     const segments: ScriptSegment[] = script.segments;
     const opts = job.input as { subtitleLangs?: string[]; coverPhotoIds?: string[] };
-    const subLangs: string[] = opts.subtitleLangs?.length ? opts.subtitleLangs : iv.subtitle_langs;
+    // Entradas verificadas antes da primeira chamada paga, com erro permanente (não se repete): antes, uma fotografia de
+    // capa forjada ('-' × 36 passava o filtro da rota) só falhava na consulta da capa, depois de pagas a voz, os tempos das
+    // legendas, as traduções e a capa, e o erro (não permanente) repetia tudo três vezes.
+    if (opts.coverPhotoIds !== undefined && (!Array.isArray(opts.coverPhotoIds) || opts.coverPhotoIds.length > 2 || !opts.coverPhotoIds.every(isUuid)))
+      throw new PermanentError('Fotografias da capa inválidas');
+    // Línguas das legendas (as do pedido ou, sem elas, as da entrevista): só as oferecidas, e cada uma traduz-se uma vez.
+    // Antes, só se verificava o formato: ['en', 'de' × 3000] dava 3000 traduções das legendas (gpt-4.1) numa geração.
+    const askedLangs: unknown = opts.subtitleLangs?.length ? opts.subtitleLangs : iv.subtitle_langs;
+    if ((opts.subtitleLangs !== undefined && !Array.isArray(opts.subtitleLangs)) || !Array.isArray(askedLangs) || !askedLangs.every(l => SUBTITLE_LANGS.some(s => s[0] === l)))
+      throw new PermanentError('Línguas das legendas inválidas');
+    const subLangs: string[] = [...new Set(askedLangs as string[])];
+    const long = (Array.isArray(segments) ? segments : []).find(s => typeof s?.textEnglish !== 'string' || s.textEnglish.length > SCRIPT_SEGMENT_MAX);
+    if (!Array.isArray(segments) || !segments.length || long) throw new PermanentError(`Guião inválido${long ? `: o segmento ${String(long.id)} passa o limite da síntese de voz (${SCRIPT_SEGMENT_MAX} caracteres)` : ''}`);
+    await db.query(`UPDATE interviews SET production_status='generating' WHERE id=$1`, [iv.id]);
 
     // 1. Áudio por segmento (com cache por texto+papel+voz+modelo), incluindo o aviso inicial.
     const all: { id: string; role: 'host' | 'guest'; text: string; editorial: boolean }[] = [
@@ -162,63 +189,88 @@ export const handlers: Record<string, Handler> = {
     const audioId = await saveAsset(db, { interviewId: iv.id, kind: 'episode_audio', mime: 'audio/mpeg', ext: 'mp3', data: asm.mp3, durationMs: asm.durationMs, meta: { maxVolumeDb: asm.maxVolumeDb, clipping: asm.clipping } });
 
     // 3. Legendas: tempos MEDIDOS no áudio sintético final de cada segmento (não por divisão de duração por palavras).
+    // Cada tentativa paga outra vez os tempos (sem cache): os minutos enviados ficam no usage_ledger ('timestamps_min').
     let en: Cue[] = [];
+    let wordsMs = 0;
     for (let i = 0; i < timing.length; i++) {
       const seg = timing[i];
       await progress(step, total, `A sincronizar as legendas: segmento ${i + 1} de ${timing.length}`);
       const words = await transcribeWords(seg.data, seg.ext).catch(() => []);
+      wordsMs += seg.durationMs;
       step += W.words;
       en.push(...cuesFromWords(words, seg, 'en'));
     }
+    if (wordsMs) await usage(db, iv.id, 'timestamps_min', wordsMs / 60000, (wordsMs / 60000) * config.prices.transcribePerMin);
     en = fixOverlaps(en).map((c, i) => ({ ...c, id: `c${i}` }));
     const subtitles: Record<string, Cue[]> = { en };
+    const trIssues: string[] = [];
     for (const lang of subLangs.filter(l => l !== 'en')) {
       await progress(step, total, `A traduzir as legendas (${lang})`);
-      const tr = await translateSubtitleCues(en.map(c => ({ id: c.id, text: c.text })), lang);
+      // Teto de tokens por bloco e, numa resposta cortada ou inválida, o inglês desse bloco (o trabalho não se repete).
+      const meter = newMeter();
+      const tr = await translateSubtitleCues(en.map(c => ({ id: c.id, text: c.text })), lang, meter).finally(() => recordTextUsage(db, iv.id, 'subtitle_tokens', meter));
+      const untranslated = tr.filter(x => x.reviewFlags.includes(UNTRANSLATED)).length;
+      if (untranslated) trIssues.push(`${lang}: ${untranslated} legendas ficaram em inglês (a resposta da IA veio cortada ou inválida)`);
       const map = new Map(tr.map(x => [x.sourceCueId, x.translatedText]));
       subtitles[lang] = en.map(c => ({ ...c, language: lang, text: map.get(c.id) || c.text })); // ligação 1:1 aos cues de origem
       step += W.tr;
     }
     if (!subLangs.includes('en')) delete subtitles.en;
-    const cueIssues = Object.entries(subtitles).flatMap(([l, c]) => checkCues(c, asm.durationMs).map(m => `${l}: ${m}`));
+    const cueIssues = [...trIssues, ...Object.entries(subtitles).flatMap(([l, c]) => checkCues(c, asm.durationMs).map(m => `${l}: ${m}`))];
 
     // 4. Capa: fundo por IA (ou determinístico) + texto e retratos compostos por nós.
     await progress(step, total, 'A criar a capa');
-    const brief = await coverBriefing(script.title_en, iv.objective_text).catch(() => null);
+    const coverMeter = newMeter();
+    const brief = await coverBriefing(script.title_en, iv.objective_text, coverMeter).catch(() => null);
+    await recordTextUsage(db, iv.id, 'cover_tokens', coverMeter);
     const bg = brief ? await generateCoverBackground(brief).catch(() => null) : null;
     if (bg) await usage(db, iv.id, 'image', 1, config.prices.imageEach);
     const coverOk = await consent('cover_use');
     const photoRows = coverOk && opts.coverPhotoIds?.length
       ? await db.query(`SELECT a.*, p.id AS photo_id FROM photos p JOIN assets a ON a.id=p.asset_id WHERE p.interview_id=$1 AND p.id = ANY($2::uuid[]) LIMIT 2`, [iv.id, opts.coverPhotoIds]) : [];
     const photoBufs = await Promise.all(photoRows.map((a: any) => storage.get(a.storage_key)));
-    const { cover, thumb } = await composeCover({ title: script.title_en, subtitle: iv.guest_name ? `with ${iv.guest_name}` : '', brand: config.brand, background: bg, photos: photoBufs, palette: brief?.palette });
+    // A capa não falha pelas entradas (composeCover: texto sem os caracteres que o XML não admite, fotografia ou fundo que não
+    // se descodificam ficam de fora); uma falha que ainda assim aconteça repetir-se-ia igual em cada tentativa, depois das
+    // etapas pagas, e por isso é permanente.
+    const { cover, thumb, photos: inCover } = await composeCover({ title: script.title_en, subtitle: iv.guest_name ? `with ${iv.guest_name}` : '', brand: config.brand, background: bg, photos: photoBufs, palette: brief?.palette })
+      .catch((e: any) => { throw new PermanentError(`Não foi possível compor a capa: ${String(e?.message ?? e).slice(0, 200)}`); });
     const coverId = await saveAsset(db, { interviewId: iv.id, kind: 'episode_cover', mime: 'image/jpeg', ext: 'jpg', data: cover });
     const thumbId = await saveAsset(db, { interviewId: iv.id, kind: 'episode_cover', mime: 'image/jpeg', ext: 'jpg', data: thumb, meta: { thumb: true } });
     step += W.cover;
     await progress(step, total, 'Controlo de qualidade');
 
-    // 5. Capítulos e controlo de qualidade.
+    // 5. Capítulos e controlo de qualidade. O título corta-se por pontos de código (firstChars): antes, o slice(0, 90) partia
+    // um emoji a começar na posição 89 (pergunta do convidado ou guião editado à mão) e a gravação do episódio falhava.
     const chapters: { startMs: number; title: string }[] = [];
     const seen = new Set<string>();
     for (const s of segments) {
       if (s.sourceQuestionId && s.transformationType === 'translated_question' && !seen.has(s.sourceQuestionId)) {
         seen.add(s.sourceQuestionId);
-        chapters.push({ startMs: timing.find(t => t.id === s.id)!.startMs, title: s.textEnglish.slice(0, 90) });
+        chapters.push({ startMs: timing.find(t => t.id === s.id)!.startMs, title: firstChars(s.textEnglish, 90) });
       }
     }
     const issues = [...cueIssues];
     if (asm.clipping) issues.push('Áudio com clipping');
     if (asm.durationMs < 1000) issues.push('Duração demasiado curta');
 
-    const prev = await db.query(`UPDATE episodes SET status='superseded', stale=true WHERE interview_id=$1 AND status IN ('preview','ready') RETURNING id`, [iv.id]);
-    // coverPhotoIds: a escolha do entrevistador (também escolhe a fotografia do vídeo); coverPhotos: as que entraram de
-    // facto na capa, para a capa deixar de se publicar e de ser servida se o convidado retirar a autorização (approval.ts).
-    const ep = await db.one(
-      `INSERT INTO episodes(interview_id, script_id, slug, title, description, audio_asset_id, cover_asset_id, cover_thumb_asset_id, duration_ms, subtitles, chapters, technical, status, visibility)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'preview','private') RETURNING id`,
-      [iv.id, script.id, `${slugify(script.title_en)}-${randomBytes(3).toString('hex')}`, script.title_en, iv.objective_shared ? iv.objective_text.slice(0, 500) : '', audioId, coverId, thumbId, asm.durationMs,
-        JSON.stringify(subtitles), JSON.stringify(chapters), JSON.stringify({ maxVolumeDb: asm.maxVolumeDb, clipping: asm.clipping, qcIssues: issues, supersedes: prev.map((p: any) => p.id), mock: config.openai.mock, voices: voiceOf, models: config.openai.models, coverPhotoIds: opts.coverPhotoIds ?? [], coverPhotos: photoRows.map((r: any) => r.photo_id), timing: timing.map(t => ({ id: t.id, role: t.role, kind: kinds.get(t.id) ?? '', startMs: t.startMs, durationMs: t.durationMs })) })]);
-    await db.query(`UPDATE interviews SET production_status=$2, publication_status='awaiting_approval' WHERE id=$1`, [iv.id, issues.length ? 'qc' : 'ready']);
+    // Gravação final numa só transação: se falhar, as versões anteriores ficam como estavam. Um erro dos dados (SQLSTATE da
+    // classe 22, um valor que a base não aceita, ou 23, uma restrição) repetir-se-ia igual em cada tentativa, depois de
+    // pagas as etapas anteriores, e por isso é permanente; uma falha da ligação continua a repetir-se.
+    const ep = await db.tx(async tx => {
+      const prev = await tx.query(`UPDATE episodes SET status='superseded', stale=true WHERE interview_id=$1 AND status IN ('preview','ready') RETURNING id`, [iv.id]);
+      // coverPhotoIds: a escolha do entrevistador (também escolhe a fotografia do vídeo); coverPhotos: as que entraram de
+      // facto na capa, para a capa deixar de se publicar e de ser servida se o convidado retirar a autorização (approval.ts).
+      const row = await tx.one(
+        `INSERT INTO episodes(interview_id, script_id, slug, title, description, audio_asset_id, cover_asset_id, cover_thumb_asset_id, duration_ms, subtitles, chapters, technical, status, visibility)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'preview','private') RETURNING id`,
+        [iv.id, script.id, `${slugify(script.title_en)}-${randomBytes(3).toString('hex')}`, script.title_en, iv.objective_shared ? firstChars(iv.objective_text, 500) : '', audioId, coverId, thumbId, asm.durationMs,
+          JSON.stringify(subtitles), JSON.stringify(chapters), JSON.stringify({ maxVolumeDb: asm.maxVolumeDb, clipping: asm.clipping, qcIssues: issues, supersedes: prev.map((p: any) => p.id), mock: config.openai.mock, voices: voiceOf, models: config.openai.models, coverPhotoIds: opts.coverPhotoIds ?? [], coverPhotos: inCover.map(i => photoRows[i].photo_id), timing: timing.map(t => ({ id: t.id, role: t.role, kind: kinds.get(t.id) ?? '', startMs: t.startMs, durationMs: t.durationMs })) })]);
+      await tx.query(`UPDATE interviews SET production_status=$2, publication_status='awaiting_approval' WHERE id=$1`, [iv.id, issues.length ? 'qc' : 'ready']);
+      return row;
+    }).catch((e: any) => {
+      if (/^2[23][0-9A-Z]{3}$/.test(String(e?.code ?? ''))) throw new PermanentError(`Não foi possível gravar o episódio: ${String(e?.message ?? e).slice(0, 200)}`);
+      throw e;
+    });
     await progress(total, total, 'Concluído');
     return { episodeId: ep.id, qcIssues: issues };
   },

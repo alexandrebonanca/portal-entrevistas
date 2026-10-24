@@ -9,6 +9,8 @@ import { seller, WITHDRAWAL_DAYS } from './legal.ts';
 import { cr, EXTRA_INTERVIEW_CENTS, EXTRA_REGEN_CENTS, TOPUP_MIN_CENTS, TOPUP_MAX_CENTS, CREDIT_VALID_MONTHS, REFUND_WINDOW_DAYS } from './wallet.ts';
 import { QUOTE_VALID_DAYS, START_DEADLINE_HOURS } from './quotes.ts';
 import { FOLLOWUP_MIN_LEFT_SEC, inviteLimits } from './limits.ts';
+import { freeOfferOn, FREE_PRODUCTION_JOBS, FREE_JOBS_FOR_SCRIPT, FREE_VIDEO_RENDERS } from './free-interview.ts';
+import { VERIFY_PER_DAY, VERIFY_TOTAL } from './email-verify.ts';
 
 /**
  * Assistente virtual da página de ajuda (perguntas e respostas). A resposta vem SEMPRE da base de conhecimento
@@ -318,6 +320,11 @@ const baseFaqVars = (): Record<string, string> => ({
   // A vendedora das Definições «Empresa vendedora» (por omissão, config.seller).
   sellerName: seller().name || config.seller.name || config.owner.name,
   logDays: String(ASSISTANT_LOG_DAYS),
+  verifyPerDay: String(VERIFY_PER_DAY),
+  verifyTotal: String(VERIFY_TOTAL),
+  freeJobs: String(FREE_PRODUCTION_JOBS),
+  freeJobsScript: String(FREE_JOBS_FOR_SCRIPT),
+  freeVideos: String(FREE_VIDEO_RENDERS),
 });
 export const FAQ_VAR_HELP: Record<string, string> = {
   brand: 'nome do portal', brandSite: 'endereço no cartão final dos vídeos', maxAnswerMin: 'minutos máximos por resposta',
@@ -331,14 +338,34 @@ export const FAQ_VAR_HELP: Record<string, string> = {
   quoteValidDays: 'dias de validade de um orçamento', startDeadlineHours: 'horas para a produção de um orçamento aceite arrancar',
   ownerName: 'entidade gestora', sellerName: 'quem comercializa (Definições «Empresa vendedora»)',
   logDays: 'dias de conservação do registo das perguntas ao assistente',
+  verifyPerDay: 'emails de confirmação do email da conta em 24 horas, por conta e por caixa de correio (o do registo incluído)', verifyTotal: 'emails de confirmação do email da conta ao todo, por conta e por caixa de correio',
+  freeJobs: 'trabalhos de produção da 1.ª entrevista grátis (contam os que falham)',
+  freeJobsScript: 'trabalhos de produção por usar de que um guião novo precisa na 1.ª entrevista grátis (o dele e o do episódio)',
+  freeVideos: 'gerações do vídeo com fotografias na 1.ª entrevista grátis (contam as que falham)',
 };
-export const fillVars = (s: string) => { const v = faqVars(); return String(s ?? '').replace(/\{(\w+)\}/g, (m, k) => (k in v ? v[k] : m)); };
+/**
+ * Blocos condicionais da base: o texto entre `{?nome}` e `{/nome}` só aparece com a condição verdadeira (por exemplo,
+ * `{?freeOffer}…{/freeOffer}`, só com a 1.ª entrevista grátis ligada); uma condição desconhecida fica como está.
+ */
+const faqFlags = (): Record<string, boolean> => ({ freeOffer: freeOfferOn() });
+export const FAQ_FLAG_HELP: Record<string, string> = { freeOffer: 'só com a 1.ª entrevista grátis ligada (tetos acima de 0)' };
+export const fillVars = (s: string) => {
+  const v = faqVars(), f = faqFlags();
+  return String(s ?? '').replace(/\{\?(\w+)\}([\s\S]*?)\{\/\1\}/g, (m, k, inner) => (k in f ? (f[k] ? inner : '') : m))
+    .replace(/\{(\w+)\}/g, (m, k) => (k in v ? v[k] : m));
+};
 
 // ---------------- base de conhecimento ----------------
 
+/** Entradas da semente que só valem com a 1.ª entrevista grátis ligada: com ela desligada, o assistente não as mostra nem as usa. */
+export const FREE_OFFER_FAQ = ['entrevista-gratis'];
+/** Chaves da semente fora do assistente neste momento (as da oferta, com ela desligada). */
+const hiddenSeedKeys = () => (freeOfferOn() ? [] : FREE_OFFER_FAQ);
+
 /** Entradas ativas para um público (as de «todos» incluídas), na ordem definida pelo administrador. */
 export const activeFaq = (db: Db, lang: FaqLang, audience: Audience): Promise<FaqEntry[]> =>
-  db.query(`SELECT id, lang, audience, question, answer, keywords, sort FROM assistant_faq WHERE active AND lang=$1 AND audience IN ($2,'all') ORDER BY sort, question`, [lang, audience]);
+  db.query(`SELECT id, lang, audience, question, answer, keywords, sort FROM assistant_faq WHERE active AND lang=$1 AND audience IN ($2,'all')
+    AND (seed_key IS NULL OR NOT (seed_key = ANY($3::text[]))) ORDER BY sort, question`, [lang, audience, hiddenSeedKeys()]);
 
 // ---------------- registo das perguntas ----------------
 
@@ -438,7 +465,8 @@ export async function answerQuestion(db: Db, o: { question: string; pageLang: Fa
 export async function loadAnswer(db: Db, logId: string) {
   const log = await db.one('SELECT * FROM assistant_questions WHERE id=$1', [logId]);
   if (!log) return null;
-  const rows: FaqEntry[] = log.faq_ids?.length ? await db.query('SELECT id, lang, audience, question, answer, keywords, sort FROM assistant_faq WHERE active AND id = ANY($1::uuid[])', [log.faq_ids]) : [];
+  const rows: FaqEntry[] = log.faq_ids?.length ? await db.query(`SELECT id, lang, audience, question, answer, keywords, sort FROM assistant_faq WHERE active AND id = ANY($1::uuid[])
+    AND (seed_key IS NULL OR NOT (seed_key = ANY($2::text[])))`, [log.faq_ids, hiddenSeedKeys()]) : [];
   const entries = (log.faq_ids as string[]).map(id => rows.find(r => r.id === id)).filter(Boolean) as FaqEntry[];
   return { log, entries };
 }

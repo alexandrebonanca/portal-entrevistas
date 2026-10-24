@@ -5,6 +5,7 @@ import { esc } from './lib.ts';
 import { page } from './views.ts';
 import { markSvg } from './brand.ts';
 import { seller, complaintsLink } from './legal.ts';
+import { FREE_PRODUCTION_JOBS, FREE_VIDEO_RENDERS } from './limits.ts';
 
 const eur = (c: number) => `€${(c / 100).toFixed(c % 100 ? 2 : 0)}`;
 
@@ -60,9 +61,10 @@ const STYLES = `
 /**
  * Landing. `cq` são as etiquetas da campanha já normalizadas (utm_*, ou `ref` com o site de onde veio): seguem em todos os
  * links para o registo, para a conta ficar com a campanha que a trouxe (sem cookies), e também nos links para a galeria e para
- * a entrada, que as passam ao registo.
+ * a entrada, que as passam ao registo. `free`: os limites da 1.ª entrevista grátis (os do plano Start) quando a oferta está
+ * ligada; null não a anuncia.
  */
-export function landing(plans: any[], cq = '') {
+export function landing(plans: any[], cq = '', free: { questionLimit: number | null; answerLimitSec: number | null } | null = null) {
   const b = esc(config.brand);
   const signup = (extra = '') => esc(`/registar${extra || cq ? '?' : ''}${extra}${extra && cq ? '&' : ''}${cq}`);
   const withTags = (path: string) => esc(cq ? `${path}?${cq}` : path);
@@ -95,7 +97,8 @@ export function landing(plans: any[], cq = '') {
     <p class="lp-eyebrow">Asynchronous interviews · podcast, video and subtitles</p>
     <h1>Great interviews, recorded in your guest’s own time.</h1>
     <p class="lp-lead">Invite people whose professional culture and life experience are worth sharing. They answer on their phone, in their own time and language. ${b} turns their answers into a reviewed English podcast and video, with subtitles in English, Portuguese, Spanish, French and German, so their stories travel across countries and generations.</p>
-    <p class="row"><a class="btn accent" href="${signup()}">${cheapest ? `Start from ${cheapest} / month` : 'Get started'}</a>${video ? '<a class="btn ghost" href="#tour">Watch the 1-minute video</a>' : '<a class="btn ghost" href="#how">See how it works</a>'}</p>
+    <p class="row"><a class="btn accent" href="${signup()}">${cheapest ? `Start from ${cheapest} / month` : 'Get started'}</a>${video ? '<a class="btn ghost" href="#tour">Watch the 1-minute video</a>' : '<a class="btn ghost" href="#how">See how it works</a>'}</p>${free ? `
+    <p class="hint"><strong>Your first interview is free</strong>: no card needed. <a href="#free">How the free interview works</a></p>` : ''}
     <ul class="lp-trust"><li>No app for your guest</li><li>Consent at every step</li><li>Nothing published without approval</li></ul>
   </div>
   <figure class="lp-photo">${img('hero', 'A guest recording an interview answer', true)}
@@ -144,7 +147,10 @@ ${video ? `
   <div class="grid3" style="max-width:760px">${plans.map(p => `<div class="card"><h3 style="margin-top:0">${esc(p.name)}</h3><p style="font-size:2.2rem;margin:.1em 0">${eur(p.price_cents)}<span class="hint"> / month</span></p>
     <p>Up to <strong>${p.interviews_per_month} interviews</strong> per month.</p><ul class="sans" style="padding-left:18px"><li>Invitations, recording and photos</li><li>Transcription, English script, narration</li><li>Subtitles, cover, player and video with photos</li><li>Cancel any time</li></ul>
     <a class="btn accent" href="${signup(`plan=${encodeURIComponent(p.id)}`)}">Choose ${esc(p.name)}</a></div>`).join('')}</div>
-  <p class="hint">Plans include photos only. AI animation is never part of a plan: each animated production is quoted before anything is generated and paid with prepaid credits. · <span lang="pt-PT">A animação por IA é orçamentada à parte e paga com créditos.</span></p>
+${free ? `  <div class="card" id="free" style="max-width:760px"><h3 style="margin-top:0">Your first interview is free</h3>
+    <p>Create an account, confirm your email address and send your first invitation free of charge: no payment and no card details. The free interview has the Start plan limits (up to ${free.questionLimit} questions and ${Math.round(Number(free.answerLimitSec) / 60)} minutes of answers) and the same production as the plans (transcription, English script, narration, subtitles, cover and the video with photos), within a total of ${FREE_PRODUCTION_JOBS} production jobs: processing, regenerating the script and generating the episode, counting failed jobs and each «Try again», and up to ${FREE_VIDEO_RENDERS} generations of the video with photos. One per person and organisation, and each guest can receive only one free interview. A limited number of free interviews is available each day and each month; when they run out, the offer is temporarily unavailable. The offer can be withdrawn at any time (see the <a href="/termos#entrevista-gratis">terms</a>).</p>
+    <a class="btn accent" href="${signup()}">Send your first interview free</a></div>
+` : ''}  <p class="hint">Plans include photos only. AI animation is never part of a plan: each animated production is quoted before anything is generated and paid with prepaid credits. · <span lang="pt-PT">A animação por IA é orçamentada à parte e paga com créditos.</span></p>
   <p class="hint">Billing is monthly through Stripe, card only. VAT, where it applies, depends on your country; the final price is always shown before you pay.${s.tradeName || s.name ? ` Sold by ${esc(s.name || s.tradeName)}.` : ''} <a href="/termos">Terms of sale · Termos e condições</a> · ${complaintsLink(s)}. Plans and limits may change for new subscribers.</p>
 </section>
 

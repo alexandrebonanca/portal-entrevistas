@@ -39,7 +39,7 @@ test('privacidade: completa, sem o aviso «por completar» e sem o email pessoal
   assert.doesNotMatch(body, /must be completed/); assert.doesNotMatch(body, /before production use/);
   assert.equal(config.supportEmail, 'pessoal.dono@exemplo.pt');
   assert.ok(!body.includes(config.supportEmail), 'o SUPPORT_EMAIL nunca aparece');
-  assert.ok(body.includes(`Last updated: ${PRIVACY_UPDATED}`)); assert.equal(PRIVACY_UPDATED, '22 October 2026');
+  assert.ok(body.includes(`Last updated: ${PRIVACY_UPDATED}`)); assert.equal(PRIVACY_UPDATED, '23 October 2026');
   // Quem somos: a entidade proprietária e gestora, com país, morada, IVA e contacto.
   const who = section('Who we are');
   for (const v of [config.owner.name, 'Estonia', config.owner.address, `VAT ${config.owner.vat}`, `mailto:${config.owner.email}`]) assert.ok(who.includes(v), v);
@@ -242,7 +242,7 @@ test('privacidade: formulário de contacto, direitos também pelo /contact e alo
   // MailerSend: os emails do formulário e o seguimento desligado (MAILERSEND_SETTINGS em src/mail.ts)
   assert.match(rec, /<strong>MailerSend<\/strong>[^<]*the emails with the private link to a contact-form conversation\. Emails are sent with MailerSend’s open, click and content tracking switched off/);
   // Limites por IP: só em memória, enquanto contam (sweepRateLimits)
-  assert.match(section('What we collect and why'), /<li id="abuse-limits"><strong>Abuse limits:<\/strong> sign-in, sign-up, invitation, support, contact-form and assistant requests are counted per IP address \(and, on the contact form, also per email address\) in the server’s memory, never in the database\. Each count lasts from 10 minutes to a day, and an address leaves the memory within about a minute after its count ends/);
+  assert.match(section('What we collect and why'), /<li id="abuse-limits"><strong>Abuse limits:<\/strong> sign-in, sign-up, email confirmation, invitation, support, contact-form and assistant requests are counted per IP address \(and, on the contact form, also per email address\) in the server’s memory, never in the database\. Each count lasts from 10 minutes to a day, and an address leaves the memory within about a minute after its count ends/);
 });
 
 test('privacidade: convidados (primeira abertura, registo e emails com o link pessoal), «(in Portuguese)» e remissões com âncora', () => {

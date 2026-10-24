@@ -8,6 +8,7 @@ import { t, normLang, consentText, consentLongFor, CONSENT_VERSION, type Lang, t
 import { guestReview, guestDecides, reviewCopy } from '../approval.ts';
 import { hasVideo, promoVideo } from '../landing.ts';
 import { sniff, stripJpegMetadata, saveAsset, probeAudio } from '../media.ts';
+import { photoDecodes } from '../cover.ts';
 import { queueEmail, emailShell } from '../mail.ts';
 import { createInvitation } from '../invites.ts';
 import { aiAvailable, readQuestion, READING_VOICES } from '../ai/openai.ts';
@@ -15,6 +16,8 @@ import { storage } from '../storage.ts';
 import { inEntity, entityOfInterview } from '../settings.ts';
 import { answeredMs, secondsLeft, mmss, LIMIT_SLACK_MS } from '../limits.ts';
 import { guestHelpNav } from '../support.ts';
+import { takeAiUse, giveBackAiUse, freeSendBlock, FREE_READINGS_PER_QUESTION } from '../free-interview.ts';
+import type { Db } from '../db.ts';
 
 const H = { 'Content-Type': 'text/html; charset=utf-8' };
 
@@ -83,23 +86,34 @@ export async function guestRoutes(app: FastifyInstance) {
     return reply.redirect(`/i/${(req.params as any).token}`);
   });
 
-  // Novo link por email original (resposta genérica; limite e cooldown).
+  // Novo link por email original (resposta genérica; limite e cooldown). Um rascunho (convite que não saiu) não tem link a renovar.
   app.post('/i/:token/novo-link', async (req, reply) => {
     const tk = (req.params as any).token;
     const inv = await loadInvitation(tk);
     const email = String((req.body as any)?.email ?? '').trim().toLowerCase();
     let sent = '1';
-    if (inv && !inv.declined_at && inv.collection_status !== 'cancelled' && email === String(inv.guest_email).toLowerCase()
+    if (inv && !inv.declined_at && !['cancelled', 'draft'].includes(inv.collection_status) && email === String(inv.guest_email).toLowerCase()
         && rateLimit(`newlink:${inv.iid}`, 1, config.limits.resendCooldownSec * 1000) && rateLimit(`newlink-ip:${req.ip}`, 10, 3600_000)) {
       const iv = await db.one('SELECT * FROM interviews WHERE id=$1', [inv.iid]);
       const owner = await db.one('SELECT name FROM users WHERE id=$1', [iv.owner_id]);
       const latest = (await db.one('SELECT purpose FROM invitations WHERE interview_id=$1 ORDER BY created_at DESC LIMIT 1', [inv.iid]))?.purpose ?? inv.purpose;
+      // 1.ª entrevista grátis: o «novo link» é um reenvio como o «Reenviar convite» do entrevistador, com o mesmo total
+      // (FREE_RESENDS) e nada depois da recusa (freeSendBlock), verificados com a entrevista bloqueada na transação que cria o
+      // link; e só quando nenhum link da entrevista está em vigor (o do pedido, ainda válido, ou um mais recente, que já
+      // está na mesma caixa de correio: o token revogado por um reenvio não pede outro). Antes, o «novo link» não verificava
+      // o total: um por RESEND_COOLDOWN_SEC e 10 por hora por IP, ~720 emails por dia por entrevista grátis, que depois
+      // contavam contra o «Reenviar» do entrevistador. A resposta continua genérica. As entrevistas pagas ficam como antes.
+      const guard = iv.free_at ? async (tx: Db) => {
+        await tx.query('SELECT id FROM interviews WHERE id=$1 FOR UPDATE', [iv.id]);
+        if (await tx.one('SELECT 1 FROM invitations WHERE interview_id=$1 AND revoked_at IS NULL AND expires_at > now() LIMIT 1', [iv.id])) return 'Há um link em vigor.';
+        return freeSendBlock(tx, iv.id, { resend: latest !== 'preview' });
+      } : undefined;
       // Validação: o link novo segue o episódio atual (validar, ou só ver quando a publicação é do entrevistador ou já
       // saiu). Sem episódio para ver não se envia um link vazio: quem pediu (com o email certo) fica a saber porquê.
       if (latest === 'preview' && !(await guestReview(db, iv))) sent = 'nada';
       else {
-        await createInvitation(db, iv, { name: owner?.name ?? '' }, latest === 'preview' ? { preview: true } : latest === 'followup' ? { followup: true } : {}); // mantém a finalidade do convite em vigor
-        await audit(db, 'guest', 'invitation.renewed', inv.iid);
+        const r = await createInvitation(db, iv, { name: owner?.name ?? '' }, { ...(latest === 'preview' ? { preview: true } : latest === 'followup' ? { followup: true } : {}), guard }); // mantém a finalidade do convite em vigor
+        if (!r.refused) await audit(db, 'guest', 'invitation.renewed', inv.iid);
       }
     }
     return reply.redirect(`/i/${tk}?sent=${sent}`);
@@ -288,8 +302,13 @@ ${q.audio_asset_id ? `<p><audio controls preload="none" src="/api/g/media/${q.au
     if (asset && (asset.meta?.voice !== READING_VOICES[gender] || asset.meta?.text !== q.text)) asset = null;
     if (!asset) {
       if (!rateLimit(`tts:${iv.id}`, 30, 3600_000)) return reply.code(429).send();
+      // 1.ª entrevista grátis: leituras novas com total por entrevista, contado na base (a voz das perguntas pode mudar depois
+      // do convite, e cada mudança refaz as leituras); acima dele, 404 e a página usa a leitura do navegador.
+      const free = !!iv.free_at;
+      const nq = free ? Number((await db.one('SELECT count(*)::int AS n FROM questions WHERE interview_id=$1', [iv.id]))?.n ?? 0) : 0;
+      if (free && !(await takeAiUse(db, iv.id, 'question_reading', FREE_READINGS_PER_QUESTION * nq))) return reply.code(404).send();
       const s = await inEntity(ent, () => readQuestion(q.text, gender, iv.interaction_lang)).catch((e: any) => { req.log.error({ err: String(e?.message ?? e) }, 'leitura da pergunta falhou'); return null; });
-      if (!s) return reply.code(404).send();
+      if (!s) { if (free) await giveBackAiUse(db, iv.id, 'question_reading'); return reply.code(404).send(); }
       const id = await saveAsset(db, { interviewId: iv.id, kind: 'question_tts', mime: s.mime, ext: s.ext, data: s.data, meta: { voice: s.voice, text: q.text } });
       await db.query('UPDATE questions SET tts_asset_id=$2 WHERE id=$1', [q.id, id]);
       asset = await db.one('SELECT * FROM assets WHERE id=$1', [id]);
@@ -355,6 +374,11 @@ ${pc && !done ? `<div class="card" id="cam" data-max="3" data-msg='${esc(msg)}'>
     const kind = Buffer.isBuffer(data) ? sniff(data) : null;
     if (!kind || kind.kind !== 'image') return reply.code(415).send({ error: 'format' });
     const clean = kind.mime === 'image/jpeg' ? stripJpegMetadata(data) : data;
+    // Cada envio descodifica a fotografia (e uma recusada não conta para as 3): um limite por entrevista contra pedidos em série.
+    if (!rateLimit(`foto:${iv.id}`, 10, 60_000)) return reply.code(429).send({ error: 'rate' });
+    // A assinatura não chega: antes, uma fotografia com a assinatura JPEG e o conteúdo corrompido era guardada e só falhava
+    // no sharp, na capa do episódio, depois de pagas a voz, os tempos das legendas e as traduções, em cada tentativa.
+    if (!(await photoDecodes(clean))) return reply.code(415).send({ error: 'format' });
     const assetId = await saveAsset(db, { interviewId: iv.id, kind: 'guest_photo', mime: kind.mime, ext: kind.ext, data: clean });
     const ph = await db.one('INSERT INTO photos(interview_id, asset_id) VALUES ($1,$2) RETURNING id', [iv.id, assetId]);
     return { ok: true, id: ph.id, assetId };

@@ -1,7 +1,7 @@
 import { writeFile, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { spawn } from 'node:child_process';
-import { esc } from './lib.ts';
+import { escXml } from './lib.ts';
 import { withTemp } from './media.ts';
 import type { Cue } from './subtitles.ts';
 
@@ -64,7 +64,7 @@ async function blurredFill(sharp: any, img: Buffer) {
 }
 const initialsCard = (name: string, color: string) => {
   const ini = name.split(/\s+/).filter(Boolean).slice(0, 2).map(p => p[0]?.toUpperCase()).join('') || '?';
-  return Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="560" height="560"><rect width="560" height="560" rx="40" fill="${color}"/><text x="280" y="330" text-anchor="middle" font-family="${FONT}" font-weight="700" font-size="200" fill="#fff">${esc(ini)}</text></svg>`);
+  return Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="560" height="560"><rect width="560" height="560" rx="40" fill="${color}"/><text x="280" y="330" text-anchor="middle" font-family="${FONT}" font-weight="700" font-size="200" fill="#fff">${escXml(ini)}</text></svg>`);
 };
 
 /**
@@ -98,9 +98,9 @@ export async function renderBases(opts: {
 <defs><linearGradient id="d" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#3a2a1e"/><stop offset="1" stop-color="#1c140e"/></linearGradient></defs>
 <rect x="0" y="492" width="${W}" height="228" fill="url(#d)"/><rect x="0" y="486" width="${W}" height="8" fill="#c8803c" opacity=".7"/>
 ${[left + P / 2, left + P + gap + P / 2].map(cx => `<g fill="#e8e0d4"><rect x="${cx - 12}" y="${STUDIO.micTop}" width="24" height="${494 - STUDIO.micTop}" rx="12"/><rect x="${cx - 3}" y="492" width="6" height="16"/><rect x="${cx - 26}" y="506" width="52" height="7" rx="3"/></g>`).join('')}
-${([[opts.host, left + P / 2, 'Host'], [opts.guest, left + P + gap + P / 2, 'Guest']] as const).map(([p, cx, r]) => `<text x="${cx}" y="${STUDIO.nameY}" text-anchor="middle" font-family="${FONT}" font-weight="700" font-size="28" fill="#fff">${esc(p.name)}</text>
-<text x="${cx}" y="${STUDIO.roleY}" text-anchor="middle" font-family="${FONT}" font-size="${STUDIO.roleSize}" fill="#fff" opacity=".85">${esc((p.role || r).slice(0, 40))}</text>`).join('')}
-<text x="${W / 2}" y="58" text-anchor="middle" font-family="${FONT}" font-size="26" letter-spacing="4" fill="#fff" opacity=".85">${esc(opts.title.toUpperCase().slice(0, 60))}</text>
+${([[opts.host, left + P / 2, 'Host'], [opts.guest, left + P + gap + P / 2, 'Guest']] as const).map(([p, cx, r]) => `<text x="${cx}" y="${STUDIO.nameY}" text-anchor="middle" font-family="${FONT}" font-weight="700" font-size="28" fill="#fff">${escXml(p.name)}</text>
+<text x="${cx}" y="${STUDIO.roleY}" text-anchor="middle" font-family="${FONT}" font-size="${STUDIO.roleSize}" fill="#fff" opacity=".85">${escXml((p.role || r).slice(0, 40))}</text>`).join('')}
+<text x="${W / 2}" y="58" text-anchor="middle" font-family="${FONT}" font-size="26" letter-spacing="4" fill="#fff" opacity=".85">${escXml(opts.title.toUpperCase().slice(0, 60))}</text>
 <text x="${W - 24}" y="${H - 18}" text-anchor="end" font-family="${FONT}" font-size="16" fill="#fff" opacity=".7">Composite image · asynchronous interview</text></svg>`);
   const studio = await sharp(bg).composite([
     { input: studioSvg },
@@ -127,7 +127,7 @@ export async function subtitleFrame(base: Buffer, text: string): Promise<Buffer>
   const lines = wrapLines(text, 52, SUB.maxLines);
   const lh = SUB.lineH, boxH = lines.length * lh + SUB.pad, y0 = H - boxH - SUB.bottom;
   const svg = Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}"><rect x="${W / 2 - 560}" y="${y0}" width="1120" height="${boxH}" rx="12" fill="#000" opacity=".68"/>
-${lines.map((l, i) => `<text x="${W / 2}" y="${y0 + 46 + i * lh}" text-anchor="middle" font-family="${FONT}" font-weight="600" font-size="36" fill="#fff">${esc(l)}</text>`).join('')}</svg>`);
+${lines.map((l, i) => `<text x="${W / 2}" y="${y0 + 46 + i * lh}" text-anchor="middle" font-family="${FONT}" font-weight="600" font-size="36" fill="#fff">${escXml(l)}</text>`).join('')}</svg>`);
   return sharp(base).composite([{ input: svg }]).jpeg({ quality: 86 }).toBuffer();
 }
 
@@ -176,7 +176,7 @@ export async function subtitleOverlay(text: string): Promise<Buffer> {
   const lines = wrapLines(text, 52, SUB.maxLines);
   const lh = SUB.lineH, boxH = lines.length * lh + SUB.pad, y0 = H - boxH - SUB.bottom;
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}"><rect x="${W / 2 - 560}" y="${y0}" width="1120" height="${boxH}" rx="12" fill="#000" opacity=".68"/>
-${lines.map((l, i) => `<text x="${W / 2}" y="${y0 + 46 + i * lh}" text-anchor="middle" font-family="${FONT}" font-weight="600" font-size="36" fill="#fff">${esc(l)}</text>`).join('')}</svg>`;
+${lines.map((l, i) => `<text x="${W / 2}" y="${y0 + 46 + i * lh}" text-anchor="middle" font-family="${FONT}" font-weight="600" font-size="36" fill="#fff">${escXml(l)}</text>`).join('')}</svg>`;
   return sharp(Buffer.from(svg)).png().toBuffer();
 }
 
@@ -193,7 +193,7 @@ export async function animatedNotice(label = 'AI-animated portrait'): Promise<Bu
   const { default: sharp } = await import('sharp');
   const bw = Math.max(336, Math.round(label.length * 11.5) + 48);
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}"><rect x="${W - 36 - bw}" y="36" width="${bw}" height="44" rx="8" fill="#000" opacity=".6"/>
-<text x="${W - 36 - bw / 2}" y="65" text-anchor="middle" font-family="${FONT}" font-weight="600" font-size="20" fill="#fff">${esc(label)}</text></svg>`;
+<text x="${W - 36 - bw / 2}" y="65" text-anchor="middle" font-family="${FONT}" font-weight="600" font-size="20" fill="#fff">${escXml(label)}</text></svg>`;
   return sharp(Buffer.from(svg)).png().toBuffer();
 }
 

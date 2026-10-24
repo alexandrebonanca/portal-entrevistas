@@ -1,11 +1,16 @@
 import { config } from './config.ts';
 import type { Db } from './db.ts';
 import { esc } from './lib.ts';
+import { FREE_PRODUCTION_JOBS, FREE_JOBS_FOR_SCRIPT, FREE_VIDEO_RENDERS } from './limits.ts';
 import { sellerS, stripeScopedValue, inEntity, ownsAny, sellerEmailIsSupport, SELLER_CORE_KEYS, SELLER_CONSUMER_KEYS } from './settings.ts';
 import { sellerVatProblems, normVatNumber, isEuCountry, countryName, regionalRate, ptRegion, withVat, eurPt, fmtRate, EU_STANDARD_RATES, type VatSeller } from './vat.ts';
 
-/** Versão dos termos de venda (guardada na Stripe, na auditoria e na lista «por faturar»). */
-export const TERMS_VERSION = '2026-10-21';
+/**
+ * Versão dos termos de venda (guardada na Stripe, na auditoria e na lista «por faturar»). 2026-10-23: 1.ª entrevista grátis
+ * (2-C). 2026-10-24: no 2-C, o total de trabalhos de produção da entrevista grátis (contam os que falham e cada «Tentar de
+ * novo»; acima dele, nenhuma regeneração, nem paga).
+ */
+export const TERMS_VERSION = '2026-10-24';
 /** Prazo da livre resolução dos consumidores (DL 24/2014, art. 10.º). */
 export const WITHDRAWAL_DAYS = 14;
 /** As duas caixas que o consumidor assinala ao subscrever (o mesmo texto na página e no email de confirmação do contrato). */
@@ -178,6 +183,10 @@ ${pt ? `<li>Preço com IVA: ${[2500, 10000].map(c => `${c / 100} créditos custa
 <li>O orçamento aceite é o máximo que paga. No fim cobram-se só as falas animadas e verificadas palavra a palavra; as que ficarem em fotografia (texto que não coincidiu, filtro da Google, Google indisponível, teto ou disjuntor, autorização retirada) voltam ao saldo, com o motivo no relatório. Uma produção falhada, anulada, que não arranque nas 24 horas seguintes ao momento em que pode começar (a espera pelos vídeos à frente na fila não conta; o orçamento mostra a posição na fila e o prazo estimado) ou cujo vídeo não fique ligado ao episódio custa 0 créditos. Um reinício do servidor a meio não conta como falha: a produção retoma onde estava, sem pagar de novo os clipes já gerados. As falas já pagas reaproveitam-se a 0 créditos.</li>
 <li>Se uma autorização for retirada depois da entrega, o que foi entregue continua cobrado; o vídeo pode ser reconstruído só com o entrevistador, a 0 créditos, e os clipes com a imagem do convidado são apagados.</li>
 <li>O vídeo leva o aviso visível «AI-generated video · AI voice».</li></ul>
+<h2 id="entrevista-gratis">2-C. 1.ª entrevista grátis</h2><ul>
+<li>Uma conta de entrevistador sem entidade, que nunca teve subscrição, pode enviar uma entrevista grátis, sem pagamento nem dados de cartão, depois de confirmar o email da conta. É uma por pessoa e por organização: cada conta só a usa uma vez e cada entrevistado só pode receber uma entrevista grátis em ${esc(config.brand)}, seja quem for que o convide.</li>
+<li>Tem os limites por entrevista do plano Start em vigor no envio e as regenerações incluídas como num plano, dentro de um total de ${FREE_PRODUCTION_JOBS} trabalhos de produção (processar a entrevista, regenerar o guião e gerar o episódio): contam também os que falham, por qualquer motivo, e cada «Tentar de novo». Um guião novo (processar a entrevista, regenerar o guião, recomeçar a produção ou rever uma transcrição) precisa de ${FREE_JOBS_FOR_SCRIPT} desses trabalhos por usar, o dele e o do episódio, e um pedido adicional, depois do primeiro guião, também (a resposta do entrevistado obriga a refazer o guião e o episódio): o último trabalho só serve para gerar o episódio de um guião aprovado. Acima desse total, essa entrevista não tem mais regenerações, nem pagas com créditos (as do ponto 2-A). À parte desse total, o vídeo com fotografias pode ser gerado até ${FREE_VIDEO_RENDERS} vezes nessa entrevista (contam também as que falham); depois, o episódio e o vídeo já gerado ficam como estão. A animação por IA e a introdução animada não estão incluídas. Não conta para a quota de um plano subscrito depois.</li>
+<li>A oferta tem um número limitado de entrevistas por dia e por mês, pode estar temporariamente indisponível e pode ser alterada ou retirada a qualquer momento, sem afetar as entrevistas grátis já enviadas. A indisponibilidade, a alteração ou a retirada da oferta não dão direito a créditos nem a reembolsos.</li></ul>
 <h2>3. Planos e preços</h2><div style="overflow-x:auto"><table><thead><tr><th>Plano</th><th>Entrevistas por mês</th><th>Preço</th>${head}</tr></thead><tbody>${plans.map(row).join('')}</tbody></table></div>
 <p>${vatExplanation(s)}</p>
 <h2>4. Quem pode comprar</h2><p>Empresas e consumidores com morada de faturação num país da União Europeia (exceto os territórios fora do território de IVA da UE, como as Canárias). Para outros países, contacte-nos: ${mail(contactEmail(s))}.</p>

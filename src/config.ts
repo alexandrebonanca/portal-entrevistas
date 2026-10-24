@@ -79,6 +79,8 @@ export const config = {
       image: env.OPENAI_MODEL_IMAGE ?? 'gpt-image-1',
     },
     voices: { host: env.OPENAI_VOICE_HOST ?? 'coral', guest: env.OPENAI_VOICE_GUEST ?? 'onyx' },
+    // Qualidade das imagens do gpt-image (low, medium, high): 'medium' é o preço de PRICE_IMAGE_EACH. Fora de `models`, como o assistente.
+    imageQuality: env.OPENAI_IMAGE_QUALITY ?? 'medium',
   },
   limits: {
     maxUploadMb: Number(env.MAX_UPLOAD_MB ?? 60),
@@ -100,6 +102,15 @@ export const config = {
     // forjável, endereços diferentes); 0 fecha o formulário a pedidos novos.
     contactPerHour: positive(env.CONTACT_PER_HOUR, 30),
     contactPerDay: positive(env.CONTACT_PER_DAY, 100),
+    // 1.ª entrevista grátis: tetos de entrevistas grátis enviadas por dia e por mês (UTC), todas as contas juntas, contados
+    // na base; 0 em qualquer um desliga a oferta (a landing e o registo deixam de a anunciar).
+    freePerDay: positive(env.FREE_INTERVIEWS_PER_DAY, 10),
+    freePerMonth: positive(env.FREE_INTERVIEWS_PER_MONTH, 60),
+    // Emails «Confirm your email» (registo público e «Reenviar»): teto por hora e por dia, todas as contas juntas, contados
+    // na fila de emails. Como o /contact, o registo põe na fila um email para um endereço qualquer; acima do teto a conta
+    // fica criada sem email (o painel deixa pedir outro mais tarde).
+    verifyEmailsPerHour: positive(env.VERIFY_EMAILS_PER_HOUR, 60),
+    verifyEmailsPerDay: positive(env.VERIFY_EMAILS_PER_DAY, 300),
   },
   // Fila de trabalhos: uma via por omissão; WORKER_LANES=2 separa a curta e a dos vídeos (dois FFmpeg ao mesmo tempo não
   // cabem com folga nos 512 MB do Render starter, com o servidor web no mesmo processo). Batimento de quem corre um trabalho,
@@ -117,6 +128,9 @@ export const config = {
     transcribePerMin: Number(env.PRICE_TRANSCRIBE_PER_MIN ?? 0.006),
     ttsPer1kChars: Number(env.PRICE_TTS_PER_1K_CHARS ?? 0.015),
     textPer1kTokens: Number(env.PRICE_TEXT_PER_1K_TOKENS ?? 0.004),
+    // Tokens medidos (usage_ledger): entrada e saída em separado (gpt-4.1: 2 e 8 USD por milhão).
+    textInPer1kTokens: Number(env.PRICE_TEXT_IN_PER_1K_TOKENS ?? 0.002),
+    textOutPer1kTokens: Number(env.PRICE_TEXT_OUT_PER_1K_TOKENS ?? 0.008),
     imageEach: Number(env.PRICE_IMAGE_EACH ?? 0.04),
   },
   aiDisclosure:

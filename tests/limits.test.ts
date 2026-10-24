@@ -292,8 +292,11 @@ test('gestor de entidade: convida sem subscrição nem limite mensal, com os lim
   // o entrevistador sem subscrição continua bloqueado
   const semSub = `sid=${cookies(await post('/registar', { name: 'Sem Sub', email: 'semsub@example.com', password: PW, terms: 1 })).sid}`;
   const s = await draft(semSub, 'Sem subscrição', ['Uma?']);
-  assert.match((await get(`/entrevistas/${s}/convidar`, semSub)).body, /Precisa de uma subscrição ativa para enviar convites/);
-  await post(`/entrevistas/${s}/convidar`, {}, semSub);
+  // (registo público com o email por confirmar: o aviso pede a confirmação para a 1.ª entrevista grátis, ou um plano)
+  const sp = (await get(`/entrevistas/${s}/convidar`, semSub)).body;
+  assert.match(sp, /Confirme o email da sua conta para enviar a 1\.ª entrevista grátis, ou escolha um plano em Conta\./);
+  assert.match(sp, /<button class="accent" disabled>Enviar convite<\/button>/);
+  assert.match(decodeURIComponent(String((await post(`/entrevistas/${s}/convidar`, {}, semSub)).headers.location)), /Precisa de uma subscrição ativa para enviar convites/);
   assert.equal((await db.one('SELECT collection_status s FROM interviews WHERE id=$1', [s])).s, 'draft');
   assert.match((await get('/admin/utilizadores', admin)).body, /semsub@example\.com<\/td><td>interviewer<\/td>[\s\S]*?<span class="pill ">nenhuma<\/span>/);
 });

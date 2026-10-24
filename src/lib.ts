@@ -29,6 +29,23 @@ export async function verifyPassword(pw: string, stored: string) {
 export const esc = (v: unknown) =>
   String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
 
+/**
+ * Texto sem os caracteres que o XML 1.0 não admite (controlo C0 fora do tab e das mudanças de linha, substitutos isolados,
+ * U+FFFE e U+FFFF). Num SVG desenhado pelo sharp (capa, cartões e rodapés do vídeo), um deles faz falhar a imagem inteira
+ * («PCDATA invalid Char»): antes, um nome do convidado com U+0001, gravado no «Guardar», fazia falhar a capa do episódio em
+ * cada tentativa, depois de pagas a voz, os tempos das legendas e as traduções.
+ */
+export const xmlText = (v: unknown) => String(v ?? '').replace(/[^\t\n\r -퟿-�\u{10000}-\u{10FFFF}]/gu, '');
+/** `esc` para o texto de um SVG (xmlText e depois esc). */
+export const escXml = (v: unknown) => esc(xmlText(v));
+/**
+ * Os primeiros `n` caracteres do texto, contados por pontos de código: nunca corta um emoji (um par de substitutos) ao
+ * meio. O `slice` de uma cadeia conta unidades UTF-16 e pode deixar um substituto isolado, que o JSON.stringify escreve
+ * como «\ud83d» e o jsonb recusa («invalid input syntax for type json»): antes, uma pergunta com um emoji a começar na
+ * posição 89 fazia falhar a gravação do episódio (títulos dos capítulos), no fim da geração e em cada tentativa.
+ */
+export const firstChars = (v: unknown, n: number) => Array.from(String(v ?? '')).slice(0, n).join('');
+
 export function sign(value: string) {
   return createHmac('sha256', config.secret).update(value).digest('base64url');
 }
@@ -40,6 +57,21 @@ export function sign(value: string) {
 export const isEmail = (s: string) => s.length <= 254 && /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(s);
 /** Email que pode servir de contacto ou de Reply-To: válido e não um endereço de exemplo (de uma instalação de desenvolvimento). */
 export const isRealEmail = (s: string) => isEmail(s) && !/@example\.(com|org|net)$/i.test(s);
+/**
+ * Caixa de correio de um email (1.ª entrevista grátis: «uma por convidado» e «uma por caixa de correio»; e o total dos
+ * emails de confirmação por caixa): minúsculas e sem espaços, sem o sub-endereço («+…» antes da @, que a maioria dos
+ * fornecedores entrega na mesma caixa) e, no Gmail, sem pontos e com googlemail.com como gmail.com. Outros domínios mantêm
+ * os pontos (podem ser caixas diferentes).
+ */
+export function normMailbox(email: string) {
+  const e = String(email ?? '').trim().toLowerCase();
+  const at = e.lastIndexOf('@');
+  if (at < 1) return e;
+  let local = e.slice(0, at).split('+')[0], domain = e.slice(at + 1);
+  if (domain === 'googlemail.com') domain = 'gmail.com';
+  if (domain === 'gmail.com') local = local.replace(/\./g, '');
+  return `${local || e.slice(0, at)}@${domain}`;
+}
 
 /**
  * Limitador em memória (por processo): suficiente para o MVP de uma instância. Cada chave (IP, email, conta) guarda os

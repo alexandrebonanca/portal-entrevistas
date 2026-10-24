@@ -300,6 +300,11 @@ export interface Metrics {
   entityRevenueCents: number; allEntityRevenueCents: number;
   /** Dia (UTC) em que a contagem das visitas começou (null se desconhecido). */
   trackingSince: string | null;
+  /**
+   * 1.ª entrevista grátis: contas que a enviaram no período (todas, não só as do registo no período) e, dessas, as que pagaram
+   * depois de a usar e até ao fim do período (conversão). Fora das linhas e do CSV: «Com convite» já conta também as grátis.
+   */
+  free: { sent: number; paying: number };
 }
 /**
  * Máximo de linhas da tabela (e do CSV); as restantes juntam-se em «(outros)». As das campanhas com custo no período ficam
@@ -460,7 +465,15 @@ export async function campaignMetrics(db: Db, period: Period): Promise<Metrics> 
     list = list.filter(r => !cut.has(r));
   }
   if (other) list.push(other);
-  return { period, rows: list, totals, paid, allRevenueCents: Number(all?.n ?? 0), entityRevenueCents, allEntityRevenueCents: Number(all?.e ?? 0), daily: [...daily.values()], spend, trackingSince };
+
+  // 1.ª entrevista grátis enviada no período (users.free_interview_at: uma por conta) e as contas que, depois de a enviar e até
+  // ao fim do período, pagaram alguma coisa à conta Stripe do portal (uma linha da lista «por faturar» com valor positivo:
+  // subscrição ou carregamento de créditos), como os «Pagantes».
+  const fr = await db.one(`SELECT count(*)::int AS sent, count(*) FILTER (WHERE EXISTS (SELECT 1 FROM invoice_queue q WHERE q.user_id=u.id AND q.entity_id IS NULL
+      AND q.currency='eur' AND q.net_cents > 0 AND q.paid_at >= u.free_interview_at AND q.paid_at < $2::timestamptz))::int AS paying
+    FROM users u WHERE u.free_interview_at >= $1::timestamptz AND u.free_interview_at < $2::timestamptz`, [start, end]);
+  const free = { sent: Number(fr?.sent ?? 0), paying: Number(fr?.paying ?? 0) };
+  return { period, rows: list, totals, paid, allRevenueCents: Number(all?.n ?? 0), entityRevenueCents, allEntityRevenueCents: Number(all?.e ?? 0), daily: [...daily.values()], spend, trackingSince, free };
 }
 
 /** Indicadores derivados (null quando não há base para os calcular). */
