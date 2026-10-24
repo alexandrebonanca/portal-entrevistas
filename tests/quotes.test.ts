@@ -755,3 +755,43 @@ test('nenhum pedaço com clipe: o vídeo não se liga ao episódio e as aprovaç
   assert.equal((await db.one('SELECT valid FROM approvals WHERE id=$1', [ap.id])).valid, true, 'a aprovação mantém-se');
   assert.match((await get(`/entrevistas/${ivId}/producao`, cli.cookie)).body, /A última geração do vídeo não terminou: Nenhuma fala ficou animada/);
 });
+
+test('fotografia recusada pelos filtros: depois de N pedaços bloqueados dessa pessoa, as falas seguintes não se tentam', async () => {
+  await rejectAll();
+  await db.query(`DELETE FROM veo_ops WHERE interview_id=$1`, [ivId]); // tentativas anteriores (dos testes de cima) não contam
+  // o convidado volta a autorizar o vídeo IA (um teste de cima retirou-a)
+  for (const p of ['ai_video', 'publish_photo']) await db.query(`INSERT INTO consents(interview_id, purpose, granted, text_version, text_snapshot) VALUES ($1,$2,true,'t','t')`, [ivId, p]);
+  V.veoMock.outcome = c => (c.role === 'guest' ? 'filtered' : 'ok');
+  V.veoTuning.roleFilterLimit = 1; // a fixture tem poucas falas do convidado
+  try {
+    assert.match(msg(await post(`/entrevistas/${ivId}/episodio/${epId}/video`, { engine: 'veo', lang: 'en' }, admin)), /Geração do vídeo iniciada/);
+    await drain();
+  } finally { V.veoMock.outcome = null; V.veoTuning.roleFilterLimit = 3; }
+  const j = await lastJob();
+  assert.equal(j.state, 'done', j.error);
+  const meta = (await db.one('SELECT a.meta FROM episodes e JOIN assets a ON a.id=e.video_asset_id WHERE e.id=$1', [epId])).meta;
+  const guest = meta.fidelity.filter((f: any) => f.role === 'guest');
+  const tried = guest.filter((f: any) => f.problem === 'filtered').length;
+  assert.ok(tried >= 1 && tried <= 2, `tentados: ${tried} ${JSON.stringify(guest.map((f: any) => f.problem))}`);
+  assert.ok(guest.length === tried || guest.filter((f: any) => f.problem !== 'filtered').every((f: any) => f.problem === 'filtered_role' || f.problem === 'skipped'), 'os restantes ficam por tentar (sem custo)');
+  assert.ok(meta.fidelity.filter((f: any) => f.role === 'host').every((f: any) => f.ok), 'o entrevistador anima-se');
+  const page = (await get(`/entrevistas/${ivId}/producao`, admin)).body;
+  if (guest.some((f: any) => f.problem === 'filtered_role')) assert.match(page, /não tentado: a Google recusa animar esta fotografia/);
+});
+
+test('palavras a mais só nas pontas do clipe: aceita-se e corta-se à volta do texto certo; no meio não', () => {
+  const W = (s: string, t0 = 0.3, step = 0.4) => s.split(' ').map((w, k) => ({ word: w, start: t0 + k * step, end: t0 + k * step + 0.3 }));
+  const exp = 'In the particular case of Portugal,';
+  const tail = W('In the particular case of Portugal when Scorsese strip there');
+  const m = V.matchWindow(tail, exp)!;
+  assert.deepEqual([m.i, m.j], [0, 5]);
+  const tw = V.trimWindow(tail, 8000, exp);
+  assert.ok(tw.b <= Math.round(tail[6].start * 1000), `corta antes de «when»: ${tw.b}`);
+  const head = W('crisis what difficulties might the country face');
+  assert.deepEqual(V.matchWindow(head, 'what difficulties might the country face?'), { i: 1, j: 6 });
+  assert.ok(V.trimWindow(head, 8000, 'what difficulties might the country face?').a >= Math.round(head[0].end * 1000));
+  const dup = W('for joining us today for joining us today');
+  assert.deepEqual(V.matchWindow(dup, 'for joining us today.'), { i: 0, j: 3 });
+  assert.equal(V.matchWindow(W('In the case of Spain and Portugal'), 'In the case of Portugal'), null, 'diferença no meio');
+  assert.equal(V.matchWindow(W('one two three'), 'one two three'), null, 'igual: já passa sem cortar');
+});

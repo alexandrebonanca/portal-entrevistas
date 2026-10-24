@@ -62,3 +62,39 @@ export function checkCues(cues: Cue[], durationMs: number): string[] {
   }
   return issues;
 }
+
+/**
+ * Divide o texto traduzido de uma fala em `weights.length` partes (uma por legenda inglesa da fala), proporcionais ao
+ * tamanho de cada legenda de origem, cortando entre palavras e, perto do ponto ideal, de preferência depois de pontuação.
+ * Assim a tradução é feita à fala inteira (frases completas, sem texto a passar de uma legenda para a vizinha) e os
+ * tempos continuam a ser os medidos no áudio. Nenhuma parte fica vazia enquanto houver palavras para todas.
+ */
+export function splitByWeights(text: string, weights: number[]): string[] {
+  const words = text.trim().split(/\s+/).filter(Boolean);
+  const n = weights.length;
+  if (n <= 1 || !words.length) return n ? [words.join(' '), ...Array(n - 1).fill('')].slice(0, n) : [];
+  if (words.length <= n) return Array.from({ length: n }, (_, k) => words[k] ?? ''); // poucas palavras: uma por legenda, pela ordem
+  const total = weights.reduce((a, b) => a + Math.max(1, b), 0);
+  const len = words.reduce((a, w) => a + w.length + 1, 0);
+  const ends: number[] = []; // índice (exclusivo) da última palavra de cada parte
+  let acc = 0, start = 0;
+  for (let k = 0; k < n - 1; k++) {
+    acc += Math.max(1, weights[k]);
+    const target = (acc / total) * len;
+    let best = -1, bestScore = Infinity, pos = 0;
+    const minEnd = start + 1, maxEnd = words.length - (n - 1 - k); // deixa pelo menos uma palavra a cada parte seguinte
+    for (let j = 0; j < words.length; j++) {
+      pos += words[j].length + 1;
+      const end = j + 1;
+      if (end < minEnd || end > maxEnd) continue;
+      const punct = /[.,;:!?…)»"]$/.test(words[j]) ? 0.6 : 1; // um corte depois de pontuação vale mais
+      const score = Math.abs(pos - target) * punct;
+      if (score < bestScore) { bestScore = score; best = end; }
+    }
+    if (best < 0) best = Math.min(maxEnd, Math.max(minEnd, start + 1));
+    ends.push(best); start = best;
+  }
+  ends.push(words.length);
+  let from = 0;
+  return ends.map(e => { const part = words.slice(from, e).join(' '); from = e; return part; });
+}

@@ -10,7 +10,7 @@ import { photoTimeline, peopleOf } from './graphics.ts';
 import { lipsync, lipsyncMock, estimateLipsyncUsd } from './lipsync.ts';
 import { PROVIDERS, runProvider, signedAssetUrl } from './talking.ts';
 import { readQuestion, generateFictionalPortrait } from './ai/openai.ts';
-import { cuesFromWords, fixOverlaps, checkCues, type Cue } from './subtitles.ts';
+import { cuesFromWords, fixOverlaps, checkCues, splitByWeights, type Cue } from './subtitles.ts';
 import { composeCover } from './cover.ts';
 import { PermanentError, type Handler } from './jobs.ts';
 import { renderVeoVideo, releaseQuoteOfJob, VIDEO_ONLY_PREVIEW } from './veo-episode.ts';
@@ -219,18 +219,34 @@ export const handlers: Record<string, Handler> = {
       en.push(...cuesFromWords(words, seg, 'en'));
     }
     if (wordsMs) await usage(db, iv.id, 'timestamps_min', wordsMs / 60000, (wordsMs / 60000) * config.prices.transcribePerMin);
-    en = fixOverlaps(en).map((c, i) => ({ ...c, id: `c${i}` }));
+    // Fala de cada legenda (o id de cuesFromWords é «fala-k»), guardada antes de os ids passarem a c0, c1…
+    en = fixOverlaps(en);
+    const falaOf = en.map(c => c.id.slice(0, c.id.lastIndexOf('-')));
+    en = en.map((c, i) => ({ ...c, id: `c${i}` }));
     const subtitles: Record<string, Cue[]> = { en };
+    // Legendas de cada fala (pela ordem) e o texto aprovado dela, para a tradução fala a fala.
+    const groups = () => { const g = new Map<string, number[]>(); falaOf.forEach((f, i) => { const l = g.get(f) ?? []; l.push(i); g.set(f, l); }); return g; };
+    const falaItems = () => [...groups()].map(([fala, idx]) => ({ id: fala, text: timing.find(t => t.id === fala)?.text?.trim() || idx.map(i => en[i].text).join(' ') }));
     const trIssues: string[] = [];
     for (const lang of subLangs.filter(l => l !== 'en')) {
       await progress(step, total, `A traduzir as legendas (${lang})`);
       // Teto de tokens por bloco e, numa resposta cortada ou inválida, o inglês desse bloco (o trabalho não se repete).
       const meter = newMeter();
-      const tr = await translateSubtitleCues(en.map(c => ({ id: c.id, text: c.text })), lang, meter).finally(() => recordTextUsage(db, iv.id, 'subtitle_tokens', meter));
-      const untranslated = tr.filter(x => x.reviewFlags.includes(UNTRANSLATED)).length;
+      // Tradução fala a fala (o texto aprovado, com frases completas) e divisão pelas legendas inglesas dessa fala, na
+      // proporção do tamanho de cada uma: traduzir legenda a legenda fazia a IA passar texto de umas para as outras (e
+      // entre o entrevistador e o convidado), e as legendas traduzidas ficavam fora de tempo face à voz.
+      const tr = await translateSubtitleCues(falaItems(), lang, meter).finally(() => recordTextUsage(db, iv.id, 'subtitle_tokens', meter));
+      const map = new Map(tr.filter(x => !x.reviewFlags.includes(UNTRANSLATED) && x.translatedText.trim()).map(x => [x.sourceCueId, x.translatedText]));
+      const out: Cue[] = [];
+      let untranslated = 0;
+      for (const [fala, idx] of groups()) {
+        const t = map.get(fala);
+        const parts = t ? splitByWeights(t, idx.map(i => en[i].text.length)) : null;
+        if (!t) untranslated += idx.length;
+        idx.forEach((i, k) => out.push({ ...en[i], language: lang, text: (parts?.[k] || '') || en[i].text }));
+      }
       if (untranslated) trIssues.push(`${lang}: ${untranslated} legendas ficaram em inglês (a resposta da IA veio cortada ou inválida)`);
-      const map = new Map(tr.map(x => [x.sourceCueId, x.translatedText]));
-      subtitles[lang] = en.map(c => ({ ...c, language: lang, text: map.get(c.id) || c.text })); // ligação 1:1 aos cues de origem
+      subtitles[lang] = out.sort((x, y) => x.startMs - y.startMs);
       step += W.tr;
     }
     if (!subLangs.includes('en')) delete subtitles.en;

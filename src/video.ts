@@ -445,7 +445,10 @@ export async function buildAudioTrack(ffmpeg: string, pieces: AudioPiece[]): Pro
       if (p.src) {
         let f = written.get(p.src);
         if (!f) { f = join(dir, `s${i}.${p.ext ?? 'mp3'}`); await writeFile(f, typeof p.src === 'function' ? await p.src() : p.src); written.set(p.src, f); }
-        r = await run(ffmpeg, ['-y', '-v', 'error', '-ss', ((p.offsetMs ?? 0) / 1000).toFixed(3), '-i', f, '-vn', '-af', 'apad', '-t', d, '-ar', '44100', '-ac', '2', '-c:a', 'pcm_s16le', o], 120_000);
+        // Som de um clipe de vídeo IA (mp4): o volume muda de clipe para clipe; normaliza-se ao nível do episódio (-16 LUFS, o
+        // mesmo do assembleEpisode), para não haver saltos de volume entre clipes nem face às falas com a voz do episódio.
+        const af = p.ext === 'mp4' ? 'loudnorm=I=-16:TP=-1.5:LRA=11,apad' : 'apad';
+        r = await run(ffmpeg, ['-y', '-v', 'error', '-ss', ((p.offsetMs ?? 0) / 1000).toFixed(3), '-i', f, '-vn', '-af', af, '-t', d, '-ar', '44100', '-ac', '2', '-c:a', 'pcm_s16le', o], 120_000);
         if (r.code !== 0) console.error(`[video] troço de áudio ${i} sem som utilizável, fica silêncio: ${r.stderr.slice(-200)}`);
       }
       if (r.code !== 0) { r = await run(ffmpeg, silence, 60_000); if (r.code !== 0) throw new Error('Falha a gerar silêncio: ' + r.stderr.slice(-200)); }

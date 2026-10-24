@@ -65,3 +65,15 @@ test('estimativa inicial do tempo: por omissão pelo tamanho do episódio e depo
   assert.equal(await expectedSec(db, { kind: 'render_video', input: { episodeId: e15 } }), 30 * 15);
   assert.equal(await expectedSec(db, { kind: 'generate_episode', input: {} }), null, 'sem histórico, só pelo ritmo');
 });
+
+test('legendas traduzidas fala a fala: o texto divide-se pelas legendas inglesas na proporção, sem partes vazias', async () => {
+  const { splitByWeights } = await import('../src/subtitles.ts');
+  const t = 'É verdade. Embora tenha conhecimentos consideráveis em várias áreas da engenharia, a energia destaca-se para mim.';
+  const p = splitByWeights(t, [40, 40, 20]);
+  assert.equal(p.length, 3);
+  assert.equal(p.join(' '), t, 'nenhuma palavra se perde nem muda de ordem');
+  assert.ok(p.every(x => x.length > 0));
+  assert.equal(splitByWeights('Primeira frase curta. Segunda frase também curta aqui.', [21, 33])[0], 'Primeira frase curta.', 'corta de preferência depois de pontuação');
+  assert.deepEqual(splitByWeights('uma', [10, 10]), ['uma', '']);
+  assert.deepEqual(splitByWeights('a b', [1]), ['a b']);
+});
