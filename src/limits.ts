@@ -35,6 +35,20 @@ export const secondsLeft = (limitSec: number | null | undefined, usedMs: number)
 
 export const mmss = (sec: number) => `${Math.floor(sec / 60)}:${String(Math.floor(sec % 60)).padStart(2, '0')}`;
 
+// ---- línguas das legendas ----
+/** Línguas das legendas que o portal oferece (o inglês do guião e as quatro traduções), com o nome na página. */
+export const SUBTITLE_LANGS: readonly (readonly [code: string, label: string])[] = [['en', 'English'], ['pt-PT', 'Português (PT)'], ['es', 'Español'], ['fr', 'Français'], ['de', 'Deutsch']];
+/**
+ * Línguas das legendas pedidas: só as oferecidas e cada uma uma vez, pela ordem do pedido (no máximo as de
+ * SUBTITLE_LANGS). Antes, o /gerar, o /gerar/repetir e o «Guardar» só tiravam as desconhecidas: um pedido com ['en',
+ * 'de' × 3000] dava um trabalho com 3001 línguas e 3000 traduções das legendas (gpt-4.1, sem cache), numa só geração.
+ */
+export const subtitleLangs = (v: unknown): string[] =>
+  [...new Set(([] as unknown[]).concat(v ?? []).filter((l): l is string => typeof l === 'string' && SUBTITLE_LANGS.some(s => s[0] === l)))];
+
+/** 1.ª entrevista grátis: trabalhos de produção por entrevista (ver free-interview.ts, freeProductionJobs; aqui para os termos). */
+export const FREE_PRODUCTION_JOBS = 8;
+
 // ---- regenerações do guião e do episódio ----
 /** Regenerações já contadas na entrevista (trabalhos marcados como regeneração e que não falharam). */
 export async function regenerationsUsed(db: Db, interviewId: string): Promise<number> {

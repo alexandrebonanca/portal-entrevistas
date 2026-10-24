@@ -29,6 +29,16 @@ export async function verifyPassword(pw: string, stored: string) {
 export const esc = (v: unknown) =>
   String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
 
+/**
+ * Texto sem os caracteres que o XML 1.0 não admite (controlo C0 fora do tab e das mudanças de linha, substitutos isolados,
+ * U+FFFE e U+FFFF). Num SVG desenhado pelo sharp (capa, cartões e rodapés do vídeo), um deles faz falhar a imagem inteira
+ * («PCDATA invalid Char»): antes, um nome do convidado com U+0001, gravado no «Guardar», fazia falhar a capa do episódio em
+ * cada tentativa, depois de pagas a voz, os tempos das legendas e as traduções.
+ */
+export const xmlText = (v: unknown) => String(v ?? '').replace(/[^\t\n\r -퟿-�\u{10000}-\u{10FFFF}]/gu, '');
+/** `esc` para o texto de um SVG (xmlText e depois esc). */
+export const escXml = (v: unknown) => esc(xmlText(v));
+
 export function sign(value: string) {
   return createHmac('sha256', config.secret).update(value).digest('base64url');
 }

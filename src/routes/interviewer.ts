@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import type { Db } from '../db.ts';
 import { config } from '../config.ts';
-import { esc, isEmail, fmtDate, fmtDuration, rateLimit } from '../lib.ts';
+import { esc, isEmail, fmtDate, fmtDuration, rateLimit, xmlText } from '../lib.ts';
 import { page, flash, pill, STATUS_LABEL } from '../views.ts';
 import { requireUser, ownedInterview, audit, sendAsset } from '../app.ts';
 import { sniff, stripJpegMetadata, saveAsset, probeAudio } from '../media.ts';
@@ -13,8 +13,9 @@ import { seller } from '../legal.ts';
 import { withVat, eurPt } from '../vat.ts';
 import { walletFor, findWallet, spend, spendBlock, cr, EXTRA_INTERVIEW_CENTS } from '../wallet.ts';
 import { paidConsentHtml, paidConsentOk } from './credits.ts';
-import { inviteLimits, draftQuestionMax, answeredMs, secondsLeft, mmss, FOLLOWUP_MIN_LEFT_SEC, LIMIT_SLACK_MS } from '../limits.ts';
+import { inviteLimits, draftQuestionMax, answeredMs, secondsLeft, mmss, FOLLOWUP_MIN_LEFT_SEC, LIMIT_SLACK_MS, SUBTITLE_LANGS, subtitleLangs } from '../limits.ts';
 import { introCard } from './intro.ts';
+import { photoDecodes } from '../cover.ts';
 import { helpNav } from '../support.ts';
 import { assistantAiFor } from '../assistant.ts';
 import { composeAction, composeDraft, composeAssist, composeAvailable, composeHourFull, COMPOSE_MAX_REQUEST, COMPOSE_BODY_LIMIT, COMPOSE_RATE } from '../compose.ts';
@@ -26,7 +27,7 @@ const FREE_TRIES_PER_HOUR = 10;
 const H = { 'Content-Type': 'text/html; charset=utf-8' };
 export const nav = (u: any) => `<a href="/painel">Painel</a><a href="/entrevistas/nova">Nova entrevista</a><a href="/account">Conta</a>${u.role === 'admin' ? '' : '<a href="/conta/creditos">Créditos</a>'}${helpNav(u)}${u.role === 'admin' ? '<a href="/admin/entidades">Entidades</a><a href="/admin/utilizadores">Utilizadores</a><a href="/admin/definicoes">Definições</a>' : u.role === 'entity_admin' ? '<a href="/entidade">Entidade</a>' : ''}<form method="post" action="/sair" style="display:inline"><button class="ghost" style="padding:6px 12px;min-height:0;margin-left:16px">Sair (${esc(u.name)})</button></form>`;
 const LANGS: [string, string][] = [['pt-PT', 'Português (PT)'], ['en', 'English']];
-const SUBS = [['en', 'English'], ['pt-PT', 'Português (PT)'], ['es', 'Español'], ['fr', 'Français'], ['de', 'Deutsch']];
+const SUBS = SUBTITLE_LANGS;
 const statusPill = (s: string) => pill(STATUS_LABEL[s] ?? s, ['submitted', 'ready', 'published', 'approved'].includes(s) ? 'ok' : ['failed', 'expired', 'cancelled', 'stale', 'withdrawn'].includes(s) ? 'bad' : '');
 
 /**
@@ -113,7 +114,7 @@ ${rows.map((r: any) => `<tr><td><a href="/entrevistas/${r.id}">${esc(r.title)}</
 
   app.post('/entrevistas', async (req, reply) => {
     if (!requireUser(req, reply)) return;
-    const title = String((req.body as any)?.title ?? '').trim().slice(0, 140);
+    const title = xmlText((req.body as any)?.title).trim().slice(0, 140);
     if (!title) return reply.redirect('/entrevistas/nova');
     const r = await db.one(`INSERT INTO interviews(owner_id, title, host_name) VALUES ($1,$2,$3) RETURNING id`, [req.user!.id, title, req.user!.name]);
     await audit(db, req.user!.email, 'interview.create', r.id);
@@ -193,7 +194,7 @@ ${locked ? '' : composePanel(iv, quota!, !(await inEntity(await entityOfIntervie
     const iv = await ownedInterview(app, req, (req.params as any).id);
     if (!iv) return reply.code(404).send('Não encontrada');
     const b = req.body as any;
-    const subs = ([] as string[]).concat(b.subtitle_langs ?? []).filter(l => SUBS.some(s => s[0] === l));
+    const subs = subtitleLangs(b.subtitle_langs); // cada uma uma vez: cada língua é uma tradução paga em cada geração
     const email = String(b.guest_email ?? '').trim().toLowerCase();
     if (email && !isEmail(email)) return reply.redirect(`/entrevistas/${iv.id}/editar?e=` + encodeURIComponent('Email do entrevistado inválido.'));
     // Depois do convite, o título, o objetivo e o convidado ficam como foram enviados, e a aprovação prometida ao convidado
@@ -209,12 +210,14 @@ ${locked ? '' : composePanel(iv, quota!, !(await inEntity(await entityOfIntervie
         personal_message=CASE WHEN collection_status='draft' OR free_at IS NULL THEN $12 ELSE personal_message END, subtitle_langs=$13,
         review_policy=CASE WHEN collection_status<>'draft' AND review_policy='guest_preview' THEN 'guest_preview' ELSE $14::text END,
         host_photo_rights=$15, question_voice=$16, guest_voice=$17, host_animate=$18, host_ai_video=$19, host_title=$20, guest_title=$21 WHERE id=$1 RETURNING review_policy`,
-      [iv.id, String(b.title ?? '').trim().slice(0, 140), String(b.objective_text ?? '').slice(0, 4000), !!b.objective_shared,
-        String(b.host_name ?? '').slice(0, 100), String(b.guest_name ?? '').slice(0, 100), email, b.interaction_lang === 'en' ? 'en' : 'pt-PT',
+      // O título, os nomes e as funções vão para a capa e para os cartões do vídeo (SVG): sem os caracteres que o XML não
+      // admite (xmlText), que faziam falhar a capa em cada tentativa, depois das etapas pagas.
+      [iv.id, xmlText(b.title).trim().slice(0, 140), String(b.objective_text ?? '').slice(0, 4000), !!b.objective_shared,
+        xmlText(b.host_name).slice(0, 100), xmlText(b.guest_name).slice(0, 100), email, b.interaction_lang === 'en' ? 'en' : 'pt-PT',
         ['auto', 'pt', 'en', 'es', 'fr', 'de'].includes(b.answer_lang) ? b.answer_lang : 'auto', b.deadline || null,
         ['private', 'unlisted', 'public'].includes(b.planned_visibility) ? b.planned_visibility : 'private', String(b.personal_message ?? '').slice(0, 1500),
         subs.length ? subs : ['en'], b.review_policy === 'host_only' ? 'host_only' : 'guest_preview', !!b.host_photo_rights, b.question_voice === 'male' ? 'male' : 'female', b.guest_voice === 'male' ? 'male' : 'female', !!b.host_animate && !!b.host_photo_rights, !!b.host_ai_video && !!b.host_photo_rights,
-        String(b.host_title ?? '').replace(/\s+/g, ' ').trim().slice(0, 60), String(b.guest_title ?? '').replace(/\s+/g, ' ').trim().slice(0, 60)]);
+        xmlText(b.host_title).replace(/\s+/g, ' ').trim().slice(0, 60), xmlText(b.guest_title).replace(/\s+/g, ' ').trim().slice(0, 60)]);
     const policy = saved.review_policy;
     // Autorização retirada pelo entrevistador: o vídeo que usava a fotografia, a animação ou o Veo deixa de ser servido (o ficheiro fica privado).
     const photo = !!b.host_photo_rights, anim = photo && !!b.host_animate, ai = photo && !!b.host_ai_video;
@@ -363,6 +366,8 @@ ${locked ? '' : composePanel(iv, quota!, !(await inEntity(await entityOfIntervie
   app.post('/api/entrevistas/:id/foto', async (req, reply) => {
     const r = await rawUpload(req, reply, 'image'); if (!r) return;
     const data = r.kind.mime === 'image/jpeg' ? stripJpegMetadata(r.data) : r.data;
+    // A assinatura não chega: uma fotografia que não se descodifica só falharia no vídeo, depois de pago o resto.
+    if (!(await photoDecodes(data))) return reply.code(415).send({ error: 'A fotografia não se consegue abrir (ficheiro danificado ou com mais de 50 megapíxeis).' });
     const id = await saveAsset(db, { interviewId: r.iv.id, kind: 'host_photo', mime: r.kind.mime, ext: r.kind.ext, data });
     await db.query('UPDATE interviews SET host_photo_asset_id=$2 WHERE id=$1', [r.iv.id, id]);
     return { ok: true, assetId: id };

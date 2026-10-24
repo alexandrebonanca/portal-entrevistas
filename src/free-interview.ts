@@ -3,7 +3,7 @@ import { config } from './config.ts';
 import { esc, sha256, fmtDate, normMailbox } from './lib.ts';
 import { ACTIVE_STATUSES, quotaFor } from './billing.ts';
 import { enqueue, type EnqueueOpts } from './jobs.ts';
-import { inviteLimits, mmss } from './limits.ts';
+import { inviteLimits, mmss, FREE_PRODUCTION_JOBS } from './limits.ts';
 import { lastVerificationAt, verifySent, VERIFY_TOTAL, VERIFY_PER_DAY, VERIFY_HOURS } from './email-verify.ts';
 import { flash } from './views.ts';
 
@@ -15,9 +15,10 @@ import { flash } from './views.ts';
  * com o mesmo email normalizado (eve+1@gmail.com, e.v.e@gmail.com) já não a tem.
  * Tetos globais por dia e por mês (UTC), contados na base (`interviews.free_at`); 0 desliga a oferta. Cada convidado
  * (email normalizado) recebe no máximo uma em todo o portal, seja quem for que o convide (índice único na impressão).
- * Limites da entrevista: os do plano Start (tabela `plans`); regenerações incluídas como num plano; a animação por IA
- * continua por orçamento e com créditos, e a introdução animada não é oferecida por ela (ver routes/intro.ts). A entrevista
- * grátis não conta para a quota de um plano subscrito depois (quotaFor exclui-a, como as extra).
+ * Limites da entrevista: os do plano Start (tabela `plans`); regenerações incluídas como num plano, dentro do total de
+ * trabalhos de produção (FREE_PRODUCTION_JOBS, escrito nos termos 2-C); a animação por IA continua por orçamento e com
+ * créditos, e a introdução animada não é oferecida por ela (ver routes/intro.ts). A entrevista grátis não conta para a
+ * quota de um plano subscrito depois (quotaFor exclui-a, como as extra).
  */
 export type FreeReason = 'role' | 'entity' | 'subscribed' | 'used' | 'had_subscription' | 'off' | 'unverified' | 'cap_day' | 'cap_month' | 'guest_used';
 export interface FreeState { eligible: boolean; reason: FreeReason | null; usedAt: Date | null; interviewId: string | null; verified: boolean }
@@ -180,11 +181,33 @@ export async function aiUsed(db: Db, interviewId: string, action: AiAction): Pro
  * próxima falha tardia por descobrir também pára. As regenerações pagas com 1 crédito só contam se falharem (o crédito
  * volta); as que terminam foram pagas. Os trabalhos do administrador não contam e ele não fica bloqueado. Uso normal: 1
  * processamento, 1 episódio e as 3 regenerações incluídas (5); ficam 3 para tentar de novo depois de falhas. Acima, nada
- * entra na fila, pago ou não. Número escolhido sem dados de uso (com o tamanho do guião da entrevista grátis, cerca de 1 USD
- * por geração do episódio, no pior caso).
+ * entra na fila, pago ou não, e a recusa vem antes de qualquer pagamento (não convida a carregar créditos). Um guião novo
+ * (processar ou regenerar o guião) precisa de FREE_JOBS_FOR_SCRIPT por usar — o dele e o do episódio —, também pago (se
+ * falhar, conta): com menos, processar, «Regenerar guião», «Recomeçar» e «Guardar nova revisão» de uma transcrição (que
+ * desatualiza o guião e o episódio) ficam recusados, para um episódio pronto não deixar de se poder publicar. Saída para quem
+ * esgota o total de boa-fé (por exemplo, com falhas do fornecedor): a Ajuda, onde a equipa responde; o administrador produz
+ * na entrevista sem contar nem ficar bloqueado.
+ * Custo (pelos preços da configuração, PRICE_*, que são estimativas): cada trabalho tem até 3 tentativas e, numa falha
+ * tardia, cada tentativa paga outra vez os tempos das legendas (whisper por segmento), as traduções e a capa (resumo e
+ * imagem); só a voz fica em cache (por texto). Com o guião no máximo (SCRIPT_TOTAL_MAX, 60 000 caracteres), uma geração
+ * custa ~0,9 USD de voz e ~1,1 USD por tentativa (whisper ~0,4, 4 traduções ~0,65, capa ~0,04): ~4,1 USD com 3 tentativas.
+ * No pior caso (1 processamento e 7 gerações, cada uma com um guião diferente e as 3 tentativas a falhar no fim), cerca de
+ * 30 USD por entrevista grátis, ~1 800 USD por mês no teto de 60. Uso normal (5 trabalhos sem falhas, ~36 000 caracteres):
+ * ~5 USD. Número escolhido sem dados de uso.
  */
-export const FREE_PRODUCTION_JOBS = 8;
-export const FREE_JOBS_USED = `A 1.ª entrevista grátis inclui ${FREE_PRODUCTION_JOBS} trabalhos de produção (processar, regenerar o guião e gerar o episódio, contando os que falharam e cada «Tentar de novo») e já os usou todos. Com uma subscrição (Conta), as próximas entrevistas não têm este limite.`;
+export { FREE_PRODUCTION_JOBS };
+/** Trabalhos de produção por usar de que um guião novo precisa na entrevista grátis: o dele e o da geração do episódio. */
+export const FREE_JOBS_FOR_SCRIPT = 2;
+const jobsUsed = (help: string, account: string) => `A 1.ª entrevista grátis inclui ${FREE_PRODUCTION_JOBS} trabalhos de produção (processar, regenerar o guião e gerar o episódio, contando os que falharam e cada «Tentar de novo») e já os usou todos: nesta entrevista não há mais regenerações, nem pagas com créditos. Para a concluir, peça ajuda à equipa do portal em ${help}: a equipa pode terminar a produção desta entrevista. Com uma subscrição (${account}), as próximas entrevistas não têm este limite.`;
+export const FREE_JOBS_USED = jobsUsed('«Ajuda»', 'Conta');
+/** O mesmo, com as ligações (aviso da página da produção). */
+export const FREE_JOBS_USED_HTML = jobsUsed('<a href="/ajuda">Ajuda</a>', '<a href="/account">Conta</a>');
+const jobsLow = (help: string) => `Na 1.ª entrevista grátis resta 1 dos ${FREE_PRODUCTION_JOBS} trabalhos de produção: chega para gerar o episódio de um guião aprovado, mas não para fazer um guião novo e depois o episódio. Por isso, processar de novo, «Regenerar guião», «Recomeçar» e «Guardar nova revisão» das transcrições (que obriga a refazer o guião e o episódio) não estão disponíveis. Se precisar, peça ajuda à equipa do portal em ${help}: a equipa pode terminar a produção desta entrevista.`;
+export const FREE_JOBS_LOW = jobsLow('«Ajuda»');
+export const FREE_JOBS_LOW_HTML = jobsLow('<a href="/ajuda">Ajuda</a>');
+/** Recusa por falta de trabalhos de produção na entrevista grátis (null = pode), para uma ação que precisa de `need` por usar. */
+export const freeJobsBlock = (used: number | null, need: number): string | null =>
+  used == null ? null : used >= FREE_PRODUCTION_JOBS ? FREE_JOBS_USED : FREE_PRODUCTION_JOBS - used < need ? FREE_JOBS_LOW : null;
 /** Trabalhos de produção que contam para FREE_PRODUCTION_JOBS na entrevista (ver acima). */
 export async function freeProductionJobs(q: Db, interviewId: string): Promise<number> {
   return Number((await q.one(`SELECT count(*)::int AS n FROM jobs WHERE interview_id=$1 AND kind IN ('process_submission','prepare_script','generate_episode')

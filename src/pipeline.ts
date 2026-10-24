@@ -17,7 +17,7 @@ import { renderVeoVideo, releaseQuoteOfJob, VIDEO_ONLY_PREVIEW } from './veo-epi
 import { renderHostIntro, failIntro } from './veo-intro.ts';
 import { reverseDebit } from './wallet.ts';
 import { isUuid } from './support.ts';
-import { SCRIPT_SEGMENT_MAX } from './limits.ts';
+import { SCRIPT_SEGMENT_MAX, SUBTITLE_LANGS } from './limits.ts';
 
 const usage = (db: Db, interviewId: string, kind: string, quantity: number, cost: number) =>
   db.query('INSERT INTO usage_ledger(interview_id, kind, quantity, cost_usd, estimated) VALUES ($1,$2,$3,$4,true)', [interviewId, kind, quantity, cost]);
@@ -122,13 +122,15 @@ export const handlers: Record<string, Handler> = {
     // legendas, as traduções e a capa, e o erro (não permanente) repetia tudo três vezes.
     if (opts.coverPhotoIds !== undefined && (!Array.isArray(opts.coverPhotoIds) || opts.coverPhotoIds.length > 2 || !opts.coverPhotoIds.every(isUuid)))
       throw new PermanentError('Fotografias da capa inválidas');
-    if (opts.subtitleLangs !== undefined && (!Array.isArray(opts.subtitleLangs) || !opts.subtitleLangs.every(l => typeof l === 'string' && /^[a-z]{2}(-[A-Z]{2})?$/.test(l))))
+    // Línguas das legendas (as do pedido ou, sem elas, as da entrevista): só as oferecidas, e cada uma traduz-se uma vez.
+    // Antes, só se verificava o formato: ['en', 'de' × 3000] dava 3000 traduções das legendas (gpt-4.1) numa geração.
+    const askedLangs: unknown = opts.subtitleLangs?.length ? opts.subtitleLangs : iv.subtitle_langs;
+    if ((opts.subtitleLangs !== undefined && !Array.isArray(opts.subtitleLangs)) || !Array.isArray(askedLangs) || !askedLangs.every(l => SUBTITLE_LANGS.some(s => s[0] === l)))
       throw new PermanentError('Línguas das legendas inválidas');
+    const subLangs: string[] = [...new Set(askedLangs as string[])];
     const long = (Array.isArray(segments) ? segments : []).find(s => typeof s?.textEnglish !== 'string' || s.textEnglish.length > SCRIPT_SEGMENT_MAX);
     if (!Array.isArray(segments) || !segments.length || long) throw new PermanentError(`Guião inválido${long ? `: o segmento ${String(long.id)} passa o limite da síntese de voz (${SCRIPT_SEGMENT_MAX} caracteres)` : ''}`);
     await db.query(`UPDATE interviews SET production_status='generating' WHERE id=$1`, [iv.id]);
-
-    const subLangs: string[] = opts.subtitleLangs?.length ? opts.subtitleLangs : iv.subtitle_langs;
 
     // 1. Áudio por segmento (com cache por texto+papel+voz+modelo), incluindo o aviso inicial.
     const all: { id: string; role: 'host' | 'guest'; text: string; editorial: boolean }[] = [
@@ -205,7 +207,11 @@ export const handlers: Record<string, Handler> = {
     const photoRows = coverOk && opts.coverPhotoIds?.length
       ? await db.query(`SELECT a.*, p.id AS photo_id FROM photos p JOIN assets a ON a.id=p.asset_id WHERE p.interview_id=$1 AND p.id = ANY($2::uuid[]) LIMIT 2`, [iv.id, opts.coverPhotoIds]) : [];
     const photoBufs = await Promise.all(photoRows.map((a: any) => storage.get(a.storage_key)));
-    const { cover, thumb } = await composeCover({ title: script.title_en, subtitle: iv.guest_name ? `with ${iv.guest_name}` : '', brand: config.brand, background: bg, photos: photoBufs, palette: brief?.palette });
+    // A capa não falha pelas entradas (composeCover: texto sem os caracteres que o XML não admite, fotografia ou fundo que não
+    // se descodificam ficam de fora); uma falha que ainda assim aconteça repetir-se-ia igual em cada tentativa, depois das
+    // etapas pagas, e por isso é permanente.
+    const { cover, thumb, photos: inCover } = await composeCover({ title: script.title_en, subtitle: iv.guest_name ? `with ${iv.guest_name}` : '', brand: config.brand, background: bg, photos: photoBufs, palette: brief?.palette })
+      .catch((e: any) => { throw new PermanentError(`Não foi possível compor a capa: ${String(e?.message ?? e).slice(0, 200)}`); });
     const coverId = await saveAsset(db, { interviewId: iv.id, kind: 'episode_cover', mime: 'image/jpeg', ext: 'jpg', data: cover });
     const thumbId = await saveAsset(db, { interviewId: iv.id, kind: 'episode_cover', mime: 'image/jpeg', ext: 'jpg', data: thumb, meta: { thumb: true } });
     step += W.cover;
@@ -231,7 +237,7 @@ export const handlers: Record<string, Handler> = {
       `INSERT INTO episodes(interview_id, script_id, slug, title, description, audio_asset_id, cover_asset_id, cover_thumb_asset_id, duration_ms, subtitles, chapters, technical, status, visibility)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'preview','private') RETURNING id`,
       [iv.id, script.id, `${slugify(script.title_en)}-${randomBytes(3).toString('hex')}`, script.title_en, iv.objective_shared ? iv.objective_text.slice(0, 500) : '', audioId, coverId, thumbId, asm.durationMs,
-        JSON.stringify(subtitles), JSON.stringify(chapters), JSON.stringify({ maxVolumeDb: asm.maxVolumeDb, clipping: asm.clipping, qcIssues: issues, supersedes: prev.map((p: any) => p.id), mock: config.openai.mock, voices: voiceOf, models: config.openai.models, coverPhotoIds: opts.coverPhotoIds ?? [], coverPhotos: photoRows.map((r: any) => r.photo_id), timing: timing.map(t => ({ id: t.id, role: t.role, kind: kinds.get(t.id) ?? '', startMs: t.startMs, durationMs: t.durationMs })) })]);
+        JSON.stringify(subtitles), JSON.stringify(chapters), JSON.stringify({ maxVolumeDb: asm.maxVolumeDb, clipping: asm.clipping, qcIssues: issues, supersedes: prev.map((p: any) => p.id), mock: config.openai.mock, voices: voiceOf, models: config.openai.models, coverPhotoIds: opts.coverPhotoIds ?? [], coverPhotos: inCover.map(i => photoRows[i].photo_id), timing: timing.map(t => ({ id: t.id, role: t.role, kind: kinds.get(t.id) ?? '', startMs: t.startMs, durationMs: t.durationMs })) })]);
     await db.query(`UPDATE interviews SET production_status=$2, publication_status='awaiting_approval' WHERE id=$1`, [iv.id, issues.length ? 'qc' : 'ready']);
     await progress(total, total, 'Concluído');
     return { episodeId: ep.id, qcIssues: issues };

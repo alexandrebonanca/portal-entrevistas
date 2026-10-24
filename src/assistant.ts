@@ -9,7 +9,7 @@ import { seller, WITHDRAWAL_DAYS } from './legal.ts';
 import { cr, EXTRA_INTERVIEW_CENTS, EXTRA_REGEN_CENTS, TOPUP_MIN_CENTS, TOPUP_MAX_CENTS, CREDIT_VALID_MONTHS, REFUND_WINDOW_DAYS } from './wallet.ts';
 import { QUOTE_VALID_DAYS, START_DEADLINE_HOURS } from './quotes.ts';
 import { FOLLOWUP_MIN_LEFT_SEC, inviteLimits } from './limits.ts';
-import { freeOfferOn } from './free-interview.ts';
+import { freeOfferOn, FREE_PRODUCTION_JOBS } from './free-interview.ts';
 import { VERIFY_PER_DAY, VERIFY_TOTAL } from './email-verify.ts';
 
 /**
@@ -322,6 +322,7 @@ const baseFaqVars = (): Record<string, string> => ({
   logDays: String(ASSISTANT_LOG_DAYS),
   verifyPerDay: String(VERIFY_PER_DAY),
   verifyTotal: String(VERIFY_TOTAL),
+  freeJobs: String(FREE_PRODUCTION_JOBS),
 });
 export const FAQ_VAR_HELP: Record<string, string> = {
   brand: 'nome do portal', brandSite: 'endereço no cartão final dos vídeos', maxAnswerMin: 'minutos máximos por resposta',
@@ -336,6 +337,7 @@ export const FAQ_VAR_HELP: Record<string, string> = {
   ownerName: 'entidade gestora', sellerName: 'quem comercializa (Definições «Empresa vendedora»)',
   logDays: 'dias de conservação do registo das perguntas ao assistente',
   verifyPerDay: 'emails de confirmação do email da conta em 24 horas, por conta e por caixa de correio (o do registo incluído)', verifyTotal: 'emails de confirmação do email da conta ao todo, por conta e por caixa de correio',
+  freeJobs: 'trabalhos de produção da 1.ª entrevista grátis (contam os que falham)',
 };
 /**
  * Blocos condicionais da base: o texto entre `{?nome}` e `{/nome}` só aparece com a condição verdadeira (por exemplo,

@@ -24,9 +24,9 @@ const A = await import('../src/assistant.ts');
 const F = await import('../src/free-interview.ts');
 const M = await import('../src/metrics.ts');
 const { VERIFY_PER_DAY, VERIFY_TOTAL, mailboxHash } = await import('../src/email-verify.ts');
-const { runOne } = await import('../src/jobs.ts');
+const { runOne, PermanentError } = await import('../src/jobs.ts');
 const { handlers } = await import('../src/pipeline.ts');
-const { regenerationsUsed, REGEN_BLOCKED, SCRIPT_SEGMENT_MAX, FREE_SCRIPT_BASE, FREE_SCRIPT_PER_MIN, FREE_TRANSCRIPT_BASE, FREE_TRANSCRIPT_PER_MIN } = await import('../src/limits.ts');
+const { regenerationsUsed, SCRIPT_SEGMENT_MAX, FREE_SCRIPT_BASE, FREE_SCRIPT_PER_MIN, FREE_TRANSCRIPT_BASE, FREE_TRANSCRIPT_PER_MIN } = await import('../src/limits.ts');
 const { validateScript, REVIEW_MAX_TOKENS } = await import('../src/ai/openai.ts');
 const { makeToneWav, saveAsset } = await import('../src/media.ts');
 const { PUBLIC_SIGNUPS_PER_IP_DAY } = await import('../src/routes/site.ts');
@@ -589,10 +589,12 @@ test('administração e métricas: quem usou e quando, email confirmado; enviada
 });
 
 test('textos: termos (2-C), FAQ do assistente, privacidade; o email pessoal não aparece em nada disto', async () => {
-  assert.equal(TERMS_VERSION, '2026-10-23');
+  assert.equal(TERMS_VERSION, '2026-10-24');
   const t = (await get('/termos')).body;
   assert.match(t, /<h2 id="entrevista-gratis">2-C\. 1\.ª entrevista grátis<\/h2>/);
-  for (const s of ['sem pagamento nem dados de cartão', 'uma por pessoa e por organização', 'limites por entrevista do plano Start', 'pode ser alterada ou retirada a qualquer momento, sem afetar as entrevistas grátis já enviadas', 'A indisponibilidade, a alteração ou a retirada da oferta não dão direito a créditos nem a reembolsos.'])
+  for (const s of ['sem pagamento nem dados de cartão', 'uma por pessoa e por organização', 'limites por entrevista do plano Start', 'pode ser alterada ou retirada a qualquer momento, sem afetar as entrevistas grátis já enviadas', 'A indisponibilidade, a alteração ou a retirada da oferta não dão direito a créditos nem a reembolsos.',
+    // 6.ª revisão: o total de trabalhos de produção, escrito (antes, «as regenerações incluídas como num plano», sem ele)
+    `dentro de um total de ${F.FREE_PRODUCTION_JOBS} trabalhos de produção (processar a entrevista, regenerar o guião e gerar o episódio): contam também os que falham, por qualquer motivo, e cada «Tentar de novo». Acima desse total, essa entrevista não tem mais regenerações, nem pagas com créditos`])
     assert.ok(t.includes(s), s);
   // a exclusão fica só nos créditos e reembolsos da oferta (nada de uma exclusão geral de «compensações»)
   assert.ok(!t.includes('compensações'));
@@ -602,6 +604,12 @@ test('textos: termos (2-C), FAQ do assistente, privacidade; o email pessoal não
   // o total de emails de confirmação por conta, com os valores em vigor
   assert.match(A.fillVars(e.pt[1]), /carregue em «Reenviar» no Painel: até 3 emails em 24 horas e 5 ao todo\)/);
   assert.match(A.fillVars(e.en[1]), /on the dashboard: up to 3 emails in 24 hours and 5 in all\)/);
+  // o total de trabalhos de produção (contam os que falham e cada «Tentar de novo»; acima dele, nem pagas) e a saída pela Ajuda
+  assert.match(A.fillVars(e.pt[1]), /dentro de um total de 8 trabalhos de produção \(processar, regenerar o guião e gerar o episódio\): contam também os que falham, por qualquer motivo, e cada «Tentar de novo», e acima deles essa entrevista não tem mais regenerações, nem pagas com créditos\. A página da produção mostra quantos restam; se uma falha do serviço os gastar, peça ajuda à equipa em «Ajuda», que pode terminar a produção\./);
+  assert.match(A.fillVars(e.en[1]), /within a total of 8 production jobs \(processing, regenerating the script and generating the episode\): jobs that fail, for any reason, and each «Tentar de novo» \(Try again\) also count, and beyond them that interview has no more regenerations, not even paid with credits\. The production page shows how many are left; if a service failure uses them up, ask the team for help in «Ajuda» \(Help\), who can finish the production\./);
+  assert.doesNotMatch(e.pt[1] + e.en[1], /incluídas como num plano;|included as in a plan;/);
+  const rg = FAQ_SEED.find(x => x.key === 'regeneracoes')!;
+  assert.match(A.fillVars(rg.pt[1]), /Na 1\.ª entrevista grátis há também um total de 8 trabalhos de produção, em que contam os que falham, e acima dele não há mais regenerações, nem pagas/);
   const entries = (lang: 'pt' | 'en') => FAQ_SEED.filter(x => x.audience === 'interviewer' || x.audience === 'all').map((x, i) => ({ id: x.key, lang, audience: x.audience, question: x[lang][0], answer: x[lang][1], keywords: x[lang][2], sort: i * 10 }));
   for (const [q, lang] of [['Há teste grátis?', 'pt'], ['Posso experimentar sem pagar?', 'pt'], ['Is there a free trial?', 'en'], ['Can I try it for free?', 'en']] as const)
     assert.equal(A.searchFaq(entries(lang), q)[0]?.entry.id, 'entrevista-gratis', q);
@@ -1103,8 +1111,11 @@ test('resposta do «Reenviar» e da confirmação do email junto da caixa da ofe
 
 // ---- produção da entrevista grátis ----
 const drain = async () => { while (await runOne(db, handlers)) { /* */ } await flushOutbox(db); };
-/** Entrevista grátis (ou paga) enviada, respondida e submetida pelo convidado, com a autorização de processamento; `consent` muda-a. */
-const submitted = async (ck: string, title: string, guestEmail: string, paid = false) => {
+/**
+ * Entrevista grátis (ou paga) enviada, respondida e submetida pelo convidado, com a autorização de processamento; `consent`
+ * muda-a. `beforeSubmit`: corre com a sessão do convidado antes de ele responder (por exemplo, para enviar fotografias).
+ */
+const submitted = async (ck: string, title: string, guestEmail: string, paid = false, beforeSubmit?: (gs: string) => Promise<void>) => {
   const id = await draft(ck, title, guestEmail);
   if (paid) assert.match(msgOf(await post(`/entrevistas/${id}/convidar`, {}, ck)), /ok=Convite enviado\./);
   else assert.match(msgOf(await sendFree(ck, id)), /ok=Convite enviado: usou a sua 1\.ª entrevista grátis/);
@@ -1113,6 +1124,7 @@ const submitted = async (ck: string, title: string, guestEmail: string, paid = f
   const gs = `gs=${cookies(await post(`/i/${/\/i\/([A-Za-z0-9_-]{40,})/.exec(m.text_body)![1]}/abrir`, {})).gs}`;
   const consent = (processing: boolean) => post('/entrevista/consentimentos', { participation: '1', adult: '1', ...(processing ? { processing: '1' } : {}), publish: '1' }, gs);
   await consent(true);
+  if (beforeSubmit) await beforeSubmit(gs);
   for (const q of await db.query('SELECT id FROM questions WHERE interview_id=$1 ORDER BY position', [id]))
     assert.equal((await app.inject({ method: 'POST', url: `/api/g/respostas/${q.id}`, payload: makeToneWav(2), headers: { 'content-type': 'audio/wav', cookie: gs } })).statusCode, 200);
   await post('/entrevista/submeter', {}, gs);
@@ -1122,19 +1134,28 @@ const submitted = async (ck: string, title: string, guestEmail: string, paid = f
 const statusOf = async (id: string) => (await db.one('SELECT production_status s FROM interviews WHERE id=$1', [id])).s;
 const jobsOf = async (id: string, kind: string, state = '') => Number((await db.one(`SELECT count(*)::int n FROM jobs WHERE interview_id=$1 AND kind=$2 AND ($3='' OR state=$3)`, [id, kind, state])).n);
 
-test('1.ª entrevista grátis: depois de uma geração do episódio que falhou sem custo, processar de novo conta como regeneração (o ciclo pára na 4.ª volta com REGEN_BLOCKED); o /gerar verifica a autorização de processamento; «Tentar de novo» repete a geração sem refazer o guião', () => manyFree(async () => {
+test('1.ª entrevista grátis: depois de uma geração do episódio que falhou sem custo, processar de novo conta como regeneração (o ciclo pára na 4.ª volta, com as 3 regenerações e os 8 trabalhos usados, sem convidar a pagar); o /gerar verifica a autorização de processamento; «Tentar de novo» repete a geração sem refazer o guião', () => manyFree(async () => {
   // Antes: «Tentar de novo» (POST /processar) não contava depois de qualquer falha, e o /gerar não verificava a autorização.
   // Uma geração que falhava logo ao início (transcrição editada antes de o trabalho começar, ou autorização retirada pelo
   // convidado) tornava gratuito o guião seguinte (gpt-4.1), sem fim (6 voltas no teste do revisor, 0 regenerações).
   const ce = await created('Ciro Ciclo', 'ciro.ciclo@example.com');
-  const { id } = await submitted(ce.ck, 'Ciclo', 'conv-ciclo@example.net');
+  const { id, consent } = await submitted(ce.ck, 'Ciclo', 'conv-ciclo@example.net');
   const take = (await db.one(`SELECT t.id FROM answer_takes t JOIN answers a ON a.id=t.answer_id WHERE a.interview_id=$1 LIMIT 1`, [id])).id;
-  /** Aprova o guião, pede o episódio e edita uma transcrição antes de o trabalho começar: a geração falha logo ao início. */
+  /**
+   * Aprova o guião, pede o episódio e edita uma transcrição antes de o trabalho começar: a geração falha logo ao início. Na
+   * última volta (o 8.º trabalho de produção), a transcrição já não se grava (6.ª revisão: com menos de 2 trabalhos por usar):
+   * a falha vem da autorização de processamento retirada pelo convidado, que depois a dá de novo.
+   */
   const failGeneration = async (k: number) => {
     assert.match(msgOf(await post(`/entrevistas/${id}/guiao/aprovar`, { reviewed: '1' }, ce.ck)), /ok=Guião aprovado/, `volta ${k}`);
     assert.match(msgOf(await post(`/entrevistas/${id}/gerar`, { subtitle_langs: 'en' }, ce.ck)), /ok=Geração iniciada/, `volta ${k}`);
-    await post(`/entrevistas/${id}/transcricoes/${take}`, { text: `Texto revisto ${k}` }, ce.ck);
+    if (k < 3) await post(`/entrevistas/${id}/transcricoes/${take}`, { text: `Texto revisto ${k}` }, ce.ck);
+    else {
+      assert.equal(msgOf(await post(`/entrevistas/${id}/transcricoes/${take}`, { text: `Texto revisto ${k}` }, ce.ck)), `/entrevistas/${id}/producao?e=Transcrição não guardada. ${F.FREE_JOBS_USED}`);
+      await consent(false);
+    }
     await drain();
+    if (k >= 3) await consent(true);
     assert.equal(await statusOf(id), 'failed', `volta ${k}`);
   };
   assert.match(msgOf(await post(`/entrevistas/${id}/processar`, {}, ce.ck)), /ok=Processamento iniciado/);
@@ -1143,18 +1164,33 @@ test('1.ª entrevista grátis: depois de uma geração do episódio que falhou s
   assert.equal(await regenerationsUsed(db, id), 0, 'o primeiro processamento e a geração falhada não contam');
   // o guião ficou desatualizado: «Tentar de novo» processa de novo e diz que conta
   const pg = (await get(`/entrevistas/${id}/producao`, ce.ck)).body;
-  assert.match(pg, new RegExp(`<form method="post" action="/entrevistas/${id}/processar"><p class="hint">Falhou\\.[^<]*«Tentar de novo» processa a entrevista outra vez e refaz o guião: conta como uma regeneração\\. Na 1\\.ª entrevista grátis, conta para os ${F.FREE_PRODUCTION_JOBS} trabalhos de produção\\.</p><button class="ghost" >Tentar de novo</button>`));
+  // 6.ª revisão: na entrevista grátis, o conselho é esperar (cada tentativa conta), com a saída pela Ajuda
+  assert.match(pg, new RegExp(`<form method="post" action="/entrevistas/${id}/processar"><p class="hint">Falhou\\. Na 1\\.ª entrevista grátis, cada «Tentar de novo» conta para os ${F.FREE_PRODUCTION_JOBS} trabalhos de produção \\(restam 6\\): espere algum tempo antes de tentar de novo [^<]*<a href="/ajuda">Ajuda</a>\\. «Tentar de novo» processa a entrevista outra vez e refaz o guião: conta como uma regeneração\\.</p><button class="ghost" >Tentar de novo</button>`));
+  assert.doesNotMatch(pg, /depois de corrigir a causa/);
   for (let k = 1; k <= 3; k++) {
     assert.match(msgOf(await post(`/entrevistas/${id}/processar`, {}, ce.ck)), /ok=Processamento iniciado/, `volta ${k}`);
     await drain();
     assert.equal(await regenerationsUsed(db, id), k, `volta ${k}: conta como regeneração`);
     await failGeneration(k);
   }
-  // a 4.ª volta pára: nada na fila, nenhum guião novo
-  assert.equal(msgOf(await post(`/entrevistas/${id}/processar`, {}, ce.ck)), `/entrevistas/${id}/producao?e=${REGEN_BLOCKED()} Saldo: 0 créditos.`);
+  // a 4.ª volta pára: nada na fila, nenhum guião novo. Com as 3 regenerações e os 8 trabalhos usados, a recusa é a do total
+  // da entrevista grátis (antes, REGEN_BLOCKED com «Saldo: 0 créditos», que convidava a carregar créditos para nada)
+  assert.equal(msgOf(await post(`/entrevistas/${id}/processar`, {}, ce.ck)), `/entrevistas/${id}/producao?e=${F.FREE_JOBS_USED}`);
   assert.deepEqual([await jobsOf(id, 'process_submission'), await jobsOf(id, 'process_submission', 'done')], [4, 4]);
-  assert.equal(await regenerationsUsed(db, id), 3);
-  assert.match((await get(`/entrevistas/${id}/producao`, ce.ck)).body, /<button class="ghost" disabled>Tentar de novo — pagar 1 crédito<\/button>/);
+  assert.deepEqual([await regenerationsUsed(db, id), await F.freeProductionJobs(db, id)], [3, F.FREE_PRODUCTION_JOBS]);
+  // a página a 8 de 8 (6.ª revisão): nada de pagar nem de carregar créditos, sem saldo e com saldo
+  const out8 = (await get(`/entrevistas/${id}/producao`, ce.ck)).body;
+  assert.match(out8, /<button class="ghost" disabled>Tentar de novo<\/button>/);
+  assert.doesNotMatch(out8, /Carregar créditos|pagar 1 crédito|name="pagar"|Cada regeneração seguinte custa/);
+  assert.ok(out8.includes(`<div class="flash bad" id="trabalhos-aviso">${F.FREE_JOBS_USED_HTML}</div>`));
+  await db.query('INSERT INTO wallets(user_id, available_cents) VALUES ($1, 2500)', [ce.id]);
+  const paid8 = (await get(`/entrevistas/${id}/producao`, ce.ck)).body;
+  assert.doesNotMatch(paid8, /Carregar créditos|pagar 1 crédito|name="pagar"|Cada regeneração seguinte custa/);
+  // e o pedido expresso de pagar, com saldo, também é recusado antes de qualquer cobrança
+  for (const url of ['processar', 'guiao/regenerar', 'gerar/repetir'])
+    assert.equal(msgOf(await post(`/entrevistas/${id}/${url}`, { pagar: '1', start_now: '1', waiver: '1' }, ce.ck)), `/entrevistas/${id}/producao?e=${F.FREE_JOBS_USED}`, url);
+  assert.equal((await db.one('SELECT available_cents FROM wallets WHERE user_id=$1', [ce.id])).available_cents, 2500);
+  assert.equal(Number((await db.one(`SELECT count(*)::int n FROM jobs WHERE interview_id=$1 AND state IN ('queued','running')`, [id])).n), 0, 'nada na fila');
 
   // o /gerar verifica a autorização de processamento; «Tentar de novo» depois de uma geração falhada repete-a
   const ga = await created('Gil Autoriza', 'gil.autoriza@example.com');
@@ -1174,7 +1210,7 @@ test('1.ª entrevista grátis: depois de uma geração do episódio que falhou s
   await drain();
   assert.equal(await statusOf(g.id), 'failed');
   const p1 = (await get(`/entrevistas/${g.id}/producao`, ga.ck)).body;
-  assert.match(p1, new RegExp(`<form method="post" action="/entrevistas/${g.id}/gerar/repetir"><p class="hint">Falhou\\.[^<]*«Tentar de novo» volta a gerar o episódio do guião aprovado, com as mesmas legendas e fotografias \\(não conta como regeneração\\)\\. Na 1\\.ª entrevista grátis, conta para os ${F.FREE_PRODUCTION_JOBS} trabalhos de produção\\.</p><button class="ghost" >Tentar de novo</button>`));
+  assert.match(p1, new RegExp(`<form method="post" action="/entrevistas/${g.id}/gerar/repetir"><p class="hint">Falhou\\. Na 1\\.ª entrevista grátis, cada «Tentar de novo» conta para os ${F.FREE_PRODUCTION_JOBS} trabalhos de produção \\(restam 6\\): espere algum tempo antes de tentar de novo [^<]*<a href="/ajuda">Ajuda</a>\\. «Tentar de novo» volta a gerar o episódio do guião aprovado, com as mesmas legendas e fotografias \\(não conta como regeneração\\)\\.</p><button class="ghost" >Tentar de novo</button>`));
   assert.match(msgOf(await post(`/entrevistas/${g.id}/gerar/repetir`, {}, ga.ck)), /e=Sem autorização de processamento por IA\./);
   await g.consent(true);
   assert.match(msgOf(await post(`/entrevistas/${g.id}/gerar/repetir`, {}, ga.ck)), /ok=Geração iniciada de novo\./);
@@ -1360,7 +1396,7 @@ test('1.ª entrevista grátis: fotografia da capa forjada ou de outra entrevista
   const late = (label: string) => async (_job: any, ctx: any) => { await ctx.progress(1, 2, label); throw new Error('falha tardia simulada'); };
   try {
     assert.match(msgOf(await post(`/entrevistas/${L.id}/processar`, {}, la.ck)), /ok=Processamento iniciado/); await drainAll(); // 1
-    assert.match((await get(`/entrevistas/${L.id}/producao`, la.ck)).body, /· 1\.ª entrevista grátis: <strong id="trabalhos">1 de 8<\/strong> trabalhos de produção usados \(contam também os que falharam\)/);
+    assert.match((await get(`/entrevistas/${L.id}/producao`, la.ck)).body, /· 1\.ª entrevista grátis: <strong id="trabalhos">1 de 8<\/strong> trabalhos de produção usados \(contam também os que falharam; restam 7\)/);
     assert.match(msgOf(await post(`/entrevistas/${L.id}/guiao/aprovar`, { reviewed: '1' }, la.ck)), /ok=Guião aprovado/);
     handlers.generate_episode = late('A criar a capa');
     assert.match(msgOf(await post(`/entrevistas/${L.id}/gerar`, { subtitle_langs: 'en' }, la.ck)), /ok=Geração iniciada/); await drainAll(); // 2
@@ -1383,7 +1419,7 @@ test('1.ª entrevista grátis: fotografia da capa forjada ou de outra entrevista
     assert.equal(Number((await db.one(`SELECT count(*)::int n FROM jobs WHERE interview_id=$1`, [L.id])).n), F.FREE_PRODUCTION_JOBS, 'nada mais na fila');
     const pg = (await get(`/entrevistas/${L.id}/producao`, la.ck)).body;
     assert.match(pg, /<strong id="trabalhos">8 de 8<\/strong>/);
-    assert.ok(pg.includes(`<div class="flash bad">${F.FREE_JOBS_USED}</div>`));
+    assert.ok(pg.includes(`<div class="flash bad" id="trabalhos-aviso">${F.FREE_JOBS_USED_HTML}</div>`));
     assert.match(pg, /<button class="ghost" disabled>Tentar de novo<\/button>/);
     assert.match(pg, /<button class="danger" disabled>Recomeçar produção<\/button>/);
     assert.match(F.FREE_JOBS_USED, /Com uma subscrição \(Conta\), as próximas entrevistas não têm este limite\./);
@@ -1561,4 +1597,197 @@ test('1.ª entrevista grátis: a vez da verificação do guião só volta quando
     globalThis.fetch = realFetch; config.openai.mock = realMock;
     if (realKey === undefined) delete process.env.OPENAI_API_KEY; else process.env.OPENAI_API_KEY = realKey;
   }
+}));
+
+// ---- 6.ª revisão ----
+/** Geração do episódio corrida à mão (sem a fila), com as línguas de cada etiqueta «A traduzir as legendas (…)»: uma por tradução paga. */
+const generation = async (ivId: string, input: Record<string, unknown>) => {
+  const labels: string[] = [];
+  await handlers.generate_episode({ interview_id: ivId, input }, { db, progress: async (_d: number, _t?: number, l?: string) => { if (l) labels.push(l); } });
+  return labels.filter(l => l.startsWith('A traduzir as legendas')).map(l => /\((.+)\)$/.exec(l)![1]);
+};
+
+test('línguas das legendas: só as oferecidas e cada uma uma vez (no máximo 5) no «Guardar», no /gerar e no /gerar/repetir; o trabalho traduz cada língua uma vez, também com as da entrevista, e recusa as outras antes da 1.ª chamada paga; pagas e grátis', () => manyFree(async () => {
+  // Antes (3.ª ronda da 6.ª revisão): o filtro deixava passar as repetidas — um «Gerar episódio» com ['en', 'de' × 3000]
+  // dava um trabalho com 3001 línguas e 3000 traduções das legendas (gpt-4.1, sem cache), que contava 1 dos 8 trabalhos da
+  // entrevista grátis; o «Guardar» gravava 500 'fr'; o trabalho só verificava o formato (também nas línguas da entrevista).
+  const li = await created('Lena Línguas', 'lena.linguas@example.com');
+  const { id } = await submitted(li.ck, 'Línguas', 'conv-linguas@example.net');
+  const langsOf = async (ivId: string) => (await db.one('SELECT subtitle_langs FROM interviews WHERE id=$1', [ivId])).subtitle_langs;
+  const save = (ck: string, ivId: string, subtitle_langs: string[]) =>
+    post(`/entrevistas/${ivId}/guardar`, { title: 'Línguas', host_name: 'Host', guest_name: 'Convidado', review_policy: 'guest_preview', subtitle_langs }, ck);
+  await save(li.ck, id, ['en', ...Array(500).fill('fr'), 'xx', 'de', 'en']);
+  assert.deepEqual(await langsOf(id), ['en', 'fr', 'de']);
+  assert.match(msgOf(await post(`/entrevistas/${id}/processar`, {}, li.ck)), /ok=Processamento iniciado/); await drain();
+  assert.match(msgOf(await post(`/entrevistas/${id}/guiao/aprovar`, { reviewed: '1' }, li.ck)), /ok=Guião aprovado/);
+  assert.match(msgOf(await post(`/entrevistas/${id}/gerar`, { subtitle_langs: ['en', ...Array(3000).fill('de')] }, li.ck)), /ok=Geração iniciada/);
+  const gj = await db.one(`SELECT id, input FROM jobs WHERE interview_id=$1 AND kind='generate_episode'`, [id]);
+  assert.deepEqual([...gj.input.subtitleLangs].sort(), ['de', 'en']);
+  // «Tentar de novo» de uma geração falhada com as línguas repetidas (um pedido de antes desta correção): cada uma uma vez
+  await db.query(`UPDATE jobs SET state='failed', error='simulado', input=jsonb_set(input, '{subtitleLangs}', $2::jsonb) WHERE id=$1`, [gj.id, JSON.stringify(['en', 'es', 'es', 'es', 'it'])]);
+  await db.query(`UPDATE interviews SET production_status='failed' WHERE id=$1`, [id]);
+  assert.match(msgOf(await post(`/entrevistas/${id}/gerar/repetir`, {}, li.ck)), /ok=Geração iniciada de novo/);
+  assert.deepEqual((await db.one(`SELECT input FROM jobs WHERE interview_id=$1 AND kind='generate_episode' AND state='queued'`, [id])).input.subtitleLangs, ['en', 'es']);
+  await drain();
+  assert.equal(await statusOf(id), 'ready');
+
+  // o trabalho: uma tradução por língua, com as do pedido e, sem elas, com as da entrevista (gravadas antes desta correção)
+  const sid = (await db.one(`SELECT id FROM scripts WHERE interview_id=$1 AND status='approved'`, [id])).id;
+  assert.deepEqual(await generation(id, { scriptId: sid, subtitleLangs: ['en', 'de', 'de', 'fr', 'de', 'fr'] }), ['de', 'fr']);
+  await db.query(`UPDATE interviews SET subtitle_langs=string_to_array($2, ',') WHERE id=$1`, [id, ['en', ...Array(50).fill('es')].join(',')]);
+  assert.deepEqual(await generation(id, { scriptId: sid }), ['es']);
+  assert.deepEqual(Object.keys((await db.one(`SELECT subtitles FROM episodes WHERE interview_id=$1 AND status='preview'`, [id])).subtitles).sort(), ['en', 'es']);
+  // uma língua que o portal não oferece (no pedido ou na entrevista): erro permanente antes de qualquer etapa
+  const refused = async (input: Record<string, unknown>) => {
+    const labels: string[] = [];
+    await assert.rejects(handlers.generate_episode({ interview_id: id, input: { scriptId: sid, ...input } }, { db, progress: async (_d: number, _t?: number, l?: string) => { if (l) labels.push(l); } }),
+      (e: any) => e instanceof PermanentError && e.message === 'Línguas das legendas inválidas');
+    assert.deepEqual(labels, [], 'nenhuma etapa começou');
+  };
+  await refused({ subtitleLangs: ['en', 'it'] });
+  await refused({ subtitleLangs: 'de' });
+  await db.query(`UPDATE interviews SET subtitle_langs=ARRAY['en','zz'] WHERE id=$1`, [id]);
+  await refused({});
+
+  // entrevista paga: as mesmas rotas e o mesmo trabalho
+  const pa = await created('Paulo Línguas', 'paulo.linguas@example.com');
+  await db.query(`INSERT INTO subscriptions(user_id, plan_id, status, source) VALUES ($1,'start','active','manual')`, [pa.id]);
+  const P = await submitted(pa.ck, 'Línguas pagas', 'conv-linguas-pagas@example.net', true);
+  await save(pa.ck, P.id, ['pt-PT', 'pt-PT', 'es', ...Array(200).fill('es')]);
+  assert.deepEqual(await langsOf(P.id), ['pt-PT', 'es']);
+  await post(`/entrevistas/${P.id}/processar`, {}, pa.ck); await drain();
+  assert.match(msgOf(await post(`/entrevistas/${P.id}/guiao/aprovar`, { reviewed: '1' }, pa.ck)), /ok=Guião aprovado/);
+  assert.match(msgOf(await post(`/entrevistas/${P.id}/gerar`, { subtitle_langs: ['en', ...Array(1000).fill('fr')] }, pa.ck)), /ok=Geração iniciada/);
+  assert.deepEqual([...(await db.one(`SELECT input FROM jobs WHERE interview_id=$1 AND kind='generate_episode'`, [P.id])).input.subtitleLangs].sort(), ['en', 'fr']);
+}));
+
+test('capa: o título, os nomes e a marca sem os caracteres que o XML não admite (também no «Guardar»); a fotografia que não se descodifica é recusada no envio e, já guardada, fica fora da capa; o episódio sai à 1.ª tentativa', () => manyFree(async () => {
+  // Antes (3.ª ronda da 6.ª revisão): um nome do convidado com U+0001 («Guardar») fazia falhar o SVG da capa («PCDATA invalid
+  // Char»), e uma fotografia com a assinatura JPEG e o conteúdo corrompido passava a verificação do envio e falhava no sharp:
+  // nos dois casos, o trabalho falhava 3 vezes depois das etapas pagas (voz, tempos das legendas, traduções e capa).
+  const { composeCover, photoDecodes } = await import('../src/cover.ts');
+  const { xmlText } = await import('../src/lib.ts');
+  const { sniff } = await import('../src/media.ts');
+  const good = await jpeg('#865');
+  const bad = Buffer.concat([good.subarray(0, 20), randomBytes(4000)]);
+  assert.equal(sniff(bad)?.mime, 'image/jpeg', 'passa a verificação da assinatura');
+  assert.deepEqual([await photoDecodes(good), await photoDecodes(bad)], [true, false]);
+  assert.equal(xmlText('a\u0001b\u0008c\tok\n￿\uD800x😀'), 'abc\tok\nx😀');
+  await assert.rejects(sharp(Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><text>Eu\u0001</text></svg>')).png().toBuffer(), /PCDATA invalid Char/);
+  // composeCover: texto com caracteres de controlo, um fundo e uma fotografia que não se descodificam — não falha
+  const c = await composeCover({ title: 'T\u0001itle ￾ ok', subtitle: 'with Eu\u0001', brand: 'b\u0002rand', background: bad, photos: [bad, good] });
+  assert.deepEqual(c.photos, [1], 'só a fotografia que se descodifica');
+  assert.equal((await sharp(c.cover).metadata()).width, 1400);
+
+  // no envio: o convidado e o entrevistador
+  const fo = await created('Fábio Foto', 'fabio.foto@example.com');
+  const up = (url: string, data: Buffer, cookie: string) => app.inject({ method: 'POST', url, payload: data, headers: { 'content-type': 'image/jpeg', cookie } });
+  const { id } = await submitted(fo.ck, 'Foto', 'conv-foto@example.net', false, async gs => {
+    await post('/entrevista/fotos/autorizacoes', { photo_capture: '1', cover_use: '1' }, gs);
+    const r = await up('/api/g/fotos', bad, gs);
+    assert.deepEqual([r.statusCode, r.json()], [415, { error: 'format' }]);
+    assert.equal((await up('/api/g/fotos', good, gs)).statusCode, 200);
+  });
+  assert.equal(Number((await db.one('SELECT count(*)::int n FROM photos WHERE interview_id=$1', [id])).n), 1, 'a corrompida não ficou');
+  const hr = await up(`/api/entrevistas/${id}/foto`, bad, fo.ck);
+  assert.deepEqual([hr.statusCode, hr.json()], [415, { error: 'A fotografia não se consegue abrir (ficheiro danificado ou com mais de 50 megapíxeis).' }]);
+  assert.equal((await up(`/api/entrevistas/${id}/foto`, good, fo.ck)).statusCode, 200);
+  // no «Guardar»: os nomes e as funções sem esses caracteres
+  await post(`/entrevistas/${id}/guardar`, { title: 'Foto', host_name: 'Ho\u0002st', guest_name: 'Eu\u0001 Silva￿', guest_title: 'Eng\u0007enheira', review_policy: 'guest_preview', subtitle_langs: ['en', 'pt-PT'] }, fo.ck);
+  assert.deepEqual(Object.values(await db.one('SELECT guest_name, guest_title FROM interviews WHERE id=$1', [id])), ['Eu Silva', 'Engenheira']);
+
+  // gravados antes desta correção: um nome com U+0001 e uma fotografia corrompida já guardada (escolhida para a capa)
+  await db.query('UPDATE interviews SET guest_name=$2 WHERE id=$1', [id, 'Eu\u0001 Silva']);
+  const ok = (await db.one('SELECT id FROM photos WHERE interview_id=$1', [id])).id as string;
+  const old = (await db.one('INSERT INTO photos(interview_id, asset_id) VALUES ($1,$2) RETURNING id', [id, await saveAsset(db, { interviewId: id, kind: 'guest_photo', mime: 'image/jpeg', ext: 'jpg', data: bad })])).id as string;
+  assert.match(msgOf(await post(`/entrevistas/${id}/processar`, {}, fo.ck)), /ok=Processamento iniciado/); await drain();
+  assert.match(msgOf(await post(`/entrevistas/${id}/guiao/aprovar`, { reviewed: '1' }, fo.ck)), /ok=Guião aprovado/);
+  assert.match(msgOf(await post(`/entrevistas/${id}/gerar`, { subtitle_langs: ['en', 'pt-PT'], cover_photo: [old, ok] }, fo.ck)), /ok=Geração iniciada/);
+  await drainAll();
+  assert.deepEqual(Object.values(await db.one(`SELECT state, attempts FROM jobs WHERE interview_id=$1 AND kind='generate_episode'`, [id])), ['done', 1]);
+  const ep = await db.one('SELECT technical, subtitles FROM episodes WHERE interview_id=$1', [id]);
+  assert.deepEqual([[...ep.technical.coverPhotoIds].sort(), ep.technical.coverPhotos], [[old, ok].sort(), [ok]], 'a capa só com a fotografia que entrou');
+  assert.deepEqual(Object.keys(ep.subtitles).sort(), ['en', 'pt-PT']);
+  assert.equal(await F.freeProductionJobs(db, id), 2);
+}));
+
+test('1.ª entrevista grátis: «restam N»; com menos de 2 trabalhos por usar, «Guardar nova revisão», «Regenerar guião», processar e «Recomeçar» ficam desligados e recusados (o episódio pronto continua por publicar e ainda se gera de novo); a 8 de 8, a saída pela Ajuda e pela Conta; o administrador produz sem contar', () => manyFree(async () => {
+  // Antes (3.ª ronda da 6.ª revisão): com falhas do fornecedor a contar, a 7 de 8 «Guardar nova revisão» continuava ativo e
+  // sem aviso — gravar punha o episódio pronto como desatualizado, regenerar o guião gastava o último trabalho e o /gerar era
+  // recusado: o episódio, que só esperava a aprovação, deixava de se poder publicar, também com uma subscrição. O aviso do
+  // total falava só das «próximas entrevistas», sem saída para esta.
+  const sa = await created('Saul Saída', 'saul.saida@example.com');
+  const { id } = await submitted(sa.ck, 'Saída', 'conv-saida@example.net');
+  const page = async (ck = sa.ck, qs = '') => (await get(`/entrevistas/${id}/producao${qs}`, ck)).body;
+  assert.match(msgOf(await post(`/entrevistas/${id}/processar`, {}, sa.ck)), /ok=Processamento iniciado/); await drain();
+  assert.match(msgOf(await post(`/entrevistas/${id}/guiao/aprovar`, { reviewed: '1' }, sa.ck)), /ok=Guião aprovado/);
+  assert.match(msgOf(await post(`/entrevistas/${id}/gerar`, { subtitle_langs: 'en' }, sa.ck)), /ok=Geração iniciada/); await drain();
+  assert.equal(await statusOf(id), 'ready');
+  const p2 = await page();
+  assert.match(p2, /<strong id="trabalhos">2 de 8<\/strong> trabalhos de produção usados \(contam também os que falharam; restam 6\)/);
+  assert.doesNotMatch(p2, /id="trabalhos-aviso"/);
+  // cinco trabalhos que falharam antes destes (por exemplo, falhas do fornecedor): 7 de 8
+  for (let k = 0; k < 5; k++) await db.query(`INSERT INTO jobs(interview_id, kind, input, state, error, created_at) VALUES ($1,'prepare_script','{}','failed','503 simulado', now() - interval '1 hour')`, [id]);
+  const p7 = await page();
+  assert.match(p7, /<strong id="trabalhos">7 de 8<\/strong> trabalhos de produção usados \(contam também os que falharam; restam 1\)/);
+  assert.ok(p7.includes(`<div class="flash" id="trabalhos-aviso">${F.FREE_JOBS_LOW_HTML}</div>`));
+  assert.match(F.FREE_JOBS_LOW_HTML, /resta 1 dos 8 trabalhos de produção: chega para gerar o episódio de um guião aprovado[^<]*peça ajuda à equipa do portal em <a href="\/ajuda">Ajuda<\/a>: a equipa pode terminar a produção desta entrevista\./);
+  assert.match(p7, /<button class="ghost" disabled>Guardar nova revisão \(r2\)<\/button>/);
+  assert.match(p7, /<button class="ghost" disabled>Regenerar guião a partir das transcrições<\/button>/);
+  assert.match(p7, /<button class="danger" disabled>Recomeçar produção<\/button>/);
+  assert.match(p7, /com menos de 2 trabalhos de produção por usar, as transcrições e o guião já não se refazem/);
+  // recusados também no servidor: nada gravado, nada na fila, o episódio continua atual
+  const take = (await db.one(`SELECT t.id FROM answer_takes t JOIN answers a ON a.id=t.answer_id WHERE a.interview_id=$1 LIMIT 1`, [id])).id;
+  const revs = async () => Number((await db.one(`SELECT count(*)::int n FROM transcripts WHERE source_kind='answer_take' AND source_id=$1`, [take])).n);
+  const r0 = await revs(), n0 = Number((await db.one('SELECT count(*)::int n FROM jobs WHERE interview_id=$1', [id])).n);
+  const LOW = `/entrevistas/${id}/producao?e=${F.FREE_JOBS_LOW}`;
+  assert.equal(msgOf(await post(`/entrevistas/${id}/transcricoes/${take}`, { text: 'Revisão a 7 de 8' }, sa.ck)), `/entrevistas/${id}/producao?e=Transcrição não guardada. ${F.FREE_JOBS_LOW}`);
+  assert.equal(msgOf(await post(`/entrevistas/${id}/guiao/regenerar`, {}, sa.ck)), LOW);
+  assert.equal(msgOf(await post(`/entrevistas/${id}/processar`, {}, sa.ck)), LOW);
+  assert.equal(msgOf(await post(`/entrevistas/${id}/producao/recomecar`, {}, sa.ck)), `${LOW} Não é possível recomeçar a produção.`);
+  assert.equal(await revs(), r0, 'nada gravado');
+  assert.equal(Number((await db.one('SELECT count(*)::int n FROM jobs WHERE interview_id=$1', [id])).n), n0, 'nada na fila');
+  assert.deepEqual(Object.values(await db.one(`SELECT stale, status FROM episodes WHERE interview_id=$1`, [id])), [false, 'preview']);
+  assert.equal(await statusOf(id), 'ready');
+  // a recusa no endereço não se repete por cima do aviso
+  assert.ok(!(await page(sa.ck, `?e=${encodeURIComponent(F.FREE_JOBS_LOW)}`)).includes(F.FREE_JOBS_LOW));
+  // gerar o episódio de novo ainda é possível (precisa de 1): é o 8.º trabalho
+  assert.match(msgOf(await post(`/entrevistas/${id}/gerar`, { subtitle_langs: ['en', 'pt-PT'] }, sa.ck)), /ok=Geração iniciada/); await drain();
+  assert.equal(await statusOf(id), 'ready');
+  assert.equal(await F.freeProductionJobs(db, id), F.FREE_PRODUCTION_JOBS);
+
+  // 8 de 8: a saída (Ajuda, onde a equipa pode terminar a produção, e Conta), sem nada para pagar
+  const p8 = await page();
+  assert.match(p8, /<strong id="trabalhos">8 de 8<\/strong> trabalhos de produção usados \(contam também os que falharam; restam 0\)/);
+  assert.ok(p8.includes(`<div class="flash bad" id="trabalhos-aviso">${F.FREE_JOBS_USED_HTML}</div>`));
+  assert.match(F.FREE_JOBS_USED_HTML, /e já os usou todos: nesta entrevista não há mais regenerações, nem pagas com créditos\. Para a concluir, peça ajuda à equipa do portal em <a href="\/ajuda">Ajuda<\/a>: a equipa pode terminar a produção desta entrevista\. Com uma subscrição \(<a href="\/account">Conta<\/a>\), as próximas entrevistas não têm este limite\./);
+  assert.match(F.FREE_JOBS_USED, /peça ajuda à equipa do portal em «Ajuda»: a equipa pode terminar a produção desta entrevista\. Com uma subscrição \(Conta\)/);
+  assert.match(p8, /<button class="ghost" disabled>Guardar nova revisão \(r2\)<\/button>/);
+  assert.match(p8, /<button class="ghost" disabled>Regenerar guião a partir das transcrições<\/button>/);
+  assert.doesNotMatch(p8, /Carregar créditos|pagar 1 crédito|name="pagar"/);
+  assert.equal(msgOf(await post(`/entrevistas/${id}/transcricoes/${take}`, { text: 'Revisão a 8 de 8' }, sa.ck)), `/entrevistas/${id}/producao?e=Transcrição não guardada. ${F.FREE_JOBS_USED}`);
+  assert.ok(!(await page(sa.ck, `?e=${encodeURIComponent(F.FREE_JOBS_USED)}`)).includes(F.FREE_JOBS_USED));
+  // o episódio da 8.ª geração continua a seguir o caminho de sempre (a aprovação do entrevistador)
+  const ep = await db.one(`SELECT id FROM episodes WHERE interview_id=$1 AND status='preview'`, [id]);
+  assert.match(msgOf(await post(`/entrevistas/${id}/episodio/${ep.id}/aprovar`, { video: '' }, sa.ck)), /ok=Versão aprovada/);
+  // a 8 de 8 com as regenerações esgotadas e uma geração paga que falhou depois de um episódio (o crédito volta e o trabalho
+  // conta): os cartões «Gerar episódio» e «Tentar de novo» continuam sem nada para pagar nem carregar
+  const sid = (await db.one(`SELECT id FROM scripts WHERE interview_id=$1 AND status='approved'`, [id])).id;
+  for (let k = 0; k < 2; k++) await db.query(`INSERT INTO jobs(interview_id, kind, input, state, created_at) VALUES ($1,'prepare_script','{"regen":true}','done', now() - interval '1 hour')`, [id]);
+  await db.query(`INSERT INTO jobs(interview_id, kind, input, state, error) VALUES ($1,'generate_episode',$2,'failed','503 simulado')`, [id, JSON.stringify({ scriptId: sid, subtitleLangs: ['en'], coverPhotoIds: [], regen: true, paidCents: 100 })]);
+  await db.query(`UPDATE interviews SET production_status='failed' WHERE id=$1`, [id]);
+  assert.equal(await regenerationsUsed(db, id), 3);
+  const pf = await page();
+  assert.match(pf, /<button class="accent" disabled>Gerar episódio<\/button>/);
+  assert.match(pf, /<button class="ghost" disabled>Tentar de novo<\/button>/);
+  assert.doesNotMatch(pf, /Carregar créditos|pagar 1 crédito|name="pagar"|Cada regeneração seguinte custa/);
+  // a Ajuda aceita o pedido de uma conta sem pagamento; o administrador produz nesta entrevista sem contar nem ficar bloqueado
+  const usedBefore = await F.freeProductionJobs(db, id);
+  assert.match(msgOf(await post('/ajuda', { subject: 'Entrevista grátis', message: 'Os trabalhos de produção acabaram com falhas do serviço. Podem concluir a entrevista?' }, sa.ck)), /^\/ajuda\/[0-9a-f-]{36}\?ok=sent$/);
+  assert.match(msgOf(await post(`/entrevistas/${id}/transcricoes/${take}`, { text: 'Revisão do administrador' }, admin)), /ok=Transcrição guardada/);
+  assert.match(msgOf(await post(`/entrevistas/${id}/guiao/regenerar`, {}, admin)), /ok=Guião em regeneração/); await drain();
+  assert.match(msgOf(await post(`/entrevistas/${id}/guiao/aprovar`, { reviewed: '1' }, admin)), /ok=Guião aprovado/);
+  assert.match(msgOf(await post(`/entrevistas/${id}/gerar`, { subtitle_langs: 'en' }, admin)), /ok=Geração iniciada/); await drain();
+  assert.equal(await statusOf(id), 'ready');
+  assert.equal(await F.freeProductionJobs(db, id), usedBefore, 'os trabalhos do administrador não contam');
 }));

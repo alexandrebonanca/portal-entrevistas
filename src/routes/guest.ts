@@ -8,6 +8,7 @@ import { t, normLang, consentText, consentLongFor, CONSENT_VERSION, type Lang, t
 import { guestReview, guestDecides, reviewCopy } from '../approval.ts';
 import { hasVideo, promoVideo } from '../landing.ts';
 import { sniff, stripJpegMetadata, saveAsset, probeAudio } from '../media.ts';
+import { photoDecodes } from '../cover.ts';
 import { queueEmail, emailShell } from '../mail.ts';
 import { createInvitation } from '../invites.ts';
 import { aiAvailable, readQuestion, READING_VOICES } from '../ai/openai.ts';
@@ -373,6 +374,11 @@ ${pc && !done ? `<div class="card" id="cam" data-max="3" data-msg='${esc(msg)}'>
     const kind = Buffer.isBuffer(data) ? sniff(data) : null;
     if (!kind || kind.kind !== 'image') return reply.code(415).send({ error: 'format' });
     const clean = kind.mime === 'image/jpeg' ? stripJpegMetadata(data) : data;
+    // Cada envio descodifica a fotografia (e uma recusada não conta para as 3): um limite por entrevista contra pedidos em série.
+    if (!rateLimit(`foto:${iv.id}`, 10, 60_000)) return reply.code(429).send({ error: 'rate' });
+    // A assinatura não chega: antes, uma fotografia com a assinatura JPEG e o conteúdo corrompido era guardada e só falhava
+    // no sharp, na capa do episódio, depois de pagas a voz, os tempos das legendas e as traduções, em cada tentativa.
+    if (!(await photoDecodes(clean))) return reply.code(415).send({ error: 'format' });
     const assetId = await saveAsset(db, { interviewId: iv.id, kind: 'guest_photo', mime: kind.mime, ext: kind.ext, data: clean });
     const ph = await db.one('INSERT INTO photos(interview_id, asset_id) VALUES ($1,$2) RETURNING id', [iv.id, assetId]);
     return { ok: true, id: ph.id, assetId };
