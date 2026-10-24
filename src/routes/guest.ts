@@ -13,10 +13,12 @@ import { createInvitation } from '../invites.ts';
 import { aiAvailable, readQuestion, READING_VOICES } from '../ai/openai.ts';
 import { storage } from '../storage.ts';
 import { inEntity, entityOfInterview } from '../settings.ts';
-import { answeredMs, secondsLeft, mmss, LIMIT_SLACK_MS } from '../limits.ts';
+import { answeredMs, secondsLeft, mmss, LIMIT_SLACK_MS, wordsToMs, msToWords, maxAnswerWords } from '../limits.ts';
+import { extractAnswerText, DocError, DOC_MAX_BYTES } from '../docx.ts';
 import { guestHelpNav } from '../support.ts';
 
 const H = { 'Content-Type': 'text/html; charset=utf-8' };
+const DOC_MAX_MB = DOC_MAX_BYTES / 1024 / 1024;
 
 export async function guestRoutes(app: FastifyInstance) {
   const db = app.db;
@@ -174,7 +176,8 @@ ${left != null ? `<p class="hint sans">${esc(d.answerTime(mmss(iv.answer_limit_s
     const n = Math.max(1, Math.min(total, parseInt((req.params as any).n) || 1));
     const q = await db.one('SELECT * FROM questions WHERE interview_id=$1 AND position=$2', [iv.id, n]);
     if (!q) return reply.redirect('/entrevista');
-    const ans = await db.one(`SELECT a.*, t.asset_id, ast.duration_ms AS take_ms FROM answers a LEFT JOIN answer_takes t ON t.id=a.selected_take_id LEFT JOIN assets ast ON ast.id=t.asset_id WHERE a.question_id=$1`, [q.id]);
+    const ans = await db.one(`SELECT a.*, t.asset_id, t.uploaded_via, ast.duration_ms AS take_ms FROM answers a LEFT JOIN answer_takes t ON t.id=a.selected_take_id LEFT JOIN assets ast ON ast.id=t.asset_id WHERE a.question_id=$1`, [q.id]);
+    const written = ans?.asset_id && ans.uploaded_via === 'document' ? await docText(ans.selected_take_id) : null;
     const nextHref = n < total ? `/entrevista/p/${n + 1}` : '/entrevista/fotos';
     // Tempo total da entrevista: «base» é o que esta resposta pode usar (uma nova gravação substitui a atual); null = sem limite.
     const others = iv.answer_limit_sec == null ? 0 : await answeredMs(db, iv.id, q.id);
@@ -183,17 +186,19 @@ ${left != null ? `<p class="hint sans">${esc(d.answerTime(mmss(iv.answer_limit_s
     const left = secondsLeft(iv.answer_limit_sec, others + savedMs);
     const noTime = base != null && base < 1;
     const msg = JSON.stringify({ micDenied: d.micDenied, micNone: d.micNone, empty: d.empty, silent: d.silent, tooLong: d.tooLong, stLocal: d.stLocal, stUp: d.stUp, stSaved: d.stSaved, stFail: d.stFail, retry: d.retry, record: d.record, stop: d.stop, redo: d.redo,
-      overTotal: d.overTotal, noTimeLeft: d.noTimeLeft, limitReached: d.limitReached, maxSec: base == null ? config.limits.maxAnswerSeconds : Math.min(config.limits.maxAnswerSeconds, base), base, saved: Math.round(savedMs / 1000) });
+      overTotal: d.overTotal, noTimeLeft: d.noTimeLeft, limitReached: d.limitReached, docFormat: d.docFormat, docEmpty: d.docEmpty, docTooBig: d.docTooBig(DOC_MAX_MB), docMaxBytes: DOC_MAX_BYTES, maxSec: base == null ? config.limits.maxAnswerSeconds : Math.min(config.limits.maxAnswerSeconds, base), base, saved: Math.round(savedMs / 1000) });
     return gpage(reply, lang, `${d.question} ${n}`, `<p class="qnum">${esc(d.question)} ${n} ${esc(d.of)} ${total}${q.followup ? ' · +' : ''}</p>
 <h1 style="font-size:1.6rem">${esc(q.text) || ''}</h1>
 ${q.audio_asset_id ? `<p><audio controls preload="none" src="/api/g/media/${q.audio_asset_id}"></audio></p>` : ''}
 <p><button type="button" class="ghost" id="listen" data-q="${q.id}" data-text="${esc(q.text)}" data-lang="${lang}">🔊 ${esc(d.listen)}</button>${q.audio_asset_id ? '' : `<br><span class="hint">${esc(d.listenSynth)}</span>`}</p>
 <div class="card"><div class="rec" id="guestrec" data-upload="/api/g/respostas/${q.id}" data-msg='${esc(msg)}'>
 <div class="timer" id="timer" aria-live="off">0:00</div>${left != null ? `<p class="sans" id="left" style="margin:0">${esc(d.timeLeft)} <strong>${mmss(left)}</strong> <span class="hint">${esc(d.timeLeftNote)}</span></p>` : ''}<button type="button" id="recBtn" class="recbtn" aria-label="${esc(d.record)}" ${noTime ? 'disabled' : ''}>${esc(d.record)}</button>
-<div id="review" ${ans?.asset_id ? '' : 'hidden'} style="width:100%"><audio controls id="player" preload="none" style="width:100%" ${ans?.asset_id ? `src="/api/g/media/${ans.asset_id}"` : ''}></audio></div>
+<div id="review" ${ans?.asset_id && written == null ? '' : 'hidden'} style="width:100%"><audio controls id="player" preload="none" style="width:100%" ${ans?.asset_id && written == null ? `src="/api/g/media/${ans.asset_id}"` : ''}></audio></div>
+<div id="textReview"${written != null ? '' : ' hidden'} style="width:100%"><p class="hint" style="margin:0 0 6px">${esc(d.docReview)}</p><blockquote id="textOut" class="written">${esc(written ?? '')}</blockquote></div>
 <div class="status" id="st" role="status" aria-live="polite">${noTime ? esc(d.noTimeLeft) : ans?.asset_id ? esc(d.stSaved) : ans?.status === 'refused' ? esc(d.refused) : ''}</div>
 <div class="row"><button type="button" class="ghost" id="redoBtn" ${ans?.asset_id && !noTime ? '' : 'hidden'}>${esc(d.redo)}</button></div>
-<details><summary class="sans">${esc(d.uploadOwn)}</summary><input type="file" id="fileIn" accept="audio/*" ${noTime ? 'disabled' : ''}></details></div></div>
+<details><summary class="sans">${esc(d.uploadOwn)}</summary><input type="file" id="fileIn" accept="audio/*" ${noTime ? 'disabled' : ''}></details>
+<details><summary class="sans">${esc(d.uploadDoc)}</summary><p class="hint">${esc(d.docHint(DOC_MAX_MB, base == null ? maxAnswerWords() : Math.min(maxAnswerWords(), msToWords(base * 1000))))}</p><input type="file" id="docIn" data-upload="/api/g/respostas/${q.id}/documento" accept=".docx,.txt,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain" ${noTime ? 'disabled' : ''}></details></div></div>
 <p class="hint">${esc(d.otherAudio)}</p>
 <p><a id="next" class="btn accent" style="width:100%;text-align:center;${ans ? '' : 'pointer-events:none;opacity:.5'}" href="${nextHref}" aria-disabled="${ans ? 'false' : 'true'}">${esc(d.confirm)}</a></p>
 <form method="post" action="/api/g/respostas/${q.id}/recusar-form"><p><button class="ghost" style="width:100%">${esc(d.refuse)}</button></p></form>
@@ -248,6 +253,69 @@ ${q.audio_asset_id ? `<p><audio controls preload="none" src="/api/g/media/${q.au
     await invalidateDerived(db, iv.id);
     return { ok: true, takeId: r.take.id, assetId, durationMs: p.durationMs, silent: p.silent, remainingSec: r.remainingSec };
   });
+
+  // Resposta escrita: ficheiro Word (.docx) ou texto (.txt). Guarda-se só o texto extraído (sem o ficheiro, que pode
+  // trazer autor, comentários e revisões) e a transcrição sai já dele, marcada como «document»: não há transcrição paga.
+  app.post('/api/g/respostas/:qid/documento', { bodyLimit: DOC_MAX_BYTES + 1024 }, async (req, reply) => {
+    const iv = await needOpen(req, reply); if (!iv) return;
+    if (!(await granted(iv.id, 'participation'))) return reply.code(403).send({ error: 'consent' });
+    if (!rateLimit(`ans:${iv.id}`, 60, 60_000)) return reply.code(429).send({ error: 'rate' });
+    const q = await db.one('SELECT * FROM questions WHERE id=$2 AND interview_id=$1', [iv.id, (req.params as any).qid]);
+    if (!q) return reply.code(404).send({ error: 'question' });
+    const d = t(normLang(iv.interaction_lang));
+    const upId = String(req.headers['x-upload-id'] ?? '').slice(0, 64);
+    if (upId) {
+      const dup = await db.one(`SELECT t.id, a.duration_ms, a.meta FROM answer_takes t JOIN assets a ON a.id=t.asset_id JOIN answers an ON an.id=t.answer_id WHERE an.question_id=$1 AND a.meta->>'uploadId'=$2`, [q.id, upId]);
+      if (dup) return { ok: true, takeId: dup.id, durationMs: dup.duration_ms, duplicate: true, text: await docText(dup.id), words: dup.meta?.words ?? null, remainingSec: iv.answer_limit_sec == null ? null : secondsLeft(iv.answer_limit_sec, await answeredMs(db, iv.id)) };
+    }
+    const body = req.body as unknown;
+    const data = Buffer.isBuffer(body) ? body : typeof body === 'string' ? Buffer.from(body, 'utf8') : null;
+    if (!data) return reply.code(415).send({ error: 'format', message: d.docFormat });
+    let doc;
+    try { doc = extractAnswerText(data); }
+    catch (e: any) {
+      if (!(e instanceof DocError)) throw e;
+      req.log.warn({ bytes: data.length, reason: e.message }, 'resposta escrita recusada');
+      return e.code === 'empty' ? reply.code(422).send({ error: 'empty', message: d.docEmpty })
+        : e.code === 'tooBig' ? reply.code(413).send({ error: 'tooBig', message: d.docTooBig(DOC_MAX_MB) })
+        : reply.code(415).send({ error: 'format', message: d.docFormat });
+    }
+    if (doc.words > maxAnswerWords()) return reply.code(422).send({ error: 'tooLong', message: d.docTooLong(doc.words, maxAnswerWords()) });
+    const durationMs = wordsToMs(doc.words);
+    const over = (limitSec: number | null, othersMs: number) => limitSec != null && othersMs + durationMs > limitSec * 1000 + LIMIT_SLACK_MS;
+    const overTotal = (limitSec: number, othersMs: number) => {
+      const remainingSec = secondsLeft(limitSec, othersMs)!;
+      return reply.code(422).send({ error: 'overTotal', remainingSec, message: d.docOverTotal(msToWords(remainingSec * 1000)) });
+    };
+    if (iv.answer_limit_sec != null) {
+      const othersMs = await answeredMs(db, iv.id, q.id);
+      if (over(iv.answer_limit_sec, othersMs)) return overTotal(iv.answer_limit_sec, othersMs);
+    }
+    const assetId = await saveAsset(db, { interviewId: iv.id, kind: 'answer_text', mime: 'text/plain; charset=utf-8', ext: 'txt', data: Buffer.from(doc.text, 'utf8'), durationMs, meta: { uploadId: upId || null, via: 'document', format: doc.format, words: doc.words, estimated: true } });
+    const r = await db.tx(async tx => {
+      const cur = await tx.one('SELECT answer_limit_sec FROM interviews WHERE id=$1 FOR UPDATE', [iv.id]);
+      const othersMs = cur.answer_limit_sec == null ? 0 : await answeredMs(tx, iv.id, q.id);
+      if (over(cur.answer_limit_sec, othersMs)) return { refused: { limitSec: cur.answer_limit_sec as number, othersMs } };
+      const ans = await tx.one(`INSERT INTO answers(interview_id, question_id, status) VALUES ($1,$2,'answered') ON CONFLICT (question_id) DO UPDATE SET status='answered', updated_at=now() RETURNING id`, [iv.id, q.id]);
+      const tk = await tx.one(`INSERT INTO answer_takes(answer_id, asset_id, uploaded_via) VALUES ($1,$2,'document') RETURNING id`, [ans.id, assetId]);
+      await tx.query('UPDATE answers SET selected_take_id=$2 WHERE id=$1', [ans.id, tk.id]);
+      // O texto do convidado é a transcrição (revisão 1, origem «document»); o editor pode revê-la como as outras.
+      await tx.query(`INSERT INTO transcripts(interview_id, source_kind, source_id, revision, text, language, origin) VALUES ($1,'answer_take',$2,1,$3,$4,'document')`,
+        [iv.id, tk.id, doc.text, iv.answer_lang && iv.answer_lang !== 'auto' ? iv.answer_lang : null]);
+      return { take: tk, remainingSec: secondsLeft(cur.answer_limit_sec, othersMs + durationMs) };
+    });
+    if (r.refused) {
+      const a = await db.one('UPDATE assets SET deleted_at=now() WHERE id=$1 RETURNING storage_key', [assetId]);
+      if (a) await storage.remove(a.storage_key).catch(() => {});
+      return overTotal(r.refused.limitSec, r.refused.othersMs);
+    }
+    await invalidateDerived(db, iv.id);
+    return { ok: true, takeId: r.take.id, assetId, durationMs, words: doc.words, text: doc.text, remainingSec: r.remainingSec };
+  });
+
+  /** Texto original de uma resposta escrita (a revisão 1, a do convidado). */
+  const docText = async (takeId: string | null) => takeId
+    ? ((await db.one(`SELECT text FROM transcripts WHERE source_kind='answer_take' AND source_id=$1 AND origin='document' ORDER BY revision LIMIT 1`, [takeId]))?.text ?? '') : '';
 
   const refuse = async (iv: any, qid: string) => {
     const q = await db.one('SELECT id FROM questions WHERE id=$2 AND interview_id=$1', [iv.id, qid]);
@@ -374,8 +442,9 @@ ${pc && !done ? `<div class="card" id="cam" data-max="3" data-msg='${esc(msg)}'>
   const consentShown = (x: any, lang: Lang, policy?: string) =>
     String(x.text_snapshot ?? '').split('\n')[0].trim() || consentText(lang, x.purpose as ConsentPurpose, policy);
   const summary = async (iv: any) => {
-    const qs = await db.query(`SELECT q.*, a.status, t.asset_id, ast.duration_ms FROM questions q LEFT JOIN answers a ON a.question_id=q.id
+    const qs = await db.query(`SELECT q.*, a.status, a.selected_take_id, t.asset_id, t.uploaded_via, ast.duration_ms FROM questions q LEFT JOIN answers a ON a.question_id=q.id
       LEFT JOIN answer_takes t ON t.id=a.selected_take_id LEFT JOIN assets ast ON ast.id=t.asset_id WHERE q.interview_id=$1 ORDER BY q.position`, [iv.id]);
+    for (const q of qs) if (q.status === 'answered' && q.uploaded_via === 'document') q.written = await docText(q.selected_take_id);
     const photos = await db.query('SELECT * FROM photos WHERE interview_id=$1 ORDER BY created_at', [iv.id]);
     const consents = await db.query(`SELECT DISTINCT ON (purpose) purpose, granted, text_snapshot FROM consents WHERE interview_id=$1 ORDER BY purpose, created_at DESC`, [iv.id]);
     return { qs, photos, consents, complete: qs.length > 0 && qs.every((q: any) => q.status === 'answered' || q.status === 'refused') };
@@ -387,7 +456,7 @@ ${pc && !done ? `<div class="card" id="cam" data-max="3" data-msg='${esc(msg)}'>
     if (iv.collection_status === 'submitted') return reply.redirect('/entrevista/obrigado');
     const s = await summary(iv);
     return gpage(reply, lang, d.review, `<h1>${esc(d.review)}</h1><h2>${esc(d.yourAnswers)}</h2>
-<ol class="sans" style="padding-left:20px">${s.qs.map((q: any) => `<li style="margin:10px 0">${esc(q.text)}<br>${q.status === 'answered' ? `<audio controls preload="none" src="/api/g/media/${q.asset_id}" style="width:100%"></audio>` : q.status === 'refused' ? pill(d.refused, 'warn') : pill('⚠', 'bad')}</li>`).join('')}</ol>
+<ol class="sans" style="padding-left:20px">${s.qs.map((q: any) => `<li style="margin:10px 0">${esc(q.text)}<br>${q.status === 'answered' && q.written != null ? `<span class="hint">${esc(d.textAnswer)}</span><blockquote class="written">${esc(q.written)}</blockquote>` : q.status === 'answered' ? `<audio controls preload="none" src="/api/g/media/${q.asset_id}" style="width:100%"></audio>` : q.status === 'refused' ? pill(d.refused, 'warn') : pill('⚠', 'bad')}</li>`).join('')}</ol>
 <h2>${esc(d.photos)}</h2>${s.photos.length ? `<div class="thumbs">${s.photos.map((p: any) => `<img alt="" src="/api/g/media/${p.asset_id}">`).join('')}</div>` : `<p class="hint">${esc(d.noPhotos)}</p>`}
 <ul class="sans">${s.consents.map((x: any) => `<li>${x.granted ? '✔' : '✘'} ${esc(consentShown(x, lang, iv.review_policy))}</li>`).join('')}</ul>
 ${s.complete ? `<form method="post" action="/entrevista/submeter" onsubmit="return confirm('${esc(d.submitConfirm)}')"><p><button class="accent" style="width:100%">${esc(d.submit)}</button></p></form>` : `<div class="flash bad">${esc(d.pendingUploads)}</div><p><a class="btn" href="/entrevista">${esc(d.continue)}</a></p>`}`);
@@ -401,7 +470,7 @@ ${s.complete ? `<form method="post" action="/entrevista/submeter" onsubmit="retu
     if (!s.complete) return reply.redirect('/entrevista/rever');
     const snapshot = {
       interviewId: iv.id, questionVersion: iv.version, submittedAt: new Date().toISOString(),
-      answers: s.qs.map((q: any) => ({ questionId: q.id, status: q.status, assetId: q.asset_id ?? null })),
+      answers: s.qs.map((q: any) => ({ questionId: q.id, status: q.status, assetId: q.asset_id ?? null, ...(q.uploaded_via === 'document' ? { via: 'document' } : {}) })),
       photos: s.photos.map((p: any) => p.asset_id), consents: s.consents.map((x: any) => ({ purpose: x.purpose, granted: x.granted })),
     };
     const sub = await db.tx(async tx => {

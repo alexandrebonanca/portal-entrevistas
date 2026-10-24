@@ -132,6 +132,14 @@ export const FAQ_SEED: SeedEntry[] = [
       `On the interview page (from the dashboard): the «Respostas» (Answers) table shows each question with its state (answered, declined or pending) and the audio; below are the guest's photos, the permissions they gave (with the text version and the date) and the emails sent. The original files are only shown to you and to the portal administration.`,
       'listen answers, see answers, audio, photos, permissions, consents, where'] },
 
+  { key: 'respostas-escritas', audience: 'interviewer', sort: 115,
+    pt: ['O entrevistado pode responder por escrito, com um ficheiro Word?',
+      `Sim. Em cada pergunta, o entrevistado pode carregar um documento Word (.docx) ou um ficheiro de texto (.txt) em vez de gravar. O portal guarda só o texto e mostra-o na tabela «Respostas» e em «Produção do podcast» com a marca «resposta escrita (ficheiro)». Esse texto é já a transcrição (origem «document»): não há transcrição paga e pode corrigi-lo como as outras. No guião, as falas que vêm dele ficam assinaladas, e no episódio são lidas pela voz sintética do entrevistado, como as respostas gravadas. Cada resposta escrita pode ter até {maxAnswerWords} palavras e conta para o tempo total de respostas como uma leitura de cerca de 150 palavras por minuto.`,
+      'resposta escrita, word, docx, texto, ficheiro, txt, documento, sem áudio, escrever'],
+    en: ['Can the guest answer in writing, with a Word file?',
+      `Yes. For each question, the guest can upload a Word document (.docx) or a text file (.txt) instead of recording. The portal keeps only the text and shows it in the «Respostas» (Answers) table and in «Produção do podcast» (Podcast production) marked «resposta escrita (ficheiro)» (written answer, file). That text is already the transcript (origin «document»): there is no paid transcription and you can correct it like the others. In the script, the lines that come from it are flagged, and in the episode they are read by the guest's synthetic voice, like the recorded answers. Each written answer can have up to {maxAnswerWords} words and counts towards the total answer time as a reading at about 150 words per minute.`,
+      'written answer, word, docx, text, file, txt, document, no audio, write'] },
+
   { key: 'estados', audience: 'interviewer',
     pt: ['O que querem dizer os estados da entrevista?',
       `Recolha: «Rascunho» (ainda não enviada), «Convidada» (convite enviado), «Iniciada» (o entrevistado abriu o link), «Submetida» (respostas entregues), «Reaberta» (perguntas adicionais depois de submeter) e «Cancelada». Produção: «Produção não pedida», «Em fila», «Transcrição», «Revisão editorial», «Geração», «Pronta», «Controlo de qualidade» (há alertas a corrigir), «Falhou» e «Desatualizada» (as respostas mudaram depois do guião). Publicação: «Privada», «Aguarda aprovação», «Publicada» e «Retirada».`,
@@ -367,10 +375,10 @@ export const FAQ_SEED: SeedEntry[] = [
   // ======================= convidados =======================
   { key: 'convidado-como-funciona', audience: 'guest',
     pt: ['Como funciona a entrevista?',
-      `Responde às perguntas no telemóvel ou no computador, quando lhe der jeito, sem instalar nada nem criar conta. Primeiro escolhe o que autoriza; depois, em cada pergunta, ouve-a, grava a resposta e pode ouvi-la e repeti-la. No fim pode juntar fotografias (é opcional), revê tudo e submete. A partir das suas respostas, o entrevistador prepara um episódio de podcast em inglês.`,
+      `Responde às perguntas no telemóvel ou no computador, quando lhe der jeito, sem instalar nada nem criar conta. Primeiro escolhe o que autoriza; depois, em cada pergunta, ouve-a, grava a resposta e pode ouvi-la e repeti-la (ou carrega um áudio já gravado ou um ficheiro Word com a resposta escrita). No fim pode juntar fotografias (é opcional), revê tudo e submete. A partir das suas respostas, o entrevistador prepara um episódio de podcast em inglês.`,
       'como funciona, o que é isto, entrevista, passos, começar, o que tenho de fazer'],
     en: ['How does the interview work?',
-      `You answer the questions on your phone or computer, whenever suits you, with nothing to install and no account. First you choose what you allow; then, for each question, you listen to it, record your answer and can play it back and redo it. At the end you can add photos (optional), review everything and submit. From your answers, the interviewer prepares an English-language podcast episode.`,
+      `You answer the questions on your phone or computer, whenever suits you, with nothing to install and no account. First you choose what you allow; then, for each question, you listen to it, record your answer and can play it back and redo it (or upload an existing recording, or a Word file with your written answer). At the end you can add photos (optional), review everything and submit. From your answers, the interviewer prepares an English-language podcast episode.`,
       'how it works, what is this, interview, steps, start, what do I do'] },
 
   { key: 'convidado-instalar', audience: 'guest',
@@ -428,6 +436,14 @@ export const FAQ_SEED: SeedEntry[] = [
     en: ['Can I upload a recording I already made?',
       `Yes. On the question page, open «Upload an existing recording» and choose the file. The portal checks that it is valid audio with sound; the maximum length is the same as for recordings ({maxAnswerMin} minutes) and it counts towards the interview's total time, if there is one.`,
       'upload audio, file, recorded audio, send audio'] },
+
+  { key: 'convidado-carregar-word', audience: 'guest', sort: 85,
+    pt: ['Posso responder com um texto escrito (ficheiro Word)?',
+      `Sim. Na página da pergunta, abra «Carregar um ficheiro Word como resposta à questão» e escolha um documento Word (.docx) ou um ficheiro de texto (.txt), até 2 MB. O portal lê só o texto (sem imagens, comentários nem formatação) e mostra-o para confirmar; para o mudar, carregue outro ficheiro ou grave a resposta, que substitui a anterior. Cada resposta escrita pode ter até {maxAnswerWords} palavras e conta para o tempo total da entrevista como uma leitura de cerca de 150 palavras por minuto. No episódio, o texto é traduzido e lido pela voz sintética escolhida para si, como as respostas gravadas. Um .doc antigo ou um PDF não é aceite: guarde-o como .docx.`,
+      'word, docx, ficheiro de texto, texto escrito, resposta escrita, escrever, documento, txt, carregar ficheiro, sem gravar'],
+    en: ['Can I answer with written text (a Word file)?',
+      `Yes. On the question page, open «Upload a Word file as your answer» and choose a Word document (.docx) or a text file (.txt), up to 2 MB. The portal reads only the text (no images, comments or formatting) and shows it to you to check; to change it, upload another file or record the answer, which replaces the previous one. Each written answer can have up to {maxAnswerWords} words and counts towards the interview's total time as a reading at about 150 words per minute. In the episode, the text is translated and read by the synthetic voice chosen for you, like the recorded answers. An old .doc file or a PDF is not accepted: save it as .docx.`,
+      'word, docx, text file, written text, written answer, write, document, txt, upload file, without recording'] },
 
   { key: 'convidado-continuar', audience: 'guest',
     pt: ['Posso parar e continuar mais tarde?',
@@ -511,10 +527,10 @@ export const FAQ_SEED: SeedEntry[] = [
 
   { key: 'convidado-privacidade', audience: 'guest',
     pt: ['Quem tem acesso às minhas respostas? Posso pedir que apaguem os meus dados?',
-      `As gravações originais e as fotografias não usadas ficam privadas: só o entrevistador e a equipa do portal (para suporte) lhes têm acesso. Com a sua autorização, o áudio é enviado a um fornecedor de IA para transcrição, tradução e narração. Pode pedir acesso, correção, retirada de autorização ou eliminação ao suporte, nesta página; depois de o link deixar de valer, use o formulário de contacto do portal (ligação «Contact» no fundo de cada página). As perguntas que escreve no assistente desta página são respondidas só com as perguntas frequentes (não seguem para serviços de IA) e ficam registadas sem identificação durante {logDays} dias. Cópias já descarregadas ou distribuídas fora do portal podem não ser recuperáveis.`,
+      `As gravações originais e as fotografias não usadas ficam privadas: só o entrevistador e a equipa do portal (para suporte) lhes têm acesso. Com a sua autorização, o áudio é enviado a um fornecedor de IA para transcrição, tradução e narração (numa resposta escrita, só o texto, para tradução e narração; do ficheiro Word guarda-se apenas o texto). Pode pedir acesso, correção, retirada de autorização ou eliminação ao suporte, nesta página; depois de o link deixar de valer, use o formulário de contacto do portal (ligação «Contact» no fundo de cada página). As perguntas que escreve no assistente desta página são respondidas só com as perguntas frequentes (não seguem para serviços de IA) e ficam registadas sem identificação durante {logDays} dias. Cópias já descarregadas ou distribuídas fora do portal podem não ser recuperáveis.`,
       'privacidade, dados, apagar, eliminar, quem vê, acesso, RGPD, retirar autorização, dados pessoais'],
     en: ['Who can access my answers? Can I ask for my data to be deleted?',
-      `The original recordings and unused photos stay private: only the interviewer and the portal team (for support) can access them. With your permission, the audio is sent to an AI provider for transcription, translation and narration. You can ask support, on this page, for access, correction, withdrawal of consent or deletion; once your link is no longer valid, use the portal’s contact form (the «Contact» link at the bottom of every page). Questions you type into the assistant on this page are answered only from the frequently asked questions (they are not sent to AI services) and are stored without identification for {logDays} days. Copies already downloaded or distributed outside the portal may not be recoverable.`,
+      `The original recordings and unused photos stay private: only the interviewer and the portal team (for support) can access them. With your permission, the audio is sent to an AI provider for transcription, translation and narration (for a written answer, only the text, for translation and narration; of a Word file, only the text is kept). You can ask support, on this page, for access, correction, withdrawal of consent or deletion; once your link is no longer valid, use the portal’s contact form (the «Contact» link at the bottom of every page). Questions you type into the assistant on this page are answered only from the frequently asked questions (they are not sent to AI services) and are stored without identification for {logDays} days. Copies already downloaded or distributed outside the portal may not be recoverable.`,
       'privacy, data, delete, erase, who sees, access, GDPR, withdraw consent, personal data'] },
 
   { key: 'convidado-lingua', audience: 'guest',

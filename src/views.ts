@@ -42,6 +42,7 @@ footer{border-top:1px solid var(--line);margin-top:64px;padding:28px 0;color:var
 .qnum{font:600 .85rem system-ui;letter-spacing:.1em;color:var(--accent);text-transform:uppercase}
 video.cam{width:100%;max-height:60vh;border-radius:12px;background:#000;transform:scaleX(-1)}
 .thumbs{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}.thumbs img{width:100%;aspect-ratio:1;object-fit:cover;border-radius:8px}
+.written{white-space:pre-wrap;margin:6px 0;padding:8px 12px;border-left:3px solid var(--line);max-height:22em;overflow:auto;font-size:.95rem}
 .cue{font:1.1rem/1.5 system-ui;min-height:3.2em;text-align:center;padding:12px;background:var(--card);border:1px solid var(--line);border-radius:10px}
 .seg{border-left:3px solid var(--line);padding:6px 12px;margin:10px 0}.seg.host{border-color:var(--accent)}.seg.flag{background:rgba(180,105,31,.08)}
 .skip{position:absolute;left:-999px}.skip:focus{left:8px;top:8px;background:var(--card);padding:8px;z-index:9}
@@ -84,6 +85,8 @@ ${o.script ? `<script src="/static/recorder.js" defer></script><script src="${o.
 export const flash = (msg?: string, kind: 'ok' | 'bad' = 'ok') => (msg ? `<div class="flash ${kind}" role="status">${esc(msg)}</div>` : '');
 
 export const pill = (label: string, kind: '' | 'ok' | 'bad' | 'warn' = '') => `<span class="pill ${kind}">${esc(label)}</span>`;
+/** Resposta escrita do convidado (ficheiro Word ou texto), nas páginas do entrevistador: assinalada e com o texto original. */
+export const writtenAnswer = (text: string | null) => `${pill('resposta escrita (ficheiro)', 'warn')}<blockquote class="written">${esc(text ?? '')}</blockquote>`;
 
 export const STATUS_LABEL: Record<string, string> = {
   draft: 'Rascunho', invited: 'Convidada', started: 'Iniciada', submitted: 'Submetida', expired: 'Expirada', cancelled: 'Cancelada', reopened: 'Reaberta',

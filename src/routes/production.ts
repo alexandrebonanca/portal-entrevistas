@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { config } from '../config.ts';
 import { esc, fmtDate, fmtDuration, sha256, rateLimit } from '../lib.ts';
-import { page, flash, pill, STATUS_LABEL } from '../views.ts';
+import { page, flash, pill, writtenAnswer, STATUS_LABEL } from '../views.ts';
 import { requireUser, ownedInterview, audit, sendAsset } from '../app.ts';
 import { enqueue, videoQueue, laneOf, type EnqueueOpts } from '../jobs.ts';
 import type { Db } from '../db.ts';
@@ -164,9 +164,10 @@ export async function productionRoutes(app: FastifyInstance) {
 
     // 1. Pedido de processamento
     if (submitted && iv.production_status === 'not_requested') {
-      const qs = await db.query(`SELECT q.position, q.text, t.asset_id FROM questions q LEFT JOIN answers a ON a.question_id=q.id LEFT JOIN answer_takes t ON t.id=a.selected_take_id WHERE q.interview_id=$1 ORDER BY q.position`, [iv.id]);
+      const qs = await db.query(`SELECT q.position, q.text, t.asset_id, t.uploaded_via, tr.text AS written FROM questions q LEFT JOIN answers a ON a.question_id=q.id LEFT JOIN answer_takes t ON t.id=a.selected_take_id
+        LEFT JOIN transcripts tr ON t.uploaded_via='document' AND tr.source_kind='answer_take' AND tr.source_id=t.id AND tr.revision=1 WHERE q.interview_id=$1 ORDER BY q.position`, [iv.id]);
       body += `<div class="card"><h2 style="margin-top:0">1. Rever originais e confirmar</h2>
-<ol>${qs.map((x: any) => `<li>${esc(x.text) || '(áudio)'}<br>${x.asset_id ? `<audio controls preload="none" src="/media/${x.asset_id}"></audio>` : pill('sem resposta', 'warn')}</li>`).join('')}</ol>
+<ol>${qs.map((x: any) => `<li>${esc(x.text) || '(áudio)'}<br>${x.asset_id && x.uploaded_via === 'document' ? writtenAnswer(x.written) : x.asset_id ? `<audio controls preload="none" src="/media/${x.asset_id}"></audio>` : pill('sem resposta', 'warn')}</li>`).join('')}</ol>
 <p class="sans">Autorização de processamento por IA: ${procOk ? pill('concedida', 'ok') : pill('não concedida', 'bad')} · capa com fotografia: ${coverOk ? pill('sim', 'ok') : pill('não', 'warn')} · publicação: ${pubOk ? pill('sim', 'ok') : pill('não', 'bad')}</p>
 ${!procOk ? '<div class="flash bad">O entrevistado não autorizou o processamento por IA. Não é possível processar; não existe forma de contornar esta decisão. Contacte o entrevistado.</div>' : ''}
 ${!aiAvailable() ? '<div class="flash bad">OPENAI_API_KEY não está configurada neste ambiente.</div>' : ''}
@@ -195,12 +196,12 @@ ${iv.production_status === 'failed' ? `<form method="post" action="/entrevistas/
     if (script && ['editorial_review', 'generating', 'qc', 'ready', 'stale', 'failed'].includes(iv.production_status)) {
       const segs: any[] = script.segments, flags: any[] = script.review_flags, blocking: string[] = script.blocking_issues;
       const flagged = new Set(flags.map((f: any) => f.segmentId));
-      const items = await db.query(`SELECT q.id, q.position, q.text, a.selected_take_id, t.asset_id FROM questions q LEFT JOIN answers a ON a.question_id=q.id LEFT JOIN answer_takes t ON t.id=a.selected_take_id WHERE q.interview_id=$1 ORDER BY q.position`, [iv.id]);
+      const items = await db.query(`SELECT q.id, q.position, q.text, a.selected_take_id, t.asset_id, t.uploaded_via FROM questions q LEFT JOIN answers a ON a.question_id=q.id LEFT JOIN answer_takes t ON t.id=a.selected_take_id WHERE q.interview_id=$1 ORDER BY q.position`, [iv.id]);
       const trs = [];
       for (const it of items) trs.push({ it, a: it.selected_take_id ? await latestTranscript(db, 'answer_take', it.selected_take_id) : null });
       const editable = script.status === 'draft';
       body += `<div class="card"><h2 style="margin-top:0">2. Transcrições (originais)</h2>${iv.production_status === 'stale' ? '<div class="flash bad">As respostas mudaram depois do guião: aprovações invalidadas. Regenere o guião.</div>' : ''}
-${trs.map(({ it, a }) => `<div class="seg"><strong>${it.position}. ${esc(it.text)}</strong>${it.asset_id ? `<br><audio controls preload="none" src="/media/${it.asset_id}"></audio>` : ''}
+${trs.map(({ it, a }) => `<div class="seg"><strong>${it.position}. ${esc(it.text)}</strong>${it.asset_id && it.uploaded_via === 'document' ? ` ${pill('resposta escrita (ficheiro)', 'warn')}` : it.asset_id ? `<br><audio controls preload="none" src="/media/${it.asset_id}"></audio>` : ''}
 ${a ? `<form method="post" action="/entrevistas/${iv.id}/transcricoes/${it.selected_take_id}"><textarea name="text" aria-label="Transcrição">${esc(a.text)}</textarea><button class="ghost">Guardar nova revisão (r${a.revision + 1})</button> <span class="hint">r${a.revision} · ${esc(a.origin)}</span></form>` : '<span class="hint">sem transcrição</span>'}</div>`).join('')}
 <form method="post" action="/entrevistas/${iv.id}/guiao/regenerar">${exhausted ? payFields : ''}<button class="ghost" ${aiAvailable() && canRegen ? '' : 'disabled'}>Regenerar guião a partir das transcrições${exhausted ? PAY : ''}</button></form>${exhausted ? regenHint : ''}</div>
 

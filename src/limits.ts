@@ -29,6 +29,15 @@ export async function answeredMs(db: Db, interviewId: string, exceptQuestionId: 
   return Number(r?.ms ?? 0);
 }
 
+/**
+ * Resposta escrita (ficheiro Word ou texto): conta para os limites como a duração estimada da leitura pela voz sintética,
+ * a ~150 palavras por minuto. O teto por resposta é o mesmo das gravações, em palavras.
+ */
+export const WORDS_PER_MIN = 150;
+export const wordsToMs = (words: number) => Math.round((words * 60_000) / WORDS_PER_MIN);
+export const msToWords = (ms: number) => Math.floor((ms * WORDS_PER_MIN) / 60_000);
+export const maxAnswerWords = () => msToWords(config.limits.maxAnswerSeconds * 1000);
+
 /** Segundos de resposta que ainda restam (null = sem limite). */
 export const secondsLeft = (limitSec: number | null | undefined, usedMs: number): number | null =>
   limitSec == null ? null : Math.max(0, Math.floor((limitSec * 1000 - usedMs) / 1000));

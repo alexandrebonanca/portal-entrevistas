@@ -27,6 +27,13 @@ async function transcribeAsset(db: Db, interview: any, assetId: string, sourceKi
   if (await latestTranscript(db, sourceKind, sourceId)) return;
   const a = await db.one('SELECT * FROM assets WHERE id=$1 AND deleted_at IS NULL', [assetId]);
   if (!a) throw new PermanentError('Ativo em falta');
+  // Resposta escrita (o texto entra como transcrição ao carregar): se faltar, sai do próprio texto, sem transcrição paga.
+  if (a.kind === 'answer_text') {
+    const text = (await storage.get(a.storage_key)).toString('utf8');
+    await db.query(`INSERT INTO transcripts(interview_id, source_kind, source_id, revision, text, language, origin) VALUES ($1,$2,$3,1,$4,$5,'document') ON CONFLICT DO NOTHING`,
+      [interview.id, sourceKind, sourceId, text, interview.answer_lang && interview.answer_lang !== 'auto' ? interview.answer_lang : null]);
+    return;
+  }
   const ext = a.storage_key.split('.').pop()!;
   const r = await transcribeAudio(await storage.get(a.storage_key), ext, interview.answer_lang);
   await db.query(`INSERT INTO transcripts(interview_id, source_kind, source_id, revision, text, language) VALUES ($1,$2,$3,1,$4,$5) ON CONFLICT DO NOTHING`, [interview.id, sourceKind, sourceId, r.text, r.language]);
@@ -34,9 +41,12 @@ async function transcribeAsset(db: Db, interview: any, assetId: string, sourceKi
   await usage(db, interview.id, 'transcription_min', mins, mins * config.prices.transcribePerMin);
 }
 
+/** Marca, no guião, as falas do convidado que vêm de uma resposta escrita. */
+export const WRITTEN_FLAG = 'Resposta escrita: o convidado carregou um ficheiro (Word ou texto) em vez de gravar; o texto é lido pela voz sintética.';
+
 export async function prepareScript(db: Db, interviewId: string) {
   const iv = await db.one('SELECT * FROM interviews WHERE id=$1', [interviewId]);
-  const qs = await db.query(`SELECT q.*, a.status, a.selected_take_id FROM questions q LEFT JOIN answers a ON a.question_id=q.id WHERE q.interview_id=$1 ORDER BY q.position`, [interviewId]);
+  const qs = await db.query(`SELECT q.*, a.status, a.selected_take_id, t.uploaded_via FROM questions q LEFT JOIN answers a ON a.question_id=q.id LEFT JOIN answer_takes t ON t.id=a.selected_take_id WHERE q.interview_id=$1 ORDER BY q.position`, [interviewId]);
   const items: any[] = [];
   for (const q of qs) {
     const qt = q.text || (await latestTranscript(db, 'question', q.id))?.text || '';
@@ -44,6 +54,10 @@ export async function prepareScript(db: Db, interviewId: string) {
     items.push({ questionId: q.id, question: qt, status: q.status === 'answered' ? 'answered' : 'refused', answer: at });
   }
   const r = await prepareEnglishScript({ title: iv.title, objective: iv.objective_text, items });
+  // Respostas escritas (ficheiro Word ou texto): o editor vê no guião que a fala do convidado não veio de uma gravação.
+  const written = new Set(qs.filter((q: any) => q.status === 'answered' && q.uploaded_via === 'document').map((q: any) => q.id));
+  for (const s of r.segments) if (s.transformationType === 'translated_answer' && s.sourceQuestionId && written.has(s.sourceQuestionId))
+    r.reviewFlags.push({ segmentId: s.id, reason: WRITTEN_FLAG });
   // Garante a apresentação (onde o vídeo mostra os dois) e o agradecimento final do entrevistador — textos editoriais do anfitrião.
   if (!r.segments.some(x => x.transformationType === 'editorial_intro')) {
     r.segments.unshift({ id: 'intro', speakerRole: 'host', textEnglish: `Welcome. Today${iv.guest_name ? ` ${iv.guest_name} joins us` : ' we have a guest with us'} to talk about ${r.titleEnglish}.`, sourceQuestionId: null, transformationType: 'editorial_intro' });
@@ -80,7 +94,7 @@ export const handlers: Record<string, Handler> = {
     const processingOk = (await db.one(`SELECT granted FROM consents WHERE interview_id=$1 AND purpose='processing' ORDER BY created_at DESC LIMIT 1`, [iv.id]))?.granted;
     if (!processingOk) throw new PermanentError('Sem autorização de processamento por IA');
     await db.query(`UPDATE interviews SET production_status='transcribing' WHERE id=$1`, [iv.id]);
-    const qs = await db.query(`SELECT q.*, a.status, t.asset_id, a.selected_take_id FROM questions q LEFT JOIN answers a ON a.question_id=q.id LEFT JOIN answer_takes t ON t.id=a.selected_take_id WHERE q.interview_id=$1 ORDER BY q.position`, [iv.id]);
+    const qs = await db.query(`SELECT q.*, a.status, t.asset_id, t.uploaded_via, a.selected_take_id FROM questions q LEFT JOIN answers a ON a.question_id=q.id LEFT JOIN answer_takes t ON t.id=a.selected_take_id WHERE q.interview_id=$1 ORDER BY q.position`, [iv.id]);
     // Pesos: transcrever uma resposta ~3, uma pergunta gravada ~1, preparar o guião ~6.
     const W = { q: 1, a: 3, script: 6 };
     let done = 0; const total = qs.length * (W.q + W.a) + W.script;
@@ -88,7 +102,7 @@ export const handlers: Record<string, Handler> = {
     for (const q of qs) {
       if (q.audio_asset_id && !q.text) { await progress(done, total, `A transcrever a pergunta ${q.position} de ${qs.length}`); await transcribeAsset(db, iv, q.audio_asset_id, 'question', q.id); }
       done += W.q;
-      if (q.status === 'answered' && q.asset_id) { await progress(done, total, `A transcrever a resposta ${q.position} de ${qs.length}`); await transcribeAsset(db, iv, q.asset_id, 'answer_take', q.selected_take_id); }
+      if (q.status === 'answered' && q.asset_id) { await progress(done, total, q.uploaded_via === 'document' ? `Resposta ${q.position} de ${qs.length}: escrita, sem transcrição` : `A transcrever a resposta ${q.position} de ${qs.length}`); await transcribeAsset(db, iv, q.asset_id, 'answer_take', q.selected_take_id); }
       done += W.a;
       await progress(done, total);
     }
@@ -443,10 +457,12 @@ export function animationEstimate(ep: any, iv: any, guestConsent: boolean, hasHo
 
 /** Estimativa (não custo final): preços configuráveis; a utilização observada fica no usage_ledger. */
 export async function estimateCost(db: Db, interviewId: string, subtitleLangs: string[]) {
-  const a = await db.one(`SELECT COALESCE(sum(ast.duration_ms),0)::bigint AS ms FROM answers an JOIN answer_takes t ON t.id=an.selected_take_id JOIN assets ast ON ast.id=t.asset_id WHERE an.interview_id=$1`, [interviewId]);
+  // Respostas escritas: duração estimada da leitura (contam para a voz e o texto), sem transcrição.
+  const a = await db.one(`SELECT COALESCE(sum(ast.duration_ms),0)::bigint AS ms, COALESCE(sum(ast.duration_ms) FILTER (WHERE ast.kind<>'answer_text'),0)::bigint AS audio_ms
+    FROM answers an JOIN answer_takes t ON t.id=an.selected_take_id JOIN assets ast ON ast.id=t.asset_id WHERE an.interview_id=$1 AND an.status='answered'`, [interviewId]);
   const mins = Number(a.ms) / 60000;
   const spokenChars = mins * 900; // ~150 palavras/min × 6 caracteres
-  const tr = mins * config.prices.transcribePerMin;
+  const tr = (Number(a.audio_ms) / 60000) * config.prices.transcribePerMin;
   const tts = ((spokenChars * 1.2 + 300) / 1000) * config.prices.ttsPer1kChars;
   const text = ((spokenChars * 2) / 3 / 1000) * config.prices.textPer1kTokens * (1 + subtitleLangs.filter(l => l !== 'en').length);
   const img = config.prices.imageEach;

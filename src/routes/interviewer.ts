@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import type { Db } from '../db.ts';
 import { config } from '../config.ts';
 import { esc, isEmail, fmtDate, fmtDuration, rateLimit } from '../lib.ts';
-import { page, flash, pill, STATUS_LABEL } from '../views.ts';
+import { page, flash, pill, writtenAnswer, STATUS_LABEL } from '../views.ts';
 import { requireUser, ownedInterview, audit, sendAsset } from '../app.ts';
 import { sniff, stripJpegMetadata, saveAsset, probeAudio } from '../media.ts';
 import { createInvitation } from '../invites.ts';
@@ -537,8 +537,9 @@ ${iv.objective_shared && iv.objective_text ? `<p class="hint">O entrevistado vê
     if (!iv) return reply.code(404).send('Não encontrada');
     const q = req.query as any;
     const rows = await db.query(
-      `SELECT q.*, a.status AS ans_status, t.asset_id AS take_asset FROM questions q LEFT JOIN answers a ON a.question_id=q.id
-       LEFT JOIN answer_takes t ON t.id=a.selected_take_id WHERE q.interview_id=$1 ORDER BY q.position`, [iv.id]);
+      `SELECT q.*, a.status AS ans_status, t.asset_id AS take_asset, t.uploaded_via, tr.text AS written FROM questions q LEFT JOIN answers a ON a.question_id=q.id
+       LEFT JOIN answer_takes t ON t.id=a.selected_take_id
+       LEFT JOIN transcripts tr ON t.uploaded_via='document' AND tr.source_kind='answer_take' AND tr.source_id=t.id AND tr.revision=1 WHERE q.interview_id=$1 ORDER BY q.position`, [iv.id]);
     const photos = await db.query('SELECT p.*, a.id AS aid FROM photos p JOIN assets a ON a.id=p.asset_id WHERE p.interview_id=$1 ORDER BY p.created_at', [iv.id]);
     const consents = await db.query(`SELECT DISTINCT ON (purpose) purpose, granted, text_version, created_at FROM consents WHERE interview_id=$1 ORDER BY purpose, created_at DESC`, [iv.id]);
     const inv = await db.one(`SELECT * FROM invitations WHERE interview_id=$1 ORDER BY created_at DESC LIMIT 1`, [iv.id]);
@@ -554,9 +555,9 @@ ${inv ? `<br><strong>Convite:</strong> ${inv.revoked_at ? 'revogado' : inv.decli
 <a class="btn ghost" href="/entrevistas/${iv.id}/editar">Editar</a>
 ${['invited', 'started', 'reopened', 'expired'].includes(iv.collection_status) ? `<form method="post" action="/entrevistas/${iv.id}/reenviar"><button class="ghost">Reenviar convite (revoga o anterior)</button></form><form method="post" action="/entrevistas/${iv.id}/cancelar" onsubmit="return confirm('Cancelar a entrevista?')"><button class="danger">Cancelar</button></form>` : ''}
 ${sub || iv.production_status !== 'not_requested' ? `<a class="btn accent" href="/entrevistas/${iv.id}/producao">Produção do podcast →</a>` : ''}</div></div>
-<div class="card"><h2 style="margin-top:0">Respostas</h2><table><thead><tr><th>#</th><th>Pergunta</th><th>Estado</th><th>Áudio</th></tr></thead><tbody>
+<div class="card"><h2 style="margin-top:0">Respostas</h2><table><thead><tr><th>#</th><th>Pergunta</th><th>Estado</th><th>Resposta</th></tr></thead><tbody>
 ${rows.map((r: any) => `<tr><td>${r.position}</td><td>${esc(r.text) || '(áudio)'}${r.followup ? ' ' + pill('adicional') : ''}</td><td>${r.ans_status === 'answered' ? pill('Respondida', 'ok') : r.ans_status === 'refused' ? pill('Recusada', 'warn') : pill('Pendente')}</td>
-<td>${r.take_asset ? `<audio controls preload="none" src="/media/${r.take_asset}"></audio>` : ''}</td></tr>`).join('')}</tbody></table></div>
+<td>${r.take_asset && r.uploaded_via === 'document' ? writtenAnswer(r.written) : r.take_asset ? `<audio controls preload="none" src="/media/${r.take_asset}"></audio>` : ''}</td></tr>`).join('')}</tbody></table></div>
 <div class="card"><h2 style="margin-top:0">Fotografias do convidado</h2>${photos.length ? `<div class="thumbs">${photos.map((p: any) => `<img alt="Selfie" src="/media/${p.aid}">`).join('')}</div>` : '<p class="hint">Sem fotografias.</p>'}</div>
 <div class="card"><h2 style="margin-top:0">Autorizações</h2>${consents.length ? `<table><tbody>${consents.map((c: any) => `<tr><td>${esc(c.purpose)}</td><td>${c.granted ? pill('Autorizado', 'ok') : pill('Recusado', 'bad')}</td><td>${esc(c.text_version)}</td><td>${fmtDate(c.created_at)}</td></tr>`).join('')}</tbody></table>` : '<p class="hint">Ainda sem registos.</p>'}</div>
 <div class="card"><h2 style="margin-top:0">Emails</h2><table><tbody>${emails.map((e: any) => `<tr><td>${esc(e.subject)}</td><td>${pill(e.state === 'pending' ? 'por enviar' : e.state, e.state === 'sent' ? 'ok' : e.state === 'failed' ? 'bad' : 'warn')}</td><td>${fmtDate(e.created_at)}</td><td class="hint">${e.state === 'pending' ? 'Ainda não enviado: confirme que o MailerSend está configurado em Definições.' : esc(e.error ?? '')}</td></tr>`).join('') || '<tr><td class="hint">Sem emails.</td></tr>'}</tbody></table></div>
