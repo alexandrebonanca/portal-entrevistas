@@ -6,8 +6,8 @@ import { requireUser, ownedInterview, audit, sendAsset } from '../app.ts';
 import { enqueue, videoQueue, laneOf, type EnqueueOpts } from '../jobs.ts';
 import type { Db } from '../db.ts';
 import { regenerationsUsed, REGEN_BLOCKED, scriptSizeError, scriptTotalMax, SCRIPT_SEGMENT_MAX, milhares, transcriptMax, SUBTITLE_LANGS, subtitleLangs } from '../limits.ts';
-import { estimateCost, latestTranscript, animationEstimate } from '../pipeline.ts';
-import { aiAvailable, aiNotAnswered, reviewScript, validateScript, episodeVoice } from '../ai/openai.ts';
+import { estimateCost, latestTranscript, animationEstimate, recordTextUsage } from '../pipeline.ts';
+import { aiAvailable, aiNotAnswered, reviewScript, validateScript, episodeVoice, newMeter } from '../ai/openai.ts';
 import { playerHtml } from './episode.ts';
 import { createInvitation } from '../invites.ts';
 import { queueEmail, emailShell } from '../mail.ts';
@@ -552,8 +552,10 @@ ${ep.visibility === 'public' ? `<form method="post" action="/entrevistas/${iv.id
     const items = await db.query(`SELECT q.id, q.text, a.selected_take_id FROM questions q LEFT JOIN answers a ON a.question_id=q.id WHERE q.interview_id=$1 ORDER BY q.position`, [iv.id]);
     const tr = [];
     for (const it of items) tr.push({ questionId: it.id, question: it.text, answer: it.selected_take_id ? (await latestTranscript(db, 'answer_take', it.selected_take_id))?.text : null });
+    // Os tokens ficam no usage_ledger ('review_tokens'), também numa resposta paga que falha depois (cortada, inválida).
+    const meter = newMeter();
     try {
-      const r = await reviewScript(tr, s.segments);
+      const r = await reviewScript(tr, s.segments, meter).finally(() => recordTextUsage(db, iv.id, 'review_tokens', meter));
       const flags = [...s.review_flags, ...r.issues.map((i: any) => ({ segmentId: String(i.scriptSegmentId), reason: `[${i.severity}] ${i.explanation}` }))];
       await db.query('UPDATE scripts SET review_flags=$2 WHERE id=$1', [s.id, JSON.stringify(flags)]);
       return back(reply, iv.id, r.issues.length ? `${r.issues.length} possíveis problemas assinalados.` : 'Sem alertas — isto não substitui a revisão humana.');

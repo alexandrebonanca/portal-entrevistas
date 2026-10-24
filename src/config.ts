@@ -79,6 +79,8 @@ export const config = {
       image: env.OPENAI_MODEL_IMAGE ?? 'gpt-image-1',
     },
     voices: { host: env.OPENAI_VOICE_HOST ?? 'coral', guest: env.OPENAI_VOICE_GUEST ?? 'onyx' },
+    // Qualidade das imagens do gpt-image (low, medium, high): 'medium' é o preço de PRICE_IMAGE_EACH. Fora de `models`, como o assistente.
+    imageQuality: env.OPENAI_IMAGE_QUALITY ?? 'medium',
   },
   limits: {
     maxUploadMb: Number(env.MAX_UPLOAD_MB ?? 60),
@@ -126,6 +128,9 @@ export const config = {
     transcribePerMin: Number(env.PRICE_TRANSCRIBE_PER_MIN ?? 0.006),
     ttsPer1kChars: Number(env.PRICE_TTS_PER_1K_CHARS ?? 0.015),
     textPer1kTokens: Number(env.PRICE_TEXT_PER_1K_TOKENS ?? 0.004),
+    // Tokens medidos (usage_ledger): entrada e saída em separado (gpt-4.1: 2 e 8 USD por milhão).
+    textInPer1kTokens: Number(env.PRICE_TEXT_IN_PER_1K_TOKENS ?? 0.002),
+    textOutPer1kTokens: Number(env.PRICE_TEXT_OUT_PER_1K_TOKENS ?? 0.008),
     imageEach: Number(env.PRICE_IMAGE_EACH ?? 0.04),
   },
   aiDisclosure:

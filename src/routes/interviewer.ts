@@ -82,7 +82,11 @@ export async function interviewerRoutes(app: FastifyInstance) {
     // Entrevista grátis com um guião ou um episódio: a resposta (ou a recusa) do convidado à pergunta adicional desatualiza-os,
     // e refazê-los precisa de FREE_JOBS_FOR_SCRIPT trabalhos de produção por usar. Antes, a 7 de 8, o pedido saía, a resposta
     // punha o episódio pronto como desatualizado e nada o refazia (processar, aprovar e gerar eram todos recusados).
-    const produced = iv.free_at && !admin && await q.one('SELECT 1 FROM scripts WHERE interview_id=$1 UNION ALL SELECT 1 FROM episodes WHERE interview_id=$1 LIMIT 1', [iv.id]);
+    // Um guião em curso (processamento ou guião novo na fila ou a correr) conta como um guião: antes, a 6 de 8, o /processar
+    // punha o trabalho na fila (7 de 8), o pedido saía por ainda não haver guião, e a resposta desatualizava o que ele dava.
+    // Contado na transação do POST, com a entrevista FOR UPDATE, a mesma que o enqueueProduction bloqueia.
+    const produced = iv.free_at && !admin && await q.one(`SELECT 1 FROM scripts WHERE interview_id=$1 UNION ALL SELECT 1 FROM episodes WHERE interview_id=$1
+      UNION ALL SELECT 1 FROM jobs WHERE interview_id=$1 AND kind IN ('process_submission','prepare_script') AND state IN ('queued','running') LIMIT 1`, [iv.id]);
     const noJobs = produced ? freeJobsBlock(await freeProductionJobs(q, iv.id), FREE_JOBS_FOR_SCRIPT) : null;
     const reason = iv.collection_status === 'cancelled' ? 'A entrevista foi cancelada: não é possível acrescentar perguntas.'
       : declined ? declined

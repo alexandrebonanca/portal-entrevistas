@@ -190,13 +190,19 @@ export async function aiUsed(db: Db, interviewId: string, action: AiAction): Pro
  * desatualizado, e nada o refazia. Fica um caso: um pedido adicional enviado com 2 ou mais por usar e respondido depois de o
  * entrevistador gastar outros (ver docs/estado.md). Saída para quem esgota o total de boa-fé (por exemplo, com falhas do
  * fornecedor): a Ajuda, onde a equipa responde; o administrador produz na entrevista sem contar nem ficar bloqueado.
- * Custo (pelos preços da configuração, PRICE_*, que são estimativas): cada trabalho tem até 3 tentativas e, numa falha
- * tardia, cada tentativa paga outra vez os tempos das legendas (whisper por segmento), as traduções e a capa (resumo e
- * imagem); só a voz fica em cache (por texto). Com o guião no máximo (SCRIPT_TOTAL_MAX, 60 000 caracteres), uma geração
- * custa ~0,9 USD de voz e ~1,1 USD por tentativa (whisper ~0,4, 4 traduções ~0,65, capa ~0,04): ~4,1 USD com 3 tentativas.
- * No pior caso (1 processamento e 7 gerações, cada uma com um guião diferente e as 3 tentativas a falhar no fim), cerca de
- * 30 USD por entrevista grátis, ~1 800 USD por mês no teto de 60. Uso normal (5 trabalhos sem falhas, ~36 000 caracteres):
- * ~5 USD. Número escolhido sem dados de uso.
+ * Custo (preços de tabela da OpenAI: gpt-4.1 a 2 USD por milhão de tokens de entrada e 8 de saída, whisper-1 a 0,006 USD
+ * por minuto, gpt-image-1 médio a ~0,04): cada trabalho tem até 3 tentativas e, numa falha tardia, cada tentativa paga
+ * outra vez os tempos das legendas (whisper por segmento), as traduções e a capa (resumo e imagem); só a voz fica em cache
+ * (por texto). Com o guião no máximo (SCRIPT_TOTAL_MAX, 60 000 caracteres, ~860 legendas em 15 blocos por língua), uma
+ * geração custa ~0,9 USD de voz e ~1,85 USD por tentativa (whisper de ~67 min ~0,4; 4 traduções ~1,4, cada uma com ~24 000
+ * tokens de entrada e ~37 000 de saída; capa ~0,05): ~6,5 USD com 3 tentativas. A saída das traduções tem teto por bloco
+ * (subtitleMaxTokens, ~1,7× a saída esperada): no teto, ~0,65 USD por língua e ~3 USD por tentativa. Desde a 8.ª revisão
+ * uma tradução cortada ou inválida deixa o bloco em inglês e o trabalho não se repete; repetem-no as falhas do fornecedor
+ * (ligação, 429, 5xx) ou uma falha tardia por descobrir. Pior caso (1 processamento e 7 gerações, cada uma com um guião
+ * diferente e as 3 tentativas a falhar no fim): ~46 USD por entrevista grátis com traduções normais (~2 750 USD por mês no
+ * teto de 60), até ~70 USD com as traduções no teto. Uso normal (1 processamento e 4 gerações sem falhas, ~36 000
+ * caracteres): ~7 USD. Antes da 8.ª revisão, este comentário dava ~0,65 USD às 4 traduções e ~30 USD ao pior caso.
+ * Número escolhido sem dados de uso; o usage_ledger regista agora cada etapa paga (ver pipeline.ts, recordTextUsage).
  */
 /** FREE_JOBS_FOR_SCRIPT: trabalhos de produção por usar de que um guião novo precisa (o dele e o da geração do episódio); os dois números ficam em limits.ts, para os termos e a FAQ. */
 export { FREE_PRODUCTION_JOBS, FREE_JOBS_FOR_SCRIPT };

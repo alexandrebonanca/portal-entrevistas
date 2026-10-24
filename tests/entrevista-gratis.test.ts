@@ -24,10 +24,10 @@ const A = await import('../src/assistant.ts');
 const F = await import('../src/free-interview.ts');
 const M = await import('../src/metrics.ts');
 const { VERIFY_PER_DAY, VERIFY_TOTAL, mailboxHash } = await import('../src/email-verify.ts');
-const { runOne, PermanentError } = await import('../src/jobs.ts');
+const { runOne, PermanentError, enqueue } = await import('../src/jobs.ts');
 const { handlers } = await import('../src/pipeline.ts');
 const { regenerationsUsed, SCRIPT_SEGMENT_MAX, FREE_SCRIPT_BASE, FREE_SCRIPT_PER_MIN, FREE_TRANSCRIPT_BASE, FREE_TRANSCRIPT_PER_MIN } = await import('../src/limits.ts');
-const { validateScript, REVIEW_MAX_TOKENS } = await import('../src/ai/openai.ts');
+const { validateScript, REVIEW_MAX_TOKENS, translateSubtitleCues, subtitleMaxTokens, scriptMaxTokens, coverMaxTokens, newMeter, UNTRANSLATED, TEXT_MODEL_MAX_OUT } = await import('../src/ai/openai.ts');
 const { makeToneWav, saveAsset } = await import('../src/media.ts');
 const { PUBLIC_SIGNUPS_PER_IP_DAY } = await import('../src/routes/site.ts');
 const sharp = (await import('sharp')).default;
@@ -2000,4 +2000,142 @@ test('«Tentar de novo» na 1.ª entrevista grátis sem tentativa possível (7 d
     assert.match(c7[1], /^Falhou\. Na 1\.ª entrevista grátis, cada «Tentar de novo» conta para os 8 trabalhos de produção \(restam 1\): espere algum tempo antes de tentar de novo [^]*«Tentar de novo» volta a gerar o episódio do guião aprovado, com as mesmas legendas e fotografias \(não conta como regeneração\)\.$/);
     assert.equal(c7[2], undefined);
   } finally { handlers.generate_episode = real.gen; handlers.process_submission = real.proc; }
+}));
+
+// ---- 8.ª revisão ----
+test('«Pedido adicional» na 1.ª entrevista grátis com um guião em curso: a 6 de 8, processar e pedir antes de o trabalho correr (na fila ou a correr) é recusado, sem nada em questions nem em emails; o guião sai e o episódio gera-se com o último trabalho', () => manyFree(async () => {
+  // Antes (repro do juiz na 9c5de05): o pedido saía por ainda não haver guião, o email ia, o convidado respondia e submetia,
+  // e o guião que o processamento dava ficava 'stale': /processar dava FREE_JOBS_LOW, aprovar «Não é possível aprovar» e
+  // /gerar «Aprove primeiro o guião» (saída só pela Ajuda).
+  const pc = await created('Clara Curso', 'clara.curso@example.com');
+  const { id } = await submitted(pc.ck, 'Em curso', 'conv-curso@example.net');
+  const counts = async () => Object.values(await db.one(`SELECT (SELECT count(*)::int FROM questions WHERE interview_id=$1) q, (SELECT count(*)::int FROM emails WHERE interview_id=$1) e, (SELECT count(*)::int FROM invitations WHERE interview_id=$1) i`, [id]));
+  await db.query(`INSERT INTO jobs(interview_id, kind, input, state, error, created_at) SELECT $1, 'process_submission', '{}', 'failed', '503 simulado', now() - interval '1 hour' FROM generate_series(1, 6)`, [id]);
+  assert.equal(await F.freeProductionJobs(db, id), 6);
+  assert.match(msgOf(await post(`/entrevistas/${id}/processar`, {}, pc.ck)), /ok=Processamento iniciado/);
+  assert.equal(await F.freeProductionJobs(db, id), 7);
+  assert.ok(!(await db.one('SELECT 1 FROM scripts WHERE interview_id=$1', [id])), 'ainda sem guião');
+  const c0 = await counts();
+  const refused = `/entrevistas/${id}/editar?qe=${F.FREE_JOBS_LOW}#fq`;
+  assert.equal(msgOf(await post(`/entrevistas/${id}/adicional`, { text: 'Com o processamento na fila?' }, pc.ck)), refused);
+  await db.query(`UPDATE jobs SET state='running' WHERE interview_id=$1 AND state='queued'`, [id]);
+  assert.equal(msgOf(await post(`/entrevistas/${id}/adicional`, { text: 'Com o processamento a correr?' }, pc.ck)), refused);
+  await db.query(`UPDATE jobs SET state='queued' WHERE interview_id=$1 AND state='running'`, [id]);
+  assert.deepEqual(await counts(), c0, 'nada em questions, em emails nem em invitations');
+  assert.match((await get(`/entrevistas/${id}/editar`, pc.ck)).body, /<textarea id="fq" name="text" required disabled><\/textarea><button class="accent" disabled>/);
+  await drain();
+  assert.equal((await db.one('SELECT status FROM scripts WHERE interview_id=$1', [id])).status, 'draft', 'o guião não ficou desatualizado');
+  assert.match(msgOf(await post(`/entrevistas/${id}/guiao/aprovar`, { reviewed: '1' }, pc.ck)), /ok=Guião aprovado/);
+  assert.match(msgOf(await post(`/entrevistas/${id}/gerar`, { subtitle_langs: 'en' }, pc.ck)), /ok=Geração iniciada/); await drain();
+  assert.equal(await statusOf(id), 'ready');
+  assert.equal(await F.freeProductionJobs(db, id), 8);
+}));
+
+/** Respostas da OpenAI simuladas aqui (nada sai da máquina, chave falsa); `route` responde a cada pedido. */
+let fakeKeyN = 0;
+const fakeOpenAi = async (route: (url: string, body: any) => Response | Promise<Response>, fn: (bodies: { url: string; body: any }[]) => Promise<void>) => {
+  const bodies: { url: string; body: any }[] = [];
+  const realFetch = globalThis.fetch, realMock = config.openai.mock, realKey = process.env.OPENAI_API_KEY;
+  globalThis.fetch = (async (u: any, init: any) => {
+    const url = String(u?.url ?? u);
+    if (!url.startsWith('https://api.openai.com/v1/')) throw new Error(`rede proibida nos testes: ${url}`);
+    let body: any = null;
+    try { body = typeof init?.body === 'string' ? JSON.parse(init.body) : null; } catch { body = null; }
+    bodies.push({ url, body });
+    return route(url, body);
+  }) as any;
+  config.openai.mock = false;
+  // Uma chave por chamada: o cliente da OpenAI guarda o fetch com que foi criado e só se refaz quando a chave muda.
+  process.env.OPENAI_API_KEY = `sk-teste-falso-traducoes-${++fakeKeyN}`;
+  try { await fn(bodies); } finally {
+    globalThis.fetch = realFetch; config.openai.mock = realMock;
+    if (realKey === undefined) delete process.env.OPENAI_API_KEY; else process.env.OPENAI_API_KEY = realKey;
+  }
+};
+const jsonRes = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
+const chatRes = (content: string, finish = 'stop', usage = { prompt_tokens: 1000, completion_tokens: 2000 }) =>
+  jsonRes({ id: 'chatcmpl-teste', object: 'chat.completion', created: 0, model: 'gpt-4.1', usage: { ...usage, total_tokens: usage.prompt_tokens + usage.completion_tokens }, choices: [{ index: 0, finish_reason: finish, message: { role: 'assistant', content } }] });
+const ledgerOf = async (id: string) => Object.fromEntries((await db.query(`SELECT kind, sum(quantity)::float q, sum(cost_usd)::float usd FROM usage_ledger WHERE interview_id=$1 GROUP BY kind`, [id])).map((r: any) => [r.kind, { q: r.q, usd: r.usd }]));
+const systemOf = (b: { body: any }) => String(b.body?.messages?.[0]?.content ?? '');
+
+test('traduções das legendas: teto de tokens proporcional ao bloco; uma resposta cortada pelo teto (ou sem JSON válido) deixa o bloco em inglês, com o alerta, sem repetir; sem resposta do fornecedor, o erro sobe', async () => {
+  const cues = Array.from({ length: 130 }, (_, i) => ({ id: `c${i}`, text: `Cue number ${i} of the episode.` }));
+  // tetos: crescem com o texto e nunca passam o máximo do modelo
+  assert.ok(subtitleMaxTokens(cues.slice(0, 60)) < subtitleMaxTokens(cues.slice(0, 60).map(c => ({ ...c, text: c.text.repeat(4) }))));
+  assert.equal(subtitleMaxTokens(Array.from({ length: 60 }, () => ({ text: 'x'.repeat(4000) }))), TEXT_MODEL_MAX_OUT);
+  assert.ok(scriptMaxTokens({ title: 't', objective: 'o', items: [] }) < scriptMaxTokens({ title: 't', objective: 'o', items: [{ questionId: 'q', question: 'Q?', status: 'answered', answer: 'a'.repeat(9000) }] }));
+  assert.ok(coverMaxTokens('t', 'o') >= 800 && coverMaxTokens('t', 'o'.repeat(3000)) > coverMaxTokens('t', 'o'));
+  let n = 0;
+  await fakeOpenAi(async (_url, body) => {
+    n++;
+    const block = JSON.parse(/<interview_data>\n([^]*)\n<\/interview_data>/.exec(body.messages[1].content)![1]);
+    if (n === 1) return chatRes('{"cues":[{"sourceCueId":"c0","translatedText":"Legenda', 'length');
+    if (n === 2) return chatRes(JSON.stringify({ cues: block.map((c: any) => ({ sourceCueId: c.id, translatedText: `[de] ${c.text}`, reviewFlags: [] })) }));
+    return chatRes('{"cues": [nul');
+  }, async bodies => {
+    const meter = newMeter();
+    const tr = await translateSubtitleCues(cues, 'de', meter);
+    assert.equal(bodies.length, 3, 'um pedido por bloco, nenhum repetido');
+    bodies.forEach((b, k) => assert.equal(b.body.max_completion_tokens, subtitleMaxTokens(cues.slice(k * 60, k * 60 + 60)), `bloco ${k}: o teto`));
+    assert.equal(tr.length, 130);
+    assert.deepEqual(tr.slice(0, 60).map(x => [x.translatedText, x.reviewFlags]), cues.slice(0, 60).map(c => [c.text, [UNTRANSLATED]]), 'bloco cortado: o inglês, com o alerta');
+    assert.deepEqual(tr.slice(60, 120).map(x => x.translatedText), cues.slice(60, 120).map(c => `[de] ${c.text}`));
+    assert.ok(tr.slice(120).every(x => x.reviewFlags.includes(UNTRANSLATED)), 'JSON inválido: o inglês, com o alerta');
+    assert.deepEqual(meter, { input: 3000, output: 6000 }, 'os tokens das três respostas pagas, também das que falharam');
+  });
+  // sem resposta do fornecedor (5xx): o erro sobe (o trabalho repete-se, sem custo)
+  await fakeOpenAi(() => jsonRes({ error: { message: 'Service unavailable', type: 'server_error' } }, 503), async () => {
+    await assert.rejects(translateSubtitleCues(cues.slice(0, 5), 'de', newMeter()));
+  });
+});
+
+test('episódio com a tradução das legendas cortada pelo teto: sai à 1.ª tentativa, com essa língua em inglês e o alerta no controlo de qualidade; a capa vai com a qualidade média; o usage_ledger regista os tempos das legendas, as traduções, o resumo da capa e a verificação; o guião cortado falha de vez à 1.ª tentativa', () => manyFree(async () => {
+  // Antes: a resposta cortada lançava um erro comum, e o trabalho repetia-se até 3 vezes, pagando outra vez o whisper por
+  // segmento e as traduções; o usage_ledger só tinha a transcrição, o guião, a voz e a imagem.
+  const tc = await created('Tiago Corte', 'tiago.corte@example.com');
+  const { id } = await submitted(tc.ck, 'Corte', 'conv-corte@example.net');
+  assert.match(msgOf(await post(`/entrevistas/${id}/processar`, {}, tc.ck)), /ok=Processamento iniciado/); await drain();
+  assert.match(msgOf(await post(`/entrevistas/${id}/guiao/verificar`, {}, tc.ck)), /ok=Sem alertas/);
+  assert.match(msgOf(await post(`/entrevistas/${id}/guiao/aprovar`, { reviewed: '1' }, tc.ck)), /ok=Guião aprovado/);
+  const before = await ledgerOf(id);
+  assert.ok(before.text_tokens?.q > 0 && before.review_tokens?.q > 0, 'o guião e a verificação ficam registados');
+  const png = (await sharp({ create: { width: 64, height: 64, channels: 3, background: '#335577' } }).png().toBuffer()).toString('base64');
+  await fakeOpenAi(async (url, body) => {
+    if (url.endsWith('/audio/speech')) return new Response(makeToneWav(1.5), { status: 200, headers: { 'content-type': 'audio/mpeg' } });
+    if (url.endsWith('/audio/transcriptions')) return jsonRes({ text: '', words: [] });
+    if (url.endsWith('/images/generations')) return jsonRes({ created: 0, data: [{ b64_json: png }] });
+    const sys = String(body?.messages?.[0]?.content ?? '');
+    if (sys.startsWith('You are an audiovisual translator')) return chatRes('{"cues":[{"sourceCueId":"c0","translatedText":"Will', 'length', { prompt_tokens: 500, completion_tokens: 900 });
+    if (sys.startsWith('You are an art director')) return chatRes(JSON.stringify({ backgroundPromptEnglish: 'soft gradient', palette: ['#112233'], layoutHints: 'x', negativeConstraints: [] }), 'stop', { prompt_tokens: 100, completion_tokens: 50 });
+    return chatRes('{"titleEnglish":"T","segments":[{"id":"s0","speakerRole":"host","textEnglish":"Hel', 'length', { prompt_tokens: 700, completion_tokens: 300 });
+  }, async bodies => {
+    assert.match(msgOf(await post(`/entrevistas/${id}/gerar`, { subtitle_langs: ['en', 'de'] }, tc.ck)), /ok=Geração iniciada/);
+    await drain();
+    const job = await db.one(`SELECT state, attempts, error FROM jobs WHERE interview_id=$1 AND kind='generate_episode' ORDER BY created_at DESC LIMIT 1`, [id]);
+    assert.deepEqual([job.state, job.attempts], ['done', 1], `uma tentativa (${job.error})`);
+    const tr = bodies.filter(b => systemOf(b).startsWith('You are an audiovisual translator'));
+    assert.equal(tr.length, 1, 'a tradução não se repetiu');
+    assert.ok(tr[0].body.max_completion_tokens > 0);
+    const cover = bodies.find(b => systemOf(b).startsWith('You are an art director'))!;
+    assert.ok(cover.body.max_completion_tokens >= 800, 'o resumo da capa leva teto');
+    assert.equal(bodies.find(b => b.url.endsWith('/images/generations'))!.body.quality, 'medium');
+    const ep = await db.one(`SELECT subtitles, technical FROM episodes WHERE interview_id=$1 ORDER BY created_at DESC LIMIT 1`, [id]);
+    assert.deepEqual(ep.subtitles.de.map((c: any) => c.text), ep.subtitles.en.map((c: any) => c.text), 'o alemão ficou em inglês');
+    assert.ok(ep.technical.qcIssues.some((m: string) => /^de: \d+ legendas ficaram em inglês/.test(m)), 'o alerta no controlo de qualidade');
+    const after = await ledgerOf(id);
+    assert.equal(after.subtitle_tokens.q, 1400, 'a tradução cortada foi paga e fica registada');
+    assert.equal(after.cover_tokens.q, 150);
+    assert.ok(after.timestamps_min.q > 0 && after.timestamps_min.usd > 0, 'os tempos das legendas (whisper por segmento)');
+    assert.ok(after.image.q === 1 && after.tts_chars.q > 0);
+    // guião cortado: erro permanente, uma tentativa (e não três), com os tokens registados
+    const textBefore = after.text_tokens.q;
+    await enqueue(db, { kind: 'prepare_script', interviewId: id });
+    await drain();
+    const ps = await db.one(`SELECT state, attempts, error FROM jobs WHERE interview_id=$1 AND kind='prepare_script' ORDER BY created_at DESC LIMIT 1`, [id]);
+    assert.deepEqual([ps.state, ps.attempts], ['failed', 1]);
+    assert.match(ps.error, /O guião da IA não pôde ser lido: resposta da IA cortada pelo teto de tokens/);
+    const scriptBody = bodies.filter(b => systemOf(b) && !/^You are an (audiovisual|art)/.test(systemOf(b))).at(-1)!;
+    assert.ok(scriptBody.body.max_completion_tokens > 1500, 'o guião leva teto');
+    assert.equal((await ledgerOf(id)).text_tokens.q - textBefore, 1000);
+  });
 }));

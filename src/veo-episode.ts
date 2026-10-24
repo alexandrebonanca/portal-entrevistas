@@ -2,7 +2,7 @@ import { config } from './config.ts';
 import { storage } from './storage.ts';
 import { sha256, esc } from './lib.ts';
 import { saveAsset, hasAudioStream } from './media.ts';
-import { transcribeClip, translateSubtitleCues, aiAvailable, type Word } from './ai/openai.ts';
+import { transcribeClip, translateSubtitleCues, aiAvailable, newMeter, meterUsd, type Word } from './ai/openai.ts';
 import { renderBases, subtitleFrame, encodeComposite, buildAudioTrack, mockTalkingClip, type Part, type Shot, type Scene, type AudioPiece } from './video.ts';
 import { cuesFromWords } from './subtitles.ts';
 import { peopleOf, cardBackground, titleCard, endCard, chapterTitles, planGraphics, graphicsOverlays, graphicsMeta, TITLE_CARD_MS, END_CARD_MS, type GfxSpan } from './graphics.ts';
@@ -1051,7 +1051,11 @@ export async function renderVeoVideo(job: any, { db, progress }: Parameters<Hand
   // 5. Legendas na língua escolhida: as do Veo seguem o que foi dito (traduzidas se preciso); as fixas vêm do episódio.
   if (lang && lang !== 'en' && veoCues.length) {
     await progress(77, 100, `A traduzir as legendas (${lang})`);
-    const tr = await translateSubtitleCues(veoCues.map(c => ({ id: c.id, text: c.text })), lang);
+    // Os tokens da tradução ficam no usage_ledger ('subtitle_tokens', como no episódio); um bloco cortado fica em inglês.
+    const meter = newMeter();
+    const tr = await translateSubtitleCues(veoCues.map(c => ({ id: c.id, text: c.text })), lang, meter).finally(async () => {
+      if (meter.input + meter.output > 0) await db.query(`INSERT INTO usage_ledger(interview_id, kind, quantity, cost_usd, estimated) VALUES ($1,'subtitle_tokens',$2,$3,true)`, [iv.id, meter.input + meter.output, meterUsd(meter)]);
+    });
     const map = new Map(tr.map(x => [x.sourceCueId, x.translatedText]));
     for (const c of veoCues) c.text = map.get(c.id) || c.text;
   }
