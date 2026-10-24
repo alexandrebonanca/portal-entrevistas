@@ -8,6 +8,24 @@
   };
   PE.fmt = (s) => Math.floor(s / 60) + ':' + String(Math.floor(s % 60)).padStart(2, '0');
 
+  // Uma só voz de cada vez: começar um som (<audio>/<video> com som da página, leitura do servidor, síntese do navegador)
+  // cala os outros. solo.n muda a cada som novo ou paragem: uma leitura pedida que chegue depois disso já não toca.
+  const solo = (PE.solo = { el: null, n: 0 });
+  const quiet = (keep) => {
+    document.querySelectorAll('audio, video').forEach((m) => { if (m !== keep && !m.muted && !m.paused) m.pause(); });
+    if (solo.el && solo.el !== keep) solo.el.pause();
+    if (window.speechSynthesis) speechSynthesis.cancel();
+  };
+  // 'play' não sobe na árvore: apanha-se na fase de captura (inclui o play nativo dos controlos).
+  document.addEventListener('play', (e) => { if (e.target.muted) return; solo.n++; quiet(e.target); }, true);
+  solo.stop = () => { quiet(null); return ++solo.n; };
+  solo.play = (m) => { quiet(m); if (!m.isConnected) solo.el = m; return Promise.resolve(m.play()).catch(() => {}); };
+  solo.speak = (text, lang) => {
+    if (!('speechSynthesis' in window)) return;
+    quiet(null);
+    const u = new SpeechSynthesisUtterance(text); u.lang = lang; speechSynthesis.speak(u);
+  };
+
   // Aviso do navegador antes de sair da página a meio de uma gravação ou de um envio (por exemplo, pela ligação «Ajuda»).
   let busy = 0;
   window.addEventListener('beforeunload', (e) => { if (busy > 0) { e.preventDefault(); e.returnValue = ''; } });

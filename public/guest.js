@@ -20,19 +20,24 @@
   const enableNext = () => { if (next) { next.style.pointerEvents = ''; next.style.opacity = ''; next.setAttribute('aria-disabled', 'false'); } };
   const disableNext = () => { if (next) { next.style.pointerEvents = 'none'; next.style.opacity = '.5'; next.setAttribute('aria-disabled', 'true'); } };
 
-  // Leitura da pergunta: áudio original se existir; senão leitura sintética do servidor; em último caso, síntese do navegador (alternativa de acessibilidade).
+  // Leitura da pergunta: o áudio gravado pelo entrevistador, se existir (e então nunca voz sintética); senão a leitura do
+  // servidor (pedida uma vez); em último caso a síntese do navegador. Uma só voz de cada vez (PE.solo); repetir recomeça.
+  const qAudio = document.getElementById('qaudio');
+  let tts = null, loading = false;
   if (listen) listen.addEventListener('click', async () => {
-    if (ctl) return; // não reproduzir enquanto grava
-    const a = document.querySelector('audio[src^="/api/g/media"]');
-    if (a && a !== player && !a.closest('#review')) { a.currentTime = 0; a.play(); return; }
+    if (ctl || loading) return; // não reproduzir enquanto grava nem pedir a leitura duas vezes
+    const ready = qAudio || tts;
+    if (ready) { ready.currentTime = 0; PE.solo.play(ready); return; }
+    const n = PE.solo.stop();
+    loading = true;
     try {
       const r = await fetch('/api/g/leitura/' + listen.dataset.q, { credentials: 'same-origin' });
       if (!r.ok) throw new Error('no tts');
-      const b = await r.blob();
-      const au = new Audio(URL.createObjectURL(b)); au.play();
+      tts = new Audio(URL.createObjectURL(await r.blob()));
+      if (n === PE.solo.n && !ctl) PE.solo.play(tts); // entretanto tocou outro som ou começou a gravação: não se sobrepõe
     } catch (_) {
-      if ('speechSynthesis' in window) { const u = new SpeechSynthesisUtterance(listen.dataset.text); u.lang = listen.dataset.lang; speechSynthesis.cancel(); speechSynthesis.speak(u); }
-    }
+      if (n === PE.solo.n && !ctl) PE.solo.speak(listen.dataset.text, listen.dataset.lang);
+    } finally { loading = false; }
   });
 
   async function send(blob, via) {
@@ -77,8 +82,7 @@
       send(blob, 'recording');
       return;
     }
-    document.querySelectorAll('audio').forEach((a) => a.pause());
-    if (window.speechSynthesis) speechSynthesis.cancel();
+    PE.solo.stop(); // nenhuma voz a tocar (nem a leitura sintética) para o microfone não a apanhar
     disableNext();
     try {
       hitLimit = false;

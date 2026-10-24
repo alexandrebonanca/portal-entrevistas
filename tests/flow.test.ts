@@ -143,6 +143,26 @@ test('gravar sem consentimento é recusado; depois do consentimento funciona', a
   assert.equal(bad.statusCode, 422);
 });
 
+test('pergunta gravada pelo entrevistador: ouve-se só a gravação, nunca a leitura sintética', async () => {
+  const [q] = await db.query('SELECT * FROM questions WHERE interview_id=$1 ORDER BY position', [ivId]);
+  const synth = /Read aloud with an AI-generated voice\./;
+  assert.equal((await get(`/api/g/leitura/${q.id}`, guest)).statusCode, 200, 'sem gravação há leitura do servidor');
+  let page = (await get('/entrevista/p/1', guest)).body;
+  assert.doesNotMatch(page, /id="qaudio"/);
+  assert.match(page, synth);
+  const a = await db.one(`INSERT INTO assets(interview_id, kind, mime, size, sha256, storage_key) VALUES ($1,'question_audio','audio/webm',1,'x','x') RETURNING id`, [ivId]);
+  await db.query('UPDATE questions SET audio_asset_id=$2 WHERE id=$1', [q.id, a.id]);
+  try {
+    assert.equal((await get(`/api/g/leitura/${q.id}`, guest)).statusCode, 404, 'com gravação não há voz sintética');
+    page = (await get('/entrevista/p/1', guest)).body;
+    assert.match(page, new RegExp(`<audio id="qaudio" controls preload="none" src="/api/g/media/${a.id}">`));
+    assert.doesNotMatch(page, synth);
+  } finally {
+    await db.query('UPDATE questions SET audio_asset_id=NULL WHERE id=$1', [q.id]);
+    await db.query('DELETE FROM assets WHERE id=$1', [a.id]);
+  }
+});
+
 test('não é possível submeter com perguntas por responder; recusa explícita conta', async () => {
   const early = await post('/entrevista/submeter', {}, guest);
   assert.match(early.headers.location as string, /rever/);
