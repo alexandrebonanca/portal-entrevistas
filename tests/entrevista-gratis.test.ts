@@ -638,7 +638,7 @@ test('textos: termos (2-C), FAQ do assistente, privacidade; o email pessoal não
     assert.equal(A.searchFaq(entries(lang), q)[0]?.entry.id, 'entrevista-gratis', q);
   assert.equal(Number((await db.one(`SELECT count(*)::int n FROM assistant_faq WHERE seed_key='entrevista-gratis'`)).n), 2);
   // privacidade: o email de confirmação e a impressão do convidado
-  assert.equal(PRIVACY_UPDATED, '23 October 2026');
+  assert.equal(PRIVACY_UPDATED, '24 October 2026');
   const p = (await get('/privacy')).body;
   assert.match(p, /If you sign up yourself while the free first interview is offered, we email you a link to confirm your email address \(valid for 48 hours and usable once; apart from our copy of that email, the portal keeps only a one-way hash of the link’s code\)/);
   assert.doesNotMatch(p, /the portal keeps only a one-way hash of it\)/, 'a cópia do email (tabela emails) guarda o link completo');
