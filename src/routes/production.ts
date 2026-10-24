@@ -23,7 +23,7 @@ import { withVat, eurPt } from '../vat.ts';
 import { quoteSection } from './quotes.ts';
 import { introProductionHint } from './intro.ts';
 import { helpNav, isUuid } from '../support.ts';
-import { takeAiUse, giveBackAiUse, aiUsed, FREE_SCRIPT_REVIEWS, FREE_REVIEWS_USED, FREE_PRODUCTION_JOBS, FREE_JOBS_USED, FREE_JOBS_USED_HTML, FREE_JOBS_LOW, FREE_JOBS_LOW_HTML, FREE_JOBS_FOR_SCRIPT, freeJobsBlock, freeProductionJobs } from '../free-interview.ts';
+import { takeAiUse, giveBackAiUse, aiUsed, FREE_SCRIPT_REVIEWS, FREE_REVIEWS_USED, FREE_PRODUCTION_JOBS, FREE_JOBS_USED, FREE_JOBS_USED_HTML, FREE_JOBS_LOW, FREE_JOBS_LOW_HTML, FREE_JOBS_LOW_NO_SCRIPT_HTML, FREE_JOBS_FOR_SCRIPT, freeJobsBlock, freeJobsDoneHtml, freeProductionJobs } from '../free-interview.ts';
 
 /** Os retratos animados (Replicate) ficam reservados ao administrador. */
 const ANIMATE_ADMIN_ONLY = 'Os retratos animados por IA (Replicate) estão reservados ao administrador. A animação com o Google Veo faz-se por orçamento, na secção «Animação por IA».';
@@ -210,13 +210,25 @@ export async function productionRoutes(app: FastifyInstance) {
     const canScript = canRegen && !jobsLow;
     // Processar de novo pago (o botão de pagar e o aviso só quando um guião novo ainda é possível).
     const scriptPay = scriptBefore && !jobsLow;
-    // O aviso do total (com as ligações à Ajuda e à Conta) substitui a mesma recusa vinda no endereço.
-    const freeHtml = jobsOut ? FREE_JOBS_USED_HTML : jobsLow ? FREE_JOBS_LOW_HTML : '';
+    // O aviso do total (com as ligações à Ajuda e à Conta) substitui a mesma recusa vinda no endereço. Vermelho só quando o que
+    // resta não chega para concluir: a 8 de 8, sem um episódio que se aprove e publique como sempre (atual, sem alertas da
+    // qualidade nem a capa retirada, já publicado ou a ser gerado pelo último trabalho; com ele, o aviso é neutro e diz que não
+    // há mais regenerações); a 7 de 8, sem um guião aprovado ou por aprovar (nem um a ser feito) para gerar o episódio.
+    const live = jobs.find((j: any) => ['queued', 'running'].includes(j.state));
+    let freeHtml = '', freeBad = false;
+    if (jobsOut) {
+      const epState = live?.kind === 'generate_episode' ? 'running' as const : !ep || ep.stale ? null : ep.status === 'published' ? 'published' as const
+        : ep.status === 'preview' && !(ep.technical?.qcIssues ?? []).length && !(await coverWithdrawn(db, ep.id)) ? 'preview' as const : null;
+      freeHtml = epState ? freeJobsDoneHtml(epState) : FREE_JOBS_USED_HTML; freeBad = !epState;
+    } else if (jobsLow) {
+      const scriptOk = (!!script && ['draft', 'approved'].includes(script.status)) || ['process_submission', 'prepare_script'].includes(live?.kind);
+      freeHtml = scriptOk ? FREE_JOBS_LOW_HTML : FREE_JOBS_LOW_NO_SCRIPT_HTML; freeBad = !scriptOk;
+    }
     const eMsg = freeHtml && typeof q.e === 'string' && (q.e.startsWith(FREE_JOBS_USED) || q.e.startsWith(FREE_JOBS_LOW)) ? undefined : q.e;
     let body = `<div class="wrap" style="padding-top:32px"><p><a href="/entrevistas/${iv.id}">← ${esc(iv.title)}</a></p><h1>Produção do podcast</h1>${flash(q.ok)}${flash(eMsg, 'bad')}
 <p class="sans">${pill(STATUS_LABEL[iv.production_status] ?? iv.production_status)} ${pill(STATUS_LABEL[iv.publication_status] ?? iv.publication_status)} · Utilização registada (estimativa): <strong>$${ledger.usd.toFixed(2)}</strong>
 · Regenerações do guião e do episódio: <strong id="regen">${regen} de ${INCLUDED}</strong> incluídas${req.user!.role === 'admin' ? ' (o administrador não tem limite e as dele não contam)' : ''}${freeJobs != null ? `
-· 1.ª entrevista grátis: <strong id="trabalhos">${Math.min(freeJobs, FREE_PRODUCTION_JOBS)} de ${FREE_PRODUCTION_JOBS}</strong> trabalhos de produção usados (contam também os que falharam; restam ${jobsLeft})` : ''}</p>${freeHtml ? `<div class="flash${jobsOut ? ' bad' : ''}" id="trabalhos-aviso">${freeHtml}</div>` : ''}`;
+· 1.ª entrevista grátis: <strong id="trabalhos">${Math.min(freeJobs, FREE_PRODUCTION_JOBS)} de ${FREE_PRODUCTION_JOBS}</strong> trabalhos de produção usados (contam também os que falharam; restam ${jobsLeft})` : ''}</p>${freeHtml ? `<div class="flash${freeBad ? ' bad' : ''}" id="trabalhos-aviso">${freeHtml}</div>` : ''}`;
 
     if (!submitted) body += `<div class="flash">A entrevista ainda não foi submetida pelo entrevistado.</div>`;
 
@@ -235,7 +247,6 @@ ${scriptPay ? payFields : ''}<button class="accent" ${procOk && aiAvailable() &&
     }
 
     // 2. Progresso
-    const live = jobs.find((j: any) => ['queued', 'running'].includes(j.state));
     if (live) {
       body += `<div class="card" id="progress" data-url="/entrevistas/${iv.id}/progresso" aria-live="polite"><h2 style="margin-top:0">${esc(JOB_LABEL[live.kind] ?? live.kind)}</h2>
 <div class="pbar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div class="pfill"></div></div>
@@ -248,18 +259,25 @@ ${scriptPay ? payFields : ''}<button class="accent" ${procOk && aiAvailable() &&
       // só conta se já houve episódio); senão, processa de novo, o que refaz o guião e conta como regeneração se já houve um.
       const retryGen = await failedGeneration(db, iv.id);
       const retryRegen = retryGen ? await hadEpisode(db, iv.id) : await hadScript(db, iv.id);
+      // Na 1.ª entrevista grátis, a tentativa já não é possível quando faltam os trabalhos de produção: repetir a geração
+      // precisa de 1, processar de novo (um guião novo) de FREE_JOBS_FOR_SCRIPT.
+      const retryOut = retryGen ? jobsOut : jobsLow;
       // Sem o botão de pagar quando a ação já não é possível na entrevista grátis (um guião novo precisa de 2 trabalhos).
-      const retryPay = exhausted && retryRegen && (retryGen ? !jobsOut : !jobsLow);
+      const retryPay = exhausted && retryRegen && !retryOut;
       // Na 1.ª entrevista grátis cada tentativa gasta um dos trabalhos de produção, também quando a falha é do fornecedor: em
       // vez de «depois de corrigir a causa», o conselho é esperar, e a saída é a Ajuda (a equipa pode terminar a produção).
-      const failHint = jobsLeft != null
+      // Sem tentativa possível, o texto diz isso (antes, mandava esperar e tentar de novo ao lado do botão desligado, com
+      // «conta como uma regeneração»).
+      const failHint = retryOut
+        ? `Falhou. Nesta 1.ª entrevista grátis já não é possível tentar de novo: ${jobsOut ? `os ${FREE_PRODUCTION_JOBS} trabalhos de produção estão todos usados` : `resta 1 dos ${FREE_PRODUCTION_JOBS} trabalhos de produção, e processar de novo, que refaz o guião, precisa de ${FREE_JOBS_FOR_SCRIPT} (o dele e o do episódio)`}. Peça ajuda à equipa do portal em <a href="/ajuda">Ajuda</a>: a equipa pode terminar a produção desta entrevista.`
+        : jobsLeft != null
         ? `Falhou. Na 1.ª entrevista grátis, cada «Tentar de novo» conta para os ${FREE_PRODUCTION_JOBS} trabalhos de produção (restam ${jobsLeft}): espere algum tempo antes de tentar de novo (uma falha do serviço de IA costuma ser passageira; um erro permanente, como uma autorização retirada, não passa com outra tentativa) e, se voltar a falhar, peça ajuda à equipa do portal em <a href="/ajuda">Ajuda</a>.`
         : 'Falhou. Os erros permanentes exigem revisão; pode tentar novamente depois de corrigir a causa.';
-      const retryNote = retryGen ? ` «Tentar de novo» volta a gerar o episódio do guião aprovado, com as mesmas legendas e fotografias${retryRegen ? ': conta como uma regeneração (já houve um episódio).' : ' (não conta como regeneração).'}`
+      const retryNote = retryOut ? '' : retryGen ? ` «Tentar de novo» volta a gerar o episódio do guião aprovado, com as mesmas legendas e fotografias${retryRegen ? ': conta como uma regeneração (já houve um episódio).' : ' (não conta como regeneração).'}`
         : retryRegen ? ' «Tentar de novo» processa a entrevista outra vez e refaz o guião: conta como uma regeneração.' : '';
       body += `<div class="card"><h2 style="margin-top:0">Trabalhos</h2><table><tbody>${jobs.map((j: any) => `<tr><td>${esc(j.kind)}</td><td>${pill(j.state, j.state === 'done' ? 'ok' : j.state === 'failed' ? 'bad' : '')}</td><td>${j.progress_total ? `${j.progress_done}/${j.progress_total}` : ''}</td><td class="hint">${esc(j.error ?? '')}</td></tr>`).join('')}</tbody></table>
 
-<form method="post" action="/entrevistas/${iv.id}/${retryGen ? 'gerar/repetir' : 'processar'}"><p class="hint">${failHint}${esc(retryNote)}</p>${retryPay ? payFields : ''}<button class="ghost" ${(retryPay && !canRegen) || (retryGen ? jobsOut : jobsLow) ? 'disabled' : ''}>Tentar de novo${retryPay ? PAY : ''}</button></form>${retryPay ? regenHint : ''}</div>`;
+<form method="post" action="/entrevistas/${iv.id}/${retryGen ? 'gerar/repetir' : 'processar'}"><p class="hint">${failHint}${esc(retryNote)}</p>${retryPay ? payFields : ''}<button class="ghost" ${(retryPay && !canRegen) || retryOut ? 'disabled' : ''}>Tentar de novo${retryPay ? PAY : ''}</button></form>${retryPay ? regenHint : ''}</div>`;
     }
 
     // 3. Revisão editorial

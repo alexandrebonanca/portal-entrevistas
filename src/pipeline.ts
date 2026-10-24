@@ -2,7 +2,7 @@ import { randomBytes } from 'node:crypto';
 import type { Db } from './db.ts';
 import { config } from './config.ts';
 import { storage } from './storage.ts';
-import { sha256, slugify } from './lib.ts';
+import { sha256, slugify, firstChars } from './lib.ts';
 import { saveAsset, assembleEpisode, probeAudio } from './media.ts';
 import { transcribeAudio, transcribeWords, prepareEnglishScript, translateSubtitleCues, synthesizeSpeech, coverBriefing, generateCoverBackground, episodeVoice, type ScriptSegment } from './ai/openai.ts';
 import { planShots, renderBases, subtitleFrame, encodeVideo, encodeComposite, splitParts, shotsWithin, sliceAudio, stillClip, buildAudioTrack, type Part } from './video.ts';
@@ -217,28 +217,38 @@ export const handlers: Record<string, Handler> = {
     step += W.cover;
     await progress(step, total, 'Controlo de qualidade');
 
-    // 5. Capítulos e controlo de qualidade.
+    // 5. Capítulos e controlo de qualidade. O título corta-se por pontos de código (firstChars): antes, o slice(0, 90) partia
+    // um emoji a começar na posição 89 (pergunta do convidado ou guião editado à mão) e a gravação do episódio falhava.
     const chapters: { startMs: number; title: string }[] = [];
     const seen = new Set<string>();
     for (const s of segments) {
       if (s.sourceQuestionId && s.transformationType === 'translated_question' && !seen.has(s.sourceQuestionId)) {
         seen.add(s.sourceQuestionId);
-        chapters.push({ startMs: timing.find(t => t.id === s.id)!.startMs, title: s.textEnglish.slice(0, 90) });
+        chapters.push({ startMs: timing.find(t => t.id === s.id)!.startMs, title: firstChars(s.textEnglish, 90) });
       }
     }
     const issues = [...cueIssues];
     if (asm.clipping) issues.push('Áudio com clipping');
     if (asm.durationMs < 1000) issues.push('Duração demasiado curta');
 
-    const prev = await db.query(`UPDATE episodes SET status='superseded', stale=true WHERE interview_id=$1 AND status IN ('preview','ready') RETURNING id`, [iv.id]);
-    // coverPhotoIds: a escolha do entrevistador (também escolhe a fotografia do vídeo); coverPhotos: as que entraram de
-    // facto na capa, para a capa deixar de se publicar e de ser servida se o convidado retirar a autorização (approval.ts).
-    const ep = await db.one(
-      `INSERT INTO episodes(interview_id, script_id, slug, title, description, audio_asset_id, cover_asset_id, cover_thumb_asset_id, duration_ms, subtitles, chapters, technical, status, visibility)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'preview','private') RETURNING id`,
-      [iv.id, script.id, `${slugify(script.title_en)}-${randomBytes(3).toString('hex')}`, script.title_en, iv.objective_shared ? iv.objective_text.slice(0, 500) : '', audioId, coverId, thumbId, asm.durationMs,
-        JSON.stringify(subtitles), JSON.stringify(chapters), JSON.stringify({ maxVolumeDb: asm.maxVolumeDb, clipping: asm.clipping, qcIssues: issues, supersedes: prev.map((p: any) => p.id), mock: config.openai.mock, voices: voiceOf, models: config.openai.models, coverPhotoIds: opts.coverPhotoIds ?? [], coverPhotos: inCover.map(i => photoRows[i].photo_id), timing: timing.map(t => ({ id: t.id, role: t.role, kind: kinds.get(t.id) ?? '', startMs: t.startMs, durationMs: t.durationMs })) })]);
-    await db.query(`UPDATE interviews SET production_status=$2, publication_status='awaiting_approval' WHERE id=$1`, [iv.id, issues.length ? 'qc' : 'ready']);
+    // Gravação final numa só transação: se falhar, as versões anteriores ficam como estavam. Um erro dos dados (SQLSTATE da
+    // classe 22, um valor que a base não aceita, ou 23, uma restrição) repetir-se-ia igual em cada tentativa, depois de
+    // pagas as etapas anteriores, e por isso é permanente; uma falha da ligação continua a repetir-se.
+    const ep = await db.tx(async tx => {
+      const prev = await tx.query(`UPDATE episodes SET status='superseded', stale=true WHERE interview_id=$1 AND status IN ('preview','ready') RETURNING id`, [iv.id]);
+      // coverPhotoIds: a escolha do entrevistador (também escolhe a fotografia do vídeo); coverPhotos: as que entraram de
+      // facto na capa, para a capa deixar de se publicar e de ser servida se o convidado retirar a autorização (approval.ts).
+      const row = await tx.one(
+        `INSERT INTO episodes(interview_id, script_id, slug, title, description, audio_asset_id, cover_asset_id, cover_thumb_asset_id, duration_ms, subtitles, chapters, technical, status, visibility)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'preview','private') RETURNING id`,
+        [iv.id, script.id, `${slugify(script.title_en)}-${randomBytes(3).toString('hex')}`, script.title_en, iv.objective_shared ? firstChars(iv.objective_text, 500) : '', audioId, coverId, thumbId, asm.durationMs,
+          JSON.stringify(subtitles), JSON.stringify(chapters), JSON.stringify({ maxVolumeDb: asm.maxVolumeDb, clipping: asm.clipping, qcIssues: issues, supersedes: prev.map((p: any) => p.id), mock: config.openai.mock, voices: voiceOf, models: config.openai.models, coverPhotoIds: opts.coverPhotoIds ?? [], coverPhotos: inCover.map(i => photoRows[i].photo_id), timing: timing.map(t => ({ id: t.id, role: t.role, kind: kinds.get(t.id) ?? '', startMs: t.startMs, durationMs: t.durationMs })) })]);
+      await tx.query(`UPDATE interviews SET production_status=$2, publication_status='awaiting_approval' WHERE id=$1`, [iv.id, issues.length ? 'qc' : 'ready']);
+      return row;
+    }).catch((e: any) => {
+      if (/^2[23][0-9A-Z]{3}$/.test(String(e?.code ?? ''))) throw new PermanentError(`Não foi possível gravar o episódio: ${String(e?.message ?? e).slice(0, 200)}`);
+      throw e;
+    });
     await progress(total, total, 'Concluído');
     return { episodeId: ep.id, qcIssues: issues };
   },

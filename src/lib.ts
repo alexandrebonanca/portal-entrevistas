@@ -38,6 +38,13 @@ export const esc = (v: unknown) =>
 export const xmlText = (v: unknown) => String(v ?? '').replace(/[^\t\n\r -퟿-�\u{10000}-\u{10FFFF}]/gu, '');
 /** `esc` para o texto de um SVG (xmlText e depois esc). */
 export const escXml = (v: unknown) => esc(xmlText(v));
+/**
+ * Os primeiros `n` caracteres do texto, contados por pontos de código: nunca corta um emoji (um par de substitutos) ao
+ * meio. O `slice` de uma cadeia conta unidades UTF-16 e pode deixar um substituto isolado, que o JSON.stringify escreve
+ * como «\ud83d» e o jsonb recusa («invalid input syntax for type json»): antes, uma pergunta com um emoji a começar na
+ * posição 89 fazia falhar a gravação do episódio (títulos dos capítulos), no fim da geração e em cada tentativa.
+ */
+export const firstChars = (v: unknown, n: number) => Array.from(String(v ?? '')).slice(0, n).join('');
 
 export function sign(value: string) {
   return createHmac('sha256', config.secret).update(value).digest('base64url');

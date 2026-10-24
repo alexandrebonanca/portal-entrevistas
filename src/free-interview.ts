@@ -3,7 +3,7 @@ import { config } from './config.ts';
 import { esc, sha256, fmtDate, normMailbox } from './lib.ts';
 import { ACTIVE_STATUSES, quotaFor } from './billing.ts';
 import { enqueue, type EnqueueOpts } from './jobs.ts';
-import { inviteLimits, mmss, FREE_PRODUCTION_JOBS } from './limits.ts';
+import { inviteLimits, mmss, FREE_PRODUCTION_JOBS, FREE_JOBS_FOR_SCRIPT } from './limits.ts';
 import { lastVerificationAt, verifySent, VERIFY_TOTAL, VERIFY_PER_DAY, VERIFY_HOURS } from './email-verify.ts';
 import { flash } from './views.ts';
 
@@ -183,10 +183,13 @@ export async function aiUsed(db: Db, interviewId: string, action: AiAction): Pro
  * processamento, 1 episódio e as 3 regenerações incluídas (5); ficam 3 para tentar de novo depois de falhas. Acima, nada
  * entra na fila, pago ou não, e a recusa vem antes de qualquer pagamento (não convida a carregar créditos). Um guião novo
  * (processar ou regenerar o guião) precisa de FREE_JOBS_FOR_SCRIPT por usar — o dele e o do episódio —, também pago (se
- * falhar, conta): com menos, processar, «Regenerar guião», «Recomeçar» e «Guardar nova revisão» de uma transcrição (que
- * desatualiza o guião e o episódio) ficam recusados, para um episódio pronto não deixar de se poder publicar. Saída para quem
- * esgota o total de boa-fé (por exemplo, com falhas do fornecedor): a Ajuda, onde a equipa responde; o administrador produz
- * na entrevista sem contar nem ficar bloqueado.
+ * falhar, conta): com menos, processar, «Regenerar guião», «Recomeçar», «Guardar nova revisão» de uma transcrição e, quando
+ * já há um guião ou um episódio, «Pedido adicional» (a nova revisão e a resposta do entrevistado à pergunta adicional
+ * desatualizam o guião e o episódio) ficam recusados, para um episódio pronto não deixar de se poder publicar. Antes da 7.ª
+ * revisão, o «Pedido adicional» não olhava para o total: a 7 de 8, a resposta do entrevistado punha o episódio pronto como
+ * desatualizado, e nada o refazia. Fica um caso: um pedido adicional enviado com 2 ou mais por usar e respondido depois de o
+ * entrevistador gastar outros (ver docs/estado.md). Saída para quem esgota o total de boa-fé (por exemplo, com falhas do
+ * fornecedor): a Ajuda, onde a equipa responde; o administrador produz na entrevista sem contar nem ficar bloqueado.
  * Custo (pelos preços da configuração, PRICE_*, que são estimativas): cada trabalho tem até 3 tentativas e, numa falha
  * tardia, cada tentativa paga outra vez os tempos das legendas (whisper por segmento), as traduções e a capa (resumo e
  * imagem); só a voz fica em cache (por texto). Com o guião no máximo (SCRIPT_TOTAL_MAX, 60 000 caracteres), uma geração
@@ -195,19 +198,47 @@ export async function aiUsed(db: Db, interviewId: string, action: AiAction): Pro
  * 30 USD por entrevista grátis, ~1 800 USD por mês no teto de 60. Uso normal (5 trabalhos sem falhas, ~36 000 caracteres):
  * ~5 USD. Número escolhido sem dados de uso.
  */
-export { FREE_PRODUCTION_JOBS };
-/** Trabalhos de produção por usar de que um guião novo precisa na entrevista grátis: o dele e o da geração do episódio. */
-export const FREE_JOBS_FOR_SCRIPT = 2;
-const jobsUsed = (help: string, account: string) => `A 1.ª entrevista grátis inclui ${FREE_PRODUCTION_JOBS} trabalhos de produção (processar, regenerar o guião e gerar o episódio, contando os que falharam e cada «Tentar de novo») e já os usou todos: nesta entrevista não há mais regenerações, nem pagas com créditos. Para a concluir, peça ajuda à equipa do portal em ${help}: a equipa pode terminar a produção desta entrevista. Com uma subscrição (${account}), as próximas entrevistas não têm este limite.`;
+/** FREE_JOBS_FOR_SCRIPT: trabalhos de produção por usar de que um guião novo precisa (o dele e o da geração do episódio); os dois números ficam em limits.ts, para os termos e a FAQ. */
+export { FREE_PRODUCTION_JOBS, FREE_JOBS_FOR_SCRIPT };
+const HELP_HTML = '<a href="/ajuda">Ajuda</a>', ACCOUNT_HTML = '<a href="/account">Conta</a>';
+const JOBS_WHAT = `${FREE_PRODUCTION_JOBS} trabalhos de produção (processar, regenerar o guião e gerar o episódio, contando os que falharam e cada «Tentar de novo»)`;
+/**
+ * Recusa pelo total esgotado e aviso vermelho da página da produção quando não há episódio que se possa aprovar e publicar
+ * (com um, o aviso é neutro: freeJobsDoneHtml).
+ */
+const jobsUsed = (help: string, account: string) => `A 1.ª entrevista grátis inclui ${JOBS_WHAT} e já os usou todos: nesta entrevista não há mais regenerações, nem pagas com créditos, nem pedidos adicionais (a resposta do entrevistado desatualiza o guião e o episódio). Para a concluir, peça ajuda à equipa do portal em ${help}: a equipa pode terminar a produção desta entrevista. Com uma subscrição (${account}), as próximas entrevistas não têm este limite.`;
 export const FREE_JOBS_USED = jobsUsed('«Ajuda»', 'Conta');
-/** O mesmo, com as ligações (aviso da página da produção). */
-export const FREE_JOBS_USED_HTML = jobsUsed('<a href="/ajuda">Ajuda</a>', '<a href="/account">Conta</a>');
-const jobsLow = (help: string) => `Na 1.ª entrevista grátis resta 1 dos ${FREE_PRODUCTION_JOBS} trabalhos de produção: chega para gerar o episódio de um guião aprovado, mas não para fazer um guião novo e depois o episódio. Por isso, processar de novo, «Regenerar guião», «Recomeçar» e «Guardar nova revisão» das transcrições (que obriga a refazer o guião e o episódio) não estão disponíveis. Se precisar, peça ajuda à equipa do portal em ${help}: a equipa pode terminar a produção desta entrevista.`;
+/** O mesmo, com as ligações (aviso da página da produção e recusa do «Pedido adicional» na edição). */
+export const FREE_JOBS_USED_HTML = jobsUsed(HELP_HTML, ACCOUNT_HTML);
+/**
+ * Total esgotado com um episódio que se aprova e publica como sempre (atual, sem alertas da qualidade nem a capa retirada),
+ * já publicado ou a ser gerado pelo último trabalho: aviso neutro. Antes, a página dizia a vermelho que era preciso a equipa
+ * para concluir a entrevista, também quando o 8.º trabalho gerava o episódio e depois de o administrador concluir a produção
+ * (a saída prometida), com «Aprovar», «Enviar pré-visualização» e «Publicar» ativos: pedidos de ajuda sem razão.
+ */
+export const freeJobsDoneHtml = (ep: 'running' | 'preview' | 'published') => `A 1.ª entrevista grátis inclui ${JOBS_WHAT} e já os usou todos. ${ep === 'published' ? 'O episódio continua publicado.'
+  : `${ep === 'running' ? 'O último está em curso: quando o episódio ficar pronto,' : 'O episódio atual não muda:'} pode aprová-lo, enviar a pré-visualização ao entrevistado (quando ele aprova a versão final) e publicá-lo, como sempre.`} Nesta entrevista não há mais regenerações, nem pagas com créditos, nem pedidos adicionais: para alterar o guião ou o episódio, peça ajuda à equipa do portal em ${HELP_HTML}. Com uma subscrição (${ACCOUNT_HTML}), as próximas entrevistas não têm este limite.`;
+/** Recusa com 1 trabalho por usar e aviso neutro da página da produção quando há um guião aprovado (ou por aprovar) para gerar o episódio. */
+const jobsLow = (help: string) => `Na 1.ª entrevista grátis resta 1 dos ${FREE_PRODUCTION_JOBS} trabalhos de produção: chega para gerar o episódio de um guião aprovado, mas não para fazer um guião novo e depois o episódio. Por isso, processar de novo, «Regenerar guião», «Recomeçar», «Guardar nova revisão» das transcrições e «Pedido adicional» (a nova revisão e a resposta do entrevistado obrigam a refazer o guião e o episódio) não estão disponíveis. Se precisar, peça ajuda à equipa do portal em ${help}: a equipa pode terminar a produção desta entrevista.`;
 export const FREE_JOBS_LOW = jobsLow('«Ajuda»');
-export const FREE_JOBS_LOW_HTML = jobsLow('<a href="/ajuda">Ajuda</a>');
+export const FREE_JOBS_LOW_HTML = jobsLow(HELP_HTML);
+/**
+ * 1 trabalho por usar sem um guião aprovado (nem por aprovar) para gerar o episódio — por exemplo, com 7 processamentos
+ * falhados ou o guião desatualizado: aviso vermelho. Antes, a página dizia sempre que o trabalho que restava chegava para
+ * gerar o episódio de um guião aprovado, também sem nenhum guião, e com o estilo neutro.
+ */
+export const FREE_JOBS_LOW_NO_SCRIPT_HTML = `Na 1.ª entrevista grátis resta 1 dos ${FREE_PRODUCTION_JOBS} trabalhos de produção e esta entrevista não tem um guião aprovado: fazer um guião novo e depois o episódio precisa de ${FREE_JOBS_FOR_SCRIPT}, e o trabalho que resta só serve para gerar o episódio de um guião aprovado. Por isso, processar de novo, «Regenerar guião», «Recomeçar», «Guardar nova revisão» das transcrições e «Pedido adicional» não estão disponíveis. Para a concluir, peça ajuda à equipa do portal em ${HELP_HTML}: a equipa pode terminar a produção desta entrevista.`;
+/**
+ * O total de trabalhos de produção, com a ligação ao ponto 2-C dos termos, onde a entrevista grátis se pede (caixas da
+ * oferta no painel, na página do convite e na Conta, e a linha «Limites da entrevista» do convite grátis). Antes, só os
+ * termos e a FAQ o diziam: a condição não aparecia antes do envio.
+ */
+export const FREE_JOBS_PT = `até ${FREE_PRODUCTION_JOBS} trabalhos de produção (contam os que falham e cada «Tentar de novo»; ver os <a href="/termos#entrevista-gratis">termos</a>)`;
 /** Recusa por falta de trabalhos de produção na entrevista grátis (null = pode), para uma ação que precisa de `need` por usar. */
 export const freeJobsBlock = (used: number | null, need: number): string | null =>
   used == null ? null : used >= FREE_PRODUCTION_JOBS ? FREE_JOBS_USED : FREE_PRODUCTION_JOBS - used < need ? FREE_JOBS_LOW : null;
+/** Uma recusa (de freeJobsBlock ou outra, em texto) para desenhar numa página: as de freeJobsBlock com as ligações. */
+export const freeJobsBlockHtml = (msg: string) => msg === FREE_JOBS_USED ? FREE_JOBS_USED_HTML : msg === FREE_JOBS_LOW ? FREE_JOBS_LOW_HTML : esc(msg);
 /** Trabalhos de produção que contam para FREE_PRODUCTION_JOBS na entrevista (ver acima). */
 export async function freeProductionJobs(q: Db, interviewId: string): Promise<number> {
   return Number((await q.one(`SELECT count(*)::int AS n FROM jobs WHERE interview_id=$1 AND kind IN ('process_submission','prepare_script','generate_episode')
@@ -276,7 +307,7 @@ interface UnverifiedState { sent: Date | null; more: boolean; later: boolean; ca
 
 const T = {
   pt: {
-    limits: (l: ReturnType<typeof inviteLimits>) => `com os limites do plano Start (até ${l.questionLimit} perguntas, incluindo as adicionais, e até ${mmss(l.answerLimitSec!)} min de respostas do entrevistado)`,
+    limits: (l: ReturnType<typeof inviteLimits>) => `com os limites do plano Start (até ${l.questionLimit} perguntas, incluindo as adicionais, e até ${mmss(l.answerLimitSec!)} min de respostas do entrevistado) e ${FREE_JOBS_PT}`,
     eligible: (l: ReturnType<typeof inviteLimits>, where: 'painel' | 'convite') => `<strong>A sua 1.ª entrevista é grátis.</strong> ${where === 'convite' ? 'Este convite segue' : 'Envie o primeiro convite'} sem pagamento nem dados de cartão, ${T.pt.limits(l)}. É uma por pessoa e por organização${where === 'painel' ? ': crie a entrevista e, em «Rever e convidar», carregue em «Enviar convite grátis»' : ''}.`,
     unverified: (email: string, s: UnverifiedState) => `${s.canConfirm ? '<strong>A sua 1.ª entrevista é grátis</strong>, depois de confirmar o email da sua conta.' : '<strong>A 1.ª entrevista grátis exige o email da conta confirmado.</strong>'} ${s.sent ? `Enviámos uma ligação para ${esc(email)} em ${esc(fmtDate(s.sent))} (válida 48 horas).`
       : !s.more ? 'Não é possível enviar mais emails de confirmação para o email desta conta.' : s.later ? `Ainda não foi possível enviar a ligação para ${esc(email)}. Pode pedir uma ligação mais tarde.` : `Ainda não foi possível enviar a ligação para ${esc(email)}: carregue em «Reenviar».`}`,
@@ -287,7 +318,7 @@ const T = {
     cap: 'A oferta da 1.ª entrevista grátis está temporariamente indisponível. Pode tentar mais tarde ou escolher um plano em <a href="/account">Conta</a>.',
   },
   en: {
-    limits: (l: ReturnType<typeof inviteLimits>) => `with the Start plan limits (up to ${l.questionLimit} questions, additional ones included, and ${mmss(l.answerLimitSec!)} min of answers)`,
+    limits: (l: ReturnType<typeof inviteLimits>) => `with the Start plan limits (up to ${l.questionLimit} questions, additional ones included, and ${mmss(l.answerLimitSec!)} min of answers) and up to ${FREE_PRODUCTION_JOBS} production jobs (failed ones and each «Tentar de novo», Try again, count; see the <a href="/termos#entrevista-gratis">terms</a>)`,
     eligible: (l: ReturnType<typeof inviteLimits>) => `<strong>Your first interview is free.</strong> Send your first invitation with no payment and no card details, ${T.en.limits(l)}: create it on the dashboard (Painel) and press «Enviar convite grátis» (Send free invitation). One per person and organisation.`,
     unverified: (email: string, s: UnverifiedState) => `${s.canConfirm ? '<strong>Your first interview is free</strong> once you confirm your account’s email.' : '<strong>The free first interview needs a confirmed account email.</strong>'} ${s.sent ? `We sent a link to ${esc(email)} on ${esc(fmtDate(s.sent))} (valid for 48 hours).`
       : !s.more ? 'No more confirmation emails can be sent to this account’s email address.' : s.later ? `We could not send the link to ${esc(email)} yet. You can ask for a link later.` : `We could not send the link to ${esc(email)} yet: press «Resend».`}`,
