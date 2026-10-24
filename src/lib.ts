@@ -26,6 +26,9 @@ export async function verifyPassword(pw: string, stored: string) {
   return key.length === expected.length && timingSafeEqual(key, expected);
 }
 
+/** Texto de uma linha: espaços seguidos (e quebras) passam a um só, sem espaços nas pontas. */
+export const oneSpace = (v: unknown) => String(v ?? '').replace(/\s+/g, ' ').trim();
+
 export const esc = (v: unknown) =>
   String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
 

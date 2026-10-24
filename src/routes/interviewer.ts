@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import type { Db } from '../db.ts';
 import { config } from '../config.ts';
-import { esc, isEmail, fmtDate, fmtDuration, rateLimit, xmlText } from '../lib.ts';
+import { esc, oneSpace, isEmail, fmtDate, fmtDuration, rateLimit, xmlText } from '../lib.ts';
 import { page, flash, pill, STATUS_LABEL } from '../views.ts';
 import { requireUser, ownedInterview, audit, sendAsset } from '../app.ts';
 import { sniff, stripJpegMetadata, saveAsset, probeAudio } from '../media.ts';
@@ -224,8 +224,8 @@ ${locked ? '' : composePanel(iv, quota!, !(await inEntity(await entityOfIntervie
         host_photo_rights=$15, question_voice=$16, guest_voice=$17, host_animate=$18, host_ai_video=$19, host_title=$20, guest_title=$21 WHERE id=$1 RETURNING review_policy`,
       // O título, os nomes e as funções vão para a capa e para os cartões do vídeo (SVG): sem os caracteres que o XML não
       // admite (xmlText), que faziam falhar a capa em cada tentativa, depois das etapas pagas.
-      [iv.id, xmlText(b.title).trim().slice(0, 140), String(b.objective_text ?? '').slice(0, 4000), !!b.objective_shared,
-        xmlText(b.host_name).slice(0, 100), xmlText(b.guest_name).slice(0, 100), email, b.interaction_lang === 'en' ? 'en' : 'pt-PT',
+      [iv.id, oneSpace(xmlText(b.title)).slice(0, 140), String(b.objective_text ?? '').slice(0, 4000), !!b.objective_shared,
+        oneSpace(xmlText(b.host_name)).slice(0, 100), oneSpace(xmlText(b.guest_name)).slice(0, 100), email, b.interaction_lang === 'en' ? 'en' : 'pt-PT',
         ['auto', 'pt', 'en', 'es', 'fr', 'de'].includes(b.answer_lang) ? b.answer_lang : 'auto', b.deadline || null,
         ['private', 'unlisted', 'public'].includes(b.planned_visibility) ? b.planned_visibility : 'private', String(b.personal_message ?? '').slice(0, 1500),
         subs.length ? subs : ['en'], b.review_policy === 'host_only' ? 'host_only' : 'guest_preview', !!b.host_photo_rights, b.question_voice === 'male' ? 'male' : 'female', b.guest_voice === 'male' ? 'male' : 'female', !!b.host_animate && !!b.host_photo_rights, !!b.host_ai_video && !!b.host_photo_rights,
