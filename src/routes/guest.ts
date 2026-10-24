@@ -14,7 +14,7 @@ import { createInvitation } from '../invites.ts';
 import { aiAvailable, readQuestion, READING_VOICES } from '../ai/openai.ts';
 import { storage } from '../storage.ts';
 import { inEntity, entityOfInterview } from '../settings.ts';
-import { answeredMs, secondsLeft, mmss, LIMIT_SLACK_MS, wordsToMs, msToWords, maxAnswerWords } from '../limits.ts';
+import { answeredMs, secondsLeft, mmss, LIMIT_SLACK_MS, wordsToMs, msToWords, maxAnswerWords, writtenMaxChars } from '../limits.ts';
 import { extractAnswerText, DocError, DOC_MAX_BYTES } from '../docx.ts';
 import { guestHelpNav } from '../support.ts';
 import { takeAiUse, giveBackAiUse, freeSendBlock, FREE_READINGS_PER_QUESTION } from '../free-interview.ts';
@@ -296,6 +296,8 @@ ${q.audio_asset_id ? `<p><audio id="qaudio" controls preload="none" src="/api/g/
     }
     if (doc.words > maxAnswerWords()) return reply.code(422).send({ error: 'tooLong', message: d.docTooLong(doc.words, maxAnswerWords()) });
     const durationMs = wordsToMs(doc.words);
+    const maxChars = writtenMaxChars(durationMs);
+    if (doc.text.length > maxChars) return reply.code(422).send({ error: 'tooLong', message: d.docTooManyChars(doc.text.length, maxChars) });
     const over = (limitSec: number | null, othersMs: number) => limitSec != null && othersMs + durationMs > limitSec * 1000 + LIMIT_SLACK_MS;
     const overTotal = (limitSec: number, othersMs: number) => {
       const remainingSec = secondsLeft(limitSec, othersMs)!;

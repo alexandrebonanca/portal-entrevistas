@@ -163,6 +163,10 @@ test('upload do Word: autorização, formatos, vazio, tamanho, palavras e tempo 
   const long = await sendDoc(qs[0], docx([run(words(maxAnswerWords() + 1))]), guest);
   assert.equal(long.statusCode, 422); assert.equal(long.json().error, 'tooLong');
   assert.match(long.json().message, new RegExp(`${maxAnswerWords() + 1} palavras; cada resposta pode ter até ${maxAnswerWords()}`));
+  // poucas «palavras» enormes: dentro do limite de palavras, mas acima do teto de caracteres pela duração estimada
+  const dense = await sendDoc(qs[0], Buffer.from(Array.from({ length: 20 }, () => 'x'.repeat(2000)).join(' '), 'utf8'), guest);
+  assert.equal(dense.statusCode, 422); assert.equal(dense.json().error, 'tooLong');
+  assert.match(dense.json().message, /40019 caracteres/);
   // tempo total: 60 s ≈ 150 palavras; um texto de 200 palavras não cabe
   await db.query('UPDATE interviews SET answer_limit_sec=60 WHERE id=$1', [ivId]);
   const over = await sendDoc(qs[0], docx([run(words(200))]), guest);

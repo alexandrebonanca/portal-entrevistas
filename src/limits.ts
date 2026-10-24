@@ -98,6 +98,12 @@ export const FREE_SCRIPT_BASE = 3000, FREE_SCRIPT_PER_MIN = 2000;
  * revisão). null: sem este máximo (entrevista paga, administrador).
  */
 export const FREE_TRANSCRIPT_BASE = 300, FREE_TRANSCRIPT_PER_MIN = 2000;
+/**
+ * Máximo de caracteres de uma resposta escrita (ficheiro), pela duração estimada da leitura, como o teto da revisão de uma
+ * transcrição na entrevista grátis. Vale para todas as entrevistas: o limite de palavras conta sequências sem espaços, e um
+ * texto de «palavras» enormes passaria inteiro para o guião e a verificação, pagos por caractere.
+ */
+export const writtenMaxChars = (durationMs: number) => Math.ceil(FREE_TRANSCRIPT_BASE + (FREE_TRANSCRIPT_PER_MIN * durationMs) / 60000);
 export async function transcriptMax(db: Db, iv: { id: string; free_at?: unknown }, takeId: string, admin: boolean): Promise<{ max: number; minutes: number } | null> {
   if (admin || !iv.free_at) return null;
   const r = await db.one(`SELECT COALESCE(ast.duration_ms,0)::bigint AS ms,
