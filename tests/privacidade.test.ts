@@ -39,7 +39,7 @@ test('privacidade: completa, sem o aviso «por completar» e sem o email pessoal
   assert.doesNotMatch(body, /must be completed/); assert.doesNotMatch(body, /before production use/);
   assert.equal(config.supportEmail, 'pessoal.dono@exemplo.pt');
   assert.ok(!body.includes(config.supportEmail), 'o SUPPORT_EMAIL nunca aparece');
-  assert.ok(body.includes(`Last updated: ${PRIVACY_UPDATED}`)); assert.equal(PRIVACY_UPDATED, '22 October 2026');
+  assert.ok(body.includes(`Last updated: ${PRIVACY_UPDATED}`)); assert.equal(PRIVACY_UPDATED, '24 October 2026');
   // Quem somos: a entidade proprietária e gestora, com país, morada, IVA e contacto.
   const who = section('Who we are');
   for (const v of [config.owner.name, 'Estonia', config.owner.address, `VAT ${config.owner.vat}`, `mailto:${config.owner.email}`]) assert.ok(who.includes(v), v);
@@ -277,7 +277,7 @@ test('privacidade: a FAQ do assistente não contradiz a /privacy nem manda escre
   assert.match(by('convidado-aprovar').en[1], /use the link «Ask for a correction or the withdrawal of the episode» \(it opens the portal’s contact form with the episode filled in\)/);
   assert.match(by('devolucoes').pt[1], /peça-o ao suporte, nesta página de ajuda\./);
   // regravar: cada «Repetir» acrescenta uma gravação (answer_takes) e as anteriores ficam, como diz a /privacy
-  assert.match(section('What we collect and why'), /your recorded answers \(a new recording is added and earlier ones are kept, not overwritten\)/);
+  assert.match(section('What we collect and why'), /your answers, recorded or written in a Word \(\.docx\) or plain-text \(\.txt\) file you upload \(a new answer is added and earlier ones are kept, not overwritten;/);
   assert.match(by('convidado-regravar').pt[1], /Usa-se a gravação mais recente; as anteriores não são apagadas: ficam guardadas em privado com a entrevista, não entram no episódio, e pode pedir ao suporte, nesta página, que as apague\./);
   assert.match(by('convidado-regravar').en[1], /The latest recording is used; earlier ones are not deleted: they are kept privately with the interview, are not used in the episode, and you can ask support, on this page, to delete them\./);
   assert.doesNotMatch(answers, /fica a gravação mais recente|the latest recording is kept/);

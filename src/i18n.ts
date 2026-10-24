@@ -31,11 +31,11 @@ const D = {
     resendBtn: 'Enviar novo link', resendDone: 'Se o email corresponder a um convite, enviámos um novo link.', yourEmail: 'O seu email',
     beforeStart: 'Antes de começar', objective: 'Objetivo da entrevista',
     consentIntro: 'Escolha o que autoriza. Nada está pré-selecionado. Pode recusar tudo o que não seja necessário para participar.',
-    c_participation: 'Participação e gravação das minhas respostas (necessário para responder).',
+    c_participation: 'Participação e registo das minhas respostas, gravadas ou escritas (necessário para responder).',
     c_processing: 'Transcrição, tradução para inglês e narração com vozes sintéticas geradas por IA, através de serviços externos.',
     c_publish: 'Publicação do episódio resultante, depois de eu o ter visto e aprovado.',
     c_publish_host: 'Publicação do episódio resultante, depois de revisto e aprovado pelo entrevistador. Um vídeo em que eu apareça animado por IA só é publicado depois de eu o ter visto e aprovado.',
-    consentLong: 'Quem organiza: o entrevistador indicado no convite. Finalidades: gravar as suas respostas, transcrevê-las, traduzi-las e produzir um episódio de podcast em inglês com vozes sintéticas (não clonamos a sua voz). Serviços externos: transcrição, tradução e voz sintética são feitos por um fornecedor de IA. Publicação: {PUB} Conservação: os originais ficam privados e pode pedir a sua eliminação na página «Ajuda» desta entrevista ou, depois de o link deixar de valer, pelo formulário de contacto do portal.',
+    consentLong: 'Quem organiza: o entrevistador indicado no convite. Finalidades: registar as suas respostas (gravadas ou escritas num ficheiro Word ou de texto, de que só se guarda o texto), transcrever as gravadas, traduzi-las e produzir um episódio de podcast em inglês com vozes sintéticas (não clonamos a sua voz). Serviços externos: transcrição, tradução e voz sintética são feitos por um fornecedor de IA. Publicação: {PUB} Conservação: os originais ficam privados e pode pedir a sua eliminação na página «Ajuda» desta entrevista ou, depois de o link deixar de valer, pelo formulário de contacto do portal.',
     pubAll: 'só após a sua aprovação do resultado.', pubHost: 'decidida pelo entrevistador; um vídeo em que apareça animado por IA só com a sua aprovação.',
     adults: 'Confirmo que tenho 18 anos ou mais.',
     save: 'Guardar e continuar', start: 'Começar', continue: 'Continuar',
@@ -75,7 +75,7 @@ const D = {
     howAnswer: (n: number) => `Responde a ${n} pergunta${n === 1 ? '' : 's'} no telemóvel ou no computador, quando lhe der jeito. Não precisa de instalar nada nem de criar conta.`,
     howListen: 'Pode ouvir cada resposta e gravá-la de novo até submeter a entrevista.',
     howApprove: 'No fim, vê o episódio e aprova-o antes de ser publicado.',
-    howConsent: 'Antes de começar, escolhe o que autoriza (gravação, tratamento e publicação); as fotografias são opcionais e pedidas no fim.',
+    howConsent: 'Antes de começar, escolhe o que autoriza (registo das respostas, tratamento e publicação); as fotografias são opcionais e pedidas no fim.',
     linkUntil: (d: string) => `Este link é pessoal. Pode responder até ${d}.`,
     emailDecline: 'Se não pretende participar, abra o link e escolha «Não pretendo participar».',
     help: 'Dúvidas? Abra o seu link pessoal e use a página «Ajuda»: a equipa do portal responde lá.', tagline: 'entrevistas gravadas no seu tempo', privacyLink: 'Privacidade',
@@ -136,11 +136,11 @@ const D = {
     resendBtn: 'Send a new link', resendDone: 'If the email matches an invitation, we have sent a new link.', yourEmail: 'Your email',
     beforeStart: 'Before you start', objective: 'Purpose of the interview',
     consentIntro: 'Choose what you allow. Nothing is pre-selected. You may refuse anything that is not needed to take part.',
-    c_participation: 'Taking part and recording my answers (needed to answer).',
+    c_participation: 'Taking part and recording or writing my answers (needed to answer).',
     c_processing: 'Transcription, translation into English and narration with AI-generated synthetic voices, using external services.',
     c_publish: 'Publication of the resulting episode, after I have seen and approved it.',
     c_publish_host: 'Publication of the resulting episode, after it has been reviewed and approved by the interviewer. A video in which I appear animated by AI is only published after I have seen and approved it.',
-    consentLong: 'Organiser: the interviewer named in the invitation. Purposes: record your answers, transcribe and translate them, and produce an English-language podcast episode narrated with synthetic voices (we do not clone your voice). External services: transcription, translation and synthetic voice are provided by an AI vendor. Publication: {PUB} Retention: the originals stay private and you can ask for their deletion on this interview’s “Help” page or, once your link is no longer valid, through the portal’s contact form.',
+    consentLong: 'Organiser: the interviewer named in the invitation. Purposes: keep your answers (recorded, or written in an uploaded Word or text file, of which only the text is kept), transcribe the recorded ones, translate them, and produce an English-language podcast episode narrated with synthetic voices (we do not clone your voice). External services: transcription, translation and synthetic voice are provided by an AI vendor. Publication: {PUB} Retention: the originals stay private and you can ask for their deletion on this interview’s “Help” page or, once your link is no longer valid, through the portal’s contact form.',
     pubAll: 'only after you approve the result.', pubHost: 'decided by the interviewer; a video in which you appear animated by AI only with your approval.',
     adults: 'I confirm I am 18 or older.',
     save: 'Save and continue', start: 'Start', continue: 'Continue',
@@ -180,7 +180,7 @@ const D = {
     howAnswer: (n: number) => `Answer ${n} question${n === 1 ? '' : 's'} on your phone or computer, whenever suits you. Nothing to install, no account to create.`,
     howListen: 'You can listen to each answer and record it again until you submit the interview.',
     howApprove: 'At the end, you see the episode and approve it before it is published.',
-    howConsent: 'Before you start, you choose what you allow (recording, processing and publication); photos are optional and asked for at the end.',
+    howConsent: 'Before you start, you choose what you allow (keeping your answers, processing and publication); photos are optional and asked for at the end.',
     linkUntil: (d: string) => `This link is personal. You can answer until ${d}.`,
     emailDecline: 'If you do not wish to take part, open the link and choose “I do not wish to take part”.',
     help: 'Need help? Open your personal link and use the “Help” page: the portal team replies there.', tagline: 'interviews recorded in your own time', privacyLink: 'Privacy',
@@ -219,7 +219,7 @@ export const t = (lang: Lang) => D[lang];
 
 // v2: publicação conforme a política de revisão; Replicate na animação. v3: o pedido de eliminação segue pela «Ajuda» da
 // entrevista ou pelo formulário de contacto (já não pelo «contacto de apoio», o email que deixou de se mostrar).
-export const CONSENT_VERSION = 'v3-2026-10';
+export const CONSENT_VERSION = 'v4-2026-10';
 export const CONSENT_PURPOSES = ['participation', 'processing', 'photo_capture', 'cover_use', 'publish_photo', 'animate_portrait', 'ai_video', 'publish'] as const;
 export type ConsentPurpose = typeof CONSENT_PURPOSES[number];
 /** Texto de cada autorização; a de publicação depende da política de revisão da entrevista. */
