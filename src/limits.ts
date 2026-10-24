@@ -50,6 +50,8 @@ export const subtitleLangs = (v: unknown): string[] =>
 export const FREE_PRODUCTION_JOBS = 8;
 /** Trabalhos de produção por usar de que um guião novo precisa na entrevista grátis: o dele e o da geração do episódio (ver free-interview.ts). */
 export const FREE_JOBS_FOR_SCRIPT = 2;
+/** 1.ª entrevista grátis: gerações do vídeo com fotografias por entrevista (ver free-interview.ts, freeVideoRenders; aqui para os termos). */
+export const FREE_VIDEO_RENDERS = 3;
 
 // ---- regenerações do guião e do episódio ----
 /** Regenerações já contadas na entrevista (trabalhos marcados como regeneração e que não falharam). */

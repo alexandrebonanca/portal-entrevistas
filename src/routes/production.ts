@@ -23,7 +23,7 @@ import { withVat, eurPt } from '../vat.ts';
 import { quoteSection } from './quotes.ts';
 import { introProductionHint } from './intro.ts';
 import { helpNav, isUuid } from '../support.ts';
-import { takeAiUse, giveBackAiUse, aiUsed, FREE_SCRIPT_REVIEWS, FREE_REVIEWS_USED, FREE_PRODUCTION_JOBS, FREE_JOBS_USED, FREE_JOBS_USED_HTML, FREE_JOBS_LOW, FREE_JOBS_LOW_HTML, FREE_JOBS_LOW_NO_SCRIPT_HTML, FREE_JOBS_FOR_SCRIPT, freeJobsBlock, freeJobsDoneHtml, freeProductionJobs } from '../free-interview.ts';
+import { takeAiUse, giveBackAiUse, aiUsed, FREE_SCRIPT_REVIEWS, FREE_REVIEWS_USED, FREE_PRODUCTION_JOBS, FREE_JOBS_USED, FREE_JOBS_USED_HTML, FREE_JOBS_LOW, FREE_JOBS_LOW_HTML, FREE_JOBS_LOW_NO_SCRIPT_HTML, FREE_JOBS_FOR_SCRIPT, freeJobsBlock, freeJobsDoneHtml, freeProductionJobs, FREE_VIDEO_RENDERS, FREE_VIDEOS_USED, FREE_VIDEOS_USED_HTML, freeVideoRenders } from '../free-interview.ts';
 
 /** Os retratos animados (Replicate) ficam reservados ao administrador. */
 const ANIMATE_ADMIN_ONLY = 'Os retratos animados por IA (Replicate) estão reservados ao administrador. A animação com o Google Veo faz-se por orçamento, na secção «Animação por IA».';
@@ -199,6 +199,9 @@ export async function productionRoutes(app: FastifyInstance) {
     const jobsLeft = freeJobs != null ? Math.max(0, FREE_PRODUCTION_JOBS - freeJobs) : null;
     const jobsOut = jobsLeft === 0;
     const jobsLow = jobsLeft != null && jobsLeft < FREE_JOBS_FOR_SCRIPT;
+    // E o total das gerações do vídeo com fotografias: esgotado, a secção do vídeo não mostra «Gerar vídeo» e explica a saída.
+    const freeVideos = iv.free_at && req.user!.role !== 'admin' ? await freeVideoRenders(db, iv.id) : null;
+    const videosOut = freeVideos != null && freeVideos >= FREE_VIDEO_RENDERS;
     // Regenerações esgotadas: a seguinte paga-se com 1 crédito (botão com o valor e, para consumidores, as duas caixas). Com
     // o total da entrevista grátis esgotado, nem pagas: sem o botão de pagar nem «Carregar créditos» (antes, a página mandava
     // carregar créditos para uma regeneração que o enqueueProduction recusava sempre).
@@ -224,11 +227,12 @@ export async function productionRoutes(app: FastifyInstance) {
       const scriptOk = (!!script && ['draft', 'approved'].includes(script.status)) || ['process_submission', 'prepare_script'].includes(live?.kind);
       freeHtml = scriptOk ? FREE_JOBS_LOW_HTML : FREE_JOBS_LOW_NO_SCRIPT_HTML; freeBad = !scriptOk;
     }
-    const eMsg = freeHtml && typeof q.e === 'string' && (q.e.startsWith(FREE_JOBS_USED) || q.e.startsWith(FREE_JOBS_LOW)) ? undefined : q.e;
+    const eMsg = typeof q.e === 'string' && ((freeHtml && (q.e.startsWith(FREE_JOBS_USED) || q.e.startsWith(FREE_JOBS_LOW))) || (videosOut && q.e.startsWith(FREE_VIDEOS_USED))) ? undefined : q.e;
     let body = `<div class="wrap" style="padding-top:32px"><p><a href="/entrevistas/${iv.id}">← ${esc(iv.title)}</a></p><h1>Produção do podcast</h1>${flash(q.ok)}${flash(eMsg, 'bad')}
 <p class="sans">${pill(STATUS_LABEL[iv.production_status] ?? iv.production_status)} ${pill(STATUS_LABEL[iv.publication_status] ?? iv.publication_status)} · Utilização registada (estimativa): <strong>$${ledger.usd.toFixed(2)}</strong>
 · Regenerações do guião e do episódio: <strong id="regen">${regen} de ${INCLUDED}</strong> incluídas${req.user!.role === 'admin' ? ' (o administrador não tem limite e as dele não contam)' : ''}${freeJobs != null ? `
-· 1.ª entrevista grátis: <strong id="trabalhos">${Math.min(freeJobs, FREE_PRODUCTION_JOBS)} de ${FREE_PRODUCTION_JOBS}</strong> trabalhos de produção usados (contam também os que falharam; restam ${jobsLeft})` : ''}</p>${freeHtml ? `<div class="flash${freeBad ? ' bad' : ''}" id="trabalhos-aviso">${freeHtml}</div>` : ''}`;
+· 1.ª entrevista grátis: <strong id="trabalhos">${Math.min(freeJobs, FREE_PRODUCTION_JOBS)} de ${FREE_PRODUCTION_JOBS}</strong> trabalhos de produção usados (contam também os que falharam; restam ${jobsLeft})` : ''}${freeVideos != null ? `
+· Vídeo com fotografias: <strong id="videos">${Math.min(freeVideos, FREE_VIDEO_RENDERS)} de ${FREE_VIDEO_RENDERS}</strong> gerações usadas (contam também as que falharam)` : ''}</p>${freeHtml ? `<div class="flash${freeBad ? ' bad' : ''}" id="trabalhos-aviso">${freeHtml}</div>` : ''}`;
 
     if (!submitted) body += `<div class="flash">A entrevista ainda não foi submetida pelo entrevistado.</div>`;
 
@@ -371,7 +375,7 @@ ${videoMeta?.googleBusy ? '<div class="flash">O Google Veo estava com procura el
 ${videoMeta?.engine === 'veo' ? `<details ${videoMeta.fidelityIssues || videoMeta.fallbackSegments?.length ? 'open' : ''}><summary class="sans">Fidelidade ao guião: ${videoMeta.fidelityIssues ? `${videoMeta.fidelityIssues} pedaço(s) sem clipe aprovado (não disseram o texto aprovado ou não foi possível verificar); essas falas ficaram com a fotografia fixa e a voz do episódio` : 'todos os clipes dizem o texto aprovado'}</summary>
 <table class="sans"><thead><tr><th>Fala</th><th>Guião</th><th>Ouvido no vídeo</th><th>Resultado</th></tr></thead><tbody>${(videoMeta.fidelity ?? []).map((f: any) => `<tr><td>${esc(f.segmentId)}</td><td>${esc(f.expected)}</td><td>${esc(f.heard || '—')}</td><td>${f.ok ? pill(f.edits ? 'coincide (grafia de nome)' : 'coincide', 'ok') : f.problem === 'busy' ? pill('Google indisponível (procura elevada): fotografia fixa', 'warn') : f.problem === 'busycap' ? pill('em pausa após 4 falhas da Google em 36 h (gere de novo mais tarde): fotografia fixa', 'warn') : f.problem === 'filtered' ? pill('bloqueado pelos filtros da Google: fotografia fixa', 'warn') : f.problem === 'capped' ? pill(`limite de tentativas esgotado${f.cause ? ` (${f.cause})` : ''}: fotografia fixa`, 'warn') : f.problem === 'capped_budget' ? pill('teto do orçamento atingido: fotografia fixa, não cobrada', 'warn') : f.problem === 'breaker' ? pill('disjuntor (demasiadas repetições falhadas): fotografia fixa, não cobrada', 'warn') : f.problem === 'no_clips' ? pill('clipes já pagos indisponíveis: fotografia fixa', 'warn') : f.problem === 'unchecked' ? pill('não verificado: fotografia fixa', 'warn') : f.problem === 'error' ? pill('falhou na Google: fotografia fixa', 'warn') : !f.checked ? pill('não verificado: fotografia fixa', 'warn') : pill(`${f.edits ?? '?'} diferença(s): fotografia fixa`, 'bad')}${f.ok && !f.used ? ' <span class="hint">(outra parte da fala falhou: fala em fotografia fixa)</span>' : ''}${f.attempts > 1 ? ` <span class="hint">${f.attempts} tentativas</span>` : ''}${f.reused ? ' <span class="hint">(reaproveitado: fala já paga)</span>' : ''}</td></tr>`).join('')}</tbody></table></details>` : ''}` : '<p class="hint">Ainda não foi gerado.</p>'}
 ${!live && lastVideoJob?.state === 'failed' ? `<div class="flash bad">A última geração do vídeo não terminou: ${esc(String(lastVideoJob.error ?? '').slice(0, 400))}</div>` : ''}
-${!ep.stale ? `${ep.status !== 'preview' ? `<p class="hint"><strong>${esc(VIDEO_ONLY_PREVIEW)}</strong></p>` : `<form method="post" action="/entrevistas/${iv.id}/episodio/${ep.id}/video" class="row" onsubmit="return confirm('Gerar o vídeo?')">
+${!ep.stale ? `${ep.status !== 'preview' ? `<p class="hint"><strong>${esc(VIDEO_ONLY_PREVIEW)}</strong></p>` : videosOut ? `<div class="flash" id="videos-aviso">${FREE_VIDEOS_USED_HTML}</div>` : `<form method="post" action="/entrevistas/${iv.id}/episodio/${ep.id}/video" class="row" onsubmit="return confirm('Gerar o vídeo?')">
 ${(() => { const est = animationEstimate(ep, iv, animOk, !!(iv.host_photo_rights && iv.host_photo_asset_id), guestHasPhoto);
   const hostVeo = !!(iv.host_ai_video && iv.host_photo_rights && iv.host_photo_asset_id), guestVeo = veoOk && guestHasPhoto && iv.review_policy === 'guest_preview';
   const ve = veoEstimate(ep.technical?.timing ?? [], epSegs, hostVeo, guestVeo, tier);
@@ -700,15 +704,29 @@ ${ep.visibility === 'public' ? `<form method="post" action="/entrevistas/${iv.id
     // Só num episódio por publicar: num publicado, o vídeo novo iria logo para o ar sem nova aprovação.
     if (c.ep.status !== 'preview') return back(reply, c.iv.id, undefined, engine === 'veo' ? VEO_ONLY_PREVIEW : VIDEO_ONLY_PREVIEW);
     // Clique repetido: não se paga duas vezes a mesma geração.
-    if (await db.one(`SELECT 1 FROM jobs WHERE interview_id=$1 AND kind='render_video' AND (state='queued' OR (state='running' AND locked_at > now() - interval '15 minutes'))`, [c.iv.id])) return back(reply, c.iv.id, undefined, 'Já há um vídeo a ser gerado; aguarde que termine.');
+    const VIDEO_BUSY = 'Já há um vídeo a ser gerado; aguarde que termine.';
+    const videoInQueue = (q: Db) => q.one(`SELECT 1 FROM jobs WHERE interview_id=$1 AND kind='render_video' AND (state='queued' OR (state='running' AND locked_at > now() - interval '15 minutes'))`, [c.iv.id]);
+    if (await videoInQueue(db)) return back(reply, c.iv.id, undefined, VIDEO_BUSY);
+    const admin = req.user!.role === 'admin';
+    // 1.ª entrevista grátis: total de gerações do vídeo com fotografias (FREE_VIDEO_RENDERS), antes das verificações do Veo; contado outra vez na transação.
+    if (c.iv.free_at && !admin && (await freeVideoRenders(db, c.iv.id)) >= FREE_VIDEO_RENDERS) return back(reply, c.iv.id, undefined, FREE_VIDEOS_USED);
     if (engine === 'veo') {
       if ((await db.one('SELECT status FROM scripts WHERE id=$1', [c.ep.script_id]))?.status !== 'approved') return back(reply, c.iv.id, undefined, VEO_SCRIPT_REPLACED);
       if (await db.one(`SELECT 1 FROM approvals a JOIN episodes e ON e.id=a.episode_id WHERE e.script_id=$1 AND a.actor='guest' AND a.valid AND a.decision='changes' LIMIT 1`, [c.ep.script_id])) return back(reply, c.iv.id, undefined, VEO_CHANGES);
       if (!config.openai.mock && !inEntity(ent, () => veoConfigured())) return back(reply, c.iv.id, undefined, VEO_NO_CREDENTIALS);
       if (!config.openai.mock && !inEntity(ent, () => aiAvailable())) return back(reply, c.iv.id, undefined, 'Falta a chave da OpenAI (transcrição para verificar os clipes) em Definições.');
     }
-    const n = Number((await db.one(`SELECT count(*)::int AS n FROM jobs WHERE interview_id=$1 AND kind='render_video'`, [c.iv.id])).n);
-    await enqueue(db, { kind: 'render_video', interviewId: c.iv.id, input: { episodeId: c.ep.id, lang: lang && c.ep.subtitles?.[lang] ? lang : null, animate: engine === 'lipsync', requestedBy: req.user!.id, ...(engine === 'veo' ? { engine: 'veo', veoRetries: 1 } : {}) }, dedupe: `video:${c.ep.id}:${n}` });
+    // Contado e posto na fila com a entrevista bloqueada (como o enqueueProduction): dois pedidos em simultâneo na última
+    // geração grátis não passam os dois. `admin`: o vídeo do administrador não conta para o total (freeVideoRenders).
+    const r = await db.tx(async (tx): Promise<{ blocked?: string }> => {
+      await tx.one('SELECT id FROM interviews WHERE id=$1 FOR UPDATE', [c.iv.id]);
+      if (await videoInQueue(tx)) return { blocked: VIDEO_BUSY };
+      if (c.iv.free_at && !admin && (await freeVideoRenders(tx, c.iv.id)) >= FREE_VIDEO_RENDERS) return { blocked: FREE_VIDEOS_USED };
+      const n = Number((await tx.one(`SELECT count(*)::int AS n FROM jobs WHERE interview_id=$1 AND kind='render_video'`, [c.iv.id])).n);
+      await enqueue(tx, { kind: 'render_video', interviewId: c.iv.id, input: { episodeId: c.ep.id, lang: lang && c.ep.subtitles?.[lang] ? lang : null, animate: engine === 'lipsync', requestedBy: req.user!.id, ...(engine === 'veo' ? { engine: 'veo', veoRetries: 1 } : {}), ...(admin && c.iv.free_at ? { admin: true } : {}) }, dedupe: `video:${c.ep.id}:${n}` });
+      return {};
+    });
+    if (r.blocked) return back(reply, c.iv.id, undefined, r.blocked);
     await audit(db, req.user!.email, 'episode.video_requested', c.iv.id, { lang, engine });
     return back(reply, c.iv.id, 'Geração do vídeo iniciada.');
   });

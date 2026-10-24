@@ -3,7 +3,7 @@ import { config } from './config.ts';
 import { esc, sha256, fmtDate, normMailbox } from './lib.ts';
 import { ACTIVE_STATUSES, quotaFor } from './billing.ts';
 import { enqueue, type EnqueueOpts } from './jobs.ts';
-import { inviteLimits, mmss, FREE_PRODUCTION_JOBS, FREE_JOBS_FOR_SCRIPT } from './limits.ts';
+import { inviteLimits, mmss, FREE_PRODUCTION_JOBS, FREE_JOBS_FOR_SCRIPT, FREE_VIDEO_RENDERS } from './limits.ts';
 import { lastVerificationAt, verifySent, VERIFY_TOTAL, VERIFY_PER_DAY, VERIFY_HOURS } from './email-verify.ts';
 import { flash } from './views.ts';
 
@@ -16,7 +16,8 @@ import { flash } from './views.ts';
  * Tetos globais por dia e por mês (UTC), contados na base (`interviews.free_at`); 0 desliga a oferta. Cada convidado
  * (email normalizado) recebe no máximo uma em todo o portal, seja quem for que o convide (índice único na impressão).
  * Limites da entrevista: os do plano Start (tabela `plans`); regenerações incluídas como num plano, dentro do total de
- * trabalhos de produção (FREE_PRODUCTION_JOBS, escrito nos termos 2-C); a animação por IA continua por orçamento e com
+ * trabalhos de produção (FREE_PRODUCTION_JOBS, escrito nos termos 2-C) e um total próprio de gerações do vídeo com fotografias
+ * (FREE_VIDEO_RENDERS, ver freeVideoRenders); a animação por IA continua por orçamento e com
  * créditos, e a introdução animada não é oferecida por ela (ver routes/intro.ts). A entrevista grátis não conta para a
  * quota de um plano subscrito depois (quotaFor exclui-a, como as extra).
  */
@@ -205,7 +206,7 @@ export async function aiUsed(db: Db, interviewId: string, action: AiAction): Pro
  * Número escolhido sem dados de uso; o usage_ledger regista agora cada etapa paga (ver pipeline.ts, recordTextUsage).
  */
 /** FREE_JOBS_FOR_SCRIPT: trabalhos de produção por usar de que um guião novo precisa (o dele e o da geração do episódio); os dois números ficam em limits.ts, para os termos e a FAQ. */
-export { FREE_PRODUCTION_JOBS, FREE_JOBS_FOR_SCRIPT };
+export { FREE_PRODUCTION_JOBS, FREE_JOBS_FOR_SCRIPT, FREE_VIDEO_RENDERS };
 const HELP_HTML = '<a href="/ajuda">Ajuda</a>', ACCOUNT_HTML = '<a href="/account">Conta</a>';
 const JOBS_WHAT = `${FREE_PRODUCTION_JOBS} trabalhos de produção (processar, regenerar o guião e gerar o episódio, contando os que falharam e cada «Tentar de novo»)`;
 /**
@@ -239,7 +240,7 @@ export const FREE_JOBS_LOW_NO_SCRIPT_HTML = `Na 1.ª entrevista grátis resta 1 
  * oferta no painel, na página do convite e na Conta, e a linha «Limites da entrevista» do convite grátis). Antes, só os
  * termos e a FAQ o diziam: a condição não aparecia antes do envio.
  */
-export const FREE_JOBS_PT = `até ${FREE_PRODUCTION_JOBS} trabalhos de produção (contam os que falham e cada «Tentar de novo»; ver os <a href="/termos#entrevista-gratis">termos</a>)`;
+export const FREE_JOBS_PT = `até ${FREE_PRODUCTION_JOBS} trabalhos de produção e ${FREE_VIDEO_RENDERS} gerações do vídeo com fotografias (contam os que falham e cada «Tentar de novo»; ver os <a href="/termos#entrevista-gratis">termos</a>)`;
 /** Recusa por falta de trabalhos de produção na entrevista grátis (null = pode), para uma ação que precisa de `need` por usar. */
 export const freeJobsBlock = (used: number | null, need: number): string | null =>
   used == null ? null : used >= FREE_PRODUCTION_JOBS ? FREE_JOBS_USED : FREE_PRODUCTION_JOBS - used < need ? FREE_JOBS_LOW : null;
@@ -250,6 +251,26 @@ export async function freeProductionJobs(q: Db, interviewId: string): Promise<nu
   return Number((await q.one(`SELECT count(*)::int AS n FROM jobs WHERE interview_id=$1 AND kind IN ('process_submission','prepare_script','generate_episode')
     AND input->>'admin' IS NULL AND (input->>'paidCents' IS NULL OR state='failed')`, [interviewId]))?.n ?? 0);
 }
+
+/**
+ * 1.ª entrevista grátis: gerações do vídeo com fotografias («Gerar vídeo» / «Gerar de novo», trabalho render_video com a
+ * imagem fixa), contadas quando entram na fila, também as que falham, e sem os do administrador. Antes não tinham total:
+ * cada geração ocupa a via única dos vídeos do worker (WORKER_LANES=1, um FFmpeg de cada vez, ~CPU de toda a duração do
+ * episódio mais os ~8 s dos cartões) e grava um episode_video novo no disco (o anterior fica guardado em privado, como na
+ * produção paga): no teste do revisor, 12 renderizações seguidas, todas aceites, numa conta sem pagamento. Uso normal: o
+ * primeiro vídeo e 2 para mudar a língua das legendas ou refazer depois de uma regeneração. Contado numa transação com a
+ * entrevista FOR UPDATE (como o enqueueProduction); acima, nada entra na fila e a saída é a Ajuda. Fora deste total: o
+ * vídeo com o Google Veo por orçamento (pago com créditos, e a reconstrução de um orçamento liquidado) e os do administrador.
+ * Não conta para FREE_PRODUCTION_JOBS (não gasta IA: voz, legendas e capa já existem) nem como regeneração.
+ */
+export async function freeVideoRenders(q: Db, interviewId: string): Promise<number> {
+  return Number((await q.one(`SELECT count(*)::int AS n FROM jobs WHERE interview_id=$1 AND kind='render_video'
+    AND input->>'admin' IS NULL AND input->>'quoteId' IS NULL AND input->>'rebuild' IS NULL`, [interviewId]))?.n ?? 0);
+}
+const videosUsed = (help: string, account: string) => `A 1.ª entrevista grátis inclui ${FREE_VIDEO_RENDERS} gerações do vídeo com fotografias (contam também as que falharam) e já as usou todas: o episódio fica como está (com o vídeo atual, se houver) e pode aprová-lo e publicá-lo como sempre. Para gerar outro (por exemplo, com outra língua nas legendas), peça ajuda à equipa do portal em ${help}. Com uma subscrição (${account}), as próximas entrevistas não têm este limite.`;
+/** Recusa do «Gerar vídeo» com as gerações do vídeo esgotadas (texto para o endereço) e o mesmo com as ligações (página da produção). */
+export const FREE_VIDEOS_USED = videosUsed('«Ajuda»', 'Conta');
+export const FREE_VIDEOS_USED_HTML = videosUsed(HELP_HTML, ACCOUNT_HTML);
 
 /**
  * Contas sem pagamento (entrevistador sem entidade e sem subscrição em vigor: as da 1.ª entrevista grátis e as de quem deixou
@@ -324,7 +345,7 @@ const T = {
     cap: 'A oferta da 1.ª entrevista grátis está temporariamente indisponível. Pode tentar mais tarde ou escolher um plano em <a href="/account">Conta</a>.',
   },
   en: {
-    limits: (l: ReturnType<typeof inviteLimits>) => `with the Start plan limits (up to ${l.questionLimit} questions, additional ones included, and ${mmss(l.answerLimitSec!)} min of answers) and up to ${FREE_PRODUCTION_JOBS} production jobs (failed ones and each «Tentar de novo», Try again, count; see the <a href="/termos#entrevista-gratis">terms</a>)`,
+    limits: (l: ReturnType<typeof inviteLimits>) => `with the Start plan limits (up to ${l.questionLimit} questions, additional ones included, and ${mmss(l.answerLimitSec!)} min of answers) and up to ${FREE_PRODUCTION_JOBS} production jobs and ${FREE_VIDEO_RENDERS} generations of the video with photos (failed ones and each «Tentar de novo», Try again, count; see the <a href="/termos#entrevista-gratis">terms</a>)`,
     eligible: (l: ReturnType<typeof inviteLimits>) => `<strong>Your first interview is free.</strong> Send your first invitation with no payment and no card details, ${T.en.limits(l)}: create it on the dashboard (Painel) and press «Enviar convite grátis» (Send free invitation). One per person and organisation.`,
     unverified: (email: string, s: UnverifiedState) => `${s.canConfirm ? '<strong>Your first interview is free</strong> once you confirm your account’s email.' : '<strong>The free first interview needs a confirmed account email.</strong>'} ${s.sent ? `We sent a link to ${esc(email)} on ${esc(fmtDate(s.sent))} (valid for 48 hours).`
       : !s.more ? 'No more confirmation emails can be sent to this account’s email address.' : s.later ? `We could not send the link to ${esc(email)} yet. You can ask for a link later.` : `We could not send the link to ${esc(email)} yet: press «Resend».`}`,

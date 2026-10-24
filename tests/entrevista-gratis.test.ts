@@ -310,11 +310,11 @@ test('convite grátis: página, marca, limites do Start (da tabela), painel e Co
   let painel = (await get('/painel', fa.ck)).body;
   assert.match(painel, /<strong>A sua 1\.ª entrevista é grátis\.<\/strong> Envie o primeiro convite sem pagamento nem dados de cartão, com os limites do plano Start \(até 4 perguntas, incluindo as adicionais, e até 10:00 min de respostas do entrevistado\)/);
   // 7.ª revisão: o total de trabalhos de produção, com a ligação ao ponto 2-C, onde a oferta se pede (antes, só nos termos e na FAQ)
-  const JOBS_PT = 'e até 8 trabalhos de produção (contam os que falham e cada «Tentar de novo»; ver os <a href="/termos#entrevista-gratis">termos</a>). É uma por pessoa e por organização';
+  const JOBS_PT = 'e até 8 trabalhos de produção e 3 gerações do vídeo com fotografias (contam os que falham e cada «Tentar de novo»; ver os <a href="/termos#entrevista-gratis">termos</a>). É uma por pessoa e por organização';
   assert.ok(painel.includes(`10:00 min de respostas do entrevistado) ${JOBS_PT}: crie a entrevista`), 'painel');
   const conta = (await get('/account', fa.ck)).body;
   assert.match(conta, /<strong>Your first interview is free\.<\/strong> Send your first invitation with no payment and no card details, with the Start plan limits \(up to 4 questions/);
-  assert.ok(conta.includes('10:00 min of answers) and up to 8 production jobs (failed ones and each «Tentar de novo», Try again, count; see the <a href="/termos#entrevista-gratis">terms</a>): create it on the dashboard'), 'Conta');
+  assert.ok(conta.includes('10:00 min of answers) and up to 8 production jobs and 3 generations of the video with photos (failed ones and each «Tentar de novo», Try again, count; see the <a href="/termos#entrevista-gratis">terms</a>): create it on the dashboard'), 'Conta');
 
   const id = await draft(fa.ck, 'A grátis', 'Joao.Silva+x@gmail.com');
   const pg = (await get(`/entrevistas/${id}/convidar`, fa.ck)).body;
@@ -322,7 +322,7 @@ test('convite grátis: página, marca, limites do Start (da tabela), painel e Co
   assert.ok(pg.includes(`10:00 min de respostas do entrevistado) ${JOBS_PT}.</div>`), 'caixa do convite');
   assert.match(pg, /<input type="hidden" name="free" value="1"><button class="accent" >Enviar convite grátis<\/button>/);
   assert.match(pg, /até 4 perguntas, incluindo as adicionais; até 10:00 min de respostas do entrevistado no total/);
-  assert.ok(pg.includes('; máximo de 5:00 min por resposta; até 8 trabalhos de produção (contam os que falham e cada «Tentar de novo»; ver os <a href="/termos#entrevista-gratis">termos</a>). Ficam fixos com o convite.'), 'linha dos limites');
+  assert.ok(pg.includes('; máximo de 5:00 min por resposta; até 8 trabalhos de produção e 3 gerações do vídeo com fotografias (contam os que falham e cada «Tentar de novo»; ver os <a href="/termos#entrevista-gratis">termos</a>). Ficam fixos com o convite.'), 'linha dos limites');
   assert.doesNotMatch(pg, /Precisa de uma subscrição ativa|Uso neste período/);
   // sem o pedido explícito (página antiga) não gasta a oferta
   assert.match(msgOf(await post(`/entrevistas/${id}/convidar`, {}, fa.ck)), /Precisa de uma subscrição ativa/);
@@ -418,7 +418,7 @@ test('tetos diário e mensal (0 desliga): textos neutros, nada enviado; landing 
   assert.match(home, /<div class="card" id="free"[^>]*><h3[^>]*>Your first interview is free<\/h3>/);
   assert.match(home, /The free interview has the Start plan limits \(up to 15 questions and 15 minutes of answers\)/);
   // 7.ª revisão: o total de trabalhos de produção e a ligação ao ponto 2-C dos termos
-  assert.ok(home.includes('and the same production as the plans (transcription, English script, narration, subtitles, cover and the video with photos), within a total of 8 production jobs: processing, regenerating the script and generating the episode, counting failed jobs and each «Try again». One per person'));
+  assert.ok(home.includes('and the same production as the plans (transcription, English script, narration, subtitles, cover and the video with photos), within a total of 8 production jobs: processing, regenerating the script and generating the episode, counting failed jobs and each «Try again», and up to 3 generations of the video with photos. One per person'));
   assert.match(home, /One per person and organisation, and each guest can receive only one free interview\. A limited number of free interviews is available each day and each month; when they run out, the offer is temporarily unavailable\. The offer can be withdrawn at any time \(see the <a href="\/termos#entrevista-gratis">terms<\/a>\)/);
   assert.match(home, /<a class="btn accent" href="\/registar">Send your first interview free<\/a>/);
   assert.match(home, /VAT, where it applies, depends on your country; the final price is always shown before you pay\./);
@@ -621,8 +621,8 @@ test('textos: termos (2-C), FAQ do assistente, privacidade; o email pessoal não
   assert.match(A.fillVars(e.en[1]), /within a total of 8 production jobs \(processing, regenerating the script and generating the episode\): jobs that fail, for any reason, and each «Tentar de novo» \(Try again\) also count, and beyond them that interview has no more regenerations, not even paid with credits\. [^]*The production page shows how many are left; if a service failure uses them up, ask the team for help in «Ajuda» \(Help\), who can finish the production\./);
   assert.doesNotMatch(e.pt[1] + e.en[1], /incluídas como num plano;|included as in a plan;/);
   // 7.ª revisão: um guião novo precisa de 2 trabalhos por usar, e o pedido adicional também
-  assert.ok(A.fillVars(e.pt[1]).includes('nem pagas com créditos. Um guião novo (processar, regenerar o guião, recomeçar ou rever uma transcrição) precisa de 2 desses trabalhos por usar, o dele e o do episódio, e um pedido adicional, depois do primeiro guião, também (a resposta do entrevistado obriga a refazer o guião e o episódio): o último trabalho só serve para gerar o episódio de um guião aprovado. A página da produção mostra quantos restam;'));
-  assert.ok(A.fillVars(e.en[1]).includes('not even paid with credits. A new script (processing, regenerating the script, restarting or revising a transcript) needs 2 of those jobs left, its own and the episode\'s, and so does an additional question once there is a script (the guest\'s answer means redoing the script and the episode): the last job only serves to generate the episode of an approved script. The production page shows how many are left;'));
+  assert.ok(A.fillVars(e.pt[1]).includes('nem pagas com créditos. Um guião novo (processar, regenerar o guião, recomeçar ou rever uma transcrição) precisa de 2 desses trabalhos por usar, o dele e o do episódio, e um pedido adicional, depois do primeiro guião, também (a resposta do entrevistado obriga a refazer o guião e o episódio): o último trabalho só serve para gerar o episódio de um guião aprovado. O vídeo com fotografias fica fora desse total, mas pode ser gerado até 3 vezes (contam também as que falham). A página da produção mostra quantos restam;'));
+  assert.ok(A.fillVars(e.en[1]).includes('not even paid with credits. A new script (processing, regenerating the script, restarting or revising a transcript) needs 2 of those jobs left, its own and the episode\'s, and so does an additional question once there is a script (the guest\'s answer means redoing the script and the episode): the last job only serves to generate the episode of an approved script. The video with photos is outside that total, but it can be generated up to 3 times (failed ones also count). The production page shows how many are left;'));
   const rg = FAQ_SEED.find(x => x.key === 'regeneracoes')!;
   assert.match(A.fillVars(rg.pt[1]), /Na 1\.ª entrevista grátis há também um total de 8 trabalhos de produção, em que contam os que falham, e acima dele não há mais regenerações, nem pagas/);
   assert.ok(A.fillVars(rg.pt[1]).includes('nem pagas; um guião novo precisa de 2 desses trabalhos por usar (o dele e o do episódio), por isso o último só serve para gerar o episódio, mesmo com regenerações por usar (ver «Há teste grátis?»).'));
@@ -2138,4 +2138,84 @@ test('episódio com a tradução das legendas cortada pelo teto: sai à 1.ª ten
     assert.ok(scriptBody.body.max_completion_tokens > 1500, 'o guião leva teto');
     assert.equal((await ledgerOf(id)).text_tokens.q - textBefore, 1000);
   });
+}));
+
+test('1.ª entrevista grátis: o vídeo com fotografias tem um total próprio (3 gerações, contam as que falham), contado com a entrevista bloqueada; acima dele, nada entra na fila, a página não mostra «Gerar de novo» e dá a saída pela Ajuda; o administrador gera sem contar; as pagas como antes; termos e FAQ', () => manyFree(async () => {
+  // Antes (4.ª ronda da 8.ª revisão): o POST /video só recusava com um vídeo já na fila; no teste do revisor, 12 renderizações
+  // seguidas numa conta sem pagamento, todas aceites, cada uma com a via única do worker e um episode_video novo no disco.
+  if (!admin) admin = `sid=${cookies(await post('/registar', { name: 'Admin', email: 'admin@example.com', password: PW, terms: 1 })).sid}`;
+  assert.equal(F.FREE_VIDEO_RENDERS, 3);
+  const vv = await created('Vitor Vídeo', 'vitor.video@example.com');
+  const { id } = await submitted(vv.ck, 'Vídeo', 'conv-video@example.net');
+  assert.match(msgOf(await post(`/entrevistas/${id}/processar`, {}, vv.ck)), /ok=Processamento iniciado/); await drain();
+  assert.match(msgOf(await post(`/entrevistas/${id}/guiao/aprovar`, { reviewed: '1' }, vv.ck)), /ok=Guião aprovado/);
+  assert.match(msgOf(await post(`/entrevistas/${id}/gerar`, { subtitle_langs: 'en' }, vv.ck)), /ok=Geração iniciada/); await drain();
+  const ep = await db.one('SELECT id FROM episodes WHERE interview_id=$1 AND NOT stale', [id]);
+  const video = (ck = vv.ck) => post(`/entrevistas/${id}/episodio/${ep.id}/video`, { engine: 'still', lang: 'en' }, ck);
+  const page = async (ck = vv.ck, qs = '') => (await get(`/entrevistas/${id}/producao${qs}`, ck)).body;
+  const form = `action="/entrevistas/${id}/episodio/${ep.id}/video" `;
+  const p0 = await page();
+  assert.match(p0, /· Vídeo com fotografias: <strong id="videos">0 de 3<\/strong> gerações usadas \(contam também as que falharam\)/);
+  assert.ok(p0.includes(form) && !p0.includes('id="videos-aviso"'));
+  // 1.ª geração; a 2.ª falhou (por exemplo, no FFmpeg) e conta
+  assert.match(msgOf(await video()), /ok=Geração do vídeo iniciada/); await drainAll();
+  await db.query(`INSERT INTO jobs(interview_id, kind, input, state, error, created_at) VALUES ($1,'render_video',$2,'failed','ffmpeg simulado', now() - interval '1 minute')`, [id, JSON.stringify({ episodeId: ep.id, lang: 'en', requestedBy: vv.id })]);
+  assert.equal(await F.freeVideoRenders(db, id), 2);
+  assert.match(await page(), /<strong id="videos">2 de 3<\/strong>/);
+  // dois pedidos em simultâneo na última: só um entra na fila
+  const before = await jobsOf(id, 'render_video');
+  const both = await Promise.all([video(), video()]);
+  assert.equal(both.filter(r => /ok=Geração do vídeo iniciada/.test(msgOf(r))).length, 1, both.map(msgOf).join(' | '));
+  assert.equal(await jobsOf(id, 'render_video'), before + 1);
+  await drainAll();
+  assert.equal(await F.freeVideoRenders(db, id), 3);
+  // 3 de 3: recusado antes de entrar na fila, com a saída pela Ajuda; nada novo nos trabalhos nem nos vídeos
+  const videoAssets = async () => Number((await db.one(`SELECT count(*)::int n FROM assets WHERE interview_id=$1 AND kind='episode_video'`, [id])).n);
+  const assets = await videoAssets();
+  const r4 = msgOf(await video());
+  assert.ok(r4.includes(`e=${F.FREE_VIDEOS_USED}`), r4);
+  assert.match(F.FREE_VIDEOS_USED, /inclui 3 gerações do vídeo com fotografias \(contam também as que falharam\) e já as usou todas: o episódio fica como está \(com o vídeo atual, se houver\) e pode aprová-lo e publicá-lo como sempre\. Para gerar outro[^.]*, peça ajuda à equipa do portal em «Ajuda»\./);
+  assert.equal(await jobsOf(id, 'render_video'), before + 1);
+  assert.equal(await videoAssets(), assets);
+  // a página: sem o formulário (nem «Gerar de novo»), com o aviso e as ligações à Ajuda e à Conta; a recusa no endereço não se repete
+  const p3 = await page(vv.ck, `?e=${encodeURIComponent(F.FREE_VIDEOS_USED)}`);
+  assert.match(p3, /<strong id="videos">3 de 3<\/strong>/);
+  assert.ok(!p3.includes(form) && !p3.includes('Gerar de novo</button>'));
+  assert.ok(p3.includes(`<div class="flash" id="videos-aviso">${F.FREE_VIDEOS_USED_HTML}</div>`));
+  assert.ok(F.FREE_VIDEOS_USED_HTML.includes('<a href="/ajuda">Ajuda</a>') && F.FREE_VIDEOS_USED_HTML.includes('<a href="/account">Conta</a>'));
+  assert.ok(!p3.includes('já as usou todas: o episódio fica como está (com o vídeo atual, se houver) e pode aprová-lo e publicá-lo como sempre. Para gerar outro (por exemplo, com outra língua nas legendas), peça ajuda à equipa do portal em «Ajuda»'), 'a recusa vinda no endereço não se repete');
+  // não conta para os trabalhos de produção (nem como regeneração)
+  assert.equal(await F.freeProductionJobs(db, id), 2);
+  // o administrador gera sem contar (marcado como dele) e não fica bloqueado; a página dele não mostra o total
+  assert.match(msgOf(await video(admin)), /ok=Geração do vídeo iniciada/);
+  assert.equal((await db.one(`SELECT input FROM jobs WHERE interview_id=$1 AND kind='render_video' ORDER BY created_at DESC LIMIT 1`, [id])).input.admin, true);
+  await drainAll();
+  assert.equal(await F.freeVideoRenders(db, id), 3);
+  const pa = await page(admin);
+  assert.ok(pa.includes(form) && !pa.includes('id="videos"'));
+
+  // entrevista paga: sem este total (o 4.º vídeo entra na fila, a página não mostra o contador)
+  const pg = await created('Paulo Vídeo', 'paulo.video@example.com');
+  await db.query(`INSERT INTO subscriptions(user_id, plan_id, status, source) VALUES ($1,'start','active','manual')`, [pg.id]);
+  const P = await submitted(pg.ck, 'Vídeo pago', 'conv-video-pago@example.net', true);
+  assert.match(msgOf(await post(`/entrevistas/${P.id}/processar`, {}, pg.ck)), /ok=Processamento iniciado/); await drain();
+  assert.match(msgOf(await post(`/entrevistas/${P.id}/guiao/aprovar`, { reviewed: '1' }, pg.ck)), /ok=Guião aprovado/);
+  assert.match(msgOf(await post(`/entrevistas/${P.id}/gerar`, { subtitle_langs: 'en' }, pg.ck)), /ok=Geração iniciada/); await drain();
+  const pep = await db.one('SELECT id FROM episodes WHERE interview_id=$1 AND NOT stale', [P.id]);
+  for (let k = 0; k < 4; k++) { assert.match(msgOf(await post(`/entrevistas/${P.id}/episodio/${pep.id}/video`, { engine: 'still', lang: 'en' }, pg.ck)), /ok=Geração do vídeo iniciada/, `pago ${k}`); await drainAll(); }
+  assert.doesNotMatch((await get(`/entrevistas/${P.id}/producao`, pg.ck)).body, /id="videos"/);
+
+  // termos 2-C, FAQ (entrevista grátis e vídeo com fotografias, só com a oferta ligada), condições onde a oferta se pede e landing
+  const t = (await get('/termos')).body;
+  assert.ok(t.includes('À parte desse total, o vídeo com fotografias pode ser gerado até 3 vezes nessa entrevista (contam também as que falham); depois, o episódio e o vídeo já gerado ficam como estão.'));
+  const e = FAQ_SEED.find(x => x.key === 'entrevista-gratis')!;
+  assert.ok(A.fillVars(e.pt[1]).includes('O vídeo com fotografias fica fora desse total, mas pode ser gerado até 3 vezes (contam também as que falham).'));
+  assert.ok(A.fillVars(e.en[1]).includes('The video with photos is outside that total, but it can be generated up to 3 times (failed ones also count).'));
+  const vf = FAQ_SEED.find(x => x.key === 'video-fotografias')!;
+  assert.ok(A.fillVars(vf.pt[1]).includes('Na 1.ª entrevista grátis, pode gerá-lo até 3 vezes (contam também as que falham); depois, o vídeo já gerado fica e, para outro, peça ajuda à equipa em «Ajuda».'));
+  assert.ok(A.fillVars(vf.en[1]).includes('In the free first interview, you can generate it up to 3 times (failed ones also count);'));
+  await withLimits({ freePerMonth: 0 }, async () => assert.doesNotMatch(A.fillVars(vf.pt[1]) + A.fillVars(vf.en[1]), /até 3 vezes|up to 3 times/));
+  assert.ok(A.FAQ_VAR_HELP.freeVideos);
+  assert.ok(F.FREE_JOBS_PT.startsWith('até 8 trabalhos de produção e 3 gerações do vídeo com fotografias (contam os que falham'));
+  assert.match((await get('/')).body, /within a total of 8 production jobs: processing, regenerating the script and generating the episode, counting failed jobs and each «Try again», and up to 3 generations of the video with photos\./);
 }));
