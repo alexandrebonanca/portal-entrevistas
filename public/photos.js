@@ -26,7 +26,7 @@
   keep.onclick = async () => {
     st.textContent = msg.stUp;
     try { await PE.upload('/api/g/fotos', pendingBlob); location.reload(); }
-    catch (e) { st.textContent = e.code === 'max' ? msg.max3 : msg.stFail; }
+    catch (e) { st.textContent = e.code === 'max' ? msg.max3 : e.code === 'storage' && e.serverMessage ? e.serverMessage : msg.stFail; }
   };
   if (fileIn) fileIn.onchange = async () => {
     const f = fileIn.files[0]; if (!f) return;

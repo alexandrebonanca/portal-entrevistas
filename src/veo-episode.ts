@@ -10,6 +10,7 @@ import { veoSubmit, veoAwait, veoEpisodePrompt, VeoQuotaError, VeoCancelled, Veo
 import { ownsAny, entityOfInterview, inEntity, VEO_CRED_KEYS } from './settings.ts';
 import { PermanentError, JobPaused, type Handler } from './jobs.ts';
 import type { Db } from './db.ts';
+import { purgeUnpublishedPhotoVideos } from './uploads.ts';
 import { flushOutbox, queueEmail, emailShell } from './mail.ts';
 import { release, settle, cr } from './wallet.ts';
 import { introPhrase, introKeyOf, readyIntro, INTRO_SPAN_ID } from './intro.ts';
@@ -1107,6 +1108,8 @@ export async function renderVeoVideo(job: any, { db, progress }: Parameters<Hand
   // lidas no próprio momento. As aprovações ficam presas ao vídeo que foi visto (approvals.video_asset_id).
   let settled: { charged: number; released: number; owner: string } | null = null;
   const speechSec = (quote?.selection as any[] ?? []).filter(x => !x.reused && x.cents > 0).reduce((n, x) => n + Number(x.sec || 0), 0);
+  // O vídeo anterior do episódio (por publicar): se era só com fotografias, sai do disco depois de ligado o novo (uploads.ts).
+  const before = (await db.one('SELECT video_asset_id FROM episodes WHERE id=$1', [ep.id]))?.video_asset_id ?? null;
   const linked = await db.tx(async tx => {
     const row = await tx.one(
       `UPDATE episodes e SET video_asset_id=$2, video_lang=$3 FROM interviews i
@@ -1124,6 +1127,7 @@ export async function renderVeoVideo(job: any, { db, progress }: Parameters<Hand
     return row;
   });
   if (!linked) throw new PermanentError('Uma autorização foi retirada, o convidado pediu alterações ou o episódio mudou durante a geração: o vídeo não foi ligado ao episódio e fica privado. Os clipes pagos ficam guardados.');
+  if (before && before !== id) await purgeUnpublishedPhotoVideos(db, iv.id, before);
   if (quote && settled) await quoteSettledEmail(db, quote, settled, iv);
   await progress(100, 100, 'Concluído');
   return { videoAssetId: id, veoClips: meta.veoClips, generatedClips: generated, spentUsd, veoUsd: costUsd, fallbackSegments: fallbackSegs, fidelityIssues: meta.fidelityIssues, ...(settled ? { chargedCents: (settled as any).charged, releasedCents: (settled as any).released } : {}) };

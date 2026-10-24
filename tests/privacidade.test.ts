@@ -276,10 +276,10 @@ test('privacidade: a FAQ do assistente não contradiz a /privacy nem manda escre
   assert.match(by('convidado-suporte').en[1], /for a new request, use the portal’s contact form/);
   assert.match(by('convidado-aprovar').en[1], /use the link «Ask for a correction or the withdrawal of the episode» \(it opens the portal’s contact form with the episode filled in\)/);
   assert.match(by('devolucoes').pt[1], /peça-o ao suporte, nesta página de ajuda\./);
-  // regravar: cada «Repetir» acrescenta uma gravação (answer_takes) e as anteriores ficam, como diz a /privacy
-  assert.match(section('What we collect and why'), /your answers, recorded or written in a Word \(\.docx\) or plain-text \(\.txt\) file you upload \(a new answer is added and earlier ones are kept, not overwritten;/);
-  assert.match(by('convidado-regravar').pt[1], /Usa-se a gravação mais recente; as anteriores não são apagadas: ficam guardadas em privado com a entrevista, não entram no episódio, e pode pedir ao suporte, nesta página, que as apague\./);
-  assert.match(by('convidado-regravar').en[1], /The latest recording is used; earlier ones are not deleted: they are kept privately with the interview, are not used in the episode, and you can ask support, on this page, to delete them\./);
+  // regravar: antes de submeter, a resposta nova substitui e a anterior é apagada (uploads.ts), como diz a /privacy
+  assert.match(section('What we collect and why'), /your answers, recorded or written in a Word \(\.docx\) or plain-text \(\.txt\) file you upload \(before you submit, a new answer to a question replaces the earlier one, which is deleted;/);
+  assert.match(by('convidado-regravar').pt[1], /Usa-se a gravação \(ou o ficheiro\) mais recente, e a anterior dessa pergunta é apagada; se indicar que não pretende responder, a resposta que lá estava também é apagada\./);
+  assert.match(by('convidado-regravar').en[1], /The latest recording \(or file\) is used, and the earlier one for that question is deleted; if you choose not to answer, the answer that was there is deleted too\./);
   assert.doesNotMatch(answers, /fica a gravação mais recente|the latest recording is kept/);
   // quem pergunta como apagar a resposta ou a gravação anterior recebe primeiro uma entrada que não diz que se apaga sozinha
   const { searchFaq } = await import('../src/assistant.ts');

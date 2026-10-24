@@ -19,6 +19,7 @@ import { photoDecodes } from '../cover.ts';
 import { helpNav } from '../support.ts';
 import { assistantAiFor } from '../assistant.ts';
 import { composeAction, composeDraft, composeAssist, composeAvailable, composeHourFull, COMPOSE_MAX_REQUEST, COMPOSE_BODY_LIMIT, COMPOSE_RATE } from '../compose.ts';
+import { uploadRoom, reserveUploadRoom, uploadRefusalText, discardAsset, discardHostRecording } from '../uploads.ts';
 import { freeInterviewFor, freeLimits, claimFree, releaseFree, freeRefusal, freeNotice, freeSendBlock, freeMsg, transcriptionRoom, enqueueHostTranscription, transcriptionsUsed, freeJobsBlock, freeJobsBlockHtml, freeProductionJobs, FREE_JOBS_FOR_SCRIPT, FREE_JOBS_PT } from '../free-interview.ts';
 
 /** Envios grátis tentados por conta e por hora (cada recusa por convidado diz algo sobre esse email: o limite trava a sondagem). */
@@ -307,7 +308,8 @@ ${locked ? '' : composePanel(iv, quota!, !(await inEntity(await entityOfIntervie
   });
   app.post('/entrevistas/:id/perguntas/:qid/eliminar', async (req, reply) => {
     const iv = await qGuard(req, reply); if (!iv) return;
-    await db.query('DELETE FROM questions WHERE id=$2 AND interview_id=$1', [iv.id, (req.params as any).qid]);
+    const gone = await db.one('DELETE FROM questions WHERE id=$2 AND interview_id=$1 RETURNING audio_asset_id', [iv.id, (req.params as any).qid]);
+    await discardHostRecording(db, gone?.audio_asset_id); // a gravação da pergunta eliminada (se nenhuma cópia a usar)
     await renumber(iv.id);
     return reply.redirect(back(iv, 'perguntas'));
   });
@@ -372,7 +374,25 @@ ${locked ? '' : composePanel(iv, quota!, !(await inEntity(await entityOfIntervie
     const data = req.body as Buffer;
     const kind = Buffer.isBuffer(data) ? sniff(data) : null;
     if (!kind || kind.kind !== want) { reply.code(415).send({ error: 'Formato de ficheiro não suportado' }); return null; }
-    return { iv, data, kind };
+    return { iv, data, kind, admin: req.user.role === 'admin' };
+  };
+  // Espaço dos ficheiros enviados (uploads.ts). `replaces`: o ficheiro que o envio substitui (não conta). Antes de guardar
+  // (para não escrever no disco o que seria recusado) e, com o ficheiro guardado, numa transação com a entrevista bloqueada.
+  const roomFor = async (reply: any, r: { iv: any; admin: boolean }, bytes: number, replaces?: string | null) => {
+    const no = await uploadRoom(db, r.iv.id, bytes, { except: [replaces], admin: r.admin });
+    if (no) { reply.code(413).send({ error: uploadRefusalText(no, 'host') }); return false; }
+    return true;
+  };
+  /** Liga o ficheiro guardado (`link`, na transação) se ainda couber; senão, apaga-o e responde 413. Devolve se ligou. */
+  const linkIfRoom = async (reply: any, r: { iv: any; admin: boolean }, assetId: string, replaces: (tx: Db) => Promise<string | null | undefined>, link: (tx: Db) => Promise<unknown>) => {
+    const no = await db.tx(async tx => {
+      await tx.one('SELECT 1 FROM interviews WHERE id=$1 FOR UPDATE', [r.iv.id]);
+      const res = await reserveUploadRoom(tx, r.iv.id, { except: [await replaces(tx)], admin: r.admin });
+      if (!res) await link(tx);
+      return res;
+    });
+    if (no) { await discardAsset(db, assetId, 'refused'); reply.code(413).send({ error: uploadRefusalText(no, 'host') }); return false; }
+    return true;
   };
 
   app.post('/api/entrevistas/:id/foto', async (req, reply) => {
@@ -380,8 +400,10 @@ ${locked ? '' : composePanel(iv, quota!, !(await inEntity(await entityOfIntervie
     const data = r.kind.mime === 'image/jpeg' ? stripJpegMetadata(r.data) : r.data;
     // A assinatura não chega: uma fotografia que não se descodifica só falharia no vídeo, depois de pago o resto.
     if (!(await photoDecodes(data))) return reply.code(415).send({ error: 'A fotografia não se consegue abrir (ficheiro danificado ou com mais de 50 megapíxeis).' });
+    // A fotografia anterior do entrevistador conta enquanto estiver guardada (pode estar na introdução animada ou em vídeos).
+    if (!(await roomFor(reply, r, data.length))) return;
     const id = await saveAsset(db, { interviewId: r.iv.id, kind: 'host_photo', mime: r.kind.mime, ext: r.kind.ext, data });
-    await db.query('UPDATE interviews SET host_photo_asset_id=$2 WHERE id=$1', [r.iv.id, id]);
+    if (!(await linkIfRoom(reply, r, id, async () => null, tx => tx.query('UPDATE interviews SET host_photo_asset_id=$2 WHERE id=$1', [r.iv.id, id])))) return;
     return { ok: true, assetId: id };
   });
 
@@ -394,8 +416,13 @@ ${locked ? '' : composePanel(iv, quota!, !(await inEntity(await entityOfIntervie
     const p = await probeAudio(r.data, r.kind.ext);
     if (!p.ok || p.durationMs < 500) return reply.code(422).send({ error: 'Gravação inválida ou vazia' });
     if (tooLong(req, p.durationMs, config.limits.maxObjectiveAudioSec)) return reply.code(422).send({ error: `Gravação demasiado longa: o objetivo pode ter até ${mmss(config.limits.maxObjectiveAudioSec)} min.` });
+    const prevObjective = async (q: Db = db) => (await q.one('SELECT objective_asset_id FROM interviews WHERE id=$1', [r.iv.id]))?.objective_asset_id as string | null;
+    const before = await prevObjective();
+    if (!(await roomFor(reply, r, r.data.length, before))) return;
     const id = await saveAsset(db, { interviewId: r.iv.id, kind: 'objective_audio', mime: r.kind.mime, ext: r.kind.ext, data: r.data, durationMs: p.durationMs });
-    await db.query('UPDATE interviews SET objective_asset_id=$2 WHERE id=$1', [r.iv.id, id]);
+    let replaced: string | null = null;
+    if (!(await linkIfRoom(reply, r, id, async tx => (replaced = await prevObjective(tx)), tx => tx.query('UPDATE interviews SET objective_asset_id=$2 WHERE id=$1', [r.iv.id, id])))) return;
+    await discardHostRecording(db, replaced); // a gravação anterior do objetivo sai do disco
     if (aiAvailable()) await enqueueHostTranscription(db, req.user!, { kind: 'transcribe_asset', interviewId: r.iv.id, input: { assetId: id, sourceKind: 'objective', sourceId: r.iv.id }, dedupe: `objective:${id}` });
     return { ok: true, assetId: id };
   });
@@ -410,8 +437,12 @@ ${locked ? '' : composePanel(iv, quota!, !(await inEntity(await entityOfIntervie
     const p = await probeAudio(r.data, r.kind.ext);
     if (!p.ok || p.durationMs < 500) return reply.code(422).send({ error: 'Gravação inválida ou vazia' });
     if (tooLong(req, p.durationMs, config.limits.maxQuestionAudioSec)) return reply.code(422).send({ error: `Gravação demasiado longa: cada pergunta pode ter até ${mmss(config.limits.maxQuestionAudioSec)} min.` });
+    if (!(await roomFor(reply, r, r.data.length, q.audio_asset_id))) return;
     const id = await saveAsset(db, { interviewId: r.iv.id, kind: 'question_audio', mime: r.kind.mime, ext: r.kind.ext, data: r.data, durationMs: p.durationMs });
-    await db.query('UPDATE questions SET audio_asset_id=$2 WHERE id=$1', [q.id, id]);
+    let replaced: string | null = null;
+    const prevAudio = async (tx: Db) => (replaced = (await tx.one('SELECT audio_asset_id FROM questions WHERE id=$1', [q.id]))?.audio_asset_id ?? null);
+    if (!(await linkIfRoom(reply, r, id, prevAudio, tx => tx.query('UPDATE questions SET audio_asset_id=$2 WHERE id=$1', [q.id, id])))) return;
+    await discardHostRecording(db, replaced); // a gravação anterior da pergunta sai do disco
     if (!q.text && aiAvailable()) await enqueueHostTranscription(db, req.user!, { kind: 'transcribe_asset', interviewId: r.iv.id, input: { assetId: id, sourceKind: 'question', sourceId: q.id, fillQuestion: true }, dedupe: `qaudio:${id}` });
     return { ok: true, assetId: id };
   });

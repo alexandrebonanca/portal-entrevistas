@@ -33,7 +33,7 @@
     const f = document.getElementById('photo').files[0]; const st = document.getElementById('photoSt');
     if (!f) return;
     st.textContent = 'A enviar…';
-    try { await PE.upload('/api/entrevistas/' + ivId + '/foto', f); reloadAt('fotografia'); } catch (e) { st.textContent = 'Formato não suportado (use JPEG ou PNG).'; }
+    try { await PE.upload('/api/entrevistas/' + ivId + '/foto', f); reloadAt('fotografia'); } catch (e) { st.textContent = e.permanent && e.message && e.message !== 'rejected' ? e.message : 'Formato não suportado (use JPEG ou PNG).'; }
   };
 
   // Depois de adicionar uma pergunta, a página volta à caixa da nova pergunta (#nq), pronta a escrever a seguinte:

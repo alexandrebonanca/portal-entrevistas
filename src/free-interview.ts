@@ -256,8 +256,8 @@ export async function freeProductionJobs(q: Db, interviewId: string): Promise<nu
  * 1.ª entrevista grátis: gerações do vídeo com fotografias («Gerar vídeo» / «Gerar de novo», trabalho render_video com a
  * imagem fixa), contadas quando entram na fila, também as que falham, e sem os do administrador. Antes não tinham total:
  * cada geração ocupa a via única dos vídeos do worker (WORKER_LANES=1, um FFmpeg de cada vez, ~CPU de toda a duração do
- * episódio mais os ~8 s dos cartões) e grava um episode_video novo no disco (o anterior fica guardado em privado, como na
- * produção paga): no teste do revisor, 12 renderizações seguidas, todas aceites, numa conta sem pagamento. Uso normal: o
+ * episódio mais os ~8 s dos cartões) e grava um episode_video novo no disco (o anterior, só com fotografias e por publicar, sai do
+ * disco ao ser substituído: uploads.ts): no teste do revisor, 12 renderizações seguidas, todas aceites, numa conta sem pagamento. Uso normal: o
  * primeiro vídeo e 2 para mudar a língua das legendas ou refazer depois de uma regeneração. Contado numa transação com a
  * entrevista FOR UPDATE (como o enqueueProduction); acima, nada entra na fila e a saída é a Ajuda. Fora deste total: o
  * vídeo com o Google Veo por orçamento (pago com créditos, e a reconstrução de um orçamento liquidado) e os do administrador.

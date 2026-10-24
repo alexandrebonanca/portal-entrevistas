@@ -60,6 +60,7 @@
       if (!doc) disableNext(); // um ficheiro recusado não mexe na resposta já guardada (que continua à vista)
       if (doc) say(e.serverMessage || (e.code === 'empty' ? msg.docEmpty : e.code === 'format' ? msg.docFormat : e.code === 'tooBig' || e.code === 'Payload Too Large' ? msg.docTooBig : msg.stFail));
       else say(e.code === 'empty' ? msg.empty : e.code === 'tooLong' ? msg.tooLong
+        : e.code === 'storage' && e.serverMessage ? e.serverMessage
         : e.code === 'overTotal' ? (e.serverMessage || msg.overTotal.replace('{t}', PE.fmt(e.remainingSec || 0))) : msg.stFail);
       showLeft(msg.base - saved); // a resposta guardada antes continua a valer
       if (!e.permanent) addRetry();

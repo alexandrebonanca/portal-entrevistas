@@ -17,6 +17,7 @@ import { renderVeoVideo, releaseQuoteOfJob, VIDEO_ONLY_PREVIEW } from './veo-epi
 import { renderHostIntro, failIntro } from './veo-intro.ts';
 import { reverseDebit } from './wallet.ts';
 import { isUuid } from './support.ts';
+import { purgeUnpublishedPhotoVideos } from './uploads.ts';
 import { SCRIPT_SEGMENT_MAX, SUBTITLE_LANGS } from './limits.ts';
 
 const usage = (db: Db, interviewId: string, kind: string, quantity: number, cost: number) =>
@@ -35,8 +36,10 @@ export const latestTranscript = (db: Db, kind: string, sourceId: string) =>
 
 async function transcribeAsset(db: Db, interview: any, assetId: string, sourceKind: string, sourceId: string) {
   if (await latestTranscript(db, sourceKind, sourceId)) return;
-  const a = await db.one('SELECT * FROM assets WHERE id=$1 AND deleted_at IS NULL', [assetId]);
+  const a = await db.one('SELECT * FROM assets WHERE id=$1', [assetId]);
   if (!a) throw new PermanentError('Ativo em falta');
+  // Gravação substituída (ou pergunta eliminada) antes de a transcrição correr: já saiu do disco e não serve (uploads.ts).
+  if (a.deleted_at) { if (a.meta?.erased === 'replaced') return; throw new PermanentError('Ativo em falta'); }
   // Resposta escrita (o texto entra como transcrição ao carregar): se faltar, sai do próprio texto, sem transcrição paga.
   if (a.kind === 'answer_text') {
     const text = (await storage.get(a.storage_key)).toString('utf8');
@@ -285,6 +288,8 @@ export const handlers: Record<string, Handler> = {
       if (/^2[23][0-9A-Z]{3}$/.test(String(e?.code ?? ''))) throw new PermanentError(`Não foi possível gravar o episódio: ${String(e?.message ?? e).slice(0, 200)}`);
       throw e;
     });
+    // Os vídeos com fotografias das versões substituídas, que nunca foram para o ar, saem do disco (uploads.ts).
+    await purgeUnpublishedPhotoVideos(db, iv.id);
     await progress(total, total, 'Concluído');
     return { episodeId: ep.id, qcIssues: issues };
   },
@@ -387,6 +392,9 @@ export const handlers: Record<string, Handler> = {
     // Ligação com as autorizações lidas no próprio momento: uma retirada durante a geração não volta a pôr o vídeo no ar,
     // e o vídeo só se liga a um episódio ainda em pré-visualização: publicado a meio da geração, o vídeo novo não entra
     // no ar sem nova aprovação (as aprovações ficam presas ao vídeo que foi visto).
+    // O vídeo que estava no episódio (ainda por publicar): lido antes de ligar o novo, para sair do disco se for só com
+    // fotografias (uploads.ts). Um trabalho de cada vez por entrevista, por isso não muda entre a leitura e a ligação.
+    const before = (await db.one('SELECT video_asset_id FROM episodes WHERE id=$1', [ep.id]))?.video_asset_id ?? null;
     const linked = await db.one(
       `UPDATE episodes e SET video_asset_id=$2, video_lang=$3 FROM interviews i
        WHERE e.id=$1 AND i.id=e.interview_id AND NOT e.stale AND e.status='preview'
@@ -396,6 +404,7 @@ export const handlers: Record<string, Handler> = {
        RETURNING e.id`,
       [ep.id, id, lang, !!hostPhoto, hostAnimated, !!guestPhoto, guestAnimated]);
     if (!linked) throw new PermanentError('Uma autorização foi retirada ou o episódio mudou durante a geração (publicado, retirado ou substituído): o vídeo não foi ligado ao episódio e fica privado. Um vídeo novo só entra num episódio em pré-visualização, para ser visto e aprovado antes de ir para o ar.');
+    if (before && before !== id) await purgeUnpublishedPhotoVideos(db, iv.id, before);
     await progress(100, 100, 'Concluído');
     return { videoAssetId: id, shots: shots.length, animated, failed, lipsyncUsd: gpuUsd };
   },

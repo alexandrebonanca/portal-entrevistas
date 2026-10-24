@@ -18,6 +18,7 @@ import { answeredMs, secondsLeft, mmss, LIMIT_SLACK_MS, wordsToMs, msToWords, ma
 import { extractAnswerText, DocError, DOC_MAX_BYTES } from '../docx.ts';
 import { guestHelpNav } from '../support.ts';
 import { takeAiUse, giveBackAiUse, freeSendBlock, FREE_READINGS_PER_QUESTION } from '../free-interview.ts';
+import { uploadRoom, reserveUploadRoom, uploadRefusalText, discardReplacedTake, discardAsset, type UploadRefusal } from '../uploads.ts';
 import type { Db } from '../db.ts';
 
 const H = { 'Content-Type': 'text/html; charset=utf-8' };
@@ -220,6 +221,11 @@ ${q.audio_asset_id ? `<p><audio id="qaudio" controls preload="none" src="/api/g/
   });
 
   // ---- API de respostas ----
+  // Espaço dos ficheiros enviados (uploads.ts): a resposta atual da pergunta não conta, porque a nova a substitui.
+  const prevTake = (q: Db, questionId: string) => q.one(`SELECT t.id AS take_id, t.asset_id FROM answers an JOIN answer_takes t ON t.id=an.selected_take_id WHERE an.question_id=$1`, [questionId]);
+  const currentAnswerAsset = async (questionId: string) => (await prevTake(db, questionId))?.asset_id as string | undefined;
+  const noRoom = (reply: FastifyReply, iv: any, r: UploadRefusal) =>
+    reply.code(413).send({ error: 'storage', message: uploadRefusalText(r, normLang(iv.interaction_lang) === 'en' ? 'guest-en' : 'guest-pt') });
   app.post('/api/g/respostas/:qid', async (req, reply) => {
     const iv = await needOpen(req, reply); if (!iv) return;
     if (!(await granted(iv.id, 'participation'))) return reply.code(403).send({ error: 'consent' });
@@ -247,22 +253,28 @@ ${q.audio_asset_id ? `<p><audio id="qaudio" controls preload="none" src="/api/g/
       const othersMs = await answeredMs(db, iv.id, q.id);
       if (over(iv.answer_limit_sec, othersMs)) return overTotal(iv.answer_limit_sec, othersMs);
     }
+    const room = await uploadRoom(db, iv.id, data.length, { except: [await currentAnswerAsset(q.id)] });
+    if (room) return noRoom(reply, iv, room);
     const assetId = await saveAsset(db, { interviewId: iv.id, kind: 'answer_audio', mime: kind.mime, ext: kind.ext, data, durationMs: p.durationMs, meta: { uploadId: upId || null, via: String(req.headers['x-upload-via'] ?? 'recording') } });
     const r = await db.tx(async tx => {
       // Soma de todas as respostas com a entrevista bloqueada: gravações em paralelo (ou uma pergunta adicional) não passam o limite.
       const cur = await tx.one('SELECT answer_limit_sec FROM interviews WHERE id=$1 FOR UPDATE', [iv.id]);
       const othersMs = cur.answer_limit_sec == null ? 0 : await answeredMs(tx, iv.id, q.id);
       if (over(cur.answer_limit_sec, othersMs)) return { refused: { limitSec: cur.answer_limit_sec as number, othersMs } };
+      const prev = await prevTake(tx, q.id);
+      const noSpace = await reserveUploadRoom(tx, iv.id, { except: [prev?.asset_id] });
+      if (noSpace) return { noSpace };
       const ans = await tx.one(`INSERT INTO answers(interview_id, question_id, status) VALUES ($1,$2,'answered') ON CONFLICT (question_id) DO UPDATE SET status='answered', updated_at=now() RETURNING id`, [iv.id, q.id]);
       const tk = await tx.one(`INSERT INTO answer_takes(answer_id, asset_id, uploaded_via) VALUES ($1,$2,$3) RETURNING id`, [ans.id, assetId, String(req.headers['x-upload-via'] ?? 'recording') === 'upload' ? 'upload' : 'recording']);
       await tx.query('UPDATE answers SET selected_take_id=$2 WHERE id=$1', [ans.id, tk.id]);
-      return { take: tk, remainingSec: secondsLeft(cur.answer_limit_sec, othersMs + p.durationMs) };
+      return { take: tk, prevTakeId: prev?.take_id as string | undefined, remainingSec: secondsLeft(cur.answer_limit_sec, othersMs + p.durationMs) };
     });
-    if (r.refused) { // o ficheiro não chega a ser usado: sai do armazenamento
-      const a = await db.one('UPDATE assets SET deleted_at=now() WHERE id=$1 RETURNING storage_key', [assetId]);
-      if (a) await storage.remove(a.storage_key).catch(() => {});
-      return overTotal(r.refused.limitSec, r.refused.othersMs);
+    if (r.refused || r.noSpace) { // o ficheiro não chega a ser usado: sai do armazenamento
+      await discardAsset(db, assetId, 'refused');
+      return r.noSpace ? noRoom(reply, iv, r.noSpace) : overTotal(r.refused!.limitSec, r.refused!.othersMs);
     }
+    // A resposta anterior desta pergunta (nunca submetida) sai do disco: só a escolhida é usada.
+    await discardReplacedTake(db, iv.id, r.prevTakeId);
     // Resposta alterada depois de guião/episódio aprovado: invalida derivados (sem apagar versões).
     await invalidateDerived(db, iv.id);
     return { ok: true, takeId: r.take.id, assetId, durationMs: p.durationMs, silent: p.silent, remainingSec: r.remainingSec };
@@ -307,24 +319,30 @@ ${q.audio_asset_id ? `<p><audio id="qaudio" controls preload="none" src="/api/g/
       const othersMs = await answeredMs(db, iv.id, q.id);
       if (over(iv.answer_limit_sec, othersMs)) return overTotal(iv.answer_limit_sec, othersMs);
     }
+    const textBytes = Buffer.byteLength(doc.text, 'utf8');
+    const room = await uploadRoom(db, iv.id, textBytes, { except: [await currentAnswerAsset(q.id)] });
+    if (room) return noRoom(reply, iv, room);
     const assetId = await saveAsset(db, { interviewId: iv.id, kind: 'answer_text', mime: 'text/plain; charset=utf-8', ext: 'txt', data: Buffer.from(doc.text, 'utf8'), durationMs, meta: { uploadId: upId || null, via: 'document', format: doc.format, words: doc.words, estimated: true } });
     const r = await db.tx(async tx => {
       const cur = await tx.one('SELECT answer_limit_sec FROM interviews WHERE id=$1 FOR UPDATE', [iv.id]);
       const othersMs = cur.answer_limit_sec == null ? 0 : await answeredMs(tx, iv.id, q.id);
       if (over(cur.answer_limit_sec, othersMs)) return { refused: { limitSec: cur.answer_limit_sec as number, othersMs } };
+      const prev = await prevTake(tx, q.id);
+      const noSpace = await reserveUploadRoom(tx, iv.id, { except: [prev?.asset_id] });
+      if (noSpace) return { noSpace };
       const ans = await tx.one(`INSERT INTO answers(interview_id, question_id, status) VALUES ($1,$2,'answered') ON CONFLICT (question_id) DO UPDATE SET status='answered', updated_at=now() RETURNING id`, [iv.id, q.id]);
       const tk = await tx.one(`INSERT INTO answer_takes(answer_id, asset_id, uploaded_via) VALUES ($1,$2,'document') RETURNING id`, [ans.id, assetId]);
       await tx.query('UPDATE answers SET selected_take_id=$2 WHERE id=$1', [ans.id, tk.id]);
       // O texto do convidado é a transcrição (revisão 1, origem «document»); o editor pode revê-la como as outras.
       await tx.query(`INSERT INTO transcripts(interview_id, source_kind, source_id, revision, text, language, origin) VALUES ($1,'answer_take',$2,1,$3,$4,'document')`,
         [iv.id, tk.id, doc.text, iv.answer_lang && iv.answer_lang !== 'auto' ? iv.answer_lang : null]);
-      return { take: tk, remainingSec: secondsLeft(cur.answer_limit_sec, othersMs + durationMs) };
+      return { take: tk, prevTakeId: prev?.take_id as string | undefined, remainingSec: secondsLeft(cur.answer_limit_sec, othersMs + durationMs) };
     });
-    if (r.refused) {
-      const a = await db.one('UPDATE assets SET deleted_at=now() WHERE id=$1 RETURNING storage_key', [assetId]);
-      if (a) await storage.remove(a.storage_key).catch(() => {});
-      return overTotal(r.refused.limitSec, r.refused.othersMs);
+    if (r.refused || r.noSpace) {
+      await discardAsset(db, assetId, 'refused');
+      return r.noSpace ? noRoom(reply, iv, r.noSpace) : overTotal(r.refused!.limitSec, r.refused!.othersMs);
     }
+    await discardReplacedTake(db, iv.id, r.prevTakeId);
     await invalidateDerived(db, iv.id);
     return { ok: true, takeId: r.take.id, assetId, durationMs, words: doc.words, text: doc.text, remainingSec: r.remainingSec };
   });
@@ -336,7 +354,9 @@ ${q.audio_asset_id ? `<p><audio id="qaudio" controls preload="none" src="/api/g/
   const refuse = async (iv: any, qid: string) => {
     const q = await db.one('SELECT id FROM questions WHERE id=$2 AND interview_id=$1', [iv.id, qid]);
     if (!q) return false;
+    const prev = await prevTake(db, q.id);
     await db.query(`INSERT INTO answers(interview_id, question_id, status, selected_take_id) VALUES ($1,$2,'refused',NULL) ON CONFLICT (question_id) DO UPDATE SET status='refused', selected_take_id=NULL, updated_at=now()`, [iv.id, q.id]);
+    await discardReplacedTake(db, iv.id, prev?.take_id);
     await invalidateDerived(db, iv.id);
     return true;
   };
@@ -450,8 +470,15 @@ ${pc && !done ? `<div class="card" id="cam" data-max="3" data-msg='${esc(msg)}'>
     // A assinatura não chega: antes, uma fotografia com a assinatura JPEG e o conteúdo corrompido era guardada e só falhava
     // no sharp, na capa do episódio, depois de pagas a voz, os tempos das legendas e as traduções, em cada tentativa.
     if (!(await photoDecodes(clean))) return reply.code(415).send({ error: 'format' });
+    const room = await uploadRoom(db, iv.id, clean.length);
+    if (room) return noRoom(reply, iv, room);
     const assetId = await saveAsset(db, { interviewId: iv.id, kind: 'guest_photo', mime: kind.mime, ext: kind.ext, data: clean });
-    const ph = await db.one('INSERT INTO photos(interview_id, asset_id) VALUES ($1,$2) RETURNING id', [iv.id, assetId]);
+    const ph = await db.tx(async tx => {
+      await tx.one('SELECT 1 FROM interviews WHERE id=$1 FOR UPDATE', [iv.id]);
+      const noSpace = await reserveUploadRoom(tx, iv.id);
+      return noSpace ? { noSpace } : tx.one('INSERT INTO photos(interview_id, asset_id) VALUES ($1,$2) RETURNING id', [iv.id, assetId]);
+    });
+    if (ph.noSpace) { await discardAsset(db, assetId, 'refused'); return noRoom(reply, iv, ph.noSpace); }
     return { ok: true, id: ph.id, assetId };
   });
   app.post('/api/g/fotos/:id/eliminar-form', async (req, reply) => {

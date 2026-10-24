@@ -23,6 +23,7 @@ import { withVat, eurPt } from '../vat.ts';
 import { quoteSection } from './quotes.ts';
 import { introProductionHint } from './intro.ts';
 import { helpNav, isUuid } from '../support.ts';
+import { purgeUnpublishedPhotoVideos } from '../uploads.ts';
 import { takeAiUse, giveBackAiUse, aiUsed, FREE_SCRIPT_REVIEWS, FREE_REVIEWS_USED, FREE_PRODUCTION_JOBS, FREE_JOBS_USED, FREE_JOBS_USED_HTML, FREE_JOBS_LOW, FREE_JOBS_LOW_HTML, FREE_JOBS_LOW_NO_SCRIPT_HTML, FREE_JOBS_FOR_SCRIPT, freeJobsBlock, freeJobsDoneHtml, freeProductionJobs, FREE_VIDEO_RENDERS, FREE_VIDEOS_USED, FREE_VIDEOS_USED_HTML, freeVideoRenders } from '../free-interview.ts';
 
 /** Os retratos animados (Replicate) ficam reservados ao administrador. */
@@ -456,6 +457,7 @@ ${ep.visibility === 'public' ? `<form method="post" action="/entrevistas/${iv.id
       await tx.query(`UPDATE approvals SET valid=false WHERE interview_id=$1 AND valid`, [iv.id]);
       await tx.query(`UPDATE interviews SET production_status='not_requested', publication_status='private' WHERE id=$1`, [iv.id]);
     });
+    await purgeUnpublishedPhotoVideos(db, iv.id); // vídeos com fotografias das versões que nunca foram para o ar (uploads.ts)
     await audit(db, req.user!.email, 'production.reset', iv.id);
     return back(reply, iv.id, paidNext ? `Produção recomeçada: processar de novo custa ${cr(EXTRA_REGEN_CENTS)} crédito.` : 'Produção recomeçada: pode voltar a processar o podcast.');
   });

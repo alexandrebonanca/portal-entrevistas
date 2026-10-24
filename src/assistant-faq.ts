@@ -415,10 +415,10 @@ export const FAQ_SEED: SeedEntry[] = [
 
   { key: 'convidado-regravar', audience: 'guest',
     pt: ['Posso gravar de novo uma resposta?',
-      `Sim, pode gravar de novo: enquanto não submeter a entrevista, volte a qualquer pergunta e carregue em «Repetir». Usa-se a gravação mais recente; as anteriores não são apagadas: ficam guardadas em privado com a entrevista, não entram no episódio, e pode pedir ao suporte, nesta página, que as apague. Depois de submeter, só pode alterar contactando quem o convidou.`,
+      `Sim, pode gravar de novo: enquanto não submeter a entrevista, volte a qualquer pergunta e carregue em «Repetir». Usa-se a gravação (ou o ficheiro) mais recente, e a anterior dessa pergunta é apagada; se indicar que não pretende responder, a resposta que lá estava também é apagada. Depois de submeter, só pode alterar contactando quem o convidou.`,
       'repetir, regravar, gravar de novo, mudar resposta, corrigir resposta, apagar resposta, outra vez'],
     en: ['Can I record an answer again?',
-      `Yes, you can record again: until you submit the interview, go back to any question and press «Redo». The latest recording is used; earlier ones are not deleted: they are kept privately with the interview, are not used in the episode, and you can ask support, on this page, to delete them. After submitting, you can only change things by contacting the interviewer.`,
+      `Yes, you can record again: until you submit the interview, go back to any question and press «Redo». The latest recording (or file) is used, and the earlier one for that question is deleted; if you choose not to answer, the answer that was there is deleted too. After submitting, you can only change things by contacting the interviewer.`,
       'redo, record again, re-record, change answer, correct answer, delete answer'] },
 
   { key: 'convidado-recusar-pergunta', audience: 'guest',

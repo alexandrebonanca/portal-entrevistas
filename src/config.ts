@@ -86,6 +86,10 @@ export const config = {
   },
   limits: {
     maxUploadMb: Number(env.MAX_UPLOAD_MB ?? 60),
+    // Espaço dos ficheiros enviados (respostas, fotografias, gravações do entrevistador; ver uploads.ts), em MB; 0 desliga.
+    // Por entrevista, para todas as contas (o administrador não conta), e por conta sem pagamento, todas as entrevistas dela.
+    interviewUploadMb: positive(env.INTERVIEW_UPLOAD_MB, 400),
+    unpaidAccountUploadMb: positive(env.UNPAID_ACCOUNT_UPLOAD_MB, 200),
     maxAnswerSeconds: Number(env.MAX_ANSWER_SECONDS ?? 300),
     maxQuestions: Number(env.MAX_QUESTIONS ?? 15),
     // Por entrevista, quando o plano não o indica (o plano manda; o administrador não tem limite).
