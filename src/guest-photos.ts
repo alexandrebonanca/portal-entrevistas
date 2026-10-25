@@ -26,10 +26,12 @@ export async function hostPhotoBlock(db: Db, iv: { id: string; review_policy?: s
  * deixou de poder ser usada passa à seguinte.
  */
 export async function videoGuestPhoto(db: Db, iv: { id: string; guest_photo_id?: string | null }, o: { pid?: string | null; coverIds?: string[] } = {}): Promise<{ id: string; asset_id: string; added_by: string } | null> {
-  for (const id of [o.pid, iv.guest_photo_id, o.coverIds?.[0]]) {
+  for (const [k, id] of [o.pid, iv.guest_photo_id, o.coverIds?.[0]].entries()) {
     if (!id) continue;
-    const r = await db.one(`SELECT p.id, p.asset_id, p.added_by FROM photos p WHERE p.id=$1 AND p.interview_id=$2 AND ${usablePhotoSql('p')}`, [id, iv.id]);
+    // A da capa só serve se a Google não a recusou (a pedida e a escolhida pelo entrevistador valem sempre).
+    const r = await db.one(`SELECT p.id, p.asset_id, p.added_by FROM photos p JOIN assets a ON a.id=p.asset_id WHERE p.id=$1 AND p.interview_id=$2 AND ${usablePhotoSql('p')} AND ($3::boolean OR a.meta->>'veoRefused' IS NULL)`, [id, iv.id, k < 2]);
     if (r) return r;
   }
-  return db.one(`SELECT p.id, p.asset_id, p.added_by FROM photos p WHERE p.interview_id=$1 AND ${usablePhotoSql('p')} ORDER BY p.created_at LIMIT 1`, [iv.id]);
+  // Sem escolha: a mais antiga que a Google não recusou (e, se todas foram recusadas, a mais antiga).
+  return db.one(`SELECT p.id, p.asset_id, p.added_by FROM photos p JOIN assets a ON a.id=p.asset_id WHERE p.interview_id=$1 AND ${usablePhotoSql('p')} ORDER BY (a.meta->>'veoRefused' IS NOT NULL), p.created_at LIMIT 1`, [iv.id]);
 }

@@ -94,11 +94,13 @@ export async function productionRoutes(app: FastifyInstance) {
   const REDO_BOX = (what: string) => `<label class="check"><input type="checkbox" required> <span>Confirmo que quero ${what}: o trabalho volta a ser feito e pago de novo.</span></label>`;
   const guestPhotoCard = async (iv: any) => {
     const block = await hostPhotoBlock(db, iv);
-    const photos = await db.query(`SELECT p.id, p.asset_id, p.added_by, ${usablePhotoSql('p')} AS usable FROM photos p WHERE p.interview_id=$1 ORDER BY p.created_at`, [iv.id]);
-    const cur = await videoGuestPhoto(db, iv);
+    const photos = await db.query(`SELECT p.id, p.asset_id, p.added_by, ${usablePhotoSql('p')} AS usable, a.meta->>'veoRefused' AS refused FROM photos p JOIN assets a ON a.id=p.asset_id WHERE p.interview_id=$1 ORDER BY p.created_at`, [iv.id]);
+    // A que entra no vídeo, como na geração (a escolhida, ou a 1.ª da capa do episódio atual, ou a mais antiga).
+    const epNow = await db.one(`SELECT technical FROM episodes WHERE interview_id=$1 AND status<>'superseded' AND NOT stale ORDER BY created_at DESC LIMIT 1`, [iv.id]);
+    const cur = await videoGuestPhoto(db, iv, { coverIds: epNow?.technical?.coverPhotoIds });
     const pubPhoto = await consent(iv.id, 'publish_photo');
     const mine = photos.filter((p: any) => p.added_by === 'host');
-    const label = (p: any) => (p.added_by === 'host' ? 'acrescentada por si' : 'enviada pelo entrevistado') + (p.usable ? '' : ' · sem autorização de edição: não é usada');
+    const label = (p: any) => (p.added_by === 'host' ? 'acrescentada por si' : 'enviada pelo entrevistado') + (p.usable ? '' : ' · sem autorização de edição: não é usada') + (p.refused ? ' · a Google recusou animá-la no vídeo premium' : '');
     return `<div class="card" id="foto-convidado"><h2 style="margin-top:0">Fotografia do entrevistado</h2>
 <p class="hint">É a fotografia usada no vídeo (e a que pode escolher para a capa). Se o fornecedor de IA recusar animá-la (por exemplo, por parecer uma pessoa conhecida ou uma imagem editada), escolha outra ou acrescente uma fotografia do entrevistado e gere o vídeo de novo. Com a autorização de edição que ele deu ao aceitar o convite, pode editar a entrevista; o entrevistado vê e aprova o episódio antes de qualquer publicação.</p>
 ${!pubPhoto ? '<div class="flash">O entrevistado não autorizou a publicação de fotografias: o vídeo e a capa não usam nenhuma fotografia dele.</div>' : ''}

@@ -1,5 +1,5 @@
 import { config } from './config.ts';
-import { videoGuestPhoto } from './guest-photos.ts';
+import { videoGuestPhoto, usablePhotoSql } from './guest-photos.ts';
 import { storage } from './storage.ts';
 import { sha256, esc } from './lib.ts';
 import { saveAsset, hasAudioStream, withTemp } from './media.ts';
@@ -11,7 +11,7 @@ import { cuesFromWords, splitByWeights } from './subtitles.ts';
 import { peopleOf, cardBackground, titleCard, endCard, chapterTitles, planGraphics, graphicsOverlays, graphicsMeta, TITLE_CARD_MS, END_CARD_MS, type GfxSpan } from './graphics.ts';
 import { veoSubmit, veoAwait, veoEpisodePrompt, VeoQuotaError, VeoCancelled, VeoBusy, VeoFiltered, VeoOpError, VeoUnsupported, VeoCredsMissing, isKeyRejected, opOfCurrentCreds, veoTier, veoModel, veoBackend, veoConfigured, veoCredsScope, veoScopeId, veoPricePerSec, veoPriceOfModel, veoKeyModel, veoLabel, tierOfModel, type VeoTier } from './talking.ts';
 import { ownsAny, entityOfInterview, inEntity, VEO_CRED_KEYS } from './settings.ts';
-import { PermanentError, JobPaused, type Handler } from './jobs.ts';
+import { PermanentError, JobPaused, enqueue, type Handler } from './jobs.ts';
 import type { Db } from './db.ts';
 import { purgeUnpublishedPhotoVideos } from './uploads.ts';
 import { notifyJob } from './notify.ts';
@@ -306,7 +306,7 @@ type Attempt = { assetId: string; storageKey: string; words: Word[]; heard: stri
 export type PlanSeg = Seg & { reuseKey: string | null; take: number; chunks: Chunk[] };
 type StartImage = { image: Buffer; vertical: boolean; hash: string };
 export interface VeoPlan {
-  segs: PlanSeg[]; hostPhoto: Buffer | null; guestPhoto: Buffer | null; guestPhotoByHost?: boolean; hostVeo: boolean; guestVeo: boolean;
+  segs: PlanSeg[]; hostPhoto: Buffer | null; guestPhoto: Buffer | null; guestPhotoByHost?: boolean; guestPhotoId?: string | null; guestAssetId?: string | null; hostVeo: boolean; guestVeo: boolean;
   start: Record<Role, StartImage | null>; voice: Record<Role, 'male' | 'female'>; photoSha: Record<Role, string | null>;
 }
 
@@ -355,6 +355,7 @@ export async function veoPlan(db: Db, iv: any, ep: any, o: { tier: VeoTier; phot
   if (await consent('publish_photo')) {
     const ph = await videoGuestPhoto(db, iv, { pid: o.photoId, coverIds: ep.technical?.coverPhotoIds });
     guestRow = ph ? await photoRow(ph.asset_id) : null;
+    if (guestRow) guestRow.photoId = ph!.id;
     if (guestRow) guestRow.byHost = ph!.added_by === 'host';
   }
   const hostPhoto = hostRow ? await storage.get(hostRow.storage_key) : null;
@@ -392,7 +393,7 @@ export async function veoPlan(db: Db, iv: any, ep: any, o: { tier: VeoTier; phot
     });
     prevRole = s.role; prevLast = s.chunks.length ? s.chunks[s.chunks.length - 1].key : null;
   }
-  return { segs, hostPhoto, guestPhoto, guestPhotoByHost: !!guestPhoto && !!guestRow?.byHost, hostVeo, guestVeo, start, voice, photoSha };
+  return { segs, hostPhoto, guestPhoto, guestPhotoByHost: !!guestPhoto && !!guestRow?.byHost, guestPhotoId: guestRow?.photoId ?? null, guestAssetId: guestRow?.id ?? null, hostVeo, guestVeo, start, voice, photoSha };
 }
 
 /**
@@ -728,6 +729,7 @@ export async function renderVeoVideo(job: any, { db, progress }: Parameters<Hand
   // recusa é da fotografia (não do texto): as falas seguintes dessa pessoa ficam em fotografia sem se tentarem (poupa tempo).
   const filteredByRole = { host: 0, guest: 0 }, okByRole = { host: 0, guest: 0 };
   const roleBlocked = new Set<string>();
+  let refusedRole: string | null = null; // pessoa cuja fotografia a Google recusou (o trabalho pára)
   const roleCause: Record<string, string | null> = {};
   type U = { key: string; c: Chunk; falas: PlanSeg[]; atts: Attempt[]; failures: number; busyRecent: number; chosen: Attempt | null; problem: Problem | null; cause?: string };
   const units = new Map<string, U>();
@@ -983,6 +985,7 @@ export async function renderVeoVideo(job: any, { db, progress }: Parameters<Hand
             roleCause[role] = u.cause ?? null;
             console.error(`[veo] fotografia do ${role === 'host' ? 'entrevistador' : 'convidado'} recusada pelos filtros da Google em ${filteredByRole[role]} pedaços: o trabalho pára`);
             // Pára já (não monta um vídeo sem esta pessoa animada): os clipes pagos ficam guardados e são reaproveitados.
+            refusedRole ??= role;
             stop(new PermanentError(roleRefused(role, roleCause[role])));
           }
         }
@@ -1109,6 +1112,17 @@ export async function renderVeoVideo(job: any, { db, progress }: Parameters<Hand
     await Promise.allSettled([workerB(), workerB()]);
   }
   if (abort) {
+    // Fotografia do convidado recusada pela Google: fica marcada e, havendo outra dele, passa a ser a do vídeo e a geração
+    // repete-se sozinha (os bloqueios não são cobrados e os clipes do entrevistador são reaproveitados). Só sem orçamento.
+    if (refusedRole === 'guest' && !quote && plan.guestAssetId && Number(job.input.autoPhotoRetry ?? 0) < 2) {
+      await db.query(`UPDATE assets SET meta=meta || jsonb_build_object('veoRefused', now()::text) WHERE id=$1`, [plan.guestAssetId]);
+      const other = await db.one(`SELECT p.id FROM photos p JOIN assets a ON a.id=p.asset_id WHERE p.interview_id=$1 AND a.deleted_at IS NULL AND a.meta->>'veoRefused' IS NULL AND ${usablePhotoSql('p')} ORDER BY p.created_at LIMIT 1`, [iv.id]);
+      if (other) {
+        await db.query('UPDATE interviews SET guest_photo_id=$2 WHERE id=$1', [iv.id, other.id]);
+        await enqueue(db, { kind: 'render_video', interviewId: iv.id, input: { ...job.input, photoId: null, autoPhotoRetry: Number(job.input.autoPhotoRetry ?? 0) + 1 }, dedupe: `video:${ep.id}:foto:${other.id}:${Date.now()}` });
+        throw new PermanentError(`${abort.message} Escolhemos automaticamente outra fotografia do entrevistado e o vídeo está a ser gerado de novo.`);
+      }
+    }
     if (abort instanceof JobPaused && quote) await db.query(`UPDATE animation_quotes SET status_note=$2, updated_at=now() WHERE id=$1 AND status='running'`, [quote.id, abort.message]);
     throw abort;
   }

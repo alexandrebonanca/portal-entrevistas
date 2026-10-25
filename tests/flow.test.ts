@@ -818,3 +818,21 @@ test('laboratório: diagnóstico do filtro da Google com as fotografias reais do
   assert.match((await get('/admin/laboratorio', owner)).body, /Diagnóstico do filtro da Google[\s\S]*Plano mais aberto/);
   assert.equal(job.interview_id, null, 'não aparece como trabalho da entrevista');
 });
+
+test('fotografia recusada pela Google: deixa de ser usada por omissão (a escolhida pelo entrevistador continua a valer)', async () => {
+  const { videoGuestPhoto } = await import('../src/guest-photos.ts');
+  const { saveAsset } = await import('../src/media.ts');
+  const img = await sharp({ create: { width: 64, height: 64, channels: 3, background: '#357' } }).jpeg().toBuffer();
+  const a1 = await saveAsset(db, { interviewId: ivId, kind: 'guest_photo', mime: 'image/jpeg', ext: 'jpg', data: img });
+  const a2 = await saveAsset(db, { interviewId: ivId, kind: 'guest_photo', mime: 'image/jpeg', ext: 'jpg', data: img });
+  await db.query('DELETE FROM photos WHERE interview_id=$1', [ivId]);
+  const p1 = (await db.one(`INSERT INTO photos(interview_id, asset_id, created_at) VALUES ($1,$2, now() - interval '1 hour') RETURNING id`, [ivId, a1])).id;
+  const p2 = (await db.one('INSERT INTO photos(interview_id, asset_id) VALUES ($1,$2) RETURNING id', [ivId, a2])).id;
+  await db.query('UPDATE interviews SET guest_photo_id=NULL WHERE id=$1', [ivId]);
+  const iv = await db.one('SELECT * FROM interviews WHERE id=$1', [ivId]);
+  assert.equal((await videoGuestPhoto(db, iv, { coverIds: [p1] }))!.id, p1);
+  await db.query(`UPDATE assets SET meta=meta || '{"veoRefused":"x"}'::jsonb WHERE id=$1`, [a1]);
+  assert.equal((await videoGuestPhoto(db, iv, { coverIds: [p1] }))!.id, p2, 'a da capa recusada dá lugar à outra');
+  assert.equal((await videoGuestPhoto(db, iv))!.id, p2, 'sem escolha: a mais antiga não recusada');
+  assert.equal((await videoGuestPhoto(db, { ...iv, guest_photo_id: p1 }))!.id, p1, 'a escolhida explicitamente vale sempre');
+});
