@@ -23,7 +23,8 @@ import { withVat, eurPt } from '../vat.ts';
 import { quoteSection } from './quotes.ts';
 import { introProductionHint } from './intro.ts';
 import { helpNav, isUuid } from '../support.ts';
-import { purgeUnpublishedPhotoVideos } from '../uploads.ts';
+import { purgeUnpublishedPhotoVideos, discardAsset } from '../uploads.ts';
+import { usablePhotoSql, hostPhotoBlock, videoGuestPhoto } from '../guest-photos.ts';
 import { videoSummary, VIDEO_NORMAL, VIDEO_PREMIUM } from '../video-offer.ts';
 import { takeAiUse, giveBackAiUse, aiUsed, FREE_SCRIPT_REVIEWS, FREE_REVIEWS_USED, FREE_PRODUCTION_JOBS, FREE_JOBS_USED, FREE_JOBS_USED_HTML, FREE_JOBS_LOW, FREE_JOBS_LOW_HTML, FREE_JOBS_LOW_NO_SCRIPT_HTML, FREE_JOBS_FOR_SCRIPT, freeJobsBlock, freeJobsDoneHtml, freeProductionJobs, FREE_VIDEO_RENDERS, FREE_VIDEOS_USED, FREE_VIDEOS_USED_HTML, freeVideoRenders } from '../free-interview.ts';
 
@@ -86,6 +87,51 @@ export async function productionRoutes(app: FastifyInstance) {
   const back = (reply: any, id: string, ok?: string, e?: string) =>
     reply.redirect(`/entrevistas/${id}/producao${ok ? '?ok=' + encodeURIComponent(ok) : e ? '?e=' + encodeURIComponent(e) : ''}`);
 
+  // ---- fotografia do entrevistado (capa e vídeo): escolher entre as dele ou acrescentar outra (guest-photos.ts) ----
+  const HOST_GUEST_PHOTOS = 2;
+  const guestPhotoCard = async (iv: any) => {
+    const block = await hostPhotoBlock(db, iv);
+    const photos = await db.query(`SELECT p.id, p.asset_id, p.added_by, ${usablePhotoSql('p')} AS usable FROM photos p WHERE p.interview_id=$1 ORDER BY p.created_at`, [iv.id]);
+    const cur = await videoGuestPhoto(db, iv);
+    const pubPhoto = await consent(iv.id, 'publish_photo');
+    const mine = photos.filter((p: any) => p.added_by === 'host');
+    const label = (p: any) => (p.added_by === 'host' ? 'acrescentada por si' : 'enviada pelo entrevistado') + (p.usable ? '' : ' · sem autorização de edição: não é usada');
+    return `<div class="card" id="foto-convidado"><h2 style="margin-top:0">Fotografia do entrevistado</h2>
+<p class="hint">É a fotografia usada no vídeo (e a que pode escolher para a capa). Se o fornecedor de IA recusar animá-la (por exemplo, por parecer uma pessoa conhecida ou uma imagem editada), escolha outra ou acrescente uma fotografia do entrevistado e gere o vídeo de novo. Com a autorização de edição que ele deu ao aceitar o convite, pode editar a entrevista; o entrevistado vê e aprova o episódio antes de qualquer publicação.</p>
+${!pubPhoto ? '<div class="flash">O entrevistado não autorizou a publicação de fotografias: o vídeo e a capa não usam nenhuma fotografia dele.</div>' : ''}
+${photos.length ? `<form method="post" action="/entrevistas/${iv.id}/foto-convidado/escolher"><div class="thumbs">${photos.map((p: any) => `<label class="check" style="flex-direction:column;align-items:flex-start"><span><input type="radio" name="photo" value="${p.id}" ${cur?.id === p.id ? 'checked' : ''} ${p.usable ? '' : 'disabled'}> ${cur?.id === p.id ? '<strong>no vídeo</strong>' : 'usar no vídeo'}</span><img alt="" src="/media/${p.asset_id}"><span class="hint">${esc(label(p))}</span></label>`).join('')}</div>
+<p><button class="ghost">Usar a fotografia escolhida no vídeo</button> <span class="hint">Vale para o próximo vídeo gerado; com o vídeo premium, as falas do entrevistado são animadas de novo a partir desta fotografia.</span></p></form>` : '<p class="hint">O entrevistado não enviou fotografias.</p>'}
+${mine.map((p: any) => `<form method="post" action="/entrevistas/${iv.id}/foto-convidado/${p.id}/eliminar" onsubmit="return confirm('Retirar esta fotografia acrescentada por si?')" style="display:inline-block;margin:0 8px 8px 0"><button class="ghost"><img alt="" src="/media/${p.asset_id}" style="width:40px;height:40px;object-fit:cover;border-radius:6px;vertical-align:middle"> Retirar</button></form>`).join('')}
+${block ? `<p class="hint"><strong>Acrescentar uma fotografia:</strong> ${esc(block)}</p>` : mine.length >= HOST_GUEST_PHOTOS ? `<p class="hint">Já acrescentou ${HOST_GUEST_PHOTOS} fotografias: retire uma para acrescentar outra.</p>`
+  : `<fieldset style="border:1px solid var(--line);border-radius:8px"><legend class="sans">Acrescentar uma fotografia do entrevistado</legend>
+<input type="file" id="gphoto" accept="image/jpeg,image/png,image/webp">
+<label class="check"><input type="checkbox" id="gphotoRights"> É uma fotografia real do entrevistado (sem montagens nem rostos de outras pessoas) e tenho o direito de a usar neste episódio.</label>
+<button type="button" class="ghost" id="gphotoBtn" data-url="/api/entrevistas/${iv.id}/foto-convidado">Acrescentar e usar no vídeo</button> <span class="status" id="gphotoSt" role="status"></span>
+<p class="hint">O entrevistado vê esta fotografia na página dele e pode retirá-la. Só é usada com as autorizações das fotografias que ele deu (publicação e, no vídeo premium, a animação por IA).</p></fieldset>`}</div>`;
+  };
+
+  app.post('/entrevistas/:id/foto-convidado/escolher', async (req, reply) => {
+    const iv = await guard(req, reply); if (!iv) return;
+    const pid = String((req.body as any)?.photo ?? '');
+    if (!isUuid(pid)) return back(reply, iv.id, undefined, 'Escolha uma fotografia.');
+    const p = await db.one(`SELECT p.id FROM photos p WHERE p.id=$1 AND p.interview_id=$2 AND ${usablePhotoSql('p')}`, [pid, iv.id]);
+    if (!p) return back(reply, iv.id, undefined, 'Essa fotografia já não pode ser usada (retirada ou sem autorização de edição).');
+    await db.query('UPDATE interviews SET guest_photo_id=$2 WHERE id=$1', [iv.id, p.id]);
+    await audit(db, req.user!.email, 'guest_photo.chosen', iv.id, { photoId: p.id });
+    return back(reply, iv.id, 'Fotografia escolhida: entra no próximo vídeo gerado.');
+  });
+
+  app.post('/entrevistas/:id/foto-convidado/:pid/eliminar', async (req, reply) => {
+    const iv = await guard(req, reply); if (!iv) return;
+    const pid = String((req.params as any).pid);
+    const p = isUuid(pid) ? await db.one(`SELECT id, asset_id FROM photos WHERE id=$1 AND interview_id=$2 AND added_by='host'`, [pid, iv.id]) : null;
+    if (!p) return back(reply, iv.id, undefined, 'Só pode retirar as fotografias que acrescentou.');
+    await db.query('DELETE FROM photos WHERE id=$1', [p.id]); // interviews.guest_photo_id passa a NULL (ON DELETE SET NULL)
+    await discardAsset(db, p.asset_id, 'removed_by_host');
+    await audit(db, req.user!.email, 'guest_photo.removed_by_host', iv.id, { photoId: p.id });
+    return back(reply, iv.id, 'Fotografia retirada.');
+  });
+
   // ---- regenerações do guião e do episódio: 3 incluídas por entrevista; as seguintes custam 1 crédito (o administrador não tem limite) ----
   const INCLUDED = config.limits.includedRegenerations;
   const REGEN_NOTE: Record<string, string> = { process_submission: 'Regeneração extra: processar de novo', prepare_script: 'Regeneração extra do guião', generate_episode: 'Regeneração extra do episódio' };
@@ -137,7 +183,7 @@ export async function productionRoutes(app: FastifyInstance) {
   const ownPhotos = async (ivId: string, ids: unknown[]): Promise<string[]> => {
     const asked = [...new Set(ids.filter(isUuid).map(x => (x as string).toLowerCase()))].slice(0, 2);
     if (!asked.length) return [];
-    const own = new Set((await db.query('SELECT id FROM photos WHERE interview_id=$1 AND id = ANY($2::uuid[])', [ivId, asked])).map((p: any) => String(p.id)));
+    const own = new Set((await db.query(`SELECT p.id FROM photos p WHERE p.interview_id=$1 AND p.id = ANY($2::uuid[]) AND ${usablePhotoSql('p')}`, [ivId, asked])).map((p: any) => String(p.id)));
     return asked.filter(x => own.has(x));
   };
   /**
@@ -319,7 +365,7 @@ ${editable ? `<div class="row" style="margin-top:12px"><form method="post" actio
 <p class="hint">O assistente só assinala possíveis problemas; nunca aprova nem substitui a revisão humana.${reviewsLeft == null ? '' : reviewsLeft > 0 ? ` 1.ª entrevista grátis: <span id="verificacoes">${FREE_SCRIPT_REVIEWS - reviewsLeft} de ${FREE_SCRIPT_REVIEWS}</span> verificações usadas.` : ` ${esc(FREE_REVIEWS_USED)}`}</p>` : ''}</div>`;
 
       if (script.status === 'approved' && !running && !['ready', 'qc'].includes(iv.production_status)) {
-        const photos = coverOk ? await db.query('SELECT p.id, p.asset_id FROM photos p WHERE p.interview_id=$1', [iv.id]) : [];
+        const photos = coverOk ? await db.query(`SELECT p.id, p.asset_id FROM photos p WHERE p.interview_id=$1 AND ${usablePhotoSql('p')} ORDER BY p.created_at`, [iv.id]) : [];
         body += `<div class="card"><h2 style="margin-top:0">4. Gerar áudio, legendas e capa</h2>
 <form method="post" action="/entrevistas/${iv.id}/gerar" onsubmit="return confirm('Gerar o episódio (operações pagas)?')">
 <fieldset style="border:1px solid var(--line);border-radius:8px"><legend class="sans">Línguas das legendas</legend>${SUBS.map(([v, l]) => `<label class="check"><input type="checkbox" name="subtitle_langs" value="${v}" ${iv.subtitle_langs.includes(v) ? 'checked' : ''}> ${l}</label>`).join('')}</fieldset>
@@ -345,7 +391,7 @@ ${episodeBefore ? payFields : ''}<button class="accent" ${(episodeBefore && !can
       const veoFailed = Number((await db.one(`SELECT COALESCE(sum(cost_usd),0)::float AS usd FROM usage_ledger WHERE interview_id=$1 AND kind='veo_usd_failed'`, [iv.id]))?.usd ?? 0);
       const epScript = await db.one('SELECT segments, status FROM scripts WHERE id=$1', [ep.script_id]);
       const epSegs = epScript?.segments ?? [];
-      const guestHasPhoto = !!(await db.one('SELECT 1 FROM photos WHERE interview_id=$1 LIMIT 1', [iv.id]));
+      const guestHasPhoto = !!(await db.one(`SELECT 1 FROM photos p WHERE p.interview_id=$1 AND ${usablePhotoSql('p')} LIMIT 1`, [iv.id]));
       const videoMeta = ep.video_asset_id ? (await db.one('SELECT meta FROM assets WHERE id=$1', [ep.video_asset_id]))?.meta : null;
       // As aprovações valem só para o vídeo que foi visto (approvals.video_asset_id igual ao vídeo atual).
       const hostAp = await db.one(`SELECT * FROM approvals WHERE episode_id=$1 AND actor='interviewer' AND valid AND decision='approved' AND video_asset_id IS NOT DISTINCT FROM $2::uuid`, [ep.id, ep.video_asset_id]);
@@ -411,13 +457,14 @@ ${ep.visibility === 'public' ? `<form method="post" action="/entrevistas/${iv.id
 <form method="post" action="/entrevistas/${iv.id}/episodio/${ep.id}/retirar" onsubmit="return confirm('Retirar o episódio?')"><button class="danger">Retirar episódio</button></form>
 <p class="hint">Cópias já descarregadas ou distribuídas externamente podem não ser recuperáveis.</p>`}</div>`;
     }
+    if (submitted && !live) body += await guestPhotoCard(iv);
     if (!live && (script || ep || ['failed', 'stale', 'editorial_review', 'ready', 'qc'].includes(iv.production_status))) {
       body += `<div class="card"><h2 style="margin-top:0">Recomeçar a produção</h2>
 <p class="hint">Arquiva o guião e o episódio atuais (não são eliminados) e volta ao passo «Processar podcast». As gravações e as transcrições originais mantêm-se. Se o episódio estiver publicado, é retirado e sai da galeria.</p>
 <form method="post" action="/entrevistas/${iv.id}/producao/recomecar" onsubmit="return confirm('Arquivar o guião e o episódio atuais e recomeçar a produção?')"><button class="danger" ${(scriptBefore && !canRegen) || jobsLow ? 'disabled' : ''}>Recomeçar produção</button></form>${scriptPay ? `${regenHint}${canRegen ? `<p class="hint">Depois de recomeçar, processar de novo custa ${cr(EXTRA_REGEN_CENTS)} crédito.</p>` : ''}` : ''}</div>`;
     }
     body += '</div>';
-    return reply.type('text/html; charset=utf-8').send(page({ title: 'Produção', body, noindex: true, script: live ? '/static/progress.js' : '/static/player.js', nav: `<a href="/painel">Painel</a>${helpNav(req.user)}` }));
+    return reply.type('text/html; charset=utf-8').send(page({ title: 'Produção', body, noindex: true, script: live ? '/static/progress.js' : '/static/player.js', scripts: live ? [] : ['/static/guest-photo.js'], nav: `<a href="/painel">Painel</a>${helpNav(req.user)}` }));
   });
 
   // Estado dos trabalhos em JSON, para a barra de progresso (só o dono/admin).

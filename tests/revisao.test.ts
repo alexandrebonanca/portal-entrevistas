@@ -45,7 +45,7 @@ const ready = async (title: string, policy: 'guest_preview' | 'host_only', lang:
   assert.match(msgOf(await post(`/entrevistas/${id}/convidar`, {}, admin)), /ok=/);
   await flushOutbox(db);
   const guest = await guestOf(tokenOf((await inviteMails(id))[0].text_body));
-  await post('/entrevista/consentimentos', { participation: '1', adult: '1', processing: '1', publish: '1' }, guest);
+  await post('/entrevista/consentimentos', { participation: '1', adult: '1', host_edit: '1', processing: '1', publish: '1' }, guest);
   const q = await db.one('SELECT id FROM questions WHERE interview_id=$1', [id]);
   const up = await app.inject({ method: 'POST', url: `/api/g/respostas/${q.id}`, payload: makeToneWav(2), headers: { 'content-type': 'audio/wav', cookie: guest } });
   assert.equal(up.statusCode, 200, up.body);

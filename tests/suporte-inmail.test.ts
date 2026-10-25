@@ -370,7 +370,7 @@ let slug = '';
 test('episódio publicado: correções pelo formulário de contacto na página pública e na do convidado; o administrador abre o episódio', async () => {
   const { id, guest } = await interview('Pescadores da Nazaré', 'en');
   assert.match(await keep('/entrevista (consentimentos)', '/entrevista', guest), /<p class="hint">Questions or corrections\? <a href="\/entrevista\/ajuda">Contact support<\/a><\/p>/);
-  await post('/entrevista/consentimentos', { participation: '1', adult: '1', processing: '1', publish: '1' }, guest);
+  await post('/entrevista/consentimentos', { participation: '1', adult: '1', host_edit: '1', processing: '1', publish: '1' }, guest);
   await keep('/entrevista', '/entrevista', guest);
   const q = await db.one('SELECT id FROM questions WHERE interview_id=$1', [id]);
   assert.equal((await app.inject({ method: 'POST', url: `/api/g/respostas/${q.id}`, payload: makeToneWav(2), headers: { 'content-type': 'audio/wav', cookie: guest } })).statusCode, 200);

@@ -1145,7 +1145,7 @@ const submitted = async (ck: string, title: string, guestEmail: string, paid = f
   await flushOutbox(db);
   const m = (await db.query(`SELECT text_body FROM emails WHERE to_email=$1 ORDER BY created_at DESC LIMIT 1`, [guestEmail]))[0];
   const gs = `gs=${cookies(await post(`/i/${/\/i\/([A-Za-z0-9_-]{40,})/.exec(m.text_body)![1]}/abrir`, {})).gs}`;
-  const consent = (processing: boolean) => post('/entrevista/consentimentos', { participation: '1', adult: '1', ...(processing ? { processing: '1' } : {}), publish: '1' }, gs);
+  const consent = (processing: boolean) => post('/entrevista/consentimentos', { participation: '1', adult: '1', host_edit: '1', ...(processing ? { processing: '1' } : {}), publish: '1' }, gs);
   await consent(true);
   if (beforeSubmit) await beforeSubmit(gs);
   for (const q of await db.query('SELECT id FROM questions WHERE interview_id=$1 ORDER BY position', [id]))

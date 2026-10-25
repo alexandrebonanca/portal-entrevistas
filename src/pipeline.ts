@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto';
+import { videoGuestPhoto, usablePhotoSql } from './guest-photos.ts';
 import type { Db } from './db.ts';
 import { config } from './config.ts';
 import { storage } from './storage.ts';
@@ -261,7 +262,7 @@ export const handlers: Record<string, Handler> = {
     if (bg) await usage(db, iv.id, 'image', 1, config.prices.imageEach);
     const coverOk = await consent('cover_use');
     const photoRows = coverOk && opts.coverPhotoIds?.length
-      ? await db.query(`SELECT a.*, p.id AS photo_id FROM photos p JOIN assets a ON a.id=p.asset_id WHERE p.interview_id=$1 AND p.id = ANY($2::uuid[]) LIMIT 2`, [iv.id, opts.coverPhotoIds]) : [];
+      ? await db.query(`SELECT a.*, p.id AS photo_id FROM photos p JOIN assets a ON a.id=p.asset_id WHERE p.interview_id=$1 AND p.id = ANY($2::uuid[]) AND ${usablePhotoSql('p')} LIMIT 2`, [iv.id, opts.coverPhotoIds]) : [];
     const photoBufs = await Promise.all(photoRows.map((a: any) => storage.get(a.storage_key)));
     // A capa não falha pelas entradas (composeCover: texto sem os caracteres que o XML não admite, fotografia ou fundo que não
     // se descodificam ficam de fora); uma falha que ainda assim aconteça repetir-se-ia igual em cada tentativa, depois das
@@ -329,11 +330,11 @@ export const handlers: Record<string, Handler> = {
     const asset = async (id: string | null) => { if (!id) return null; const a = await db.one('SELECT storage_key FROM assets WHERE id=$1 AND deleted_at IS NULL', [id]); return a ? storage.get(a.storage_key) : null; };
     // Só fotografias autorizadas: a do entrevistador com direitos declarados; a do convidado com autorização de publicação.
     const hostPhoto = iv.host_photo_rights ? await asset(iv.host_photo_asset_id) : null;
-    let guestPhoto: Buffer | null = null;
+    let guestPhoto: Buffer | null = null, guestByHost = false;
     if (await consent('publish_photo')) {
-      const pid = job.input.photoId ?? ep.technical?.coverPhotoIds?.[0] ?? null;
-      const ph = pid ? await db.one('SELECT asset_id FROM photos WHERE id=$1 AND interview_id=$2', [pid, iv.id]) : await db.one('SELECT asset_id FROM photos WHERE interview_id=$1 ORDER BY created_at LIMIT 1', [iv.id]);
+      const ph = await videoGuestPhoto(db, iv, { pid: job.input.photoId, coverIds: ep.technical?.coverPhotoIds });
       guestPhoto = ph ? await asset(ph.asset_id) : null;
+      guestByHost = !!guestPhoto && ph!.added_by === 'host';
     }
     const cover = await asset(ep.cover_asset_id);
     const audio = await asset(ep.audio_asset_id);
@@ -406,7 +407,7 @@ export const handlers: Record<string, Handler> = {
     // Por papel: quem tem de aprovar depende de quem aparece de facto animado.
     const guestAnimated = guestAnimN > 0, hostAnimated = animated - guestAnimN > 0;
     const id = await saveAsset(db, { interviewId: iv.id, kind: 'episode_video', mime: 'video/mp4', ext: 'mp4', data: mp4, durationMs: tl.totalMs,
-      meta: { lang, shots: shots.length, guestPhoto: !!guestPhoto, hostPhoto: !!hostPhoto, animatedSegments: animated, failedAnimations: failed, guestAnimated, hostAnimated, lipsyncUsd: gpuUsd, graphics: tl.meta } });
+      meta: { lang, shots: shots.length, guestPhoto: !!guestPhoto, guestPhotoByHost: guestByHost, hostPhoto: !!hostPhoto, animatedSegments: animated, failedAnimations: failed, guestAnimated, hostAnimated, lipsyncUsd: gpuUsd, graphics: tl.meta } });
     // Ligação com as autorizações lidas no próprio momento: uma retirada durante a geração não volta a pôr o vídeo no ar,
     // e o vídeo só se liga a um episódio ainda em pré-visualização: publicado a meio da geração, o vídeo novo não entra
     // no ar sem nova aprovação (as aprovações ficam presas ao vídeo que foi visto).
@@ -419,8 +420,9 @@ export const handlers: Record<string, Handler> = {
          AND (NOT $4::boolean OR i.host_photo_rights) AND (NOT $5::boolean OR (i.host_animate AND i.host_photo_rights))
          AND (NOT $6::boolean OR COALESCE((SELECT c.granted FROM consents c WHERE c.interview_id=i.id AND c.purpose='publish_photo' ORDER BY c.created_at DESC LIMIT 1), false))
          AND (NOT $7::boolean OR (e.status='preview' AND COALESCE((SELECT c.granted FROM consents c WHERE c.interview_id=i.id AND c.purpose='animate_portrait' ORDER BY c.created_at DESC LIMIT 1), false)))
+         AND (NOT $8::boolean OR (i.review_policy='guest_preview' AND COALESCE((SELECT c.granted FROM consents c WHERE c.interview_id=i.id AND c.purpose='host_edit' ORDER BY c.created_at DESC LIMIT 1), false)))
        RETURNING e.id`,
-      [ep.id, id, lang, !!hostPhoto, hostAnimated, !!guestPhoto, guestAnimated]);
+      [ep.id, id, lang, !!hostPhoto, hostAnimated, !!guestPhoto, guestAnimated, guestByHost]);
     if (!linked) throw new PermanentError('Uma autorização foi retirada ou o episódio mudou durante a geração (publicado, retirado ou substituído): o vídeo não foi ligado ao episódio e fica privado. Um vídeo novo só entra num episódio em pré-visualização, para ser visto e aprovado antes de ir para o ar.');
     if (before && before !== id) await purgeUnpublishedPhotoVideos(db, iv.id, before);
     await notifyJob(db, job, 'video_ready');

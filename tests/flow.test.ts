@@ -127,7 +127,7 @@ test('gravar sem consentimento é recusado; depois do consentimento funciona', a
   const wav = makeToneWav(2);
   const no = await app.inject({ method: 'POST', url: `/api/g/respostas/${qs[0].id}`, payload: wav, headers: { 'content-type': 'audio/wav', cookie: guest } });
   assert.equal(no.statusCode, 403);
-  await post('/entrevista/consentimentos', { participation: '1', adult: '1', processing: '1', publish: '1' }, guest);
+  await post('/entrevista/consentimentos', { participation: '1', adult: '1', host_edit: '1', processing: '1', publish: '1' }, guest);
   const up = await app.inject({ method: 'POST', url: `/api/g/respostas/${qs[0].id}`, payload: wav, headers: { 'content-type': 'audio/wav', cookie: guest, 'x-upload-id': 'abc' } });
   assert.equal(up.statusCode, 200, up.body);
   assert.ok(up.json().durationMs > 1500);
@@ -728,4 +728,69 @@ test('migração 012: as operações do Veo de antes dela ficam com o modelo e o
     await old.query(`UPDATE veo_ops SET model='veo-3.1-fast-generate-preview', usd_per_sec=0.10 WHERE model IS NULL`); // (o UPDATE da 012)
     assert.equal((await old.one(`SELECT model FROM veo_ops WHERE chunk_key='k3'`)).model, 'veo-3.1-lite-generate-001');
   } finally { await old.close(); }
+});
+
+test('edição pelo entrevistador: autorização no convite e fotografia do entrevistado escolhida ou acrescentada por ele', async () => {
+  // o convite anuncia a autorização de edição e a revisão antes de publicar; o início regista-a (host_edit)
+  const inv = await db.one(`SELECT text_body FROM emails WHERE interview_id=$1 AND dedupe_key LIKE 'invite:%' ORDER BY created_at ASC LIMIT 1`, [ivId]);
+  assert.match(inv.text_body, /autoriza o entrevistador a editar a entrevista|allow the interviewer to edit the interview/);
+  assert.match(inv.text_body, /Só a pode tornar pública depois de a rever|can only be made public after you have reviewed/);
+  const first = await db.one(`SELECT granted, text_snapshot FROM consents WHERE interview_id=$1 AND purpose='host_edit' ORDER BY created_at ASC LIMIT 1`, [ivId]);
+  assert.equal(first.granted, true);
+  assert.match(first.text_snapshot, /substituir a fotografia minha|replace the photo of me/);
+  // sessão nova do convidado (link de validação)
+  const { createInvitation } = await import('../src/invites.ts');
+  const link = await createInvitation(db, await db.one('SELECT * FROM interviews WHERE id=$1', [ivId]), { name: 'Ana' }, { preview: true });
+  const g = `gs=${cookies(await post(`/i/${link.url!.split('/i/')[1]}/abrir`, {}, '')).gs}`;
+  const gp = (await get('/entrevista/fotos', g)).body;
+  assert.match(gp, /name="host_edit"/, 'o convidado pode retirar (ou dar) a autorização nas autorizações das fotografias');
+
+  const jpg = await sharp({ create: { width: 320, height: 320, channels: 3, background: '#468' } }).jpeg().toBuffer();
+  const upload = (extra: any = { 'x-photo-rights': '1' }) => app.inject({ method: 'POST', url: `/api/entrevistas/${ivId}/foto-convidado`, payload: jpg, headers: { 'content-type': 'image/jpeg', cookie: owner, ...extra } });
+  // as autorizações das fotografias enviadas sem a caixa retiram-na: o entrevistador não pode acrescentar
+  await post('/entrevista/fotos/autorizacoes', { photo_capture: '1', cover_use: '1', publish_photo: '1', ai_video: '1' }, g);
+  let pg = await get(`/entrevistas/${ivId}/producao`, owner);
+  assert.match(pg.body, /id="foto-convidado"[\s\S]*não deu \(ou retirou\) a autorização de edição/);
+  assert.equal((await upload()).statusCode, 409);
+
+  await post('/entrevista/fotos/autorizacoes', { photo_capture: '1', cover_use: '1', publish_photo: '1', ai_video: '1', host_edit: '1' }, g);
+  pg = await get(`/entrevistas/${ivId}/producao`, owner);
+  assert.match(pg.body, /id="gphotoBtn"/); assert.match(pg.body, /src="\/static\/guest-photo\.js"/);
+  assert.equal((await upload({})).statusCode, 422, 'sem a declaração de direitos');
+  const r = await upload();
+  assert.equal(r.statusCode, 200, r.body);
+  const added = JSON.parse(r.body);
+  const row = await db.one('SELECT added_by FROM photos WHERE id=$1', [added.id]);
+  assert.equal(row.added_by, 'host');
+  assert.equal((await db.one('SELECT guest_photo_id FROM interviews WHERE id=$1', [ivId])).guest_photo_id, added.id, 'passa a ser a do vídeo');
+  const { videoGuestPhoto } = await import('../src/guest-photos.ts');
+  let iv = await db.one('SELECT * FROM interviews WHERE id=$1', [ivId]);
+  assert.equal((await videoGuestPhoto(db, iv))!.id, added.id);
+  // o convidado vê-a, identificada, e não conta para as três dele
+  assert.match((await get('/entrevista/fotos', g)).body, /Acrescentada pelo entrevistador|Added by the interviewer/);
+
+  // escolher outra (a do convidado) e voltar à acrescentada
+  const own = await db.one(`SELECT id FROM photos WHERE interview_id=$1 AND added_by='guest' ORDER BY created_at LIMIT 1`, [ivId]);
+  if (own) {
+    await post(`/entrevistas/${ivId}/foto-convidado/escolher`, { photo: own.id }, owner);
+    assert.equal((await db.one('SELECT guest_photo_id FROM interviews WHERE id=$1', [ivId])).guest_photo_id, own.id);
+    await post(`/entrevistas/${ivId}/foto-convidado/escolher`, { photo: added.id }, owner);
+  }
+  // retirar a autorização de edição: a fotografia acrescentada deixa de ser usada (e não se escolhe)
+  await post('/entrevista/fotos/autorizacoes', { photo_capture: '1', cover_use: '1', publish_photo: '1', ai_video: '1' }, g);
+  iv = await db.one('SELECT * FROM interviews WHERE id=$1', [ivId]);
+  assert.notEqual((await videoGuestPhoto(db, iv))?.id, added.id);
+  const ch = await post(`/entrevistas/${ivId}/foto-convidado/escolher`, { photo: added.id }, owner);
+  assert.match(decodeURIComponent(ch.headers.location as string), /já não pode ser usada/);
+  // só o entrevistador retira as que acrescentou; o ficheiro sai do disco
+  await post(`/entrevistas/${ivId}/foto-convidado/${added.id}/eliminar`, {}, owner);
+  assert.ok(!(await db.one('SELECT 1 FROM photos WHERE id=$1', [added.id])));
+  assert.ok((await db.one('SELECT deleted_at FROM assets WHERE id=$1', [added.assetId])).deleted_at);
+  if (own) {
+    const no = await post(`/entrevistas/${ivId}/foto-convidado/${own.id}/eliminar`, {}, owner);
+    assert.match(decodeURIComponent(no.headers.location as string), /Só pode retirar as fotografias que acrescentou/);
+  }
+  // política «só o entrevistador aprova»: não acrescenta (o convidado tem de ver a fotografia antes de publicar)
+  const { hostPhotoBlock } = await import('../src/guest-photos.ts');
+  assert.match((await hostPhotoBlock(db, { ...iv, review_policy: 'host_only' }))!, /o entrevistado vê e aprova/);
 });

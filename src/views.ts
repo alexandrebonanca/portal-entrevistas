@@ -68,7 +68,7 @@ export function ownerLine(lang = 'pt-PT') {
   return `${pt ? `O ${esc(config.brand)} é propriedade da` : `${esc(config.brand)} is owned and operated by`} ${esc(o.name)}${country ? ` (${esc(country)})` : ''}${pt ? ', que o gere' : ''} · <a href="${esc(o.site)}" rel="noopener">${esc(site)}</a> · <a href="mailto:${esc(o.email)}">${esc(o.email)}</a>`;
 }
 
-export interface PageOpts { title: string; body: string; lang?: string; nav?: string; noindex?: boolean; desc?: string; script?: string; wide?: boolean; head?: string; styles?: string }
+export interface PageOpts { title: string; body: string; lang?: string; nav?: string; noindex?: boolean; desc?: string; script?: string; scripts?: string[]; wide?: boolean; head?: string; styles?: string }
 
 export function page(o: PageOpts) {
   return `<!doctype html><html lang="${o.lang ?? 'pt-PT'}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -79,7 +79,7 @@ ${o.noindex ? '<meta name="robots" content="noindex,nofollow"><meta name="referr
 <header class="top"><div class="wrap"><a class="brand" href="/" aria-label="${esc(config.brand)}">${markSvg(28)}${wordmark()}</a><nav>${o.nav ?? ''}</nav></div></header>
 <main id="main">${o.body}</main>
 <footer><div class="wrap"><p>${esc(config.brand)} · <a href="/privacy">Privacy</a> · <a href="/contact">Contact</a></p><p>${ownerLine(o.lang)}</p></div></footer>
-${o.script ? `<script src="/static/recorder.js" defer></script><script src="${o.script}" defer></script>` : ''}</body></html>`;
+${o.script ? `<script src="/static/recorder.js" defer></script><script src="${o.script}" defer></script>` : ''}${(o.scripts ?? []).map(s => `<script src="${s}" defer></script>`).join('')}</body></html>`;
 }
 
 export const flash = (msg?: string, kind: 'ok' | 'bad' = 'ok') => (msg ? `<div class="flash ${kind}" role="status">${esc(msg)}</div>` : '');

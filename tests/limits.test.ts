@@ -102,7 +102,7 @@ test('o convite fixa na entrevista os limites do plano; o administrador não tem
 test('respostas do convidado: tempo total de todas as perguntas, 2 s de tolerância, 422 com o tempo que resta', async () => {
   await flushOutbox(db);
   guest = await openLatest(ivId);
-  await post('/entrevista/consentimentos', { participation: '1', adult: '1', processing: '1', publish: '1' }, guest);
+  await post('/entrevista/consentimentos', { participation: '1', adult: '1', host_edit: '1', processing: '1', publish: '1' }, guest);
   const [q1, q2] = await qids(ivId);
   assert.match((await get('/entrevista', guest)).body, /Total time for your answers: 1:00 min \(1:00 left\)\./);
   let pg = await get('/entrevista/p/1', guest);
@@ -197,7 +197,7 @@ test('regenerações do guião e do episódio: 3 incluídas, a 4.ª bloqueada (c
   await post(`/entrevistas/${id}/convidar`, {}, user);
   await flushOutbox(db);
   const g = await openLatest(id);
-  await post('/entrevista/consentimentos', { participation: '1', adult: '1', processing: '1', publish: '1' }, g);
+  await post('/entrevista/consentimentos', { participation: '1', adult: '1', host_edit: '1', processing: '1', publish: '1' }, g);
   assert.equal((await audio(`/api/g/respostas/${(await qids(id))[0]}`, makeToneWav(2), g)).statusCode, 200);
   await post('/entrevista/submeter', {}, g);
   const used = () => regenerationsUsed(db, id);

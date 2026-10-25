@@ -69,7 +69,9 @@ export async function createInvitation(db: Db, interview: any, host: { name: str
   const heading = followup ? d.followupHeading(nOpen) : d.inviteHeading;
   const lead = `${followup ? d.followupLead(hostName, nOpen) : d.inviteLead(hostName)} `;
   const end = /[.?!…]$/.test(String(interview.title).trim()) ? '' : '.'; // sem «?.» quando o título já termina em pontuação
-  const steps = followup ? [] : [d.howAnswer(nQ), d.howListen, interview.review_policy === 'host_only' ? d.howConsent : d.howApprove];
+  // A autorização de edição vai no convite: quem aceita permite que o entrevistador edite a entrevista; com «o entrevistado
+  // aprova», só a pode tornar pública depois da revisão dele (howApprove). Fica registada no início (consentimento host_edit).
+  const steps = followup ? [] : [d.howAnswer(nQ), d.howListen, ...(interview.review_policy === 'host_only' ? [d.howConsent, d.inviteEditHost] : [d.howApprove])];
   const until = d.linkUntil(new Date(`${lastDay}T12:00:00Z`).toLocaleDateString(lang === 'en' ? 'en-GB' : 'pt-PT', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' }));
   const pm = String(interview.personal_message ?? '').trim();
   const body = `<p>${esc(lead)}<strong>${esc(interview.title)}</strong>${end}</p>${pm ? `<blockquote style="border-left:3px solid #b4691f;margin:16px 0;padding:4px 16px;color:#4a443b">${esc(pm).replace(/\r?\n/g, '<br>')}</blockquote>` : ''}

@@ -1,4 +1,5 @@
 import type { FastifyInstance } from 'fastify';
+import { hostPhotoBlock } from '../guest-photos.ts';
 import type { Db } from '../db.ts';
 import { config } from '../config.ts';
 import { esc, oneSpace, isEmail, fmtDate, fmtDuration, rateLimit, xmlText } from '../lib.ts';
@@ -405,6 +406,28 @@ ${locked ? '' : composePanel(iv, quota!, !(await inEntity(await entityOfIntervie
     const id = await saveAsset(db, { interviewId: r.iv.id, kind: 'host_photo', mime: r.kind.mime, ext: r.kind.ext, data });
     if (!(await linkIfRoom(reply, r, id, async () => null, tx => tx.query('UPDATE interviews SET host_photo_asset_id=$2 WHERE id=$1', [r.iv.id, id])))) return;
     return { ok: true, assetId: id };
+  });
+
+  // Fotografia do entrevistado acrescentada pelo entrevistador (guest-photos.ts): com a autorização de edição dada no
+  // convite e a política «o entrevistado aprova»; passa a ser a do vídeo. O convidado vê-a e pode retirá-la.
+  app.post('/api/entrevistas/:id/foto-convidado', async (req, reply) => {
+    const r = await rawUpload(req, reply, 'image'); if (!r) return;
+    const block = await hostPhotoBlock(db, r.iv);
+    if (block) return reply.code(409).send({ error: block });
+    if (req.headers['x-photo-rights'] !== '1') return reply.code(422).send({ error: 'Confirme que é uma fotografia real do entrevistado e que tem o direito de a usar.' });
+    const n = Number((await db.one(`SELECT count(*)::int AS n FROM photos WHERE interview_id=$1 AND added_by='host'`, [r.iv.id]))?.n ?? 0);
+    if (n >= 2) return reply.code(409).send({ error: 'Já acrescentou 2 fotografias: retire uma para acrescentar outra.' });
+    const data = r.kind.mime === 'image/jpeg' ? stripJpegMetadata(r.data) : r.data;
+    if (!(await photoDecodes(data))) return reply.code(415).send({ error: 'A fotografia não se consegue abrir (ficheiro danificado ou com mais de 50 megapíxeis).' });
+    if (!(await roomFor(reply, r, data.length))) return;
+    const id = await saveAsset(db, { interviewId: r.iv.id, kind: 'guest_photo', mime: r.kind.mime, ext: r.kind.ext, data, meta: { addedBy: 'host' } });
+    let photoId = '';
+    if (!(await linkIfRoom(reply, r, id, async () => null, async tx => {
+      photoId = (await tx.one(`INSERT INTO photos(interview_id, asset_id, added_by) VALUES ($1,$2,'host') RETURNING id`, [r.iv.id, id])).id;
+      await tx.query('UPDATE interviews SET guest_photo_id=$2 WHERE id=$1', [r.iv.id, photoId]);
+    }))) return;
+    await audit(db, req.user!.email, 'guest_photo.added_by_host', r.iv.id, { photoId });
+    return { ok: true, id: photoId, assetId: id };
   });
 
   // Transcrição automática das gravações do entrevistador: numa conta sem pagamento, um total em 24 horas (free-interview.ts);

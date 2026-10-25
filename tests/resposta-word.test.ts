@@ -138,7 +138,7 @@ test('preparar entrevista e sessão do convidado (em português)', async () => {
 });
 
 test('página da pergunta: opção Word logo abaixo da do áudio, na língua do convidado', async () => {
-  await post('/entrevista/consentimentos', { participation: '1', adult: '1', processing: '1', publish: '1' }, guest);
+  await post('/entrevista/consentimentos', { participation: '1', adult: '1', host_edit: '1', processing: '1', publish: '1' }, guest);
   const p = (await get('/entrevista/p/1', guest)).body;
   const iAudio = p.indexOf('Carregar um áudio já gravado'), iDoc = p.indexOf('Carregar um ficheiro Word como resposta à questão');
   assert.ok(iAudio > 0 && iDoc > iAudio, 'Word por baixo do áudio');
@@ -151,7 +151,7 @@ test('upload do Word: autorização, formatos, vazio, tamanho, palavras e tempo 
   // participação retirada (último registo recusado): não entra
   await db.query(`INSERT INTO consents(interview_id, purpose, granted, text_version, text_snapshot) VALUES ($1,'participation',false,'t','t')`, [ivId]);
   assert.equal((await sendDoc(qs[0], docx([run(ANSWER)]), guest)).statusCode, 403);
-  await post('/entrevista/consentimentos', { participation: '1', adult: '1', processing: '1', publish: '1' }, guest);
+  await post('/entrevista/consentimentos', { participation: '1', adult: '1', host_edit: '1', processing: '1', publish: '1' }, guest);
   assert.equal((await sendDoc(qs[0], docx([run(ANSWER)]), '')).statusCode, 401, 'sem sessão');
 
   const f = await sendDoc(qs[0], Buffer.from('%PDF-1.4 não é Word nem texto'), guest);

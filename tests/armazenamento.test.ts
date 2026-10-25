@@ -56,7 +56,7 @@ test('preparar: administrador, entrevista com 3 perguntas e sessão do convidado
   await flushOutbox(db);
   const m = await db.one(`SELECT text_body FROM emails WHERE interview_id=$1 AND dedupe_key LIKE 'invite:%'`, [ivId]);
   guest = `gs=${cookies(await post(`/i/${/\/i\/([A-Za-z0-9_-]{40,})/.exec(m.text_body)![1]}/abrir`, {})).gs}`;
-  await post('/entrevista/consentimentos', { participation: '1', adult: '1', processing: '1', publish: '1', photo_capture: '1' }, guest);
+  await post('/entrevista/consentimentos', { participation: '1', adult: '1', host_edit: '1', processing: '1', publish: '1', photo_capture: '1' }, guest);
   qs = (await db.query('SELECT id FROM questions WHERE interview_id=$1 ORDER BY position', [ivId])).map((r: any) => r.id);
   await db.query(`INSERT INTO consents(interview_id, purpose, granted, text_version, text_snapshot) VALUES ($1,'photo_capture',true,'t','t')`, [ivId]);
 });

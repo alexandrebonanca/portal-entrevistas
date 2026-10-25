@@ -498,7 +498,7 @@ test('a entidade não muda com saldo; entrevista extra a 6 créditos; regeneraç
   await flushOutbox(db);
   const mail = await db.one(`SELECT text_body FROM emails WHERE interview_id=$1 AND dedupe_key LIKE 'invite:%' ORDER BY created_at DESC LIMIT 1`, [id]);
   const g = `gs=${cookies(await post(`/i/${/\/i\/([A-Za-z0-9_-]{40,})/.exec(mail.text_body)![1]}/abrir`, {}, '')).gs}`;
-  await post('/entrevista/consentimentos', { participation: '1', adult: '1', processing: '1', publish: '1' }, g);
+  await post('/entrevista/consentimentos', { participation: '1', adult: '1', host_edit: '1', processing: '1', publish: '1' }, g);
   const q = (await db.one('SELECT id FROM questions WHERE interview_id=$1', [id])).id;
   assert.equal((await audio(`/api/g/respostas/${q}`, makeToneWav(2), g)).statusCode, 200);
   await post('/entrevista/submeter', {}, g);

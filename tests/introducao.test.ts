@@ -105,7 +105,7 @@ test('preparação: episódio em pré-visualização de um cliente com subscriç
   await flushOutbox(db);
   const mail = await db.one(`SELECT text_body FROM emails WHERE interview_id=$1 AND dedupe_key LIKE 'invite:%' ORDER BY created_at DESC LIMIT 1`, [ivId]);
   const guest = `gs=${cookies(await post(`/i/${/\/i\/([A-Za-z0-9_-]{40,})/.exec(mail.text_body)![1]}/abrir`, {})).gs}`;
-  await post('/entrevista/consentimentos', { participation: '1', adult: '1', processing: '1', publish: '1' }, guest);
+  await post('/entrevista/consentimentos', { participation: '1', adult: '1', host_edit: '1', processing: '1', publish: '1' }, guest);
   await post('/entrevista/fotos/autorizacoes', { photo_capture: '1', cover_use: '1', publish_photo: '1', ai_video: '1' }, guest);
   assert.equal((await raw('/api/g/fotos', await jpg('#4a6'), 'image/jpeg', guest)).statusCode, 200);
   for (const q of await db.query('SELECT id FROM questions WHERE interview_id=$1 ORDER BY position', [ivId])) assert.equal((await raw(`/api/g/respostas/${q.id}`, makeToneWav(2), 'audio/wav', guest)).statusCode, 200);

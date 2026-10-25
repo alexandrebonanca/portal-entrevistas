@@ -1,4 +1,5 @@
 import { config } from './config.ts';
+import { videoGuestPhoto } from './guest-photos.ts';
 import { storage } from './storage.ts';
 import { sha256, esc } from './lib.ts';
 import { saveAsset, hasAudioStream } from './media.ts';
@@ -286,7 +287,7 @@ type Attempt = { assetId: string; storageKey: string; words: Word[]; heard: stri
 export type PlanSeg = Seg & { reuseKey: string | null; take: number; chunks: Chunk[] };
 type StartImage = { image: Buffer; vertical: boolean; hash: string };
 export interface VeoPlan {
-  segs: PlanSeg[]; hostPhoto: Buffer | null; guestPhoto: Buffer | null; hostVeo: boolean; guestVeo: boolean;
+  segs: PlanSeg[]; hostPhoto: Buffer | null; guestPhoto: Buffer | null; guestPhotoByHost?: boolean; hostVeo: boolean; guestVeo: boolean;
   start: Record<Role, StartImage | null>; voice: Record<Role, 'male' | 'female'>; photoSha: Record<Role, string | null>;
 }
 
@@ -333,9 +334,9 @@ export async function veoPlan(db: Db, iv: any, ep: any, o: { tier: VeoTier; phot
   const hostRow = iv.host_photo_rights ? await photoRow(iv.host_photo_asset_id) : null;
   let guestRow: any = null;
   if (await consent('publish_photo')) {
-    const pid = o.photoId ?? ep.technical?.coverPhotoIds?.[0] ?? null;
-    const ph = pid ? await db.one('SELECT asset_id FROM photos WHERE id=$1 AND interview_id=$2', [pid, iv.id]) : await db.one('SELECT asset_id FROM photos WHERE interview_id=$1 ORDER BY created_at LIMIT 1', [iv.id]);
+    const ph = await videoGuestPhoto(db, iv, { pid: o.photoId, coverIds: ep.technical?.coverPhotoIds });
     guestRow = ph ? await photoRow(ph.asset_id) : null;
+    if (guestRow) guestRow.byHost = ph!.added_by === 'host';
   }
   const hostPhoto = hostRow ? await storage.get(hostRow.storage_key) : null;
   const guestPhoto = guestRow ? await storage.get(guestRow.storage_key) : null;
@@ -359,7 +360,7 @@ export async function veoPlan(db: Db, iv: any, ep: any, o: { tier: VeoTier; phot
       return { seg: s, k, text, dur: veoDuration(text), prompt, key: chunkKeyOf(st.hash, prompt, st.vertical, veoKeyModel(o.tier), mock, s.take) };
     });
   }
-  return { segs, hostPhoto, guestPhoto, hostVeo, guestVeo, start, voice, photoSha };
+  return { segs, hostPhoto, guestPhoto, guestPhotoByHost: !!guestPhoto && !!guestRow?.byHost, hostVeo, guestVeo, start, voice, photoSha };
 }
 
 /**
@@ -613,6 +614,8 @@ export async function renderVeoVideo(job: any, { db, progress }: Parameters<Hand
     if (cur.script_status !== 'approved') return VEO_SCRIPT_REPLACED;
     if (role === 'host') { const r = await db.one('SELECT host_ai_video, host_photo_rights FROM interviews WHERE id=$1', [iv.id]); return r?.host_ai_video && r?.host_photo_rights ? null : VEO_HOST_WITHDRAWN; }
     const r = await db.one('SELECT review_policy FROM interviews WHERE id=$1', [iv.id]);
+    // Fotografia acrescentada pelo entrevistador: exige ainda a autorização de edição (guest-photos.ts).
+    if (plan.guestPhotoByHost && !(await consent('host_edit'))) return VEO_GUEST_WITHDRAWN;
     return (await consent('ai_video')) && (await consent('publish_photo')) && r?.review_policy === 'guest_preview' ? null : VEO_GUEST_WITHDRAWN;
   };
   await progress(0, 100, 'A preparar as imagens');
@@ -1169,7 +1172,7 @@ export async function renderVeoVideo(job: any, { db, progress }: Parameters<Hand
   const clipModels: Record<string, number> = {};
   for (const s of plan.segs) for (const { at } of falaOut.get(s.id)?.clips ?? []) { const k = at.model ?? UNKNOWN_MODEL; clipModels[k] = (clipModels[k] ?? 0) + 1; }
   // (a introdução mostra o entrevistador gerado pelo Veo: conta como vídeo IA dele, com a autorização verificada ao ligar)
-  const meta = { engine: 'veo', model: tierModel, tier, usdPerSec: tierPrice, backend: veoCtx(veoBackend), lang, guestPhoto: !!plan.guestPhoto, hostPhoto: !!plan.hostPhoto, guestAiVideo: usedRoles.has('guest'), hostAiVideo: usedRoles.has('host') || !!intro,
+  const meta = { engine: 'veo', model: tierModel, tier, usdPerSec: tierPrice, backend: veoCtx(veoBackend), lang, guestPhoto: !!plan.guestPhoto, guestPhotoByHost: !!plan.guestPhotoByHost, hostPhoto: !!plan.hostPhoto, guestAiVideo: usedRoles.has('guest'), hostAiVideo: usedRoles.has('host') || !!intro,
     intro: intro ? { id: intro.id, phrase: intro.phrase, model: intro.model, durMs: introMs, paidBy: 'internal' } : null,
     veoClips: want.reduce((n, s) => n + (reused.get(s.id)?.length ?? s.chunks.length), 0), veoSegments: veoSegs.size, fallbackSegments: fallbackSegs, generatedClips: generated, spentUsd: Math.max(0, spentUsd - failedUsd), failedUsd, veoUsd: costUsd, clipModels,
     googleBusy: fidelity.some(f => f.problem === 'busy' || f.problem === 'busycap'), quoteId: quote?.id ?? null, rebuildOf, paidBy: quote ? 'credits' : entityPays ? 'entity' : rebuildOf ? 'rebuild' : 'internal',
@@ -1188,10 +1191,11 @@ export async function renderVeoVideo(job: any, { db, progress }: Parameters<Hand
          AND (NOT $4::boolean OR (i.host_ai_video AND i.host_photo_rights)) AND (NOT $5::boolean OR i.host_photo_rights)
          AND (NOT $6::boolean OR (i.review_policy='guest_preview' AND COALESCE((SELECT c.granted FROM consents c WHERE c.interview_id=i.id AND c.purpose='ai_video' ORDER BY c.created_at DESC LIMIT 1), false)))
          AND (NOT $7::boolean OR COALESCE((SELECT c.granted FROM consents c WHERE c.interview_id=i.id AND c.purpose='publish_photo' ORDER BY c.created_at DESC LIMIT 1), false))
+         AND (NOT $8::boolean OR (i.review_policy='guest_preview' AND COALESCE((SELECT c.granted FROM consents c WHERE c.interview_id=i.id AND c.purpose='host_edit' ORDER BY c.created_at DESC LIMIT 1), false)))
          AND COALESCE((SELECT a.decision FROM approvals a WHERE a.episode_id=e.id AND a.actor='guest' AND a.valid ORDER BY a.created_at DESC LIMIT 1), '') <> 'changes'
          AND EXISTS (SELECT 1 FROM scripts sc WHERE sc.id=e.script_id AND sc.status='approved')
        RETURNING e.id`,
-      [ep.id, id, lang, meta.hostAiVideo, meta.hostPhoto, meta.guestAiVideo, meta.guestPhoto]);
+      [ep.id, id, lang, meta.hostAiVideo, meta.hostPhoto, meta.guestAiVideo, meta.guestPhoto, meta.guestPhotoByHost]);
     // Só as aprovações caem (um pedido de alterações do convidado mantém-se visível).
     if (row) await tx.query(`UPDATE approvals SET valid=false WHERE episode_id=$1 AND valid AND decision='approved'`, [ep.id]);
     if (row && quote) settled = await settleQuote(tx, quote.id, falaOut, { speechSec });

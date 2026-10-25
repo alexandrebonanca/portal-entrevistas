@@ -58,7 +58,7 @@ export async function guestRoutes(app: FastifyInstance) {
     const promo = inv.purpose === 'invite' && inv.review_policy === 'guest_preview' && hasVideo()
       ? `<figure style="margin:24px 0 0"><p class="sans" style="margin:0 0 8px"><strong>${esc(d.promoTitle)}</strong></p>${promoVideo(lang, d.promoFallback, 'width:100%;height:auto;aspect-ratio:16/9;border-radius:12px;background:#000;display:block')}
 <figcaption class="hint" style="margin-top:8px">${esc(d.promoCaption)}</figcaption></figure>` : '';
-    return gpage(reply, lang, d.inviteTitle, `<h1>${esc(inv.title)}</h1><p>${esc(d.invitedBy(inv.host_name))}</p><p class="hint">${esc(d.qCount(nQ))}</p>
+    return gpage(reply, lang, d.inviteTitle, `<h1>${esc(inv.title)}</h1><p>${esc(d.invitedBy(inv.host_name))}</p><p class="hint">${esc(d.qCount(nQ))}</p><p class="hint">${esc(inv.review_policy === 'host_only' ? d.inviteEditHost : d.inviteEdit)}</p>
 <form method="post" action="/i/${esc((req.params as any).token)}/abrir"><p><button class="accent" style="width:100%">${esc(d.open)}</button></p></form>
 <form method="post" action="/i/${esc((req.params as any).token)}/recusar" onsubmit="return confirm('${esc(d.decline)}?')"><p><button class="ghost" style="width:100%">${esc(d.decline)}</button></p></form>${promo}`);
   });
@@ -157,7 +157,7 @@ export async function guestRoutes(app: FastifyInstance) {
       return gpage(reply, lang, iv.title, `<h1>${esc(iv.title)}</h1>
 ${iv.objective_shared && iv.objective_text ? `<h2>${esc(d.objective)}</h2><p>${esc(iv.objective_text)}</p>` : ''}
 <h2>${esc(d.beforeStart)}</h2><p>${esc(consentLongFor(lang, iv.review_policy))}</p><p class="hint">${esc(d.consentIntro)}</p>
-<form method="post" action="/entrevista/consentimentos" class="card">${cb('participation', d.c_participation, false, true)}${cb('processing', d.c_processing, processing)}${cb('publish', consentText(lang, 'publish', iv.review_policy), publish)}${cb('adult', d.adults, false, true)}
+<form method="post" action="/entrevista/consentimentos" class="card">${cb('participation', d.c_participation, false, true)}${cb('processing', d.c_processing, processing)}${cb('publish', consentText(lang, 'publish', iv.review_policy), publish)}${cb('host_edit', consentText(lang, 'host_edit', iv.review_policy), false, true)}${cb('adult', d.adults, false, true)}
 <p><button class="accent" style="width:100%">${esc(d.start)}</button></p></form>
 <p class="hint">${esc(d.helpLine)} <a href="/entrevista/ajuda">${esc(d.supportTitle)}</a></p>`);
     }
@@ -175,8 +175,10 @@ ${left != null ? `<p class="hint sans">${esc(d.answerTime(mmss(iv.answer_limit_s
   app.post('/entrevista/consentimentos', async (req, reply) => {
     const c = await need(req, reply); if (!c) return;
     const b = req.body as any;
-    if (!b.participation || !b.adult) return reply.redirect('/entrevista');
+    // Aceitar inclui a autorização de edição anunciada no convite (necessária, como a participação).
+    if (!b.participation || !b.adult || !b.host_edit) return reply.redirect('/entrevista');
     await recordConsent(c.iv, c.lang, 'participation', true);
+    await recordConsent(c.iv, c.lang, 'host_edit', true);
     await recordConsent(c.iv, c.lang, 'processing', !!b.processing);
     await recordConsent(c.iv, c.lang, 'publish', !!b.publish);
     await audit(db, 'guest', 'consent.recorded', c.iv.id);
@@ -412,18 +414,22 @@ ${q.audio_asset_id ? `<p><audio id="qaudio" controls preload="none" src="/api/g/
     const c = await need(req, reply); if (!c) return;
     const { iv, lang } = c, d = t(lang);
     if (!(await granted(iv.id, 'participation'))) return reply.redirect('/entrevista');
-    const [pc, cu, pp, an, av] = await Promise.all([granted(iv.id, 'photo_capture'), granted(iv.id, 'cover_use'), granted(iv.id, 'publish_photo'), granted(iv.id, 'animate_portrait'), granted(iv.id, 'ai_video')]);
+    const [pc, cu, pp, an, av, he] = await Promise.all([granted(iv.id, 'photo_capture'), granted(iv.id, 'cover_use'), granted(iv.id, 'publish_photo'), granted(iv.id, 'animate_portrait'), granted(iv.id, 'ai_video'), granted(iv.id, 'host_edit')]);
     const done = iv.collection_status === 'submitted';
+    // As fotografias que o entrevistador acrescentou (com a autorização de edição) aparecem aqui também: o convidado vê-as e
+    // pode retirá-las; só as dele contam para as três.
     const photos = await db.query('SELECT * FROM photos WHERE interview_id=$1 ORDER BY created_at', [iv.id]);
+    const own = photos.filter((p: any) => p.added_by !== 'host').length;
     const msg = JSON.stringify({ camDenied: d.camDenied, max3: d.max3, stUp: d.stUp, stFail: d.stFail });
     return gpage(reply, lang, d.photos, `<h1>${esc(d.photos)}</h1><p>${esc(d.photosIntro)}</p>
-<form method="post" action="/entrevista/fotos/autorizacoes" class="card">${cb('photo_capture', d.c_photo, pc)}${cb('cover_use', d.c_cover, cu)}${cb('publish_photo', d.c_pubphoto, pp)}${cb('animate_portrait', d.c_animate, an)}${cb('ai_video', d.c_aivideo, av)}<button class="ghost">${esc(d.save)}</button></form>
+<form method="post" action="/entrevista/fotos/autorizacoes" class="card">${cb('photo_capture', d.c_photo, pc)}${cb('cover_use', d.c_cover, cu)}${cb('publish_photo', d.c_pubphoto, pp)}${cb('animate_portrait', d.c_animate, an)}${cb('ai_video', d.c_aivideo, av)}${cb('host_edit', consentText(lang, 'host_edit', iv.review_policy), he)}<button class="ghost">${esc(d.save)}</button></form>
 ${pc && !done ? `<div class="card" id="cam" data-max="3" data-msg='${esc(msg)}'>
-<div class="thumbs" id="thumbs">${photos.map((p: any) => `<div><img alt="" src="/api/g/media/${p.asset_id}"><form method="post" action="/api/g/fotos/${p.id}/eliminar-form"><button class="ghost" style="width:100%">${esc(d.discard)}</button></form></div>`).join('')}</div>
+<div class="thumbs" id="thumbs">${photos.map((p: any) => `<div><img alt="" src="/api/g/media/${p.asset_id}">${p.added_by === 'host' ? `<span class="hint">${esc(d.photoByHost)}</span>` : ''}<form method="post" action="/api/g/fotos/${p.id}/eliminar-form"><button class="ghost" style="width:100%">${esc(d.discard)}</button></form></div>`).join('')}</div>
 <video id="vid" class="cam" autoplay playsinline muted hidden></video><canvas id="cv" hidden></canvas><div class="status" id="pst" role="status"></div>
-<div class="row"><button type="button" id="camBtn" class="ghost" ${photos.length >= 3 ? 'disabled' : ''}>${esc(d.openCamera)}</button><button type="button" id="shotBtn" class="accent" hidden>${esc(d.take)}</button></div>
+<div class="row"><button type="button" id="camBtn" class="ghost" ${own >= 3 ? 'disabled' : ''}>${esc(d.openCamera)}</button><button type="button" id="shotBtn" class="accent" hidden>${esc(d.take)}</button></div>
 <div id="prev" hidden><img id="prevImg" alt="" style="width:100%;border-radius:12px"><div class="row"><button type="button" id="keepBtn" class="accent">${esc(d.keep)}</button><button type="button" id="dropBtn" class="ghost">${esc(d.discard)}</button></div></div>
-<details><summary class="sans">${esc(d.photoUpload)}</summary><input type="file" id="photoIn" accept="image/*" ${photos.length >= 3 ? 'disabled' : ''}></details></div>` : ''}
+<details><summary class="sans">${esc(d.photoUpload)}</summary><input type="file" id="photoIn" accept="image/*" ${own >= 3 ? 'disabled' : ''}></details></div>` : ''}
+${done && photos.some((p: any) => p.added_by === 'host') ? `<div class="card"><p class="sans" style="margin-top:0"><strong>${esc(d.photoByHost)}</strong></p><div class="thumbs">${photos.filter((p: any) => p.added_by === 'host').map((p: any) => `<div><img alt="" src="/api/g/media/${p.asset_id}"><form method="post" action="/api/g/fotos/${p.id}/eliminar-form"><button class="ghost" style="width:100%">${esc(d.discard)}</button></form></div>`).join('')}</div></div>` : ''}
 <p><a class="btn accent" style="width:100%;text-align:center" href="${done ? '/entrevista/obrigado' : '/entrevista/rever'}">${esc(done ? d.continue : photos.length ? d.photosDone : d.skipPhotos)}</a></p>`, '/static/photos.js');
   });
 
@@ -435,10 +441,11 @@ ${pc && !done ? `<div class="card" id="cam" data-max="3" data-msg='${esc(msg)}'>
     await recordConsent(c.iv, c.lang, 'publish_photo', !!b.photo_capture && !!b.publish_photo);
     await recordConsent(c.iv, c.lang, 'animate_portrait', !!b.photo_capture && !!b.publish_photo && !!b.animate_portrait);
     await recordConsent(c.iv, c.lang, 'ai_video', !!b.photo_capture && !!b.publish_photo && !!b.ai_video);
+    await recordConsent(c.iv, c.lang, 'host_edit', !!b.host_edit);
     // Autorização retirada: o vídeo que usava a fotografia (ou a animação) deixa de ser servido; o ficheiro fica privado.
-    const noPhoto = !(b.photo_capture && b.publish_photo), noAnim = noPhoto || !b.animate_portrait, noVeo = noPhoto || !b.ai_video;
+    const noPhoto = !(b.photo_capture && b.publish_photo), noAnim = noPhoto || !b.animate_portrait, noVeo = noPhoto || !b.ai_video, noHostPhoto = noPhoto || !b.host_edit;
     for (const e of await db.query(`SELECT e.id, a.meta FROM episodes e JOIN assets a ON a.id=e.video_asset_id WHERE e.interview_id=$1`, [c.iv.id])) {
-      if ((noPhoto && e.meta?.guestPhoto) || (noAnim && e.meta?.guestAnimated) || (noVeo && e.meta?.guestAiVideo)) await db.query('UPDATE episodes SET video_asset_id=NULL WHERE id=$1', [e.id]);
+      if ((noPhoto && e.meta?.guestPhoto) || (noAnim && e.meta?.guestAnimated) || (noVeo && e.meta?.guestAiVideo) || (noHostPhoto && e.meta?.guestPhotoByHost)) await db.query('UPDATE episodes SET video_asset_id=NULL WHERE id=$1', [e.id]);
     }
     // RGPD (art. 7.º, n.º 3, e art. 17.º): sem a autorização, os clipes e os vídeos com a imagem animada do convidado são
     // apagados; o que foi entregue continua cobrado e o vídeo pode ser reconstruído só com o entrevistador, a 0 créditos.
@@ -459,7 +466,7 @@ ${pc && !done ? `<div class="card" id="cam" data-max="3" data-msg='${esc(msg)}'>
   app.post('/api/g/fotos', async (req, reply) => {
     const iv = await needOpen(req, reply); if (!iv) return;
     if (!(await granted(iv.id, 'photo_capture'))) return reply.code(403).send({ error: 'consent' });
-    const n = Number((await db.one('SELECT count(*)::int AS n FROM photos WHERE interview_id=$1', [iv.id]))?.n);
+    const n = Number((await db.one(`SELECT count(*)::int AS n FROM photos WHERE interview_id=$1 AND added_by='guest'`, [iv.id]))?.n);
     if (n >= 3) return reply.code(409).send({ error: 'max' });
     const data = req.body as Buffer;
     const kind = Buffer.isBuffer(data) ? sniff(data) : null;
@@ -482,8 +489,9 @@ ${pc && !done ? `<div class="card" id="cam" data-max="3" data-msg='${esc(msg)}'>
     return { ok: true, id: ph.id, assetId };
   });
   app.post('/api/g/fotos/:id/eliminar-form', async (req, reply) => {
-    const iv = await needOpen(req, reply); if (!iv) return;
-    const p = await db.one(`SELECT p.id, a.id AS aid, a.storage_key FROM photos p JOIN assets a ON a.id=p.asset_id WHERE p.id=$2 AND p.interview_id=$1`, [iv.id, (req.params as any).id]);
+    const iv = await needApi(req, reply); if (!iv) return;
+    // Depois de submeter, o convidado só retira as fotografias que o entrevistador acrescentou (as dele ficam na submissão).
+    const p = await db.one(`SELECT p.id, a.id AS aid, a.storage_key FROM photos p JOIN assets a ON a.id=p.asset_id WHERE p.id=$2 AND p.interview_id=$1 AND ($3::boolean OR p.added_by='host')`, [iv.id, (req.params as any).id, iv.collection_status !== 'submitted']);
     if (p) { await db.query('DELETE FROM photos WHERE id=$1', [p.id]); await db.query('UPDATE assets SET deleted_at=now() WHERE id=$1', [p.aid]); await storage.remove(p.storage_key); }
     return reply.redirect('/entrevista/fotos');
   });
