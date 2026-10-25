@@ -283,7 +283,7 @@ export function veoEstimate(timing: any[], segments: any[], hostOk: boolean, gue
 
 type Role = 'host' | 'guest';
 type Seg = { id: string; role: Role; kind: string; startMs: number; durationMs: number; endMs: number; text: string };
-type Chunk = { seg: Seg; k: number; text: string; dur: 4 | 6 | 8; key: string; prompt: string; chainOf?: string | null };
+type Chunk = { seg: Seg; k: number; text: string; dur: 4 | 6 | 8; key: string; prompt: string; chainOf?: string | null; follows?: string | null };
 /**
  * Clipes encadeados (VEO_CHAIN, ligado por omissão; '0' desliga): dentro de cada fala, o pedaço seguinte parte do fotograma
  * onde o anterior foi cortado, e não da fotografia, para a pose continuar no corte (Laboratório «Cortes entre clipes»). Cada
@@ -301,7 +301,7 @@ export async function cutFrame(ffmpeg: string, video: Buffer, atMs: number): Pro
     return readFile(o);
   });
 }
-type Attempt = { assetId: string; storageKey: string; words: Word[]; heard: string; checked: boolean; edits: number | null; hard: number | null; dur: number; usdPerSec: number; model: string | null };
+type Attempt = { assetId: string; storageKey: string; words: Word[]; heard: string; checked: boolean; edits: number | null; hard: number | null; dur: number; usdPerSec: number; model: string | null; chained?: boolean };
 /** Fala do plano: texto aprovado, chave de reaproveitamento (sem o modelo), take e pedaços com as chaves. */
 export type PlanSeg = Seg & { reuseKey: string | null; take: number; chunks: Chunk[] };
 type StartImage = { image: Buffer; vertical: boolean; hash: string };
@@ -369,9 +369,14 @@ export async function veoPlan(db: Db, iv: any, ep: any, o: { tier: VeoTier; phot
   const timing = (ep.technical?.timing ?? []) as any[];
   const rejected = await rejectedTakes(db, iv.id);
   const segs: PlanSeg[] = timing.map((t: any, i: number) => ({ ...t, endMs: i + 1 < timing.length ? timing[i + 1].startMs : ep.duration_ms, text: t.kind === 'disclosure' ? config.aiDisclosure : textOf.get(t.id) ?? '', reuseKey: null, take: 1, chunks: [] }));
+  // Falas seguidas da mesma pessoa (por exemplo, a transição e a pergunta do entrevistador): o 1.º pedaço da seguinte parte,
+  // se possível, do corte do último pedaço da anterior (`follows`). Fica fora da chave: os clipes já pagos continuam a servir
+  // e, sem o anterior (falhou ou não está no orçamento), parte da fotografia.
+  let prevRole: string | null = null, prevLast: string | null = null;
   for (const s of segs) {
     const st = start[s.role];
-    if (s.kind === 'disclosure' || !st) continue;
+    if (s.kind === 'disclosure' || !st) { prevRole = s.kind === 'disclosure' ? null : s.role; prevLast = null; continue; }
+    const follows = veoChain() && prevRole === s.role ? prevLast : null;
     s.reuseKey = reuseKeyOf({ photoSha: photoSha[s.role]!, role: s.role, voice: voice[s.role], vertical: st.vertical, text: s.text });
     s.take = o.takes?.get(s.id) ?? (rejected.get(s.reuseKey) ?? 0) + 1;
     // A chave não inclui a duração: as tentativas com outra duração contam para o mesmo pedaço.
@@ -381,10 +386,11 @@ export async function veoPlan(db: Db, iv: any, ep: any, o: { tier: VeoTier; phot
       const prompt = veoEpisodePrompt({ role: s.role, text, voice: voice[s.role] });
       const image = chain && prevKey ? sha256(`chain|${prevKey}`) : st.hash; // encadeado: a imagem é o corte do pedaço anterior
       const key = chunkKeyOf(image, prompt, st.vertical, veoKeyModel(o.tier), mock, s.take);
-      const ch: Chunk = { seg: s, k, text, dur: veoDuration(text), prompt, key, chainOf: chain ? prevKey : null };
+      const ch: Chunk = { seg: s, k, text, dur: veoDuration(text), prompt, key, chainOf: chain ? prevKey : null, follows: k === 0 ? follows : null };
       prevKey = key;
       return ch;
     });
+    prevRole = s.role; prevLast = s.chunks.length ? s.chunks[s.chunks.length - 1].key : null;
   }
   return { segs, hostPhoto, guestPhoto, guestPhotoByHost: !!guestPhoto && !!guestRow?.byHost, hostVeo, guestVeo, start, voice, photoSha };
 }
@@ -830,7 +836,7 @@ export async function renderVeoVideo(job: any, { db, progress }: Parameters<Hand
         await db.query('UPDATE assets SET meta=$2 WHERE id=$1', [a.id, JSON.stringify(m)]);
       }
       if (m.checked) { const j = judge(c, m.words ?? [], true, m.heard); m = { ...m, edits: j.edits, hard: j.hard, diffs: j.diffs }; } // regra atual
-      u.atts.push({ assetId: a.id, storageKey: a.storage_key, words: m.words ?? [], heard: m.heard ?? '', checked: !!m.checked, edits: m.edits ?? null, hard: m.hard ?? null, dur: Number(m.dur ?? m.billedSec ?? 8), usdPerSec: Number(m.usdPerSec ?? veoPriceOfModel(m.model)), model: m.model ?? null });
+      u.atts.push({ assetId: a.id, storageKey: a.storage_key, words: m.words ?? [], heard: m.heard ?? '', checked: !!m.checked, edits: m.edits ?? null, hard: m.hard ?? null, dur: Number(m.dur ?? m.billedSec ?? 8), usdPerSec: Number(m.usdPerSec ?? veoPriceOfModel(m.model)), model: m.model ?? null, chained: !!m.chained });
     }
     // Operações que falharam (ou expiraram) em execuções anteriores contam para o limite (o teto vale entre execuções).
     if (!mock) await db.query(`UPDATE veo_ops SET state='expired' WHERE interview_id=$1 AND chunk_key=$2 AND state='pending' AND created_at < now() - interval '36 hours'`, [iv.id, u.key]);
@@ -855,7 +861,8 @@ export async function renderVeoVideo(job: any, { db, progress }: Parameters<Hand
       const img = await chainImage(c.chainOf);
       if (!img) return 'stop';
       image = img;
-    }
+    } else if (c.follows) image = (await chainImage(c.follows)) ?? st.image; // fala seguida da mesma pessoa: se houver o anterior
+    const chained = image !== st.image;
     let busy = 0;
     for (;;) {
       if (abort) return 'stop';
@@ -937,11 +944,11 @@ export async function renderVeoVideo(job: any, { db, progress }: Parameters<Hand
         const tr = await transcribe(video, outcome === 'mismatch' ? mockMismatch(c.text) : c.text, dur);
         if (!tr.checked) stop(new PermanentError('A verificação dos clipes (transcrição) falhou: o trabalho parou para não pagar clipes que não se podem verificar. Os clipes pagos ficam guardados e são verificados na próxima geração.'));
         const j = judge(c, tr.words, tr.checked, tr.text);
-        const meta = { chunkKey: c.key, reuseKey: fala.reuseKey, take: fala.take, quoteId: quote?.id ?? null, segmentId: c.seg.id, role: c.seg.role, text: c.text, attempt: u.atts.length + 1, dur, billedSec: mock ? 0 : dur, words: tr.words, checked: tr.checked, ...j, model: opModel, usdPerSec: opPrice, mock };
+        const meta = { chained, chunkKey: c.key, reuseKey: fala.reuseKey, take: fala.take, quoteId: quote?.id ?? null, segmentId: c.seg.id, role: c.seg.role, text: c.text, attempt: u.atts.length + 1, dur, billedSec: mock ? 0 : dur, words: tr.words, checked: tr.checked, ...j, model: opModel, usdPerSec: opPrice, mock };
         const assetId = await saveAsset(db, { interviewId: iv.id, kind: 'veo_clip', mime: 'video/mp4', ext: 'mp4', data: video, durationMs: dur * 1000, meta });
         if (opId) await db.query(`UPDATE veo_ops SET state='done' WHERE id=$1`, [opId]);
         const a = await db.one('SELECT storage_key FROM assets WHERE id=$1', [assetId]);
-        const at: Attempt = { assetId, storageKey: a.storage_key, words: tr.words, heard: j.heard, checked: tr.checked, edits: j.edits, hard: j.hard, dur, usdPerSec: opPrice, model: opModel };
+        const at: Attempt = { assetId, storageKey: a.storage_key, words: tr.words, heard: j.heard, checked: tr.checked, edits: j.edits, hard: j.hard, dur, usdPerSec: opPrice, model: opModel, chained };
         u.atts.push(at);
         if (passes(at)) { u.chosen = at; okByRole[c.seg.role as 'host' | 'guest']++; return 'ok'; }
         return 'failed';
@@ -1004,6 +1011,11 @@ export async function renderVeoVideo(job: any, { db, progress }: Parameters<Hand
     }
     if (g.tasks.length) groupsA.push(g);
   }
+  // Falas seguidas da mesma pessoa vão juntas, pela ordem (a seguinte parte do corte da anterior).
+  for (let k = groupsA.length - 1; k > 0; k--) {
+    const g = groupsA[k], p = groupsA[k - 1];
+    if (g.tasks[0]?.u.c.follows && g.tasks[0].u.c.follows === p.tasks[p.tasks.length - 1]?.u.key) { p.tasks.push(...g.tasks); groupsA.splice(k, 1); }
+  }
   // Prova de cada pessoa primeiro: a 1.ª fala do entrevistador e a do convidado vão à frente, para uma fotografia recusada
   // pela Google se saber logo no início (e o trabalho parar antes de pagar o resto).
   for (const role of ['guest', 'host']) {
@@ -1039,10 +1051,13 @@ export async function renderVeoVideo(job: any, { db, progress }: Parameters<Hand
   const workerA = async () => {
     while (!abort && nextA < groupsA.length) {
       const grp = groupsA[nextA++];
+      let skip: string | null = null;
       for (const { u, fala } of grp.tasks) {
       if (abort) break;
-      // Encadeado sem o anterior aprovado: o resto da fala fica para a 2.ª passagem (sem custo aqui).
-      if (u.c.chainOf && !units.get(u.c.chainOf)?.chosen) break;
+      if (skip === fala.id) continue;
+      // Encadeado sem o anterior aprovado: o resto da fala fica para a 2.ª passagem (sem custo aqui); a fala seguinte do grupo
+      // continua (parte da fotografia se não houver o corte da anterior).
+      if (u.c.chainOf && !units.get(u.c.chainOf)?.chosen) { skip = fala.id; continue; }
       try {
         if (!u.chosen && roleBlocked.has(fala.role)) { u.problem = 'filtered_role'; u.cause = roleCause[fala.role] ?? null; }
         if (u.chosen || falaDead(fala) || !(await gate(fala))) {
@@ -1188,7 +1203,11 @@ export async function renderVeoVideo(job: any, { db, progress }: Parameters<Hand
         const cues = cuesFromWords(inWin.length ? inWin : w, { id: `${s.id}-${c.k}`, role: s.role, text: at.heard, startMs: t - a, durationMs: clipMs }, 'en');
         for (const q of cues) if (q.endMs > t && q.startMs < t + dur) veoCues.push({ id: q.id, startMs: Math.max(t, q.startMs), endMs: Math.min(t + dur, q.endMs), text: q.text });
         const load = () => storage.get(at.storageKey);
-        shotTight = shotRole === s.role ? !shotTight : false; shotRole = s.role;
+        // Encadeado (pose contínua desde o clipe anterior): mantém o plano; mudar o enquadramento aí é que se via como salto.
+        // O plano apertado só entra quando o clipe recomeça na fotografia (fala nova da mesma pessoa) e nunca num retrato
+        // vertical (a coluna estreita ampliada lê-se como um salto, não como outra câmara).
+        if (!c.chainOf && !at.chained) shotTight = shotRole === s.role && !plan.start[s.role as 'host' | 'guest']?.vertical ? !shotTight : false;
+        shotRole = s.role;
         parts.push({ kind: 'anim', startMs: t, endMs: t + dur, base: s.role === 'host' ? bases.animHost : bases.animGuest, clip: load, clipOffsetMs: a, notice: VEO_NOTICE, cues: [], zoom: shotTight ? PUNCH_IN : 1 });
         audioPieces.push({ durMs: dur, src: load, ext: 'mp4', offsetMs: a });
         t += dur;

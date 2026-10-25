@@ -797,3 +797,10 @@ test('edição pelo entrevistador: autorização no convite e fotografia do entr
   const { hostPhotoBlock } = await import('../src/guest-photos.ts');
   assert.match((await hostPhotoBlock(db, { ...iv, review_policy: 'host_only' }))!, /o entrevistado vê e aprova/);
 });
+
+test('clipes encadeados: pedaços seguintes da fala (e falas seguidas da mesma pessoa) partem do corte anterior', async () => {
+  const rows = await db.query(`SELECT meta FROM assets WHERE interview_id=$1 AND kind='veo_clip'`, [ivId]);
+  assert.ok(rows.length > 0);
+  assert.ok(rows.some((r: any) => r.meta.chained === true), 'há clipes que partiram do fotograma de corte');
+  assert.ok(rows.some((r: any) => r.meta.chained === false), 'e clipes que partiram da fotografia (início de cada pessoa)');
+});
