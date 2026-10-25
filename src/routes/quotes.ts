@@ -47,7 +47,7 @@ export async function quoteSection(db: Db, iv: any, ep: any): Promise<string> {
     // Quem autorizou (sem carregar as fotografias; o orçamento confirma tudo).
     const allowed = {
       host: !!(iv.host_ai_video && iv.host_photo_rights && iv.host_photo_asset_id),
-      guest: iv.review_policy === 'guest_preview' && (await consent(db, iv.id, 'ai_video')) && (await consent(db, iv.id, 'publish_photo')) && !!(await db.one(`SELECT 1 FROM photos p WHERE p.interview_id=$1 AND ${usablePhotoSql('p')} LIMIT 1`, [iv.id])),
+      guest: (await consent(db, iv.id, 'ai_video')) && (await consent(db, iv.id, 'publish_photo')) && !!(await db.one(`SELECT 1 FROM photos p WHERE p.interview_id=$1 AND ${usablePhotoSql('p')} LIMIT 1`, [iv.id])),
     };
     const script = await db.one('SELECT segments FROM scripts WHERE id=$1', [ep.script_id]);
     const falas = rate ? candidateFalas(ep, script?.segments ?? [], allowed, rate) : [];

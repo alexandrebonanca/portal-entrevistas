@@ -361,7 +361,8 @@ export async function veoPlan(db: Db, iv: any, ep: any, o: { tier: VeoTier; phot
   const guestPhoto = guestRow ? await storage.get(guestRow.storage_key) : null;
   const hostVeo = !!hostPhoto && !!iv.host_ai_video;
   // O convidado só aparece no Veo se puder ver e aprovar o vídeo antes da publicação (política «o entrevistado aprova»).
-  const guestVeo = !!guestPhoto && (await consent('ai_video')) && iv.review_policy === 'guest_preview';
+  // Com qualquer política: quem aparece animado por IA vê e aprova o vídeo antes de publicar (approval.ts, guestMustApprove).
+  const guestVeo = !!guestPhoto && (await consent('ai_video'));
   const start = { host: hostVeo ? await startImage(hostPhoto!) : null, guest: guestVeo ? await startImage(guestPhoto!) : null };
   const voice = { host: iv.question_voice === 'male' ? 'male' : 'female', guest: iv.guest_voice === 'male' ? 'male' : 'female' } as const;
   const photoSha = { host: hostRow?.sha256 ?? null, guest: guestRow?.sha256 ?? null };
@@ -641,7 +642,7 @@ export async function renderVeoVideo(job: any, { db, progress }: Parameters<Hand
     const r = await db.one('SELECT review_policy FROM interviews WHERE id=$1', [iv.id]);
     // Fotografia acrescentada pelo entrevistador: exige ainda a autorização de edição (guest-photos.ts).
     if (plan.guestPhotoByHost && !(await consent('host_edit'))) return VEO_GUEST_WITHDRAWN;
-    return (await consent('ai_video')) && (await consent('publish_photo')) && r?.review_policy === 'guest_preview' ? null : VEO_GUEST_WITHDRAWN;
+    return r && (await consent('ai_video')) && (await consent('publish_photo')) ? null : VEO_GUEST_WITHDRAWN;
   };
   await progress(0, 100, 'A preparar as imagens');
   const asset = async (id: string | null) => { if (!id) return null; const a = await db.one('SELECT storage_key FROM assets WHERE id=$1 AND deleted_at IS NULL', [id]); return a ? storage.get(a.storage_key) : null; };
@@ -695,6 +696,12 @@ export async function renderVeoVideo(job: any, { db, progress }: Parameters<Hand
   }
   const want = plan.segs.filter(s => reused.has(s.id) || gen.includes(s));
   if (rebuildOf && !reused.size) throw new PermanentError('Não há falas do entrevistador já pagas com clipes guardados para reconstruir o vídeo.');
+  // Antes de pagar: quem autorizou e não pode ser animado (sem fotografia utilizável) faz parar o trabalho, em vez de um vídeo
+  // em que essa pessoa aparece só em fotografia (o administrador e o gestor da entidade; no orçamento, a seleção já o diz).
+  if (!quote && !rebuildOf) {
+    if ((await consent('ai_video')) && !plan.guestVeo) throw new PermanentError('O entrevistado autorizou a animação, mas não há uma fotografia dele que se possa usar (sem fotografia, ou sem a autorização de publicação das fotografias): escolha ou acrescente uma em Produção → «Fotografia do entrevistado» antes de gerar o vídeo.');
+    if (iv.host_ai_video && !plan.hostVeo) throw new PermanentError('Autorizou o vídeo por IA, mas falta a sua fotografia ou a declaração de direitos sobre ela (em Editar).');
+  }
 
   const transcribe = transcribeVeoClip;
   const judge = (c: Chunk, words: Word[], checked: boolean, fullText?: string) => {
@@ -967,7 +974,9 @@ export async function renderVeoVideo(job: any, { db, progress }: Parameters<Hand
           if (++filteredByRole[role] >= veoTuning.roleFilterLimit && !okByRole[role] && !roleBlocked.has(role)) {
             roleBlocked.add(role);
             roleCause[role] = u.cause ?? null;
-            console.error(`[veo] fotografia do ${role === 'host' ? 'entrevistador' : 'convidado'} recusada pelos filtros da Google em ${filteredByRole[role]} pedaços: as falas seguintes ficam em fotografia`);
+            console.error(`[veo] fotografia do ${role === 'host' ? 'entrevistador' : 'convidado'} recusada pelos filtros da Google em ${filteredByRole[role]} pedaços: o trabalho pára`);
+            // Pára já (não monta um vídeo sem esta pessoa animada): os clipes pagos ficam guardados e são reaproveitados.
+            stop(new PermanentError(roleRefused(role, roleCause[role])));
           }
         }
         return 'failed';
@@ -994,6 +1003,12 @@ export async function renderVeoVideo(job: any, { db, progress }: Parameters<Hand
       if (!u.chosen && !u.problem && u.atts.length + u.failures === 0) { const t = { u, fala: s }; tasksA.push(t); g.tasks.push(t); }
     }
     if (g.tasks.length) groupsA.push(g);
+  }
+  // Prova de cada pessoa primeiro: a 1.ª fala do entrevistador e a do convidado vão à frente, para uma fotografia recusada
+  // pela Google se saber logo no início (e o trabalho parar antes de pagar o resto).
+  for (const role of ['guest', 'host']) {
+    const k = groupsA.findIndex(g => g.fala.role === role);
+    if (k > 0) groupsA.unshift(...groupsA.splice(k, 1));
   }
   const firstPassOf = (s: PlanSeg) => tasksA.filter(x => x.fala === s).length;
   // Passagem A: uma fala só arranca se o teto que resta cobrir a 1.ª passagem dela inteira (à duração máxima do motor).
@@ -1093,6 +1108,15 @@ export async function renderVeoVideo(job: any, { db, progress }: Parameters<Hand
       const u = us.find(x => !x.chosen)!;
       const best = [...u.atts].filter(a => a.checked)[0];
       falaOut.set(s.id, { clips: null, reason: falaReasonOf(unitProblem(false, !!best, u.atts.some(a => !a.checked), u.problem)) });
+    }
+  }
+  // Uma pessoa com falas a animar ficou sem nenhuma: não se monta um vídeo em que ela aparece só em fotografia.
+  // (no orçamento, a liquidação cobra só o que saiu animado; a recusa da fotografia já parou o trabalho mais acima)
+  if (!quote) for (const role of ['host', 'guest'] as const) {
+    const mine = want.filter(s => s.role === role);
+    if (mine.length && !mine.some(s => falaOut.get(s.id)?.clips)) {
+      const r = falaOut.get(mine[0].id)?.reason;
+      throw new PermanentError(roleNotAnimated(role, r ? (FALA_REASON[r] ?? r) : 'os clipes não passaram na verificação'));
     }
   }
   // Nenhum pedaço teve clipe (ex.: a Google recusou ou falhou todos os pedidos, ou o modelo deixou de existir): um vídeo só
@@ -1254,7 +1278,7 @@ export async function renderVeoVideo(job: any, { db, progress }: Parameters<Hand
       `UPDATE episodes e SET video_asset_id=$2, video_lang=$3 FROM interviews i
        WHERE e.id=$1 AND i.id=e.interview_id AND NOT e.stale AND e.status='preview'
          AND (NOT $4::boolean OR (i.host_ai_video AND i.host_photo_rights)) AND (NOT $5::boolean OR i.host_photo_rights)
-         AND (NOT $6::boolean OR (i.review_policy='guest_preview' AND COALESCE((SELECT c.granted FROM consents c WHERE c.interview_id=i.id AND c.purpose='ai_video' ORDER BY c.created_at DESC LIMIT 1), false)))
+         AND (NOT $6::boolean OR (COALESCE((SELECT c.granted FROM consents c WHERE c.interview_id=i.id AND c.purpose='ai_video' ORDER BY c.created_at DESC LIMIT 1), false)))
          AND (NOT $7::boolean OR COALESCE((SELECT c.granted FROM consents c WHERE c.interview_id=i.id AND c.purpose='publish_photo' ORDER BY c.created_at DESC LIMIT 1), false))
          AND (NOT $8::boolean OR (i.review_policy='guest_preview' AND COALESCE((SELECT c.granted FROM consents c WHERE c.interview_id=i.id AND c.purpose='host_edit' ORDER BY c.created_at DESC LIMIT 1), false)))
          AND COALESCE((SELECT a.decision FROM approvals a WHERE a.episode_id=e.id AND a.actor='guest' AND a.valid ORDER BY a.created_at DESC LIMIT 1), '') <> 'changes'
@@ -1355,6 +1379,12 @@ export const VEO_SCRIPT_REPLACED = 'O guião deste episódio foi substituído: a
 export const VEO_NEEDS_QUOTE = 'A animação com o Google Veo faz-se por orçamento: calcule o orçamento e aceite-o (o valor fica cativo e só se cobram as falas animadas e verificadas). Sem orçamento, só a geram o administrador e o gestor de uma entidade com credenciais Google próprias.';
 export const VEO_ENTITY_CREDS_GONE = 'As credenciais Google da entidade foram retiradas durante a geração: nada mais foi enviado à Google. Sem elas, a animação do gestor faz-se por orçamento, com créditos.';
 export const VEO_HOST_WITHDRAWN = 'A autorização do entrevistador para o Google Veo foi retirada: nada mais foi enviado à Google e o vídeo não foi ligado ao episódio.';
+/** Fotografia de uma pessoa recusada pela Google (filtros): o trabalho pára sem montar o vídeo e diz o que fazer. */
+export const roleRefused = (role: string, cause?: string | null) =>
+  `A Google recusou animar a fotografia do ${role === 'host' ? 'entrevistador' : 'entrevistado'}${cause ? ` (${cause})` : ''}. O vídeo não foi montado, para não sair sem ${role === 'host' ? 'o entrevistador' : 'o entrevistado'} animado; os clipes já pagos ficam guardados e são reaproveitados. ${role === 'host' ? 'Use outra fotografia sua em Editar' : 'Escolha ou acrescente outra fotografia do entrevistado em Produção → «Fotografia do entrevistado»'} e gere o vídeo de novo.`;
+/** Uma pessoa autorizada ficou sem nenhuma fala animada: o trabalho pára sem montar o vídeo. */
+export const roleNotAnimated = (role: string, why: string) =>
+  `Nenhuma fala do ${role === 'host' ? 'entrevistador' : 'entrevistado'} ficou animada (${why}). O vídeo não foi montado; os clipes já pagos ficam guardados e são reaproveitados quando gerar de novo.`;
 export const VEO_GUEST_WITHDRAWN = 'A autorização do convidado para o Google Veo foi retirada: nada mais foi enviado à Google e o vídeo não foi ligado ao episódio.';
 export const VEO_QUOTE_CLOSED = 'O orçamento já não está em curso (anulado, cancelado ou liquidado): nada mais foi enviado à Google.';
 export const VEO_QUOTE_EXPIRED = 'O orçamento passou a validade antes de a produção terminar: os créditos cativos voltaram ao saldo. Peça um orçamento novo.';

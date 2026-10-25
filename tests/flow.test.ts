@@ -559,13 +559,15 @@ test('vídeo com o Google Veo: autorização própria, som dos clipes, verifica�
   // gravar uma revisão do guião não apaga o pedido de alterações do convidado
   assert.equal((await db.one(`SELECT count(*)::int n FROM approvals WHERE episode_id=$1 AND actor='guest' AND valid AND decision='changes'`, [ep.id])).n, 1);
 
-  // com a política «só o entrevistador aprova», o convidado não entra no Veo
+  // com a política «só o entrevistador aprova», o convidado que autorizou entra no Veo na mesma (e aprova o vídeo antes de publicar)
   await db.query(`UPDATE approvals SET valid=false WHERE episode_id=$1`, [ep.id]);
   await db.query(`UPDATE interviews SET review_policy='host_only' WHERE id=$1`, [ivId]);
   await post(`/entrevistas/${ivId}/episodio/${ep.id}/video`, { lang: 'en', engine: 'veo' }, owner);
   await drain();
   const vm = (await db.one('SELECT a.meta FROM episodes e JOIN assets a ON a.id=e.video_asset_id WHERE e.id=$1', [ep.id])).meta;
-  assert.equal(vm.guestAiVideo, false); assert.equal(vm.hostAiVideo, true);
+  assert.equal(vm.guestAiVideo, true); assert.equal(vm.hostAiVideo, true);
+  const { guestMustApprove } = await import('../src/approval.ts');
+  assert.equal(guestMustApprove({ review_policy: 'host_only' }, vm), true, 'o convidado animado aprova o vídeo');
   await db.query(`UPDATE interviews SET review_policy='guest_preview' WHERE id=$1`, [ivId]);
 
   // vídeo Veo com o convidado e depois mudança para «só o entrevistador aprova»: o vídeo sai e não se publica sem ele

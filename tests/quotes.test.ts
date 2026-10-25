@@ -755,13 +755,14 @@ test('nenhum pedaço com clipe: o vídeo não se liga ao episódio e as aprovaç
   } finally { V.veoMock.outcome = null; }
   const j = await lastJob();
   assert.equal(j.state, 'failed');
-  assert.match(j.error, /Nenhuma fala ficou animada e a Google não devolveu nenhum clipe \([^)]*recusada pelo filtro da Google[^)]*\): o vídeo não foi ligado ao episódio e as aprovações mantêm-se\./);
+  // a fotografia recusada pára o trabalho logo (sem montar o vídeo), com o que fazer a seguir
+  assert.match(j.error, /A Google recusou animar a fotografia do (entrevistador|entrevistado)[^.]*\. O vídeo não foi montado/);
   assert.equal((await db.one('SELECT video_asset_id FROM episodes WHERE id=$1', [epId])).video_asset_id, ep0.video_asset_id, 'o vídeo do episódio não mudou');
   assert.equal((await db.one('SELECT valid FROM approvals WHERE id=$1', [ap.id])).valid, true, 'a aprovação mantém-se');
-  assert.match((await get(`/entrevistas/${ivId}/producao`, cli.cookie)).body, /A última geração do vídeo não terminou: Nenhuma fala ficou animada/);
+  assert.match((await get(`/entrevistas/${ivId}/producao`, cli.cookie)).body, /A última geração do vídeo não terminou: A Google recusou animar a fotografia/);
 });
 
-test('fotografia recusada pelos filtros: depois de N pedaços bloqueados dessa pessoa, as falas seguintes não se tentam', async () => {
+test('fotografia recusada pelos filtros: depois de N pedaços bloqueados dessa pessoa, o trabalho pára sem montar o vídeo (e diz o que fazer)', async () => {
   await rejectAll();
   await db.query(`DELETE FROM veo_ops WHERE interview_id=$1`, [ivId]); // tentativas anteriores (dos testes de cima) não contam
 
@@ -773,16 +774,12 @@ test('fotografia recusada pelos filtros: depois de N pedaços bloqueados dessa p
     assert.match(msg(await post(`/entrevistas/${ivId}/episodio/${epId}/video`, { engine: 'veo', lang: 'en' }, admin)), /Geração do vídeo iniciada/);
     await drain();
   } finally { V.veoMock.outcome = null; V.veoTuning.roleFilterLimit = 3; }
+  const before = (await db.one('SELECT video_asset_id FROM episodes WHERE id=$1', [epId])).video_asset_id;
   const j = await lastJob();
-  assert.equal(j.state, 'done', j.error);
-  const meta = (await db.one('SELECT a.meta FROM episodes e JOIN assets a ON a.id=e.video_asset_id WHERE e.id=$1', [epId])).meta;
-  const guest = meta.fidelity.filter((f: any) => f.role === 'guest');
-  const tried = guest.filter((f: any) => f.problem === 'filtered').length;
-  assert.ok(tried >= 1 && tried <= 2, `tentados: ${tried} ${JSON.stringify(guest.map((f: any) => f.problem))}`);
-  assert.ok(guest.length === tried || guest.filter((f: any) => f.problem !== 'filtered').every((f: any) => f.problem === 'filtered_role' || f.problem === 'skipped'), 'os restantes ficam por tentar (sem custo)');
-  assert.ok(meta.fidelity.filter((f: any) => f.role === 'host').every((f: any) => f.ok), 'o entrevistador anima-se');
-  const page = (await get(`/entrevistas/${ivId}/producao`, admin)).body;
-  if (guest.some((f: any) => f.problem === 'filtered_role')) assert.match(page, /não tentado: a Google recusa animar esta fotografia/);
+  assert.equal(j.state, 'failed');
+  assert.match(j.error, /A Google recusou animar a fotografia do entrevistado \(.*filtros.*\)\. O vídeo não foi montado.*«Fotografia do entrevistado»/);
+  assert.equal((await db.one('SELECT video_asset_id FROM episodes WHERE id=$1', [epId])).video_asset_id, before, 'nenhum vídeo sem o convidado animado');
+  assert.match((await get(`/entrevistas/${ivId}/producao`, admin)).body, /A última geração do vídeo não terminou: A Google recusou animar a fotografia do entrevistado/);
 });
 
 test('palavras a mais só nas pontas do clipe: aceita-se e corta-se à volta do texto certo; no meio não', () => {
