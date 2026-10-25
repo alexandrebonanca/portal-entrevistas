@@ -131,7 +131,7 @@ ${lines.map((l, i) => `<text x="${W / 2}" y="${y0 + 46 + i * lh}" text-anchor="m
   return sharp(base).composite([{ input: svg }]).jpeg({ quality: 86 }).toBuffer();
 }
 
-function run(bin: string, args: string[], timeoutMs: number): Promise<{ code: number; stderr: string }> {
+export function run(bin: string, args: string[], timeoutMs: number): Promise<{ code: number; stderr: string }> {
   return new Promise((resolve, reject) => {
     const p = spawn(bin, args, { stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true });
     let stderr = '';
@@ -211,8 +211,21 @@ export interface Card { bg: Buffer; glow: Buffer; layers: { png: Buffer; x: numb
 
 export type Part =
   | { kind: 'still'; startMs: number; endMs: number; shots: Shot[] }
-  | { kind: 'anim'; startMs: number; endMs: number; base: Buffer; clip: Buffer | (() => Promise<Buffer>); clipOffsetMs?: number; notice?: string; cues: { startMs: number; endMs: number; text: string }[] }
+  | { kind: 'anim'; startMs: number; endMs: number; base: Buffer; clip: Buffer | (() => Promise<Buffer>); clipOffsetMs?: number; notice?: string; cues: { startMs: number; endMs: number; text: string }[]; zoom?: number }
   | { kind: 'card'; startMs: number; endMs: number; card: Card };
+
+/**
+ * Plano apertado («punch-in») num corte entre dois clipes seguidos da mesma pessoa: o clipe seguinte entra ~18% mais perto,
+ * centrado um pouco acima do meio (a cara). É a técnica das entrevistas filmadas com uma só câmara para que o corte se leia
+ * como uma mudança de plano e não como um salto da imagem (jump cut) quando a pose volta à da fotografia.
+ */
+export const PUNCH_IN = 1.18;
+/** Filtro do clipe animado: à altura do vídeo (zoom 1) ou ampliado e recortado ao enquadramento (zoom > 1). */
+export function animClipFilter(zoom: number | undefined, w = W, h = H) {
+  if (!zoom || zoom <= 1) return `setpts=PTS-STARTPTS,scale=-2:${h},setsar=1`;
+  const zh = Math.round((h * zoom) / 2) * 2;
+  return `setpts=PTS-STARTPTS,scale=-2:${zh},crop=w=min(iw\\,${w}):h=${h}:x=(iw-min(iw\\,${w}))/2:y=(ih-${h})*0.35,setsar=1`;
+}
 
 /** Fundo dos cartões: imagem de CARD_BG, recortada a W×H numa posição que muda a cada fotograma (expressões do FFmpeg 4.1). */
 export const CARD_BG = { w: 1600, h: 900, glow: 640 };
@@ -383,7 +396,7 @@ export async function encodeComposite(ffmpeg: string, parts: Part[], frameFor: (
           await writeFile(over, await animatedOverlay(text, part.notice));
           const d = ((n * 40) / 1000).toFixed(3);
           const c = await gfx('v1', part.startMs + a0, activeIn(part.startMs + a0, part.startMs + a1), 3);
-          const g = [`[1:v]setpts=PTS-STARTPTS,scale=-2:${H},setsar=1[c]`, `[0:v]scale=${W}:${H},setsar=1[bg]`, '[bg][c]overlay=(W-w)/2:(H-h)/2:eof_action=repeat[v0]', '[v0][2:v]overlay=0:0[v1]', ...c.g, `[${c.cur}]fps=25,format=yuv420p[out]`].join(';');
+          const g = [`[1:v]${animClipFilter(part.zoom)}[c]`, `[0:v]scale=${W}:${H},setsar=1[bg]`, '[bg][c]overlay=(W-w)/2:(H-h)/2:eof_action=repeat[v0]', '[v0][2:v]overlay=0:0[v1]', ...c.g, `[${c.cur}]fps=25,format=yuv420p[out]`].join(';');
           const r = await run(ffmpeg, ['-y', '-v', 'error', '-threads', '2', '-loop', '1', '-framerate', '25', '-i', base, '-ss', ((off + a0) / 1000).toFixed(3), '-t', d, '-i', clip, '-loop', '1', '-framerate', '25', '-i', over, ...c.ins,
             '-filter_complex', g, '-map', '[out]', ...enc, '-threads', '2', '-frames:v', String(n), '-an', piece], 600_000);
           if (r.code !== 0) throw new Error('Falha a codificar parte animada: ' + r.stderr.slice(-300));
@@ -447,7 +460,9 @@ export async function buildAudioTrack(ffmpeg: string, pieces: AudioPiece[]): Pro
         if (!f) { f = join(dir, `s${i}.${p.ext ?? 'mp3'}`); await writeFile(f, typeof p.src === 'function' ? await p.src() : p.src); written.set(p.src, f); }
         // Som de um clipe de vídeo IA (mp4): o volume muda de clipe para clipe; normaliza-se ao nível do episódio (-16 LUFS, o
         // mesmo do assembleEpisode), para não haver saltos de volume entre clipes nem face às falas com a voz do episódio.
-        const af = p.ext === 'mp4' ? 'loudnorm=I=-16:TP=-1.5:LRA=11,apad' : 'apad';
+        // Fades de poucos milissegundos nas pontas de cada clipe: sem estalidos nem saltos de ruído de fundo nas junções.
+        const fadeOut = Math.max(0, p.durMs / 1000 - 0.03).toFixed(3);
+        const af = p.ext === 'mp4' ? `afade=t=in:d=0.015,loudnorm=I=-16:TP=-1.5:LRA=11,apad,afade=t=out:st=${fadeOut}:d=0.03` : 'apad';
         r = await run(ffmpeg, ['-y', '-v', 'error', '-ss', ((p.offsetMs ?? 0) / 1000).toFixed(3), '-i', f, '-vn', '-af', af, '-t', d, '-ar', '44100', '-ac', '2', '-c:a', 'pcm_s16le', o], 120_000);
         if (r.code !== 0) console.error(`[video] troço de áudio ${i} sem som utilizável, fica silêncio: ${r.stderr.slice(-200)}`);
       }

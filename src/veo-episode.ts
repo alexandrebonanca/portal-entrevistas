@@ -4,7 +4,7 @@ import { storage } from './storage.ts';
 import { sha256, esc } from './lib.ts';
 import { saveAsset, hasAudioStream } from './media.ts';
 import { transcribeClip, translateSubtitleCues, aiAvailable, newMeter, meterUsd, UNTRANSLATED, type Word } from './ai/openai.ts';
-import { renderBases, subtitleFrame, encodeComposite, buildAudioTrack, mockTalkingClip, type Part, type Shot, type Scene, type AudioPiece } from './video.ts';
+import { renderBases, subtitleFrame, encodeComposite, buildAudioTrack, mockTalkingClip, PUNCH_IN, type Part, type Shot, type Scene, type AudioPiece } from './video.ts';
 import { cuesFromWords, splitByWeights } from './subtitles.ts';
 import { peopleOf, cardBackground, titleCard, endCard, chapterTitles, planGraphics, graphicsOverlays, graphicsMeta, TITLE_CARD_MS, END_CARD_MS, type GfxSpan } from './graphics.ts';
 import { veoSubmit, veoAwait, veoEpisodePrompt, VeoQuotaError, VeoCancelled, VeoBusy, VeoFiltered, VeoOpError, VeoUnsupported, VeoCredsMissing, isKeyRejected, opOfCurrentCreds, veoTier, veoModel, veoBackend, veoConfigured, veoCredsScope, veoScopeId, veoPricePerSec, veoPriceOfModel, veoKeyModel, veoLabel, tierOfModel, type VeoTier } from './talking.ts';
@@ -1077,11 +1077,15 @@ export async function renderVeoVideo(job: any, { db, progress }: Parameters<Hand
     spans.push({ id: INTRO_SPAN_ID, role: 'host', kind: INTRO_SPAN_ID, startMs: t0, endMs: t, personShot: true });
   };
   if (!plan.segs.some(s => s.kind === 'disclosure')) { addIntro(); addCard(cards.title, TITLE_CARD_MS); }
+  // Plano de cada clipe: dois clipes seguidos da mesma pessoa alternam entre o plano normal e o apertado (PUNCH_IN), para o
+  // corte se ler como mudança de plano; a primeira fala depois de outra pessoa, de uma fotografia ou de um cartão é normal.
+  let shotRole: string | null = null, shotTight = false;
   for (const s of plan.segs) {
     const o = falaOut.get(s.id), t0 = t;
     if (!o?.clips) {
       if (o) fallbackSegs.push(s.id);
       const from = s === plan.segs[0] ? 0 : s.startMs, dur = snap(s.endMs - from);
+      shotRole = null;
       if (dur >= 40) {
         for (const c of epCues) if (c.endMs > from && c.startMs < from + dur) fixedCues.push({ id: c.id, startMs: Math.max(t, t + c.startMs - from), endMs: Math.min(t + dur, t + c.endMs - from), text: c.text });
         const still: Part = { kind: 'still', startMs: t, endMs: t + dur, shots: [] };
@@ -1100,13 +1104,14 @@ export async function renderVeoVideo(job: any, { db, progress }: Parameters<Hand
         const cues = cuesFromWords(inWin.length ? inWin : w, { id: `${s.id}-${c.k}`, role: s.role, text: at.heard, startMs: t - a, durationMs: clipMs }, 'en');
         for (const q of cues) if (q.endMs > t && q.startMs < t + dur) veoCues.push({ id: q.id, startMs: Math.max(t, q.startMs), endMs: Math.min(t + dur, q.endMs), text: q.text });
         const load = () => storage.get(at.storageKey);
-        parts.push({ kind: 'anim', startMs: t, endMs: t + dur, base: s.role === 'host' ? bases.animHost : bases.animGuest, clip: load, clipOffsetMs: a, notice: VEO_NOTICE, cues: [] });
+        shotTight = shotRole === s.role ? !shotTight : false; shotRole = s.role;
+        parts.push({ kind: 'anim', startMs: t, endMs: t + dur, base: s.role === 'host' ? bases.animHost : bases.animGuest, clip: load, clipOffsetMs: a, notice: VEO_NOTICE, cues: [], zoom: shotTight ? PUNCH_IN : 1 });
         audioPieces.push({ durMs: dur, src: load, ext: 'mp4', offsetMs: a });
         t += dur;
       }
     }
     if (t > t0) spans.push({ id: s.id, role: s.role, kind: s.kind, startMs: t0, endMs: t, personShot: !!o?.clips || stillScene(s) === s.role });
-    if (s.kind === 'disclosure') { addIntro(); addCard(cards.title, TITLE_CARD_MS); }
+    if (s.kind === 'disclosure') { addIntro(); addCard(cards.title, TITLE_CARD_MS); shotRole = null; }
   }
   // Cartão final (entra pelo preto, também depois de uma fala animada: substitui o fecho de 1,6 s na capa).
   const speechEnd = t;

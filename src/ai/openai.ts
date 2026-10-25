@@ -299,7 +299,7 @@ export async function readQuestion(text: string, gender: 'female' | 'male', lang
 }
 
 /**
- * Qualidade das imagens do gpt-image-1 (OPENAI_IMAGE_QUALITY, 'medium' por omissão, o preço de PRICE_IMAGE_EACH, ~0,04 USD
+ * Qualidade das imagens do gpt-image-1.5 (OPENAI_IMAGE_QUALITY, 'medium' por omissão, o preço de PRICE_IMAGE_EACH, ~0,04 USD
  * a 1024×1024). Antes ia sem qualidade ('auto', que pode ser a alta, ~0,17 USD). Só nos modelos gpt-image (os outros
  * modelos de imagem não aceitam estes valores).
  */

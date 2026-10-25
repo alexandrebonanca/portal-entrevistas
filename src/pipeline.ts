@@ -20,6 +20,7 @@ import { reverseDebit } from './wallet.ts';
 import { isUuid } from './support.ts';
 import { purgeUnpublishedPhotoVideos } from './uploads.ts';
 import { notifyJob } from './notify.ts';
+import { veoContinuity } from './lab-continuity.ts';
 import { SCRIPT_SEGMENT_MAX, SUBTITLE_LANGS } from './limits.ts';
 
 const usage = (db: Db, interviewId: string, kind: string, quantity: number, cost: number) =>
@@ -96,6 +97,8 @@ export async function prepareScript(db: Db, interviewId: string) {
 }
 
 export const handlers: Record<string, Handler> = {
+  // Laboratório: continuidade entre clipes do Veo (lab-continuity.ts).
+  veo_continuity: veoContinuity,
   async transcribe_asset(job, { db }) {
     const iv = await db.one('SELECT * FROM interviews WHERE id=$1', [job.interview_id]);
     const { assetId, sourceKind, sourceId, fillQuestion } = job.input;

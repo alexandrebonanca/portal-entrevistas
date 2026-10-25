@@ -6,6 +6,8 @@ import { enqueue } from '../jobs.ts';
 import { lipsyncModel, replicatePricePerSec } from '../lipsync.ts';
 import { S } from '../settings.ts';
 import { helpNav } from '../support.ts';
+import { LAB_CONTINUITY_MAX_CHUNKS } from '../lab-continuity.ts';
+import { chunkText } from '../veo-episode.ts';
 import { PROVIDERS, providerReady, isVeoProvider, veoBackend, veoModel, verifySignedAsset, presenterDirection } from '../talking.ts';
 
 /** Laboratório (só administradores): experiências com retratos fictícios. */
@@ -26,7 +28,20 @@ export async function labRoutes(app: FastifyInstance) {
     const cmp = await db.query(`SELECT * FROM jobs WHERE kind='talking_compare' ORDER BY created_at DESC LIMIT 5`);
     const cmpLive = cmp.find((r: any) => ['queued', 'running'].includes(r.state));
     const usd = (n: number | null | undefined) => (n == null ? '—' : '$' + Number(n).toFixed(2));
+    const cont = await db.query(`SELECT * FROM jobs WHERE kind='veo_continuity' ORDER BY created_at DESC LIMIT 5`);
+    const contLive = cont.find((r: any) => ['queued', 'running'].includes(r.state));
+    const contHtml = `<div class="card"><h2 style="margin-top:0">Cortes entre clipes do Veo</h2>
+<p>A mesma fala, dividida em pedaços como no vídeo premium, montada de três maneiras para comparar os cortes: <strong>A</strong> como hoje (cada clipe parte do retrato), <strong>B</strong> igual com plano apertado alternado nos cortes (sem custo extra) e <strong>C</strong> encadeado (cada clipe parte do fotograma onde o anterior foi cortado). Retrato fictício; até ${LAB_CONTINUITY_MAX_CHUNKS} pedaços.</p>
+<form method="post" action="/admin/laboratorio/continuidade" onsubmit="return confirm('Correr a experiência (5 clipes do Veo, ~$4 no Fast)?')">
+<label for="ctt">Fala (inglês, 2 a 3 frases)</label><textarea id="ctt" name="text" rows="3" maxlength="600">Today we are talking about the energy transition in Portugal and what it means for families. First, the electricity grid has to carry far more solar and wind power than it was built for. Second, we need storage, so that the energy of a sunny afternoon is still there at night.</textarea>
+<label for="ctier">Nível</label><select id="ctier" name="tier" style="width:auto"><option value="fast">Veo 3.1 Fast</option><option value="lite">Veo 3.1 Lite</option></select>
+<p><button class="accent" ${contLive ? 'disabled' : ''}>Comparar cortes</button></p></form>
+${contLive ? `<div class="flash" aria-live="polite">${esc(contLive.state === 'queued' ? 'Em fila' : contLive.progress_label || 'A correr')} — a página atualiza sozinha.<meta http-equiv="refresh" content="10"></div>` : ''}
+${cont.filter((r: any) => r.result?.variants).map((r: any) => `<h3>${fmtDate(r.created_at)} ${pill(r.state, 'ok')} <span class="hint">${esc(r.result.tier)} · ~${usd(r.result.usd)}</span></h3>
+<div class="grid3">${r.result.variants.map((v: any) => `<div class="card" style="margin:0"><strong>${esc(v.label)}</strong><video controls preload="metadata" src="/admin/laboratorio/media/${v.videoAssetId}" style="width:100%;border-radius:8px;background:#000;margin-top:6px"></video></div>`).join('')}</div>`).join('')}
+${cont[0] && !cont[0].result?.variants && cont[0].error ? `<p class="hint" style="color:var(--bad)">${esc(cont[0].error)}</p>` : ''}</div>`;
     const body = `<div class="wrap" style="padding-top:32px"><h1>Laboratório — retratos falantes</h1>${flash(q.ok)}${flash(q.e, 'bad')}
+${contHtml}
 <div class="card"><h2 style="margin-top:0">Comparação de modelos</h2>
 <p>Mesmo retrato fictício (pessoa que não existe) e a mesma frase em todos os modelos, para comparar realismo, tempo e custo lado a lado.</p>
 <form method="post" action="/admin/laboratorio/comparar" onsubmit="return confirm('Correr a comparação (custa alguns dólares no total)?')">
@@ -87,6 +102,17 @@ ${r.error ? `<p class="hint" style="color:var(--bad)">${esc(r.error)}</p>` : ''}
     await enqueue(db, { kind: 'talking_compare', input: { text, providers: chosen, direction }, dedupe: `compare:${Date.now()}` });
     await audit(db, req.user!.email, 'lab.compare_started', null, { providers: chosen });
     return reply.redirect('/admin/laboratorio?ok=' + encodeURIComponent('Comparação iniciada.'));
+  });
+
+  app.post('/admin/laboratorio/continuidade', async (req, reply) => {
+    if (!guard(req, reply)) return;
+    if (await db.one(`SELECT 1 FROM jobs WHERE kind='veo_continuity' AND state IN ('queued','running')`)) return reply.redirect('/admin/laboratorio?e=' + encodeURIComponent('Já há uma experiência de cortes a correr.'));
+    const b = req.body as any;
+    const text = String(b.text ?? '').replace(/\s+/g, ' ').trim().slice(0, 600);
+    if (chunkText(text).length < 2) return reply.redirect('/admin/laboratorio?e=' + encodeURIComponent('Escreva pelo menos duas frases (para haver cortes).'));
+    await enqueue(db, { kind: 'veo_continuity', input: { text, tier: b.tier === 'lite' ? 'lite' : 'fast' }, dedupe: `continuity:${Date.now()}` });
+    await audit(db, req.user!.email, 'lab.continuity_started', null);
+    return reply.redirect('/admin/laboratorio?ok=' + encodeURIComponent('Experiência de cortes iniciada.'));
   });
 
   app.get('/admin/laboratorio/media/:id', async (req, reply) => {

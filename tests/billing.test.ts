@@ -172,6 +172,28 @@ test('laboratório: só admin, corre a experiência (modo simulado) e mostra o v
   assert.match((await get('/admin/definicoes', admin)).body, /Replicate/);
 });
 
+test('laboratório de cortes: três montagens (como hoje, plano apertado, encadeado), clipe 1 pago uma vez', async () => {
+  const { runOne } = await import('../src/jobs.ts');
+  const { handlers } = await import('../src/pipeline.ts');
+  assert.equal((await post('/admin/laboratorio/continuidade', { text: 'One. Two.' }, user)).statusCode, 403);
+  assert.match(decodeURIComponent((await post('/admin/laboratorio/continuidade', { text: 'Only one sentence here' }, admin)).headers.location as string), /pelo menos duas frases/);
+  const text = 'Today we talk about energy in Portugal and what it means for families. First, the grid must carry much more solar and wind power. Second, we need storage for the night.';
+  const r = await post('/admin/laboratorio/continuidade', { text, tier: 'fast' }, admin);
+  assert.match(decodeURIComponent(r.headers.location as string), /iniciada/);
+  while (await runOne(db, handlers)) { /* */ }
+  const job = await db.one(`SELECT * FROM jobs WHERE kind='veo_continuity' ORDER BY created_at DESC LIMIT 1`);
+  assert.equal(job.state, 'done', job.error ?? '');
+  assert.deepEqual(job.result.variants.map((v: any) => v.id), ['same', 'punch', 'chain']);
+  const clips = await db.query(`SELECT meta->>'clip' AS c FROM assets WHERE kind='lab_video' AND meta->>'jobId'=$1 AND meta ? 'clip' ORDER BY 1`, [job.id]);
+  assert.deepEqual(clips.map((x: any) => x.c), ['A1', 'A2', 'A3', 'C2', 'C3'], 'o pedaço 1 serve às duas versões');
+  for (const v of job.result.variants) {
+    const m = await get(`/admin/laboratorio/media/${v.videoAssetId}`, admin);
+    assert.equal(m.statusCode, 200);
+    assert.equal(m.rawPayload.subarray(4, 8).toString('latin1'), 'ftyp');
+  }
+  assert.match((await get('/admin/laboratorio', admin)).body, /Cortes entre clipes do Veo[\s\S]*C — encadeado/);
+});
+
 test('laboratório comparativo: só modelos com chave, resultados lado a lado, URLs assinados', async () => {
   const { runOne } = await import('../src/jobs.ts');
   const { handlers } = await import('../src/pipeline.ts');

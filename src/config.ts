@@ -78,7 +78,7 @@ export const config = {
       transcribeTimestamps: env.OPENAI_MODEL_TIMESTAMPS ?? 'whisper-1',
       text: env.OPENAI_MODEL_TEXT ?? 'gpt-4.1',
       speech: env.OPENAI_MODEL_SPEECH ?? 'gpt-4o-mini-tts',
-      image: env.OPENAI_MODEL_IMAGE ?? 'gpt-image-1',
+      image: env.OPENAI_MODEL_IMAGE ?? 'gpt-image-1.5', // o gpt-image-1 foi desligado pela OpenAI a 23/10/2026
     },
     voices: { host: env.OPENAI_VOICE_HOST ?? 'coral', guest: env.OPENAI_VOICE_GUEST ?? 'onyx' },
     // Qualidade das imagens do gpt-image (low, medium, high): 'medium' é o preço de PRICE_IMAGE_EACH. Fora de `models`, como o assistente.
