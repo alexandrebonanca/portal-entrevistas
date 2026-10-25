@@ -26,6 +26,14 @@ const consent = async (db: Db, id: string, p: string) => !!(await db.one(`SELECT
  * Secção «Animação por orçamento» da página de produção: para o titular que não é administrador (ou para o administrador,
  * que só prepara o rascunho do cliente). Lista os orçamentos do episódio e o formulário das falas a animar.
  */
+/**
+ * Tabela de referência: créditos máximos do vídeo premium pela duração do vídeo (fala ≈ toda a duração, menos ~8 s de
+ * cartões; cada fala conta pelo menos 4 s). É o máximo: paga-se só o que sai animado e verificado.
+ */
+export const VIDEO_MINUTES = [1, 3, 5, 10, 15, 20, 30];
+export const creditsForVideoMin = (min: number, centsPerMin: number) => Math.ceil((min * centsPerMin) / 100);
+export const creditTable = (centsPerMin: number) => `<details><summary class="sans">Tabela de créditos por duração do vídeo</summary><table class="sans" style="max-width:360px"><thead><tr><th>Vídeo</th><th>Até</th></tr></thead><tbody>${VIDEO_MINUTES.map(m => `<tr><td>${m} min</td><td>${creditsForVideoMin(m, centsPerMin)} créditos</td></tr>`).join('')}</tbody></table><p class="hint">1 crédito = 1 € sem IVA. Valores máximos: paga só as falas animadas e verificadas.</p></details>`;
+
 export async function quoteSection(db: Db, iv: any, ep: any): Promise<string> {
   const owner = await db.one('SELECT id, role, entity_id FROM users WHERE id=$1', [iv.owner_id]);
   if (!owner || owner.role === 'admin') return '';
@@ -43,8 +51,12 @@ export async function quoteSection(db: Db, iv: any, ep: any): Promise<string> {
     };
     const script = await db.one('SELECT segments FROM scripts WHERE id=$1', [ep.script_id]);
     const falas = rate ? candidateFalas(ep, script?.segments ?? [], allowed, rate) : [];
+    // O cliente vê só o essencial: quantos créditos o vídeo premium deste episódio pode custar, o saldo e se tem de comprar.
+    const total = falas.reduce((n, f) => n + f.cents, 0), speech = falas.reduce((n, f) => n + f.sec, 0);
+    const w = await findWallet(db, owner.id, owner.entity_id), avail = w?.available_cents ?? 0, missing = Math.max(0, total - avail);
     let html = `<h3 id="orcamento">${VIDEO_PREMIUM}, por orçamento</h3>
-<p class="hint">${rate ? `Tarifa: ${esc(perMinuteLabel(rate.cents_per_min, vatRate, regime))}, medidos no áudio do episódio (cada fala conta pelo menos 4 s). ` : ''}1 crédito = 1 € sem IVA. O orçamento é grátis e não cativa nada; só o titular da entrevista o aceita. Paga apenas as falas que saírem animadas e verificadas.</p>`;
+<p class="sans">${rate ? `${esc(perMinuteLabel(rate.cents_per_min, vatRate, regime))}. ` : ''}Paga só as falas que saírem animadas e verificadas; o resto volta ao saldo.</p>
+${rate ? creditTable(rate.cents_per_min) : ''}`;
     if (quotes.length) html += `<ul class="sans">${quotes.map((q: any) => { const [l, k] = QUOTE_STATUS[q.status] ?? [q.status, '']; return `<li><a href="/entrevistas/${iv.id}/orcamentos/${q.id}">Orçamento de ${fmtDate(q.created_at)}</a> · ${pill(l, k)} · ${esc(priceLabel(q.price_cents, vatRate, regime))}${q.status === 'settled' ? ` · cobrados ${cr(q.charged_cents ?? 0)}, libertados ${cr(q.released_cents ?? 0)}` : ''}</li>`; }).join('')}</ul>`;
     if (block) return `${html}<p class="hint"><strong>${esc(block)}</strong></p>`;
     if (open) {
@@ -52,9 +64,12 @@ export async function quoteSection(db: Db, iv: any, ep: any): Promise<string> {
       return `${html}<p class="hint">Há um orçamento aceite em curso para este episódio: aguarde que a produção termine.${fila && !fila.running ? ` ${esc(queueLabel(fila, false))}.` : ''}</p>`;
     }
     if (!falas.length) return `${html}<p class="hint">Sem falas autorizadas para animar: o entrevistador autoriza o vídeo por IA em Editar; o convidado em «Autorizações das fotografias», e só com a política «o entrevistado aprova».</p>`;
-    return `${html}<form method="post" action="/entrevistas/${iv.id}/episodio/${ep.id}/orcamento"><div style="overflow-x:auto"><table class="sans"><thead><tr><th>Animar</th><th>Fala</th><th>Segundos</th><th>Créditos</th></tr></thead><tbody>
+    return `${html}<div class="card" style="margin:12px 0"><p class="sans" style="margin:0">Este episódio: <strong>${Math.round(speech / 6) / 10} min</strong> de fala animada → <strong>até ${cr(total)} créditos</strong>. Saldo: <strong>${cr(avail)} créditos</strong>.</p>
+${missing ? `<p class="sans" style="margin:8px 0 0;color:var(--bad)">Faltam <strong>${cr(missing)} créditos</strong> para garantir a produção até ao fim. <a class="btn ghost" href="/conta/creditos">Comprar créditos</a></p>` : '<p class="sans" style="margin:8px 0 0;color:var(--ok)">O saldo chega para a produção até ao fim.</p>'}</div>
+<form method="post" action="/entrevistas/${iv.id}/episodio/${ep.id}/orcamento">
+<details><summary class="sans">Escolher as falas a animar (opcional; por omissão, todas)</summary><div style="overflow-x:auto"><table class="sans"><thead><tr><th>Animar</th><th>Fala</th><th>Segundos</th><th>Créditos</th></tr></thead><tbody>
 ${falas.map(f => `<tr><td><input type="checkbox" name="fala" value="${esc(f.id)}" checked aria-label="Animar a fala ${esc(f.id)}"></td><td>${esc(roleLabel(f.role))} · ${esc(excerpt(f.text))}</td><td>${f.sec} s</td><td>${cr(f.cents)}</td></tr>`).join('')}</tbody></table></div>
-<p class="hint">Preço de cada fala antes do reaproveitamento: no orçamento, as falas já pagas passam a 0 créditos. As falas que tirar ficam em fotografia com a voz do episódio.</p>
+<p class="hint">As falas já pagas passam a 0 créditos no orçamento. As que tirar ficam em fotografia com a voz do episódio.</p></details>
 <label for="qlang">Legendas no vídeo</label><select id="qlang" name="lang" style="width:auto">${Object.keys(ep.subtitles ?? {}).map(l => `<option value="${esc(l)}" ${l === (ep.video_lang ?? 'pt-PT') ? 'selected' : ''}>${esc(l)}</option>`).join('')}<option value="">Sem legendas</option></select>
 <p><button class="accent">Calcular orçamento (grátis, não cativa nada)</button></p></form>`;
   });

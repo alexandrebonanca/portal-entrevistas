@@ -378,7 +378,8 @@ test('animação por fala: só com autorização específica; aviso e reserva', 
   const gtoken = /\/i\/([A-Za-z0-9_-]{40,})/.exec(tk.text_body)![1];
   const g = `gs=${cookies(await post(`/i/${gtoken}/abrir`, {}, '')).gs}`;
   const pg = await get('/entrevista/fotos', g);
-  assert.match(pg.body, /animated by AI/);
+  assert.doesNotMatch(pg.body, /Replicate/, 'a sincronização labial deixou de ser oferecida ao convidado');
+  assert.match(pg.body, /Google \(Veo\)/);
   assert.doesNotMatch(pg.body, /id="cam"/, 'depois de submeter não há captação nova');
   await post('/entrevista/fotos/autorizacoes', { photo_capture: '1', cover_use: '1', publish_photo: '1', animate_portrait: '1' }, g);
   const c = await db.one(`SELECT granted, text_snapshot FROM consents WHERE interview_id=$1 AND purpose='animate_portrait' ORDER BY created_at DESC LIMIT 1`, [ivId]);
@@ -621,7 +622,7 @@ test('vídeo IA: o Veo de quem não é administrador só por orçamento; os retr
   try {
     const pg = await get(`/entrevistas/${ivId}/producao`, owner);
     assert.doesNotMatch(pg.body, /value="lipsync"/); assert.doesNotMatch(pg.body, /value="veo"/);
-    assert.match(pg.body, /O vídeo premium \(animação por IA\) faz-se por orçamento, na secção «Vídeo premium \(animação por IA\)» abaixo/);
+    assert.match(pg.body, /Vídeo premium \(animação por IA\): veja os créditos e o seu saldo na secção «Vídeo premium \(animação por IA\)» abaixo/);
     assert.doesNotMatch(pg.body, /Google Veo 3\.1|Utilização registada|custo estimado/, 'sem modelos nem custos internos para o cliente');
     assert.match(pg.body, /id="orcamento"/, 'secção do orçamento');
     const before = await jobs();

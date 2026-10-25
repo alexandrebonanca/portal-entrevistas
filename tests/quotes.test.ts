@@ -123,6 +123,10 @@ test('orçamento: o administrador prepara o rascunho; tabela por fala, total e s
   assert.doesNotMatch(pg, /value="veo"/); assert.doesNotMatch(pg, /value="lipsync"/);
   assert.match(pg, /Vídeo premium \(animação por IA\), por orçamento/);
   assert.match(pg, /≈ 30 créditos por minuto de fala/);
+  // o essencial para o cliente: créditos do vídeo, saldo e se tem de comprar; tabela por duração do vídeo
+  assert.match(pg, /<td>10 min<\/td><td>300 créditos<\/td>/);
+  assert.match(pg, /de fala animada → <strong>até [\d,]+ créditos<\/strong>\. Saldo: <strong>/);
+  assert.match(pg, /Faltam <strong>[\d,]+ créditos<\/strong> para garantir a produção até ao fim|O saldo chega para a produção até ao fim/);
   for (const id of ALL) assert.match(pg, new RegExp(`name="fala" value="${id}" checked`));
   // o administrador prepara o rascunho (grátis, não cativa nada)
   const q = await newQuote(ALL, admin);

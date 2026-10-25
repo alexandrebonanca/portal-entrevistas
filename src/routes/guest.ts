@@ -422,7 +422,7 @@ ${q.audio_asset_id ? `<p><audio id="qaudio" controls preload="none" src="/api/g/
     const own = photos.filter((p: any) => p.added_by !== 'host').length;
     const msg = JSON.stringify({ camDenied: d.camDenied, max3: d.max3, stUp: d.stUp, stFail: d.stFail });
     return gpage(reply, lang, d.photos, `<h1>${esc(d.photos)}</h1><p>${esc(d.photosIntro)}</p>
-<form method="post" action="/entrevista/fotos/autorizacoes" class="card">${cb('photo_capture', d.c_photo, pc)}${cb('cover_use', d.c_cover, cu)}${cb('publish_photo', d.c_pubphoto, pp)}${cb('animate_portrait', d.c_animate, an)}${cb('ai_video', d.c_aivideo, av)}${cb('host_edit', consentText(lang, 'host_edit', iv.review_policy), he)}<button class="ghost">${esc(d.save)}</button></form>
+<form method="post" action="/entrevista/fotos/autorizacoes" class="card">${cb('photo_capture', d.c_photo, pc)}${cb('cover_use', d.c_cover, cu)}${cb('publish_photo', d.c_pubphoto, pp)}${cb('ai_video', d.c_aivideo, av)}${cb('host_edit', consentText(lang, 'host_edit', iv.review_policy), he)}<button class="ghost">${esc(d.save)}</button></form>
 ${pc && !done ? `<div class="card" id="cam" data-max="3" data-msg='${esc(msg)}'>
 <div class="thumbs" id="thumbs">${photos.map((p: any) => `<div><img alt="" src="/api/g/media/${p.asset_id}">${p.added_by === 'host' ? `<span class="hint">${esc(d.photoByHost)}</span>` : ''}<form method="post" action="/api/g/fotos/${p.id}/eliminar-form"><button class="ghost" style="width:100%">${esc(d.discard)}</button></form></div>`).join('')}</div>
 <video id="vid" class="cam" autoplay playsinline muted hidden></video><canvas id="cv" hidden></canvas><div class="status" id="pst" role="status"></div>

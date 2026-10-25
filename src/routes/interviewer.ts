@@ -175,7 +175,6 @@ ${objT && !iv.objective_text ? `<p class="hint">Transcrição do objetivo gravad
   ? `<option value="guest_preview" selected>O entrevistado vê e aprova a versão final antes de publicar</option>`
   : sel(iv.review_policy, [['guest_preview', 'O entrevistado vê e aprova a versão final antes de publicar'], ['host_only', 'Só o entrevistador aprova (não recomendado)']])}</select>${iv.collection_status !== 'draft' && iv.review_policy === 'guest_preview' ? '<p class="hint">Depois de enviado o convite, a política já não pode passar a «só o entrevistador aprova» (o entrevistado foi informado de que vê e aprova a versão final).</p>' : ''}
 <label class="check"><input type="checkbox" name="host_photo_rights" value="1" ${iv.host_photo_rights ? 'checked' : ''}> Tenho direito a usar a minha fotografia neste projeto</label>
-<label class="check"><input type="checkbox" name="host_animate" value="1" ${iv.host_animate ? 'checked' : ''}> Autorizo que a minha fotografia seja animada por IA no vídeo (boca sincronizada com a voz sintética), com o aviso visível «Retrato animado por IA»</label>
 <label class="check"><input type="checkbox" name="host_ai_video" value="1" ${iv.host_ai_video ? 'checked' : ''}> Autorizo que a minha fotografia e o texto aprovado das minhas falas sejam enviados à Google (Veo) para gerar um vídeo por IA em que apareço a dizer esse texto em inglês, com gestos e voz gerados pelo modelo (não é a minha voz), com o aviso visível «AI-generated video · AI voice»</label>
 <p><button class="accent">Guardar dados</button></p></form>
 
