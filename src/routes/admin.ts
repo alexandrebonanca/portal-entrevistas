@@ -100,9 +100,21 @@ export async function serviceTest(db: any, g: string, userEmail: string): Promis
     if (r.status !== 422 && r.status !== 400) throw new Error(`fal.ai respondeu ${r.status} (${fp}): ${body}`);
     msg = `fal.ai: chave válida (${fp}); verificação sem custo.`;
   } else if (g === 'WaveSpeed') {
+    if (!S('WAVESPEED_API_KEY')) throw new Error('falta a chave da WaveSpeed (a chave da API da HeyGen vai no grupo «HeyGen», mais abaixo)');
     const r = await fetch('https://api.wavespeed.ai/api/v3/predictions/00000000/result', { headers: { Authorization: `Bearer ${S('WAVESPEED_API_KEY')}` } });
     if (r.status === 401 || r.status === 403) throw new Error(`WaveSpeed recusou a chave (${r.status})`);
     msg = 'WaveSpeed: chave aceite.';
+  } else if (g === 'HeyGen') {
+    // Conta e saldo da API (GET /v3/users/me): sem custo.
+    const key = S('HEYGEN_API_KEY');
+    if (!key) throw new Error('falta a chave da API da HeyGen (platform.heygen.com → Chaves de API)');
+    const r = await fetch('https://api.heygen.com/v3/users/me', { headers: { 'x-api-key': key } });
+    const j: any = await r.json().catch(() => ({}));
+    if (r.status === 401 || r.status === 403) throw new Error(`a HeyGen recusou a chave (${r.status}): confirme a chave em platform.heygen.com → Chaves de API`);
+    if (!r.ok) throw new Error(`HeyGen respondeu ${r.status}: ${JSON.stringify(j).slice(0, 160)}`);
+    const d = j?.data ?? j;
+    const bal = d?.balance ?? d?.wallet?.balance ?? d?.remaining_balance;
+    msg = `HeyGen: chave válida${d?.email ? ` (${d.email})` : ''}${bal != null ? `; saldo da API: ${bal}` : ''}.`;
   } else if (g === 'Google') {
     // Vertex AI (conta de serviço) se houver; senão a Gemini API. Nunca gera vídeo.
     const { veoCheck } = await import('../talking.ts');
@@ -287,7 +299,7 @@ ${u.role === 'entity_admin' ? '<p class="sans">Gestor de entidade: sem subscriç
     return view(reply, 'Definições', `<h1>Definições</h1>${flash(q.ok)}${flash(q.e, 'bad')}${warn.map(w => flash(w, 'bad')).join('')}
 <p class="hint sans">As chaves são guardadas cifradas e nunca voltam a ser mostradas por inteiro. Deixe um campo em branco para manter o valor atual; escreva <code>-</code> para o apagar. Uma variável de ambiente com o mesmo nome serve de valor de reserva.</p>
 <form method="post" action="/admin/definicoes">
-${groups.map(g => `<div class="card"><div class="row"><h2 style="margin:0" class="grow">${esc(g)}</h2>${['OpenAI', 'Stripe', 'MailerSend', 'Moloni ON', 'Replicate', 'fal.ai', 'WaveSpeed', 'Google'].includes(g) ? `<button type="submit" formaction="/admin/definicoes/testar/${encodeURIComponent(g)}" class="ghost" name="testar" value="1">Guardar e testar</button>` : ''}</div>
+${groups.map(g => `<div class="card"><div class="row"><h2 style="margin:0" class="grow">${esc(g)}</h2>${['OpenAI', 'Stripe', 'MailerSend', 'Moloni ON', 'Replicate', 'fal.ai', 'WaveSpeed', 'HeyGen', 'Google'].includes(g) ? `<button type="submit" formaction="/admin/definicoes/testar/${encodeURIComponent(g)}" class="ghost" name="testar" value="1">Guardar e testar</button>` : ''}</div>
 ${g === 'Stripe' ? `<p class="hint sans">As chaves têm de ser as da conta Stripe da empresa vendedora${who ? ` (${esc(who)})` : ''}${acct.name ? `; no último «Guardar e testar» a conta chamava-se «${esc(acct.name)}»` : ''}. Endpoint do webhook a registar no Stripe: <code>${esc(config.baseUrl)}/webhooks/stripe</code> — eventos: ${esc(STRIPE_EVENTS)}. Taxas de IVA (manuais, sem IVA incluído): ${Object.keys(taxRates).length ? Object.entries(taxRates).map(([k, id]) => `${esc(k.replace(':', ' '))}% (${esc(id)})`).join(', ') : 'criadas na Stripe na primeira venda'}.</p>` : ''}
 ${g === SELLER_GROUP ? `<p class="hint sans">${esc(SELLER_HINT)}</p>` : ''}
 ${g === 'Google' ? `<p class="hint sans">${esc(VERTEX_HINT)}</p>` : ''}
