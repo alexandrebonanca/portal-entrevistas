@@ -265,17 +265,19 @@ let geminiNegativeOk = true; // a Gemini API pode não aceitar negativePrompt: d
  * Pedidos recusados (400/429) não são cobrados: o 429 espera e repete (até ~5 min), depois desiste com VeoQuotaError;
  * uma duração não aceite neste modo passa a 8 s. `model` só vale se for um modelo do serviço em vigor.
  */
-export async function veoSubmit(o: { image: Buffer; prompt: string; aspectRatio?: '16:9' | '9:16'; durationSeconds?: 4 | 6 | 8; onStatus?: (s: string) => Promise<void>; canSend?: () => Promise<boolean>; waitMs?: (attempt: number) => number; model?: string; tier?: VeoTier }): Promise<{ opName: string; dur: 4 | 6 | 8; model: string; tier: VeoTier; usdPerSec: number; backend: VeoBackend; scope: string; project: string | null }> {
+export async function veoSubmit(o: { image: Buffer; prompt: string; aspectRatio?: '16:9' | '9:16'; durationSeconds?: 4 | 6 | 8; onStatus?: (s: string) => Promise<void>; canSend?: () => Promise<boolean>; waitMs?: (attempt: number) => number; model?: string; tier?: VeoTier; lab?: { model?: string; personGeneration?: string; reference?: boolean } }): Promise<{ opName: string; dur: 4 | 6 | 8; model: string; tier: VeoTier; usdPerSec: number; backend: VeoBackend; scope: string; project: string | null }> {
   const backend = veoBackend(), scope = veoScopeId();
   const tier = o.tier ?? (o.model ? tierOfModel(o.model) : veoTier());
-  const model = o.model && Object.values(VEO_MODELS[backend]).includes(o.model) ? o.model : veoModel(tier, backend);
+  // (o Laboratório pode pedir outro modelo, a geração de pessoas e a fotografia como referência em vez de imagem inicial)
+  const model = o.lab?.model ?? (o.model && Object.values(VEO_MODELS[backend]).includes(o.model) ? o.model : veoModel(tier, backend));
   let dur: 4 | 6 | 8 = o.durationSeconds ?? 8;
   for (let attempt = 0; ; attempt++) {
     // Antes de CADA envio (também nas repetições após 429): autorização em vigor e trabalho não parado.
     if (o.canSend && !(await o.canSend())) throw new VeoCancelled('Envio à Google cancelado: autorização retirada ou trabalho parado');
     const negative = backend === 'vertex' || geminiNegativeOk;
-    const instances = [{ prompt: o.prompt, image: { bytesBase64Encoded: o.image.toString('base64'), mimeType: 'image/jpeg' } }];
-    const parameters = { aspectRatio: o.aspectRatio ?? '16:9', durationSeconds: dur, personGeneration: 'allow_adult', ...(negative ? { negativePrompt: VEO_NEGATIVE_PROMPT } : {}) };
+    const img = { bytesBase64Encoded: o.image.toString('base64'), mimeType: 'image/jpeg' };
+    const instances = [o.lab?.reference ? { prompt: o.prompt, referenceImages: [{ image: img, referenceType: 'asset' }] } : { prompt: o.prompt, image: img }];
+    const parameters = { aspectRatio: o.aspectRatio ?? '16:9', durationSeconds: dur, personGeneration: o.lab?.personGeneration ?? 'allow_adult', ...(negative ? { negativePrompt: VEO_NEGATIVE_PROMPT } : {}) };
     try {
       let op: any, project: string | null = null;
       if (backend === 'vertex') {

@@ -798,3 +798,8 @@ test('palavras a mais só nas pontas do clipe: aceita-se e corta-se à volta do 
   assert.equal(V.matchWindow(W('In the case of Spain and Portugal'), 'In the case of Portugal'), null, 'diferença no meio');
   assert.equal(V.matchWindow(W('one two three'), 'one two three'), null, 'igual: já passa sem cortar');
 });
+
+test('administrador: na opção do Veo vê quanto o mesmo vídeo custaria a um cliente, em créditos', async () => {
+  const pg = (await get(`/entrevistas/${ivId}/producao`, admin)).body;
+  assert.match(pg, /Para um cliente, este vídeo custaria até [\d,]+ créditos<\/strong> \([\d.]+ min de fala animada a 30 créditos por minuto\)\. Pedido pelo administrador: não usa créditos/);
+});

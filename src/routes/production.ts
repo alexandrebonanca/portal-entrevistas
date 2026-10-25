@@ -21,6 +21,7 @@ import { vatForProfile } from '../billing.ts';
 import { seller } from '../legal.ts';
 import { withVat, eurPt } from '../vat.ts';
 import { quoteSection } from './quotes.ts';
+import { rateForTier, candidateFalas, quoteTier } from '../quotes.ts';
 import { introProductionHint } from './intro.ts';
 import { helpNav, isUuid } from '../support.ts';
 import { purgeUnpublishedPhotoVideos, discardAsset } from '../uploads.ts';
@@ -423,6 +424,17 @@ ${episodeBefore ? REDO_BOX('gerar o episódio de novo') : ''}${episodeBefore ? p
       const isAdmin = req.user!.role === 'admin';
       // Veo sem orçamento: o administrador (custo interno) e o gestor da entidade com credenciais Google próprias (paga ela).
       const freeVeo = veoWithoutQuote(req.user, ent);
+      // O administrador não paga créditos, mas vê quanto o mesmo vídeo custaria a um cliente (para testar a oferta).
+      let adminCredits = 'Pedido pelo administrador: custo interno, sem orçamento.';
+      if (isAdmin) {
+        const rate = await rateForTier(db, quoteTier());
+        if (!rate) adminCredits = 'A tarifa do vídeo premium está desativada em Definições: os clientes ainda não o podem pedir. Pedido pelo administrador: não usa créditos (custo interno).';
+        else {
+          const fl = candidateFalas(ep, (await db.one('SELECT segments FROM scripts WHERE id=$1', [ep.script_id]))?.segments ?? [], { host: !!(iv.host_ai_video && iv.host_photo_rights && iv.host_photo_asset_id), guest: veoOk && guestHasPhoto }, rate);
+          const cents = fl.reduce((n, f) => n + f.cents, 0), sec = fl.reduce((n, f) => n + f.sec, 0);
+          adminCredits = `<strong>Para um cliente, este vídeo custaria até ${cr(cents)} créditos</strong> (${Math.round(sec / 6) / 10} min de fala animada a ${rate.cents_per_min / 100} créditos por minuto). Pedido pelo administrador: não usa créditos (custo interno).`;
+        }
+      }
       // Animação por orçamento (titular que não é administrador; o administrador só prepara o rascunho do cliente).
       const quoteHtml = !ep.stale ? await quoteSection(db, iv, ep) : '';
       // Introdução animada do entrevistador (oferecida, fora do orçamento): só nos vídeos com o Google Veo.
@@ -452,7 +464,7 @@ ${(() => { const est = animationEstimate(ep, iv, animOk, !!(iv.host_photo_rights
 ${!freeVeo ? `<p class="hint" style="margin:0 0 8px 30px">${VIDEO_PREMIUM}: veja os créditos e o seu saldo na secção «${VIDEO_PREMIUM}» abaixo.</p></fieldset>` : `<label class="check"><input type="radio" name="engine" value="veo" ${ve.clips && !veoBlock ? '' : 'disabled'}> ${isAdmin ? esc(veoLabel(tier)) : VIDEO_PREMIUM}: vídeo e voz gerados pelo modelo a partir da fotografia e do texto aprovado, aviso visível «AI-generated video · AI voice»</label>
 <p class="hint" style="margin:0 0 8px 30px">${veoBlock ? `<strong>${esc(veoBlock)}</strong> ` : ''}Entrevistador: ${hostVeo ? 'autorizado' : !iv.host_photo_asset_id ? 'sem fotografia (em Editar)' : 'sem autorização para o Veo (em Editar)'} · Convidado: ${guestVeo ? 'autorizado (vê e aprova o vídeo antes de publicar)' : !guestHasPhoto ? 'sem fotografia' : 'sem autorização para o Veo (o convidado pode dá-la em «Autorizações das fotografias», a partir do link do convite ou da pré-visualização)'}.
 ${ve.clips && !isAdmin ? `${ve.clips} clipes · demora ~${ve.minutes} min. ` : ''}${ve.clips && isAdmin ? `${ve.clips} clipes, ${ve.sec} s faturados a ~$${ve.usdPerSec.toFixed(2)}/s · custo estimado ~$${ve.usd.toFixed(2)}, até ~$${ve.usdMax.toFixed(2)} se todos precisarem de nova tentativa · demora ~${ve.minutes} min.` : ''}
-A voz é a do modelo (não a do episódio) e pode variar entre clipes. Cada clipe é transcrito e comparado palavra a palavra com o guião; se não coincidir, é gerado de novo uma vez, e se continuar a não coincidir essa fala fica com a fotografia fixa e a voz do episódio (nunca entra um clipe que diga outra coisa). O mesmo para quem não autorizou. Só antes de publicar; o vídeo novo exige nova aprovação${iv.review_policy === 'guest_preview' ? ' (o convidado vê-o na pré-visualização)' : ''}. ${isAdmin ? 'Pedido pelo administrador: custo interno, sem orçamento.' : 'Pedido pelo gestor da entidade, com as credenciais Google dela: sem orçamento nem créditos (a Google cobra no projeto Google da entidade).'}</p></fieldset>`}`; })()}<label for="vl" style="margin:0">Legendas no vídeo</label><select id="vl" name="lang" style="width:auto">${Object.keys(ep.subtitles ?? {}).map(l => `<option value="${esc(l)}" ${l === (ep.video_lang ?? 'pt-PT') ? 'selected' : ''}>${esc(l)}</option>`).join('')}<option value="">Sem legendas</option></select>${ep.video_asset_id ? `<span style="flex-basis:100%">${REDO_BOX('gerar o vídeo de novo')}</span>` : ''}<button class="${ep.video_asset_id ? 'ghost' : 'accent'}">${ep.video_asset_id ? 'Gerar o vídeo de novo' : 'Gerar vídeo'}</button>${ep.video_asset_id || hostAp || guestAp ? '<span class="hint" style="flex-basis:100%">Um vídeo novo exige nova aprovação de quem já aprovou.</span>' : ''}</form>`}
+A voz é a do modelo (não a do episódio) e pode variar entre clipes. Cada clipe é transcrito e comparado palavra a palavra com o guião; se não coincidir, é gerado de novo uma vez, e se continuar a não coincidir essa fala fica com a fotografia fixa e a voz do episódio (nunca entra um clipe que diga outra coisa). O mesmo para quem não autorizou. Só antes de publicar; o vídeo novo exige nova aprovação${iv.review_policy === 'guest_preview' ? ' (o convidado vê-o na pré-visualização)' : ''}. ${isAdmin ? '' + adminCredits : 'Pedido pelo gestor da entidade, com as credenciais Google dela: sem orçamento nem créditos (a Google cobra no projeto Google da entidade).'}</p></fieldset>`}`; })()}<label for="vl" style="margin:0">Legendas no vídeo</label><select id="vl" name="lang" style="width:auto">${Object.keys(ep.subtitles ?? {}).map(l => `<option value="${esc(l)}" ${l === (ep.video_lang ?? 'pt-PT') ? 'selected' : ''}>${esc(l)}</option>`).join('')}<option value="">Sem legendas</option></select>${ep.video_asset_id ? `<span style="flex-basis:100%">${REDO_BOX('gerar o vídeo de novo')}</span>` : ''}<button class="${ep.video_asset_id ? 'ghost' : 'accent'}">${ep.video_asset_id ? 'Gerar o vídeo de novo' : 'Gerar vídeo'}</button>${ep.video_asset_id || hostAp || guestAp ? '<span class="hint" style="flex-basis:100%">Um vídeo novo exige nova aprovação de quem já aprovou.</span>' : ''}</form>`}
 ${introHint}
 ${quoteHtml}
 ${ep.video_asset_id && ep.status !== 'published' ? `<form method="post" action="/entrevistas/${iv.id}/episodio/${ep.id}/video/retirar" onsubmit="return confirm('Tirar o vídeo deste episódio? O ficheiro fica guardado em privado.')"><button class="ghost">Tirar o vídeo do episódio (volta à versão sem vídeo)</button></form>` : ''}

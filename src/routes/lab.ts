@@ -40,7 +40,20 @@ ${contLive ? `<div class="flash" aria-live="polite">${esc(contLive.state === 'qu
 ${cont.filter((r: any) => r.result?.variants).map((r: any) => `<h3>${fmtDate(r.created_at)} ${pill(r.state, 'ok')} <span class="hint">${esc(r.result.tier)} · ~${usd(r.result.usd)}</span></h3>
 <div class="grid3">${r.result.variants.map((v: any) => `<div class="card" style="margin:0"><strong>${esc(v.label)}</strong><video controls preload="metadata" src="/admin/laboratorio/media/${v.videoAssetId}" style="width:100%;border-radius:8px;background:#000;margin-top:6px"></video></div>`).join('')}</div>`).join('')}
 ${cont[0] && !cont[0].result?.variants && cont[0].error ? `<p class="hint" style="color:var(--bad)">${esc(cont[0].error)}</p>` : ''}</div>`;
+    const probes = await db.query(`SELECT * FROM jobs WHERE kind='veo_filter_probe' ORDER BY created_at DESC LIMIT 3`);
+    const probeLive = probes.find((r: any) => ['queued', 'running'].includes(r.state));
+    const ivs = await db.query(`SELECT i.id, i.title, i.guest_name FROM interviews i WHERE EXISTS (SELECT 1 FROM photos p WHERE p.interview_id=i.id)
+      AND COALESCE((SELECT c.granted FROM consents c WHERE c.interview_id=i.id AND c.purpose='ai_video' ORDER BY c.created_at DESC LIMIT 1), false) ORDER BY i.created_at DESC LIMIT 20`);
+    const probeHtml = `<div class="card"><h2 style="margin-top:0">Diagnóstico do filtro da Google (fotografia do entrevistado)</h2>
+<p>Quando a Google recusa animar a fotografia de um entrevistado (código 15236754, «semelhança com uma pessoa conhecida»), experimenta a mesma frase curta (4 s) com variações: pedido atual, pedido simples, plano mais aberto, modelo normal, «allow_all», fotografia como referência e as outras fotografias dele. Os clipes bloqueados não são cobrados; os que passam custam ~0,40 $ (Fast) ou ~1,60 $ (modelo normal). Só entrevistas em que o entrevistado autorizou o vídeo por IA.</p>
+<form method="post" action="/admin/laboratorio/filtro" onsubmit="return confirm('Correr o diagnóstico (até ~6 $ se todas as variações passarem)?')"><label for="fiv">Entrevista</label><select id="fiv" name="interviewId">${ivs.map((i: any) => `<option value="${i.id}">${esc(i.title)} — ${esc(i.guest_name ?? '')}</option>`).join('')}</select>
+<p><button class="accent" ${probeLive || !ivs.length ? 'disabled' : ''}>Diagnosticar</button></p></form>
+${probeLive ? `<div class="flash" aria-live="polite">${esc(probeLive.progress_label || 'Em fila')} — a página atualiza sozinha.<meta http-equiv="refresh" content="10"></div>` : ''}
+${probes.filter((r: any) => r.result?.results).map((r: any) => `<h3>${fmtDate(r.created_at)} ${pill(r.state, r.state === 'done' ? 'ok' : r.state === 'failed' ? 'bad' : '')} <span class="hint">frase: «${esc(r.result.text ?? '')}»</span></h3>
+<table class="sans"><tbody>${r.result.results.map((x: any) => `<tr><td>${esc(x.label)}</td><td>${x.ok ? pill('passou', 'ok') : x.filtered ? pill('bloqueado pelo filtro', 'bad') : pill('erro', 'warn')}</td><td>${x.ok ? `<video controls preload="none" src="/admin/laboratorio/media/${x.videoAssetId}" style="width:220px;border-radius:6px;background:#000"></video>` : `<span class="hint">${esc(x.error ?? '')}</span>`}</td></tr>`).join('')}</tbody></table>`).join('')}
+${probes[0] && !probes[0].result?.results && probes[0].error ? `<p class="hint" style="color:var(--bad)">${esc(probes[0].error)}</p>` : ''}</div>`;
     const body = `<div class="wrap" style="padding-top:32px"><h1>Laboratório — retratos falantes</h1>${flash(q.ok)}${flash(q.e, 'bad')}
+${probeHtml}
 ${contHtml}
 <div class="card"><h2 style="margin-top:0">Comparação de modelos</h2>
 <p>Mesmo retrato fictício (pessoa que não existe) e a mesma frase em todos os modelos, para comparar realismo, tempo e custo lado a lado.</p>
@@ -102,6 +115,16 @@ ${r.error ? `<p class="hint" style="color:var(--bad)">${esc(r.error)}</p>` : ''}
     await enqueue(db, { kind: 'talking_compare', input: { text, providers: chosen, direction }, dedupe: `compare:${Date.now()}` });
     await audit(db, req.user!.email, 'lab.compare_started', null, { providers: chosen });
     return reply.redirect('/admin/laboratorio?ok=' + encodeURIComponent('Comparação iniciada.'));
+  });
+
+  app.post('/admin/laboratorio/filtro', async (req, reply) => {
+    if (!guard(req, reply)) return;
+    if (await db.one(`SELECT 1 FROM jobs WHERE kind='veo_filter_probe' AND state IN ('queued','running')`)) return reply.redirect('/admin/laboratorio?e=' + encodeURIComponent('Já há um diagnóstico a correr.'));
+    const id = String((req.body as any)?.interviewId ?? '');
+    if (!/^[0-9a-f-]{36}$/i.test(id) || !(await db.one('SELECT 1 FROM interviews WHERE id=$1', [id]))) return reply.redirect('/admin/laboratorio?e=' + encodeURIComponent('Escolha uma entrevista.'));
+    await enqueue(db, { kind: 'veo_filter_probe', input: { interviewId: id }, dedupe: `filtro:${Date.now()}` });
+    await audit(db, req.user!.email, 'lab.filter_probe_started', id);
+    return reply.redirect('/admin/laboratorio?ok=' + encodeURIComponent('Diagnóstico iniciado.'));
   });
 
   app.post('/admin/laboratorio/continuidade', async (req, reply) => {

@@ -804,3 +804,17 @@ test('clipes encadeados: pedaços seguintes da fala (e falas seguidas da mesma p
   assert.ok(rows.some((r: any) => r.meta.chained === true), 'há clipes que partiram do fotograma de corte');
   assert.ok(rows.some((r: any) => r.meta.chained === false), 'e clipes que partiram da fotografia (início de cada pessoa)');
 });
+
+test('laboratório: diagnóstico do filtro da Google com as fotografias reais do entrevistado (só administrador)', async () => {
+  const { handlers: H } = await import('../src/pipeline.ts');
+  await db.query(`INSERT INTO consents(interview_id, purpose, granted, text_version, text_snapshot) VALUES ($1,'ai_video',true,'t','t')`, [ivId]);
+  const r = await post('/admin/laboratorio/filtro', { interviewId: ivId }, owner);
+  assert.match(decodeURIComponent(r.headers.location as string), /Diagnóstico iniciado/);
+  while (await runOne(db, H)) { /* */ }
+  const job = await db.one(`SELECT * FROM jobs WHERE kind='veo_filter_probe' ORDER BY created_at DESC LIMIT 1`);
+  assert.equal(job.state, 'done', job.error ?? '');
+  assert.ok(job.result.results.length >= 6);
+  assert.deepEqual(job.result.results.slice(0, 6).map((x: any) => x.id), ['atual', 'simples', 'aberto', 'standard', 'allow_all', 'referencia']);
+  assert.match((await get('/admin/laboratorio', owner)).body, /Diagnóstico do filtro da Google[\s\S]*Plano mais aberto/);
+  assert.equal(job.interview_id, null, 'não aparece como trabalho da entrevista');
+});

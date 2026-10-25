@@ -32,7 +32,7 @@ export class JobPaused extends Error {
  * via única (testes e WORKER_LANES=1), com os curtos primeiro.
  */
 export type Lane = 'short' | 'video';
-export const VIDEO_KINDS = ['render_video', 'render_intro', 'talking_compare', 'lipsync_experiment', 'veo_continuity'];
+export const VIDEO_KINDS = ['render_video', 'render_intro', 'talking_compare', 'lipsync_experiment', 'veo_continuity', 'veo_filter_probe'];
 export const laneOf = (kind: string): Lane => (VIDEO_KINDS.includes(kind) ? 'video' : 'short');
 const VIDEO_IN = `(${VIDEO_KINDS.map(k => `'${k}'`).join(',')})`; // constantes do código, nunca dados de quem pede
 const laneWhere = (lane: Lane | 'all') => (lane === 'video' ? `kind IN ${VIDEO_IN}` : lane === 'short' ? `kind NOT IN ${VIDEO_IN}` : 'true');
