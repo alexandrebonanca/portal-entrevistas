@@ -64,7 +64,7 @@ const STYLES = `
  * a entrada, que as passam ao registo. `free`: os limites da 1.ª entrevista grátis (os do plano Start) quando a oferta está
  * ligada; null não a anuncia.
  */
-export function landing(plans: any[], cq = '', free: { questionLimit: number | null; answerLimitSec: number | null } | null = null) {
+export function landing(plans: any[], cq = '', free: { questionLimit: number | null; answerLimitSec: number | null } | null = null, galleryOn = true) {
   const b = esc(config.brand);
   const signup = (extra = '') => esc(`/registar${extra || cq ? '?' : ''}${extra}${extra && cq ? '&' : ''}${cq}`);
   const withTags = (path: string) => esc(cq ? `${path}?${cq}` : path);
@@ -90,7 +90,7 @@ export function landing(plans: any[], cq = '', free: { questionLimit: number | n
     head: `<meta property="og:type" content="website"><meta property="og:site_name" content="${b}"><meta property="og:title" content="Great interviews, recorded in your guest’s own time">
 <meta property="og:description" content="Asynchronous interviews that share professional cultures and life experience across countries and languages."><meta property="og:url" content="${esc(config.baseUrl)}/">${ogImage ? `<meta property="og:image" content="${esc(ogImage)}"><meta name="twitter:card" content="summary_large_image">` : ''}`,
     styles: STYLES,
-    nav: `<a href="#how">How it works</a><a href="${withTags('/podcasts')}">Gallery</a><a href="#pricing">Pricing</a><a href="${withTags('/entrar')}">Sign in</a><a class="btn accent" href="${signup()}">Get started</a>`,
+    nav: `<a href="#how">How it works</a>${galleryOn ? `<a href="${withTags('/podcasts')}">Gallery</a>` : ''}<a href="#pricing">Pricing</a><a href="${withTags('/entrar')}">Sign in</a><a class="btn accent" href="${signup()}">Get started</a>`,
     body: `
 <section class="lp-hero"><div class="wrap lp-grid">
   <div>

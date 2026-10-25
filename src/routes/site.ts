@@ -34,7 +34,9 @@ export async function siteRoutes(app: FastifyInstance) {
     if (!fromOwnSite(req.headers.referer, own)) await trackVisit(req, db, '/', tags);
     // A 1.ª entrevista grátis só se anuncia com a oferta ligada (com os limites do plano Start, lidos da tabela).
     const free = freeOfferOn() ? await freeLimits(db) : null;
-    return reply.type('text/html; charset=utf-8').send(landing(await db.query('SELECT * FROM plans WHERE active ORDER BY sort'), campaignQuery(tags), free));
+    // A galeria só aparece no menu com pelo menos um episódio público nela (uma galeria vazia não serve a quem chega de um anúncio).
+    const galleryOn = !!(await db.one(`SELECT 1 FROM episodes WHERE gallery AND status='published' AND visibility='public' AND withdrawn_at IS NULL LIMIT 1`));
+    return reply.type('text/html; charset=utf-8').send(landing(await db.query('SELECT * FROM plans WHERE active ORDER BY sort'), campaignQuery(tags), free, galleryOn));
   });
   app.get('/healthz', async () => ({ ok: true }));
   app.get('/robots.txt', async (_req, reply) => reply.type('text/plain').send('User-agent: *\nAllow: /$\nAllow: /privacy\nAllow: /e/\nAllow: /podcasts\nDisallow: /i/\nDisallow: /entrevista\nDisallow: /painel\nDisallow: /entrevistas\nDisallow: /admin\nDisallow: /account\nDisallow: /confirmar-email\n'));

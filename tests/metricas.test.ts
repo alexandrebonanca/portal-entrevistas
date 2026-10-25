@@ -698,6 +698,12 @@ test('migração 034: registos anteriores identificados pela auditoria', async (
 });
 
 test('etiquetas levadas pela galeria (/podcasts) e pela entrada (/entrar) até ao registo: o registo fica na campanha', async () => {
+  // sem episódios públicos na galeria, a landing não mostra o link; com um, mostra (com as etiquetas)
+  assert.doesNotMatch((await visit('/')).body, />Gallery</, 'galeria vazia: sem link no menu');
+  const owner = (await db.one(`SELECT id FROM users WHERE email='ana@example.com'`)).id;
+  const iv = (await db.one(`INSERT INTO interviews(owner_id, title) VALUES ($1,'Gal') RETURNING id`, [owner])).id;
+  const sc = (await db.one(`INSERT INTO scripts(interview_id, revision, title_en, segments, prompt_version, model) VALUES ($1,1,'Gal','[]','t','t') RETURNING id`, [iv])).id;
+  await db.query(`INSERT INTO episodes(interview_id, script_id, slug, title, status, visibility, published_at, gallery) VALUES ($1,$2,'ep-galeria','Gal','published','public',now(),true)`, [iv, sc]);
   const before0 = await total();
   const raw = 'utm_source=linkedin&utm_medium=paid_social&utm_campaign=qi-path';
   const cq = raw.replace(/&/g, '&amp;');

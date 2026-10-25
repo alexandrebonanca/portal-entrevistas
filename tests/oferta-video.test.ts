@@ -77,3 +77,10 @@ test('legendas traduzidas fala a fala: o texto divide-se pelas legendas inglesas
   assert.deepEqual(splitByWeights('uma', [10, 10]), ['uma', '']);
   assert.deepEqual(splitByWeights('a b', [1]), ['a b']);
 });
+
+test('bloqueio pelos filtros da Google: o código de suporte diz a categoria (antes cortava-se e perdia-se)', async () => {
+  const { filteredMessage } = await import('../src/talking.ts');
+  const m = filteredMessage(["1 videos were filtered out because they violated Vertex AI's usage guidelines. You will not be charged for blocked videos. Try rephrasing the prompt. If you think this was an error, send feedback. Support codes: 15236754"]);
+  assert.match(m, /filtros da Google \(semelhança com uma pessoa conhecida, como uma celebridade\) \[códigos 15236754\]/);
+  assert.match(filteredMessage('sem código'), /^Veo: clipe bloqueado pelos filtros da Google: sem código$/);
+});

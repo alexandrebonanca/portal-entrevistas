@@ -687,6 +687,7 @@ export async function renderVeoVideo(job: any, { db, progress }: Parameters<Hand
   // recusa é da fotografia (não do texto): as falas seguintes dessa pessoa ficam em fotografia sem se tentarem (poupa tempo).
   const filteredByRole = { host: 0, guest: 0 }, okByRole = { host: 0, guest: 0 };
   const roleBlocked = new Set<string>();
+  const roleCause: Record<string, string | null> = {};
   type U = { key: string; c: Chunk; falas: PlanSeg[]; atts: Attempt[]; failures: number; busyRecent: number; chosen: Attempt | null; problem: Problem | null; cause?: string };
   const units = new Map<string, U>();
   for (const s of gen) for (const c of s.chunks) {
@@ -899,7 +900,7 @@ export async function renderVeoVideo(job: any, { db, progress }: Parameters<Hand
         // Quota esgotada: não é uma falha da produção; o trabalho volta à fila mais tarde e o orçamento continua em curso.
         if (e instanceof VeoQuotaError) { stop(new JobPaused(VEO_QUOTA_PAUSED, QUOTA_PAUSE_MS)); return 'stop'; }
         if (e instanceof VeoUnsupported) { stop(new PermanentError(m)); return 'stop'; } // o modelo escolhido recusa o pedido: não adianta insistir
-        console.error(`[veo] pedaço ${c.seg.id}/${c.k} falhou: ${m.slice(0, 300)}`);
+        console.error(`[veo] pedaço ${c.seg.id}/${c.k} falhou: ${m.slice(0, 600)}`);
         if (e instanceof VeoBusy) {
           // Procura elevada na Google: espera e tenta outra vez, sem gastar o limite do pedaço. Muitas seguidas: pára o trabalho.
           u.problem = 'busy';
@@ -911,11 +912,13 @@ export async function renderVeoVideo(job: any, { db, progress }: Parameters<Hand
           continue;
         }
         u.problem = e instanceof VeoFiltered ? 'filtered' : 'error';
+        u.cause = m.replace(/^Veo: /, '').slice(0, 300); // o motivo (com a categoria do filtro) vai para o relatório por fala
         u.failures++;
         if (e instanceof VeoFiltered) {
           const role = c.seg.role as 'host' | 'guest';
           if (++filteredByRole[role] >= veoTuning.roleFilterLimit && !okByRole[role] && !roleBlocked.has(role)) {
             roleBlocked.add(role);
+            roleCause[role] = u.cause ?? null;
             console.error(`[veo] fotografia do ${role === 'host' ? 'entrevistador' : 'convidado'} recusada pelos filtros da Google em ${filteredByRole[role]} pedaços: as falas seguintes ficam em fotografia`);
           }
         }
@@ -968,7 +971,7 @@ export async function renderVeoVideo(job: any, { db, progress }: Parameters<Hand
     while (!abort && nextA < tasksA.length) {
       const { u, fala } = tasksA[nextA++];
       try {
-        if (!u.chosen && roleBlocked.has(fala.role)) u.problem = 'filtered_role';
+        if (!u.chosen && roleBlocked.has(fala.role)) { u.problem = 'filtered_role'; u.cause = roleCause[fala.role] ?? null; }
         if (u.chosen || falaDead(fala) || !(await gate(fala))) {
           if (earmark.has(fala.id)) earmark.set(fala.id, Math.max(0, earmark.get(fala.id)! - maxClip * tierPrice));
           doneN++; continue;

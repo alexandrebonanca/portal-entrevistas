@@ -219,6 +219,26 @@ export class VeoBusy extends Error {}
 export class VeoOpError extends PermanentError {}
 /** Clipe bloqueado pelos filtros de segurança da Google (não há vídeo; normalmente não é cobrado). */
 export class VeoFiltered extends VeoOpError {}
+
+/**
+ * Códigos de suporte dos filtros do Veo (documentação «Responsible AI» do Vertex AI): dizem a categoria do bloqueio. A
+ * razão da Google acaba com «Support codes: …»; antes cortava-se a 200 caracteres e o código perdia-se.
+ */
+export const VEO_FILTER_CODES: Record<string, string> = {
+  '58061214': 'pessoa que parece menor de idade', '17301594': 'pessoa que parece menor de idade',
+  '29310472': 'semelhança com uma pessoa conhecida, como uma celebridade', '15236754': 'semelhança com uma pessoa conhecida, como uma celebridade',
+  '64151117': 'segurança do vídeo', '42237218': 'segurança do vídeo', '62263041': 'conteúdo perigoso',
+  '57734940': 'ódio', '22137204': 'ódio', '74803281': 'outro', '29578790': 'outro', '42876398': 'outro',
+  '92201652': 'informação pessoal', '89371032': 'conteúdo proibido', '49114662': 'conteúdo proibido', '72817394': 'conteúdo proibido',
+  '90789179': 'conteúdo sexual', '43188360': 'conteúdo sexual', '78610348': 'conteúdo tóxico', '61493863': 'violência', '56562880': 'violência', '32635315': 'linguagem vulgar',
+};
+/** Mensagem do bloqueio com a categoria e os códigos (para o relatório por fala e para o registo). */
+export function filteredMessage(reasons: unknown): string {
+  const text = (Array.isArray(reasons) ? reasons : [reasons]).map(r => String(r ?? '')).join(' ');
+  const codes = [...new Set(text.match(/\b\d{8}\b/g) ?? [])];
+  const cats = [...new Set(codes.map(c => VEO_FILTER_CODES[c]).filter(Boolean))];
+  return `Veo: clipe bloqueado pelos filtros da Google${cats.length ? ` (${cats.join('; ')})` : ''}${codes.length ? ` [códigos ${codes.join(', ')}]` : ''}: ${text.slice(0, 400)}`;
+}
 /** A CONSULTA de uma operação foi recusada (4xx): nada se sabe da operação, que pode ter sido feita e cobrada. */
 export class VeoPollError extends PermanentError {}
 /** A credencial com que a operação foi criada já não está em Definições: a operação (paga) fica pendente e o trabalho pára. */
@@ -337,7 +357,7 @@ export function opOfCurrentCreds(opName: string, scope?: string | null, project?
 async function vertexVideo(resp: any, scope?: string | null): Promise<Buffer> {
   const v = resp?.videos?.[0];
   if (!v?.bytesBase64Encoded && !v?.gcsUri) {
-    if (resp?.raiMediaFilteredCount || resp?.raiMediaFilteredReasons?.length) throw new VeoFiltered(`Veo: clipe bloqueado pelos filtros da Google: ${String(resp.raiMediaFilteredReasons?.[0] ?? '').slice(0, 200)}`);
+    if (resp?.raiMediaFilteredCount || resp?.raiMediaFilteredReasons?.length) throw new VeoFiltered(filteredMessage(resp.raiMediaFilteredReasons));
     throw new VeoOpError(`Veo não devolveu vídeo: ${JSON.stringify(resp ?? {}).slice(0, 200)}`);
   }
   if (v.bytesBase64Encoded) return Buffer.from(String(v.bytesBase64Encoded), 'base64');
@@ -351,7 +371,7 @@ async function vertexVideo(resp: any, scope?: string | null): Promise<Buffer> {
 async function geminiVideo(resp: any, scope?: string | null): Promise<Buffer> {
   const gen = resp?.generateVideoResponse;
   const uri = gen?.generatedSamples?.[0]?.video?.uri;
-  if (!uri && (gen?.raiMediaFilteredCount || gen?.raiMediaFilteredReasons?.length)) throw new VeoFiltered(`Veo: clipe bloqueado pelos filtros da Google: ${String(gen.raiMediaFilteredReasons?.[0] ?? '').slice(0, 200)}`);
+  if (!uri && (gen?.raiMediaFilteredCount || gen?.raiMediaFilteredReasons?.length)) throw new VeoFiltered(filteredMessage(gen.raiMediaFilteredReasons));
   if (!uri) throw new VeoOpError(`Veo não devolveu vídeo: ${JSON.stringify(resp ?? {}).slice(0, 200)}`);
   return download(uri, { 'x-goog-api-key': credOf('GEMINI_API_KEY', scope) });
 }
