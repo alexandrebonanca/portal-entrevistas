@@ -9,7 +9,7 @@ import { transcribeAudio, transcribeWords, prepareEnglishScript, translateSubtit
 import { planShots, renderBases, subtitleFrame, encodeVideo, encodeComposite, splitParts, shotsWithin, sliceAudio, stillClip, buildAudioTrack, type Part } from './video.ts';
 import { photoTimeline, peopleOf } from './graphics.ts';
 import { lipsync, lipsyncMock, estimateLipsyncUsd } from './lipsync.ts';
-import { PROVIDERS, runProvider, signedAssetUrl } from './talking.ts';
+import { PROVIDERS, runProvider, signedAssetUrl, heygenAvatarIV } from './talking.ts';
 import { readQuestion, generateFictionalPortrait } from './ai/openai.ts';
 import { cuesFromWords, fixOverlaps, checkCues, splitByWeights, type Cue } from './subtitles.ts';
 import { composeCover } from './cover.ts';
@@ -354,8 +354,11 @@ export const handlers: Record<string, Handler> = {
 
     // Animação por fala: só com autorização específica de cada pessoa e fotografia autorizada.
     // O convidado só é animado num episódio em pré-visualização: tem de ver e aprovar o vídeo antes de ir para o ar.
-    const animHost = !!job.input.animate && iv.host_animate && !!hostPhoto;
-    const animGuest = !!job.input.animate && !!guestPhoto && ep.status === 'preview' && (await consent('animate_portrait'));
+    // HeyGen Avatar IV (teste do administrador): a fotografia e o áudio do episódio de cada fala, num só take, com a voz do
+    // episódio; vale a autorização do vídeo por IA ou a da animação do retrato.
+    const heygen = job.input.animEngine === 'heygen';
+    const animHost = !!job.input.animate && (heygen ? !!(iv.host_ai_video || iv.host_animate) : iv.host_animate) && !!hostPhoto;
+    const animGuest = !!job.input.animate && !!guestPhoto && ep.status === 'preview' && (heygen ? (await consent('ai_video')) || (await consent('animate_portrait')) : await consent('animate_portrait'));
     const segs = timing.map((t: any, i: number) => ({ ...t, endMs: i + 1 < timing.length ? timing[i + 1].startMs : ep.duration_ms }))
       .filter((t: any) => !['disclosure', 'editorial_intro', 'editorial_outro'].includes(t.kind) && ((t.role === 'host' && animHost) || (t.role === 'guest' && animGuest)) && t.durationMs >= 800);
     let animated = 0, failed = 0, gpuUsd = 0, guestAnimN = 0;
@@ -371,12 +374,19 @@ export const handlers: Record<string, Handler> = {
           try {
             const photo = sg.role === 'host' ? hostPhoto! : guestPhoto!;
             // Clipes já animados (mesma fotografia, mesma fala) são reaproveitados: uma nova tentativa não volta a pagar.
-            const clipKey = sha256(`${sha256(photo)}|${ep.audio_asset_id}|${sg.startMs}|${sg.durationMs}|${lipsyncMock() ? 'mock' : 'replicate'}`);
+            const clipKey = sha256(`${sha256(photo)}|${ep.audio_asset_id}|${sg.startMs}|${sg.durationMs}|${lipsyncMock() ? 'mock' : heygen ? 'heygen' : 'replicate'}`);
             const cached = await db.one(`SELECT storage_key FROM assets WHERE interview_id=$1 AND kind='anim_clip' AND meta->>'clipKey'=$2 AND deleted_at IS NULL LIMIT 1`, [iv.id, clipKey]);
             if (cached) clips[k] = await storage.get(cached.storage_key);
             else {
               if (lipsyncMock()) clips[k] = await stillClip(ffmpeg, photo, sg.durationMs);
-              else {
+              else if (heygen) {
+                // A HeyGen descarrega a fotografia e o áudio por URL assinado (1 h), guardados à parte (sem a entrevista).
+                const speech = await sliceAudio(ffmpeg, audio, sg.startMs, sg.startMs + sg.durationMs);
+                const pId = await saveAsset(db, { interviewId: null, kind: 'lab_portrait', mime: 'image/jpeg', ext: 'jpg', data: photo, meta: { interviewId: iv.id, heygen: true } });
+                const aId = await saveAsset(db, { interviewId: null, kind: 'lab_audio', mime: 'audio/mpeg', ext: 'mp3', data: speech, durationMs: sg.durationMs, meta: { interviewId: iv.id, heygen: true } });
+                const r = await heygenAvatarIV(signedAssetUrl(pId), signedAssetUrl(aId));
+                clips[k] = r.video; gpuUsd += (r.billedSec ?? sg.durationMs / 1000) * 0.0385;
+              } else {
                 const speech = await sliceAudio(ffmpeg, audio, sg.startMs, sg.startMs + sg.durationMs);
                 const r = await lipsync({ data: photo, mime: 'image/jpeg' }, { data: speech, mime: 'audio/mpeg' });
                 clips[k] = r.video; gpuUsd += r.estCostUsd ?? 0;
@@ -391,7 +401,7 @@ export const handlers: Record<string, Handler> = {
       await Promise.all([worker(), worker(), worker()]);
       ok = segs.map((sg: any, k: number) => ({ sg, clip: clips[k]! })).filter((x: any) => x.clip);
       animated = ok.length; guestAnimN = ok.filter((x: any) => x.sg.role === 'guest').length;
-      if (gpuUsd) await usage(db, iv.id, 'lipsync_usd', gpuUsd, gpuUsd);
+      if (gpuUsd) await usage(db, iv.id, heygen ? 'heygen_usd' : 'lipsync_usd', gpuUsd, gpuUsd);
     }
     // Partes no tempo do episódio (fixas e, com retratos animados, as falas animadas); depois os cartões (título a seguir
     // ao aviso inicial e final), o som do episódio com silêncio nos cartões e o grafismo (rodapés e capítulos).
@@ -412,7 +422,7 @@ export const handlers: Record<string, Handler> = {
     // Por papel: quem tem de aprovar depende de quem aparece de facto animado.
     const guestAnimated = guestAnimN > 0, hostAnimated = animated - guestAnimN > 0;
     const id = await saveAsset(db, { interviewId: iv.id, kind: 'episode_video', mime: 'video/mp4', ext: 'mp4', data: mp4, durationMs: tl.totalMs,
-      meta: { lang, shots: shots.length, guestPhoto: !!guestPhoto, guestPhotoByHost: guestByHost, hostPhoto: !!hostPhoto, animatedSegments: animated, failedAnimations: failed, guestAnimated, hostAnimated, lipsyncUsd: gpuUsd, graphics: tl.meta } });
+      meta: { lang, shots: shots.length, ...(heygen ? { engine: 'heygen' } : {}), guestPhoto: !!guestPhoto, guestPhotoByHost: guestByHost, hostPhoto: !!hostPhoto, animatedSegments: animated, failedAnimations: failed, guestAnimated, hostAnimated, lipsyncUsd: gpuUsd, graphics: tl.meta } });
     // Ligação com as autorizações lidas no próprio momento: uma retirada durante a geração não volta a pôr o vídeo no ar,
     // e o vídeo só se liga a um episódio ainda em pré-visualização: publicado a meio da geração, o vídeo novo não entra
     // no ar sem nova aprovação (as aprovações ficam presas ao vídeo que foi visto).
@@ -422,12 +432,13 @@ export const handlers: Record<string, Handler> = {
     const linked = await db.one(
       `UPDATE episodes e SET video_asset_id=$2, video_lang=$3 FROM interviews i
        WHERE e.id=$1 AND i.id=e.interview_id AND NOT e.stale AND e.status='preview'
-         AND (NOT $4::boolean OR i.host_photo_rights) AND (NOT $5::boolean OR (i.host_animate AND i.host_photo_rights))
+         AND (NOT $4::boolean OR i.host_photo_rights) AND (NOT $5::boolean OR ((i.host_animate OR ($9::boolean AND i.host_ai_video)) AND i.host_photo_rights))
          AND (NOT $6::boolean OR COALESCE((SELECT c.granted FROM consents c WHERE c.interview_id=i.id AND c.purpose='publish_photo' ORDER BY c.created_at DESC LIMIT 1), false))
-         AND (NOT $7::boolean OR (e.status='preview' AND COALESCE((SELECT c.granted FROM consents c WHERE c.interview_id=i.id AND c.purpose='animate_portrait' ORDER BY c.created_at DESC LIMIT 1), false)))
-         AND (NOT $8::boolean OR (i.review_policy='guest_preview' AND COALESCE((SELECT c.granted FROM consents c WHERE c.interview_id=i.id AND c.purpose='host_edit' ORDER BY c.created_at DESC LIMIT 1), false)))
+         AND (NOT $7::boolean OR (e.status='preview' AND (COALESCE((SELECT c.granted FROM consents c WHERE c.interview_id=i.id AND c.purpose='animate_portrait' ORDER BY c.created_at DESC LIMIT 1), false)
+              OR ($9::boolean AND COALESCE((SELECT c.granted FROM consents c WHERE c.interview_id=i.id AND c.purpose='ai_video' ORDER BY c.created_at DESC LIMIT 1), false)))))
+         AND (NOT $8::boolean OR (COALESCE((SELECT c.granted FROM consents c WHERE c.interview_id=i.id AND c.purpose='host_edit' ORDER BY c.created_at DESC LIMIT 1), false)))
        RETURNING e.id`,
-      [ep.id, id, lang, !!hostPhoto, hostAnimated, !!guestPhoto, guestAnimated, guestByHost]);
+      [ep.id, id, lang, !!hostPhoto, hostAnimated, !!guestPhoto, guestAnimated, guestByHost, heygen]);
     if (!linked) throw new PermanentError('Uma autorização foi retirada ou o episódio mudou durante a geração (publicado, retirado ou substituído): o vídeo não foi ligado ao episódio e fica privado. Um vídeo novo só entra num episódio em pré-visualização, para ser visto e aprovado antes de ir para o ar.');
     if (before && before !== id) await purgeUnpublishedPhotoVideos(db, iv.id, before);
     await notifyJob(db, job, 'video_ready');

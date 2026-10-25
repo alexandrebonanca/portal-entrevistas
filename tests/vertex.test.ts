@@ -344,7 +344,7 @@ test('«Guardar e testar» do Google: 404 e 400 da operação inexistente provam
 test('Laboratório: só o Veo vem marcado; os outros motores continuam disponíveis', () => {
   const veo = t.PROVIDERS.filter(p => p.preselected).map(p => p.id);
   assert.deepEqual(veo, ['veo', 'veo-lite']);
-  assert.deepEqual(t.PROVIDERS.filter(p => !p.preselected).map(p => p.id), ['omnihuman', 'fabric', 'infinitalk', 'heygen']);
+  assert.deepEqual(t.PROVIDERS.filter(p => !p.preselected).map(p => p.id), ['omnihuman', 'fabric', 'infinitalk', 'heygen-api', 'heygen']);
   assert.deepEqual(t.PROVIDERS.filter(t.isVeoProvider).map(p => [p.label, p.pricePerSec]), [['Google Veo 3.1 Fast', 0.10], ['Google Veo 3.1 Lite', 0.05]]);
   assert.ok(t.PROVIDERS.every(p => !/Flow/.test(p.label)));
   const fast = t.PROVIDERS.find(p => p.id === 'veo')!;

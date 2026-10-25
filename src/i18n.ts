@@ -39,9 +39,9 @@ const D = {
     pubAll: 'só após a sua aprovação do resultado.', pubHost: 'decidida pelo entrevistador; um vídeo em que apareça animado por IA só com a sua aprovação.',
     adults: 'Confirmo que tenho 18 anos ou mais.',
     c_host_edit: 'Autorizo o entrevistador a editar a entrevista para produzir o episódio: rever o guião e encurtar as respostas sem mudar o sentido, e escolher ou substituir a fotografia minha usada na capa e no vídeo (por exemplo, quando o fornecedor de IA recusa a que eu enviei), dentro das autorizações das fotografias que eu der. Só a pode tornar pública depois de eu rever e aprovar a versão final.',
-    c_host_edit_host: 'Autorizo o entrevistador a editar a entrevista para produzir o episódio: rever o guião e encurtar as respostas sem mudar o sentido.',
+    c_host_edit_host: 'Autorizo o entrevistador a editar a entrevista para produzir o episódio: rever o guião e encurtar as respostas sem mudar o sentido, e escolher ou substituir a fotografia minha usada na capa e no vídeo, dentro das autorizações das fotografias que eu der. Um vídeo com uma fotografia minha escolhida por ele só é publicado depois de eu o ver e aprovar.',
     inviteEdit: 'Ao aceitar, autoriza o entrevistador a editar a entrevista (guião, cortes e a fotografia sua usada no vídeo). Só a pode tornar pública depois de a rever e aprovar.',
-    inviteEditHost: 'Ao aceitar, autoriza o entrevistador a editar a entrevista (guião e cortes, sem mudar o sentido).',
+    inviteEditHost: 'Ao aceitar, autoriza o entrevistador a editar a entrevista (guião, cortes e a fotografia sua usada no vídeo). Um vídeo com uma fotografia sua escolhida por ele só é publicado depois de o ver e aprovar.',
     save: 'Guardar e continuar', start: 'Começar', continue: 'Continuar',
     question: 'Pergunta', of: 'de', listen: 'Ouvir pergunta', listenSynth: 'Leitura feita com voz gerada por IA.', record: 'Gravar resposta', stop: 'Parar', hear: 'Ouvir resposta',
     redo: 'Repetir', confirm: 'Confirmar e continuar', saveExit: 'Guardar e sair', refuse: 'Não pretendo responder', uploadOwn: 'Carregar um áudio já gravado',
@@ -149,9 +149,9 @@ const D = {
     pubAll: 'only after you approve the result.', pubHost: 'decided by the interviewer; a video in which you appear animated by AI only with your approval.',
     adults: 'I confirm I am 18 or older.',
     c_host_edit: 'I allow the interviewer to edit the interview to produce the episode: review the script and shorten answers without changing their meaning, and choose or replace the photo of me used on the cover and in the video (for example, when the AI provider refuses the one I sent), within the photo permissions I give. It can only be made public after I have reviewed and approved the final version.',
-    c_host_edit_host: 'I allow the interviewer to edit the interview to produce the episode: review the script and shorten answers without changing their meaning.',
+    c_host_edit_host: 'I allow the interviewer to edit the interview to produce the episode: review the script and shorten answers without changing their meaning, and choose or replace the photo of me used on the cover and in the video, within the photo permissions I give. A video with a photo of me chosen by the interviewer is only published after I have seen and approved it.',
     inviteEdit: 'By accepting, you allow the interviewer to edit the interview (script, cuts and the photo of you used in the video). It can only be made public after you have reviewed and approved it.',
-    inviteEditHost: 'By accepting, you allow the interviewer to edit the interview (script and cuts, without changing the meaning).',
+    inviteEditHost: 'By accepting, you allow the interviewer to edit the interview (script, cuts and the photo of you used in the video). A video with a photo of you chosen by the interviewer is only published after you have seen and approved it.',
     save: 'Save and continue', start: 'Start', continue: 'Continue',
     question: 'Question', of: 'of', listen: 'Listen to the question', listenSynth: 'Read aloud with an AI-generated voice.', record: 'Record answer', stop: 'Stop', hear: 'Play my answer',
     redo: 'Redo', confirm: 'Confirm and continue', saveExit: 'Save and leave', refuse: 'I prefer not to answer', uploadOwn: 'Upload an existing recording',
@@ -229,7 +229,7 @@ export const t = (lang: Lang) => D[lang];
 
 // v2: publicação conforme a política de revisão; Replicate na animação. v3: o pedido de eliminação segue pela «Ajuda» da
 // entrevista ou pelo formulário de contacto (já não pelo «contacto de apoio», o email que deixou de se mostrar).
-export const CONSENT_VERSION = 'v5-2026-10';
+export const CONSENT_VERSION = 'v6-2026-10';
 export const CONSENT_PURPOSES = ['participation', 'processing', 'photo_capture', 'cover_use', 'publish_photo', 'animate_portrait', 'ai_video', 'publish', 'host_edit'] as const;
 export type ConsentPurpose = typeof CONSENT_PURPOSES[number];
 /** Texto de cada autorização; a de publicação depende da política de revisão da entrevista. */

@@ -47,6 +47,7 @@ ${cont[0] && !cont[0].result?.variants && cont[0].error ? `<p class="hint" style
     const probeHtml = `<div class="card"><h2 style="margin-top:0">Diagnóstico do filtro da Google (fotografia do entrevistado)</h2>
 <p>Quando a Google recusa animar a fotografia de um entrevistado (código 15236754, «semelhança com uma pessoa conhecida»), experimenta a mesma frase curta (4 s) com variações: pedido atual, pedido simples, plano mais aberto, modelo normal, «allow_all», fotografia como referência e as outras fotografias dele. Os clipes bloqueados não são cobrados; os que passam custam ~0,40 $ (Fast) ou ~1,60 $ (modelo normal). Só entrevistas em que o entrevistado autorizou o vídeo por IA.</p>
 <form method="post" action="/admin/laboratorio/filtro" onsubmit="return confirm('Correr o diagnóstico (até ~6 $ se todas as variações passarem)?')"><label for="fiv">Entrevista</label><select id="fiv" name="interviewId">${ivs.map((i: any) => `<option value="${i.id}">${esc(i.title)} — ${esc(i.guest_name ?? '')}</option>`).join('')}</select>
+<label class="check"><input type="checkbox" name="only" value="heygen"> Só o HeyGen Avatar IV (fala inteira, com a voz do episódio; precisa da chave da HeyGen em Definições)</label>
 <p><button class="accent" ${probeLive || !ivs.length ? 'disabled' : ''}>Diagnosticar</button></p></form>
 ${probeLive ? `<div class="flash" aria-live="polite">${esc(probeLive.progress_label || 'Em fila')} — a página atualiza sozinha.<meta http-equiv="refresh" content="10"></div>` : ''}
 ${probes.filter((r: any) => r.result?.results).map((r: any) => `<h3>${fmtDate(r.created_at)} ${pill(r.state, r.state === 'done' ? 'ok' : r.state === 'failed' ? 'bad' : '')} <span class="hint">frase: «${esc(r.result.text ?? '')}»</span></h3>
@@ -122,7 +123,7 @@ ${r.error ? `<p class="hint" style="color:var(--bad)">${esc(r.error)}</p>` : ''}
     if (await db.one(`SELECT 1 FROM jobs WHERE kind='veo_filter_probe' AND state IN ('queued','running')`)) return reply.redirect('/admin/laboratorio?e=' + encodeURIComponent('Já há um diagnóstico a correr.'));
     const id = String((req.body as any)?.interviewId ?? '');
     if (!/^[0-9a-f-]{36}$/i.test(id) || !(await db.one('SELECT 1 FROM interviews WHERE id=$1', [id]))) return reply.redirect('/admin/laboratorio?e=' + encodeURIComponent('Escolha uma entrevista.'));
-    await enqueue(db, { kind: 'veo_filter_probe', input: { interviewId: id }, dedupe: `filtro:${Date.now()}` });
+    await enqueue(db, { kind: 'veo_filter_probe', input: { interviewId: id, only: (req.body as any)?.only === 'heygen' ? 'heygen' : null }, dedupe: `filtro:${Date.now()}` });
     await audit(db, req.user!.email, 'lab.filter_probe_started', id);
     return reply.redirect('/admin/laboratorio?ok=' + encodeURIComponent('Diagnóstico iniciado.'));
   });

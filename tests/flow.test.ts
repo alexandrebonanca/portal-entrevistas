@@ -474,13 +474,13 @@ test('vídeo com o Google Veo: autorização própria, som dos clipes, verifica�
   const c = await db.one(`SELECT granted, text_snapshot FROM consents WHERE interview_id=$1 AND purpose='ai_video' ORDER BY created_at DESC LIMIT 1`, [ivId]);
   assert.equal(c.granted, true); assert.match(c.text_snapshot, /not my own voice|não é a minha voz/);
   pg = await get(`/entrevistas/${ivId}/producao`, owner);
-  assert.doesNotMatch(pg.body, /value="veo" disabled/); assert.match(pg.body, /\d+ clipes, \d+ s faturados a ~\$0\.10\/s/);
+  assert.doesNotMatch(pg.body, /value="veo" disabled/); assert.match(pg.body, /custo ~\$\d+ \(máx\. ~\$\d+\)/);
   assert.match(pg.body, /value="veo" > Google Veo 3\.1 Fast:/);
   // nível escolhido pelo administrador: o Lite muda o rótulo e o preço da estimativa
   const { saveSetting } = await import('../src/settings.ts');
   await saveSetting(db, 'VEO_TIER', 'lite');
   const lite = await get(`/entrevistas/${ivId}/producao`, owner);
-  assert.match(lite.body, /Google Veo 3\.1 Lite:/); assert.match(lite.body, /\d+ clipes, \d+ s faturados a ~\$0\.05\/s/);
+  assert.match(lite.body, /Google Veo 3\.1 Lite:/); assert.match(lite.body, /custo ~\$\d+ \(máx\. ~\$\d+\)/);
   await saveSetting(db, 'VEO_TIER', '');
 
   await post(`/entrevistas/${ivId}/episodio/${ep.id}/video`, { lang: 'pt-PT', engine: 'veo' }, owner);
@@ -795,7 +795,7 @@ test('edição pelo entrevistador: autorização no convite e fotografia do entr
   }
   // política «só o entrevistador aprova»: não acrescenta (o convidado tem de ver a fotografia antes de publicar)
   const { hostPhotoBlock } = await import('../src/guest-photos.ts');
-  assert.match((await hostPhotoBlock(db, { ...iv, review_policy: 'host_only' }))!, /o entrevistado vê e aprova/);
+  assert.doesNotMatch(String(await hostPhotoBlock(db, { ...iv, review_policy: 'host_only' })), /política/, 'a política já não impede (o convidado aprova o vídeo com essa fotografia)');
 });
 
 test('clipes encadeados: pedaços seguintes da fala (e falas seguidas da mesma pessoa) partem do corte anterior', async () => {
@@ -813,7 +813,8 @@ test('laboratório: diagnóstico do filtro da Google com as fotografias reais do
   while (await runOne(db, H)) { /* */ }
   const job = await db.one(`SELECT * FROM jobs WHERE kind='veo_filter_probe' ORDER BY created_at DESC LIMIT 1`);
   assert.equal(job.state, 'done', job.error ?? '');
-  assert.ok(job.result.results.length >= 6);
+  assert.ok(job.result.results.length >= 7);
+  assert.ok(job.result.results.some((x: any) => x.id === 'heygen' && x.ok), 'HeyGen Avatar IV com a voz do episódio');
   assert.deepEqual(job.result.results.slice(0, 6).map((x: any) => x.id), ['atual', 'simples', 'aberto', 'standard', 'allow_all', 'referencia']);
   assert.match((await get('/admin/laboratorio', owner)).body, /Diagnóstico do filtro da Google[\s\S]*Plano mais aberto/);
   assert.equal(job.interview_id, null, 'não aparece como trabalho da entrevista');

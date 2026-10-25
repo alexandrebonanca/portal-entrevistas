@@ -24,6 +24,7 @@ export const SETTING_DEFS: SettingDef[] = [
   { key: 'REPLICATE_LIPSYNC_MODEL', label: 'Modelo de sincronização labial', group: 'Replicate', secret: false, hint: 'cjwbw/sadtalker' },
   { key: 'FAL_KEY', label: 'API key', group: 'fal.ai', secret: true, hint: 'chave da fal.ai' },
   { key: 'WAVESPEED_API_KEY', label: 'API key (HeyGen Avatar IV)', group: 'WaveSpeed', secret: true },
+  { key: 'HEYGEN_API_KEY', label: 'API key (platform.heygen.com → Chaves de API; saldo pré-pago em Cobrança)', group: 'HeyGen', secret: true },
   { key: 'VERTEX_SA_JSON', label: 'Conta de serviço do Vertex AI (JSON)', group: 'Google', secret: true, hint: 'cole aqui o ficheiro .json da chave da conta de serviço' },
   { key: 'VERTEX_LOCATION', label: 'Região do Vertex AI', group: 'Google', secret: false, hint: 'us-central1' },
   { key: 'VEO_TIER', label: 'Modelo do Google Veo', group: 'Google', secret: false, options: [['fast', 'Veo 3.1 Fast (~$0,10/s)'], ['lite', 'Veo 3.1 Lite (~$0,05/s, metade do preço)']] },

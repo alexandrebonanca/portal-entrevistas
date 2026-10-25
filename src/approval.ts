@@ -3,7 +3,7 @@ import { t, type Lang } from './i18n.ts';
 
 /** Quem aparece animado por IA (Google Veo ou animação por fala) tem de ver e aprovar o vídeo, seja qual for a política. */
 export const guestMustApprove = (iv: { review_policy?: string }, vmeta: any) =>
-  iv.review_policy === 'guest_preview' || !!vmeta?.guestAiVideo || !!vmeta?.guestAnimated;
+  iv.review_policy === 'guest_preview' || !!vmeta?.guestAiVideo || !!vmeta?.guestAnimated || !!vmeta?.guestPhotoByHost;
 
 /**
  * Alcance da aprovação do convidado: «all» com a política «o entrevistado aprova»; «video» quando só conta
@@ -12,7 +12,7 @@ export const guestMustApprove = (iv: { review_policy?: string }, vmeta: any) =>
  */
 export type ApprovalScope = 'all' | 'video' | 'none';
 export const approvalScope = (iv: { review_policy?: string }, vmeta: any): ApprovalScope =>
-  iv.review_policy === 'guest_preview' ? 'all' : vmeta?.guestAiVideo || vmeta?.guestAnimated ? 'video' : 'none';
+  iv.review_policy === 'guest_preview' ? 'all' : vmeta?.guestAiVideo || vmeta?.guestAnimated || vmeta?.guestPhotoByHost ? 'video' : 'none';
 
 /** Meta do vídeo ligado ao episódio (null sem vídeo). */
 export const videoMeta = async (db: Db, videoAssetId: string | null | undefined) =>

@@ -64,7 +64,7 @@ const STYLES = `
  * a entrada, que as passam ao registo. `free`: os limites da 1.ª entrevista grátis (os do plano Start) quando a oferta está
  * ligada; null não a anuncia.
  */
-export function landing(plans: any[], cq = '', free: { questionLimit: number | null; answerLimitSec: number | null } | null = null, galleryOn = true) {
+export function landing(plans: any[], cq = '', free: { questionLimit: number | null; answerLimitSec: number | null } | null = null, galleryOn = true, premiumPerMin: number | null = null) {
   const b = esc(config.brand);
   const signup = (extra = '') => esc(`/registar${extra || cq ? '?' : ''}${extra}${extra && cq ? '&' : ''}${cq}`);
   const withTags = (path: string) => esc(cq ? `${path}?${cq}` : path);
@@ -126,7 +126,7 @@ ${video ? `
     <ul class="lp-formats">
       <li><strong>Audio podcast</strong><span>A clear English episode with chapters, transcript and an audible AI disclosure.</span></li>
       <li><strong>Standard video: photos and subtitles</strong><span>Authorized photos, close-ups of whoever is speaking and subtitles in English, Portuguese, Spanish, French or German.</span></li>
-      <li><strong>Premium video: AI animation (optional, quoted separately)</strong><span>Presenters animated from authorized photos, with a visible “AI-generated video” notice, only with each person’s specific consent. Not included in any plan: each animated production is quoted before anything is generated and paid with prepaid credits.</span></li>
+      <li><strong>Premium video: AI animation (optional, quoted separately)</strong><span>Presenters animated from authorized photos, with a visible “AI-generated video” notice, only with each person’s specific consent. Pay as you go with prepaid credits${premiumPerMin ? `: up to ${premiumPerMin} credits per minute of video` : ''}; each production is quoted before anything is generated.</span></li>
     </ul>
     ${covers.length ? `<div class="lp-covers">${covers.map(([f, c]) => `<img src="/static/img/${f}.svg" alt="Sample podcast cover: ${esc(c)}" width="400" height="400" loading="lazy">`).join('')}</div>` : ''}
   </div>
@@ -150,6 +150,12 @@ ${video ? `
 ${free ? `  <div class="card" id="free" style="max-width:760px"><h3 style="margin-top:0">Your first interview is free</h3>
     <p>Create an account, confirm your email address and send your first invitation free of charge: no payment and no card details. The free interview has the Start plan limits (up to ${free.questionLimit} questions and ${Math.round(Number(free.answerLimitSec) / 60)} minutes of answers) and the same production as the plans (transcription, English script, narration, subtitles, cover and the video with photos), within a total of ${FREE_PRODUCTION_JOBS} production jobs: processing, regenerating the script and generating the episode, counting failed jobs and each «Try again», and up to ${FREE_VIDEO_RENDERS} generations of the video with photos. One per person and organisation, and each guest can receive only one free interview. A limited number of free interviews is available each day and each month; when they run out, the offer is temporarily unavailable. The offer can be withdrawn at any time (see the <a href="/termos#entrevista-gratis">terms</a>).</p>
     <a class="btn accent" href="${signup()}">Send your first interview free</a></div>
+` : ''}${premiumPerMin ? `  <div class="card" id="premium" style="max-width:760px;border:2px solid var(--accent)"><h3 style="margin-top:0">Premium video with AI animation: prepaid credits</h3>
+    <p>Add AI animation to any plan, only when you want it. Top up credits, see the quote for each production, and pay only for the speech that comes out animated and verified: the rest goes back to your balance.</p>
+    <p style="font-size:1.6rem;margin:.2em 0">Up to ${premiumPerMin} credits <span class="hint">per minute of video · 1 credit = €1</span></p>
+    <table class="sans" style="max-width:420px"><thead><tr><th>Video</th><th>Up to</th></tr></thead><tbody>${[1, 5, 10, 15, 20, 30].map(m => `<tr><td>${m} min</td><td>${m * premiumPerMin} credits</td></tr>`).join('')}</tbody></table>
+    <p class="hint">Each person appears animated only with their specific consent, with a visible “AI-generated video” notice, and the interviewee approves the video before it is published.</p>
+    <a class="btn accent" href="${signup()}">Start with a plan, add Premium anytime</a></div>
 ` : ''}  <p class="hint">Plans include photos only. AI animation is never part of a plan: each animated production is quoted before anything is generated and paid with prepaid credits. · <span lang="pt-PT">A animação por IA é orçamentada à parte e paga com créditos.</span></p>
   <p class="hint">Billing is monthly through Stripe, card only. VAT, where it applies, depends on your country; the final price is always shown before you pay.${s.tradeName || s.name ? ` Sold by ${esc(s.name || s.tradeName)}.` : ''} <a href="/termos">Terms of sale · Termos e condições</a> · ${complaintsLink(s)}. Plans and limits may change for new subscribers.</p>
 </section>

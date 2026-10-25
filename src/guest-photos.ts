@@ -7,16 +7,16 @@ import type { Db } from './db.ts';
  * política «o entrevistado aprova»: o convidado vê e aprova o episódio antes de qualquer publicação.
  * Condição SQL sobre a tabela photos com o alias `p`.
  */
-export const usablePhotoSql = (p = 'p') => `(${p}.added_by<>'host' OR (
-  EXISTS (SELECT 1 FROM interviews ui WHERE ui.id=${p}.interview_id AND ui.review_policy='guest_preview')
-  AND COALESCE((SELECT c.granted FROM consents c WHERE c.interview_id=${p}.interview_id AND c.purpose='host_edit' ORDER BY c.created_at DESC LIMIT 1), false)))`;
+export const usablePhotoSql = (p = 'p') => `(${p}.added_by<>'host' OR COALESCE((SELECT c.granted AND (c.text_snapshot ILIKE '%fotografia%' OR c.text_snapshot ILIKE '%photo%')
+  FROM consents c WHERE c.interview_id=${p}.interview_id AND c.purpose='host_edit' ORDER BY c.created_at DESC LIMIT 1), false))`;
 
 /** O entrevistador pode acrescentar ou escolher uma fotografia do convidado nesta entrevista? (motivo da recusa, ou null) */
 export async function hostPhotoBlock(db: Db, iv: { id: string; review_policy?: string; collection_status?: string }): Promise<string | null> {
   if (iv.collection_status !== 'submitted') return 'Só depois de o entrevistado submeter a entrevista.';
-  if (iv.review_policy !== 'guest_preview') return 'Só com a política «o entrevistado vê e aprova a versão final»: uma fotografia escolhida por si tem de ser vista e aprovada por ele antes de publicar.';
-  const ok = (await db.one(`SELECT granted FROM consents WHERE interview_id=$1 AND purpose='host_edit' ORDER BY created_at DESC LIMIT 1`, [iv.id]))?.granted;
-  if (!ok) return 'O entrevistado não deu (ou retirou) a autorização de edição. Os convites novos pedem-na ao aceitar; nesta entrevista, ele pode dá-la em «Autorizações das fotografias», a partir do link do convite ou da pré-visualização.';
+  // A autorização tem de cobrir a fotografia (o texto da política «só o entrevistador aprova» só passou a cobri-la na v6).
+  const c = await db.one(`SELECT granted, text_snapshot FROM consents WHERE interview_id=$1 AND purpose='host_edit' ORDER BY created_at DESC LIMIT 1`, [iv.id]);
+  const ok = !!c?.granted && /fotografia|photo/i.test(String(c.text_snapshot ?? ''));
+  if (!ok) return 'O entrevistado não deu (ou retirou) a autorização de edição, ou deu-a num texto anterior que não incluía a fotografia. Os convites novos pedem-na ao aceitar; nesta entrevista, ele pode dá-la em «Autorizações das fotografias», a partir do link do convite ou da pré-visualização.';
   return null;
 }
 

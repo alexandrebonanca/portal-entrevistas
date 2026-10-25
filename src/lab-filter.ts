@@ -2,7 +2,10 @@ import type { Handler } from './jobs.ts';
 import { config } from './config.ts';
 import { storage } from './storage.ts';
 import { saveAsset } from './media.ts';
-import { veoSubmit, veoAwait, veoEpisodePrompt } from './talking.ts';
+import { veoSubmit, veoAwait, veoEpisodePrompt, heygenAvatarIV, signedAssetUrl } from './talking.ts';
+import { readQuestion } from './ai/openai.ts';
+import { probeAudio } from './media.ts';
+import { S } from './settings.ts';
 import { chunkText, startImage } from './veo-episode.ts';
 import { mockTalkingClip } from './video.ts';
 
@@ -44,7 +47,8 @@ export const veoFilterProbe: Handler = async (job, { db, progress }) => {
     ...photos.slice(1).map((p: any, k: number) => ({ id: `foto${k + 2}`, label: `Outra fotografia do entrevistado (${k + 2}.ª)`, image: async () => (await startImage(await storage.get(p.storage_key))).image, prompt: current, usd: 0.4 })),
   ];
   const results: any[] = job.result?.results ?? [];
-  for (const [k, v] of variants.entries()) {
+  const only = job.input.only === 'heygen';
+  for (const [k, v] of (only ? [] : variants).entries()) {
     if (results.some(r => r.id === v.id)) continue;
     await progress(5 + Math.round((k / variants.length) * 90), 100, `${v.label}: a pedir à Google`);
     const t0 = Date.now();
@@ -60,6 +64,25 @@ export const veoFilterProbe: Handler = async (job, { db, progress }) => {
       results.push({ id: v.id, label: v.label, ok: false, error: m.slice(0, 400), filtered: /filtr|15236754|celebr/i.test(m), sec: Math.round((Date.now() - t0) / 1000) });
     }
     await db.query('UPDATE jobs SET result=$2 WHERE id=$1', [job.id, JSON.stringify({ results, text })]);
+  }
+  // HeyGen Avatar IV (API própria): a mesma fotografia e uma fala inteira com a voz sintética do episódio, num só take.
+  if ((S('HEYGEN_API_KEY') || config.openai.mock) && !results.some(r => r.id === 'heygen')) {
+    await progress(95, 100, 'HeyGen Avatar IV: a gerar a fala inteira');
+    const t0 = Date.now();
+    try {
+      const long = String(seg?.textEnglish ?? text).slice(0, 600);
+      const sp = await readQuestion(long, voice, 'en');
+      const pr = await probeAudio(sp.data, sp.ext);
+      const audioId = await saveAsset(db, { interviewId: null, kind: 'lab_audio', mime: sp.mime, ext: sp.ext, data: sp.data, durationMs: pr.durationMs, meta: { jobId: job.id } });
+      const photoId = await saveAsset(db, { interviewId: null, kind: 'lab_portrait', mime: 'image/jpeg', ext: 'jpg', data: await sharp(main).jpeg({ quality: 92 }).toBuffer(), meta: { jobId: job.id, interviewId: iv.id } });
+      const r = config.openai.mock ? { video: await mockTalkingClip(process.env.FFMPEG_PATH || (await import('@ffmpeg-installer/ffmpeg')).default.path, main, Math.min(pr.durationMs, 3000)), billedSec: null }
+        : await heygenAvatarIV(signedAssetUrl(photoId), signedAssetUrl(audioId), s => progress(95, 100, `HeyGen: ${s}`));
+      const id = await saveAsset(db, { interviewId: null, kind: 'lab_video', mime: 'video/mp4', ext: 'mp4', data: r.video, meta: { jobId: job.id, variant: 'heygen' } });
+      results.push({ id: 'heygen', label: `HeyGen Avatar IV: fala inteira (${Math.round(pr.durationMs / 1000)} s) com a voz do episódio, num só take`, ok: true, videoAssetId: id, usd: config.openai.mock ? 0 : Math.round((r.billedSec ?? pr.durationMs / 1000) * 0.0385 * 100) / 100, sec: Math.round((Date.now() - t0) / 1000) });
+    } catch (e: any) {
+      const m = String(e?.message ?? e);
+      results.push({ id: 'heygen', label: 'HeyGen Avatar IV: fala inteira com a voz do episódio', ok: false, error: m.slice(0, 400), filtered: /celebr|likeness|policy|moderat/i.test(m), sec: Math.round((Date.now() - t0) / 1000) });
+    }
   }
   await progress(100, 100, 'Concluído');
   return { results, text, interviewId: iv.id, usd: results.reduce((n, r) => n + (r.usd ?? 0), 0) };

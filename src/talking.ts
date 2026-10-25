@@ -18,6 +18,7 @@ export const PROVIDERS: TalkingProvider[] = [
   { id: 'omnihuman', label: 'OmniHuman 1.5 (ByteDance)', partner: 'fal.ai', keyName: 'FAL_KEY', pricePerSec: 0.16, ownAudio: true, preselected: false, note: 'Corpo, mãos e gestos; 720p' },
   { id: 'fabric', label: 'VEED Fabric 1.0', partner: 'fal.ai', keyName: 'FAL_KEY', pricePerSec: 0.14, ownAudio: true, preselected: false, note: '720p' },
   { id: 'infinitalk', label: 'InfiniteTalk', partner: 'fal.ai', keyName: 'FAL_KEY', pricePerSec: null, ownAudio: true, preselected: false, note: 'Código aberto; 480p; preço por confirmar no painel' },
+  { id: 'heygen-api', label: 'HeyGen Avatar IV (API da HeyGen)', partner: 'HeyGen', keyName: 'HEYGEN_API_KEY', pricePerSec: 0.0385, ownAudio: true, preselected: false, note: 'Fotografia + o nosso áudio (voz igual em todas as falas); até 30 min num só take; 720p' },
   { id: 'heygen', label: 'HeyGen Avatar IV', partner: 'WaveSpeed', keyName: 'WAVESPEED_API_KEY', pricePerSec: 0.10, ownAudio: true, preselected: false, note: '720p, expressividade média' },
   { id: 'veo', label: 'Google Veo 3.1 Fast', partner: 'Google', keyName: 'VERTEX_SA_JSON', pricePerSec: 0.10, ownAudio: false, preselected: true, note: 'Gera a voz dele (não usa o nosso áudio); clipe de 8 s; 720p com áudio' },
   { id: 'veo-lite', label: 'Google Veo 3.1 Lite', partner: 'Google', keyName: 'VERTEX_SA_JSON', pricePerSec: 0.05, ownAudio: false, preselected: true, note: 'Metade do preço do Fast; gera a voz dele; clipe de 8 s; 720p com áudio' },
@@ -93,6 +94,30 @@ async function falRun(model: string, input: object, onStatus?: (s: string) => Pr
   const url = out?.video?.url;
   if (!url) throw new Error('fal.ai não devolveu vídeo');
   return { video: await download(url), billedSec: typeof out.duration === 'number' ? out.duration : null };
+}
+
+// ---------- HeyGen (API própria, saldo pré-pago): Avatar IV a partir de uma fotografia e do nosso áudio ----------
+/**
+ * POST /v3/videos com `type: 'image'` (a fotografia por URL assinado) e `audio_url` (o áudio do episódio, sincronizado nos
+ * lábios): um só take até 30 min, com a nossa voz. Espera pelo estado em GET /v3/videos/{id} e descarrega o `video_url`.
+ */
+export async function heygenAvatarIV(imageUrl: string, audioUrl: string, onStatus?: (s: string) => Promise<void>, o: { expressiveness?: 'low' | 'medium' | 'high'; motionPrompt?: string } = {}) {
+  const headers = { 'x-api-key': S('HEYGEN_API_KEY'), 'Content-Type': 'application/json' };
+  const body = { type: 'image', image: { type: 'url', url: imageUrl }, audio_url: audioUrl, resolution: '720p', aspect_ratio: '16:9', fit: 'contain', expressiveness: o.expressiveness ?? 'medium', ...(o.motionPrompt ? { motion_prompt: o.motionPrompt } : {}) };
+  // Sem novas tentativas automáticas da criação: cada pedido aceite é cobrado.
+  const sub = await jsonFetch('https://api.heygen.com/v3/videos', { method: 'POST', headers, body: JSON.stringify(body) }, 'HeyGen');
+  const id = sub?.data?.video_id ?? sub?.video_id ?? sub?.data?.id ?? sub?.id;
+  if (!id) throw new Error(`HeyGen não devolveu o identificador do vídeo: ${JSON.stringify(sub).slice(0, 200)}`);
+  const t0 = Date.now();
+  for (;;) {
+    if (Date.now() - t0 > 40 * 60_000) throw new Error('HeyGen: tempo excedido');
+    await sleep(6000);
+    const r = await jsonFetch(`https://api.heygen.com/v3/videos/${encodeURIComponent(id)}`, { headers }, 'HeyGen');
+    const d = r?.data ?? r;
+    if (d.status === 'completed') { if (!d.video_url) throw new Error('HeyGen sem vídeo'); return { video: await download(d.video_url), billedSec: typeof d.duration === 'number' ? d.duration : null }; }
+    if (d.status === 'failed') throw new PermanentError(`HeyGen: ${String(d.failure_message ?? d.failure_code ?? 'falhou').slice(0, 300)}`);
+    await onStatus?.(`A gerar na HeyGen (${d.status ?? 'em curso'})`);
+  }
 }
 
 // ---------- WaveSpeed (HeyGen Avatar IV) ----------
@@ -505,6 +530,7 @@ export async function runProvider(p: TalkingProvider, a: { imageUrl: string; aud
     case 'fabric': return falRun('veed/fabric-1.0', { image_url: a.imageUrl, audio_url: a.audioUrl, resolution: '720p' }, onStatus);
     case 'infinitalk': return falRun('fal-ai/infinitalk', { image_url: a.imageUrl, audio_url: a.audioUrl, prompt: direction, resolution: '480p', num_frames: Math.min(721, Math.max(41, Math.round(a.audioSec * 25) + 5)) }, onStatus);
     case 'heygen': return wavespeedHeygen(a.imageUrl, a.audioUrl, onStatus);
+    case 'heygen-api': return heygenAvatarIV(a.imageUrl, a.audioUrl, onStatus);
     case 'veo': return veo(a.image, a.text, onStatus, 'fast');
     case 'veo-lite': return veo(a.image, a.text, onStatus, 'lite');
     default: throw new PermanentError(`Fornecedor desconhecido: ${p.id}`);

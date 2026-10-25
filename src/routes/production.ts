@@ -13,7 +13,7 @@ import { createInvitation } from '../invites.ts';
 import { queueEmail, emailShell } from '../mail.ts';
 import { veoEstimate, clipModelsNote, veoWithoutQuote, VEO_ONLY_PREVIEW, VIDEO_ONLY_PREVIEW, VEO_CHANGES, VEO_SCRIPT_REPLACED, VEO_NO_CREDENTIALS, VEO_NEEDS_QUOTE } from '../veo-episode.ts';
 import { veoConfigured, veoTier, veoLabel } from '../talking.ts';
-import { inEntity, entityOfInterview } from '../settings.ts';
+import { inEntity, entityOfInterview, S } from '../settings.ts';
 import { guestMustApprove, videoMeta as loadVideoMeta, coverWithdrawn } from '../approval.ts';
 import { walletFor, findWallet, spend, spendBlock, cr, EXTRA_REGEN_CENTS, type Wallet } from '../wallet.ts';
 import { paidConsentHtml, paidConsentOk, isConsumer } from './credits.ts';
@@ -427,14 +427,14 @@ ${episodeBefore ? REDO_BOX('gerar o episódio de novo') : ''}${episodeBefore ? p
       // Veo sem orçamento: o administrador (custo interno) e o gestor da entidade com credenciais Google próprias (paga ela).
       const freeVeo = veoWithoutQuote(req.user, ent);
       // O administrador não paga créditos, mas vê quanto o mesmo vídeo custaria a um cliente (para testar a oferta).
-      let adminCredits = 'Pedido pelo administrador: custo interno, sem orçamento.';
+      let adminCredits = 'O administrador não usa créditos.';
       if (isAdmin) {
         const rate = await rateForTier(db, quoteTier());
-        if (!rate) adminCredits = 'A tarifa do vídeo premium está desativada em Definições: os clientes ainda não o podem pedir. Pedido pelo administrador: não usa créditos (custo interno).';
+        if (!rate) adminCredits = 'A tarifa do vídeo premium está desativada em Definições (os clientes não o podem pedir); o administrador não usa créditos.';
         else {
           const fl = candidateFalas(ep, (await db.one('SELECT segments FROM scripts WHERE id=$1', [ep.script_id]))?.segments ?? [], { host: !!(iv.host_ai_video && iv.host_photo_rights && iv.host_photo_asset_id), guest: veoOk && guestHasPhoto }, rate);
           const cents = fl.reduce((n, f) => n + f.cents, 0), sec = fl.reduce((n, f) => n + f.sec, 0);
-          adminCredits = `<strong>Para um cliente, este vídeo custaria até ${cr(cents)} créditos</strong> (${Math.round(sec / 6) / 10} min de fala animada a ${rate.cents_per_min / 100} créditos por minuto). Pedido pelo administrador: não usa créditos (custo interno).`;
+          adminCredits = `Um cliente pagaria até <strong>${cr(cents)} créditos</strong>; o administrador não usa créditos.`;
         }
       }
       // Animação por orçamento (titular que não é administrador; o administrador só prepara o rascunho do cliente).
@@ -463,10 +463,11 @@ ${(() => { const est = animationEstimate(ep, iv, animOk, !!(iv.host_photo_rights
   const veoBlock = epScript?.status !== 'approved' ? VEO_SCRIPT_REPLACED : guestAp?.decision === 'changes' ? VEO_CHANGES : !veoKey ? VEO_NO_CREDENTIALS : !openaiKey ? 'Falta a chave da OpenAI (transcrição para verificar os clipes) em Definições.' : '';
   return `<fieldset style="flex-basis:100%;border:1px solid var(--line);border-radius:8px"><legend class="sans">Imagem e voz do vídeo</legend>
 <label class="check"><input type="radio" name="engine" value="still" checked> ${VIDEO_NORMAL}: fotografias, voz e legendas, incluído na sua subscrição</label>
-${!freeVeo ? `<p class="hint" style="margin:0 0 8px 30px">${VIDEO_PREMIUM}: veja os créditos e o seu saldo na secção «${VIDEO_PREMIUM}» abaixo.</p></fieldset>` : `<label class="check"><input type="radio" name="engine" value="veo" ${ve.clips && !veoBlock ? '' : 'disabled'}> ${isAdmin ? esc(veoLabel(tier)) : VIDEO_PREMIUM}: vídeo e voz gerados pelo modelo a partir da fotografia e do texto aprovado, aviso visível «AI-generated video · AI voice»</label>
-<p class="hint" style="margin:0 0 8px 30px">${veoBlock ? `<strong>${esc(veoBlock)}</strong> ` : ''}Entrevistador: ${hostVeo ? 'autorizado' : !iv.host_photo_asset_id ? 'sem fotografia (em Editar)' : 'sem autorização para o Veo (em Editar)'} · Convidado: ${guestVeo ? 'autorizado (vê e aprova o vídeo antes de publicar)' : !guestHasPhoto ? 'sem fotografia' : 'sem autorização para o Veo (o convidado pode dá-la em «Autorizações das fotografias», a partir do link do convite ou da pré-visualização)'}.
-${ve.clips && !isAdmin ? `${ve.clips} clipes · demora ~${ve.minutes} min. ` : ''}${ve.clips && isAdmin ? `${ve.clips} clipes, ${ve.sec} s faturados a ~$${ve.usdPerSec.toFixed(2)}/s · custo estimado ~$${ve.usd.toFixed(2)}, até ~$${ve.usdMax.toFixed(2)} se todos precisarem de nova tentativa · demora ~${ve.minutes} min.` : ''}
-A voz é a do modelo (não a do episódio) e pode variar entre clipes. Cada clipe é transcrito e comparado palavra a palavra com o guião; se não coincidir, é gerado de novo uma vez, e se continuar a não coincidir essa fala fica com a fotografia fixa e a voz do episódio (nunca entra um clipe que diga outra coisa). O mesmo para quem não autorizou. Só antes de publicar; o vídeo novo exige nova aprovação${iv.review_policy === 'guest_preview' ? ' (o convidado vê-o na pré-visualização)' : ''}. ${isAdmin ? '' + adminCredits : 'Pedido pelo gestor da entidade, com as credenciais Google dela: sem orçamento nem créditos (a Google cobra no projeto Google da entidade).'}</p></fieldset>`}`; })()}<label for="vl" style="margin:0">Legendas no vídeo</label><select id="vl" name="lang" style="width:auto">${Object.keys(ep.subtitles ?? {}).map(l => `<option value="${esc(l)}" ${l === (ep.video_lang ?? 'pt-PT') ? 'selected' : ''}>${esc(l)}</option>`).join('')}<option value="">Sem legendas</option></select>${ep.video_asset_id ? `<span style="flex-basis:100%">${REDO_BOX('gerar o vídeo de novo')}</span>` : ''}<button class="${ep.video_asset_id ? 'ghost' : 'accent'}">${ep.video_asset_id ? 'Gerar o vídeo de novo' : 'Gerar vídeo'}</button>${ep.video_asset_id || hostAp || guestAp ? '<span class="hint" style="flex-basis:100%">Um vídeo novo exige nova aprovação de quem já aprovou.</span>' : ''}</form>`}
+${!freeVeo ? `<p class="hint" style="margin:0 0 8px 30px">${VIDEO_PREMIUM}: veja os créditos e o seu saldo na secção «${VIDEO_PREMIUM}» abaixo.</p></fieldset>` : `${isAdmin && (config.openai.mock || S('HEYGEN_API_KEY')) ? `<label class="check"><input type="radio" name="engine" value="heygen"> HeyGen Avatar IV (teste do administrador): fotografia de cada pessoa e a voz do episódio, uma fala num só take, sem cortes</label>
+<p class="hint" style="margin:0 0 8px 30px">~$0,04 por segundo de fala animada (~$${(((ep.technical?.timing ?? []) as any[]).filter((t: any) => t.kind !== 'disclosure').reduce((n: number, t: any) => n + (t.durationMs ?? 0), 0) / 1000 * 0.0385).toFixed(2)} neste episódio), pago do saldo da API da HeyGen.</p>` : ''}
+<label class="check"><input type="radio" name="engine" value="veo" ${ve.clips && !veoBlock ? '' : 'disabled'}> ${isAdmin ? esc(veoLabel(tier)) : VIDEO_PREMIUM}: vídeo e voz gerados pelo modelo a partir da fotografia e do texto aprovado, aviso visível «AI-generated video · AI voice»</label>
+<p class="hint" style="margin:0 0 8px 30px">${veoBlock ? `<strong>${esc(veoBlock)}</strong><br>` : ''}Entrevistador: ${hostVeo ? '✓' : !iv.host_photo_asset_id ? 'sem fotografia (Editar)' : 'sem autorização (Editar)'} · Entrevistado: ${guestVeo ? '✓' : !guestHasPhoto ? 'sem fotografia' : 'sem autorização'}${ve.clips ? ` · ~${ve.minutes >= 60 ? `${Math.floor(ve.minutes / 60)} h ${Math.round(ve.minutes % 60)} min` : `${Math.round(ve.minutes)} min`}` : ''}${ve.clips && isAdmin ? ` · custo ~$${ve.usd.toFixed(0)} (máx. ~$${ve.usdMax.toFixed(0)})` : ''}<br>${isAdmin ? adminCredits : 'Pedido pelo gestor da entidade: sem créditos (a Google cobra no projeto Google da entidade).'}
+<details><summary>Como funciona</summary>A voz é a do modelo e pode variar entre clipes. Cada clipe é comparado com o guião; o que não coincidir é gerado de novo uma vez e, se falhar, essa fala fica com a fotografia e a voz do episódio. Se a Google recusar a fotografia de alguém, a geração pára no início. O vídeo novo exige nova aprovação.</details></p></fieldset>`}`; })()}<label for="vl" style="margin:0">Legendas no vídeo</label><select id="vl" name="lang" style="width:auto">${Object.keys(ep.subtitles ?? {}).map(l => `<option value="${esc(l)}" ${l === (ep.video_lang ?? 'pt-PT') ? 'selected' : ''}>${esc(l)}</option>`).join('')}<option value="">Sem legendas</option></select>${ep.video_asset_id ? `<span style="flex-basis:100%">${REDO_BOX('gerar o vídeo de novo')}</span>` : ''}<button class="${ep.video_asset_id ? 'ghost' : 'accent'}">${ep.video_asset_id ? 'Gerar o vídeo de novo' : 'Gerar vídeo'}</button>${ep.video_asset_id || hostAp || guestAp ? '<span class="hint" style="flex-basis:100%">Um vídeo novo exige nova aprovação de quem já aprovou.</span>' : ''}</form>`}
 ${introHint}
 ${quoteHtml}
 ${ep.video_asset_id && ep.status !== 'published' ? `<form method="post" action="/entrevistas/${iv.id}/episodio/${ep.id}/video/retirar" onsubmit="return confirm('Tirar o vídeo deste episódio? O ficheiro fica guardado em privado.')"><button class="ghost">Tirar o vídeo do episódio (volta à versão sem vídeo)</button></form>` : ''}
@@ -785,13 +786,14 @@ ${ep.visibility === 'public' ? `<form method="post" action="/entrevistas/${iv.id
     if (c.ep.stale) return back(reply, c.iv.id, undefined, 'Versão desatualizada.');
     const b = req.body as any;
     const lang = String(b?.lang ?? '');
-    const engine = b?.engine === 'veo' ? 'veo' : b?.engine === 'lipsync' || b?.animate ? 'lipsync' : 'still';
+    const engine = b?.engine === 'veo' ? 'veo' : b?.engine === 'heygen' ? 'heygen' : b?.engine === 'lipsync' || b?.animate ? 'lipsync' : 'still';
     // Vídeo IA pago ao fornecedor: o Veo sem orçamento só para o administrador e para o gestor de uma entidade com
     // credenciais Google próprias (os outros por orçamento aceite, nas rotas do orçamento); os retratos animados só para o
     // administrador. O pipeline volta a verificar (segunda barreira).
     const ent = await entityOfInterview(db, c.iv.id);
     if (engine === 'veo' && !veoWithoutQuote(req.user, ent)) return back(reply, c.iv.id, undefined, VEO_NEEDS_QUOTE);
-    if (engine === 'lipsync' && req.user!.role !== 'admin') return back(reply, c.iv.id, undefined, ANIMATE_ADMIN_ONLY);
+    if ((engine === 'lipsync' || engine === 'heygen') && req.user!.role !== 'admin') return back(reply, c.iv.id, undefined, ANIMATE_ADMIN_ONLY);
+    if (engine === 'heygen' && !config.openai.mock && !S('HEYGEN_API_KEY')) return back(reply, c.iv.id, undefined, 'Falta a chave da API da HeyGen em Definições.');
     // Só num episódio por publicar: num publicado, o vídeo novo iria logo para o ar sem nova aprovação.
     if (c.ep.status !== 'preview') return back(reply, c.iv.id, undefined, engine === 'veo' ? VEO_ONLY_PREVIEW : VIDEO_ONLY_PREVIEW);
     // Clique repetido: não se paga duas vezes a mesma geração.
@@ -814,7 +816,7 @@ ${ep.visibility === 'public' ? `<form method="post" action="/entrevistas/${iv.id
       if (await videoInQueue(tx)) return { blocked: VIDEO_BUSY };
       if (c.iv.free_at && !admin && (await freeVideoRenders(tx, c.iv.id)) >= FREE_VIDEO_RENDERS) return { blocked: FREE_VIDEOS_USED };
       const n = Number((await tx.one(`SELECT count(*)::int AS n FROM jobs WHERE interview_id=$1 AND kind='render_video'`, [c.iv.id])).n);
-      await enqueue(tx, { kind: 'render_video', interviewId: c.iv.id, input: { episodeId: c.ep.id, lang: lang && c.ep.subtitles?.[lang] ? lang : null, animate: engine === 'lipsync', requestedBy: req.user!.id, ...(engine === 'veo' ? { engine: 'veo', veoRetries: 1 } : {}), ...(admin && c.iv.free_at ? { admin: true } : {}) }, dedupe: `video:${c.ep.id}:${n}` });
+      await enqueue(tx, { kind: 'render_video', interviewId: c.iv.id, input: { episodeId: c.ep.id, lang: lang && c.ep.subtitles?.[lang] ? lang : null, animate: engine === 'lipsync' || engine === 'heygen', ...(engine === 'heygen' ? { animEngine: 'heygen' } : {}), requestedBy: req.user!.id, ...(engine === 'veo' ? { engine: 'veo', veoRetries: 1 } : {}), ...(admin && c.iv.free_at ? { admin: true } : {}) }, dedupe: `video:${c.ep.id}:${n}` });
       return {};
     });
     if (r.blocked) return back(reply, c.iv.id, undefined, r.blocked);

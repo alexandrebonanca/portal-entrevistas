@@ -1,4 +1,5 @@
 import type { FastifyInstance } from 'fastify';
+import { rateForTier, quoteTier } from '../quotes.ts';
 import { config } from '../config.ts';
 import { esc, hashPassword, verifyPassword, isEmail, rateLimit, sha256, newToken, SESSION_DAYS } from '../lib.ts';
 import { page, flash } from '../views.ts';
@@ -36,7 +37,9 @@ export async function siteRoutes(app: FastifyInstance) {
     const free = freeOfferOn() ? await freeLimits(db) : null;
     // A galeria só aparece no menu com pelo menos um episódio público nela (uma galeria vazia não serve a quem chega de um anúncio).
     const galleryOn = !!(await db.one(`SELECT 1 FROM episodes WHERE gallery AND status='published' AND visibility='public' AND withdrawn_at IS NULL LIMIT 1`));
-    return reply.type('text/html; charset=utf-8').send(landing(await db.query('SELECT * FROM plans WHERE active ORDER BY sort'), campaignQuery(tags), free, galleryOn));
+    // Vídeo premium: a tarifa em créditos por minuto (só com a tarifa ativa em Definições).
+    const rate = await rateForTier(db, quoteTier());
+    return reply.type('text/html; charset=utf-8').send(landing(await db.query('SELECT * FROM plans WHERE active ORDER BY sort'), campaignQuery(tags), free, galleryOn, rate ? Math.ceil(rate.cents_per_min / 100) : null));
   });
   app.get('/healthz', async () => ({ ok: true }));
   app.get('/robots.txt', async (_req, reply) => reply.type('text/plain').send('User-agent: *\nAllow: /$\nAllow: /privacy\nAllow: /e/\nAllow: /podcasts\nDisallow: /i/\nDisallow: /entrevista\nDisallow: /painel\nDisallow: /entrevistas\nDisallow: /admin\nDisallow: /account\nDisallow: /confirmar-email\n'));

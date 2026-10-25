@@ -637,7 +637,7 @@ test('gestor de entidade: o Veo sem créditos só com credenciais Google própri
     await saveEntitySetting(db, ent, 'GEMINI_API_KEY', ('AIza' + 'Test' + 'X'.repeat(29)));
     pg = (await get(`/entrevistas/${ivId}/producao`, cli.cookie)).body;
     assert.match(pg, /<input type="radio" name="engine" value="veo" >/); assert.doesNotMatch(pg, /value="lipsync"/);
-    assert.match(pg, /Pedido pelo gestor da entidade, com as credenciais Google dela: sem orçamento nem créditos/);
+    assert.match(pg, /Pedido pelo gestor da entidade: sem créditos \(a Google cobra no projeto Google da entidade\)/);
     assert.ok(pg.includes(Q.ENTITY_VEO_NO_QUOTE), 'a secção do orçamento explica porque não é precisa');
     assert.match(msg(await post(`/entrevistas/${ivId}/episodio/${epId}/orcamento`, { fala: HOST, lang: 'en' }, cli.cookie)), /credenciais Google próprias: o gestor gera o vídeo do Google Veo sem orçamento nem créditos/);
     assert.match(msg(await post(`/entrevistas/${ivId}/orcamentos/${draft.id}/aceitar`, { start_now: '1', waiver: '1' }, cli.cookie)), /sem orçamento nem créditos/, 'um rascunho de antes não se aceita (pagaria duas vezes)');
@@ -801,5 +801,20 @@ test('palavras a mais só nas pontas do clipe: aceita-se e corta-se à volta do 
 
 test('administrador: na opção do Veo vê quanto o mesmo vídeo custaria a um cliente, em créditos', async () => {
   const pg = (await get(`/entrevistas/${ivId}/producao`, admin)).body;
-  assert.match(pg, /Para um cliente, este vídeo custaria até [\d,]+ créditos<\/strong> \([\d.]+ min de fala animada a 30 créditos por minuto\)\. Pedido pelo administrador: não usa créditos/);
+  assert.match(pg, /Um cliente pagaria até <strong>[\d,]+ créditos<\/strong>; o administrador não usa créditos\./);
+});
+
+test('HeyGen Avatar IV (administrador): cada fala animada num só take com a voz do episódio; só o administrador', async () => {
+  await rejectAll();
+  const pg = (await get(`/entrevistas/${ivId}/producao`, admin)).body;
+  assert.match(pg, /value="heygen"> HeyGen Avatar IV \(teste do administrador\)/);
+  assert.doesNotMatch((await get(`/entrevistas/${ivId}/producao`, cli.cookie)).body, /value="heygen"/);
+  assert.match(msg(await post(`/entrevistas/${ivId}/episodio/${epId}/video`, { engine: 'heygen', lang: 'en' }, cli.cookie)), /reservados ao administrador/);
+  assert.match(msg(await post(`/entrevistas/${ivId}/episodio/${epId}/video`, { engine: 'heygen', lang: 'en' }, admin)), /Geração do vídeo iniciada/);
+  await drain();
+  const j = await lastJob();
+  assert.equal(j.state, 'done', j.error ?? '');
+  const meta = (await db.one('SELECT a.meta FROM episodes e JOIN assets a ON a.id=e.video_asset_id WHERE e.id=$1', [epId])).meta;
+  assert.equal(meta.engine, 'heygen');
+  assert.ok(meta.animatedSegments > 0);
 });
