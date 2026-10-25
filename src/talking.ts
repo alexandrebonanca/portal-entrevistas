@@ -103,7 +103,9 @@ async function falRun(model: string, input: object, onStatus?: (s: string) => Pr
  */
 export async function heygenAvatarIV(imageUrl: string, audioUrl: string, onStatus?: (s: string) => Promise<void>, o: { expressiveness?: 'low' | 'medium' | 'high'; motionPrompt?: string } = {}) {
   const headers = { 'x-api-key': S('HEYGEN_API_KEY'), 'Content-Type': 'application/json' };
-  const body = { type: 'image', image: { type: 'url', url: imageUrl }, audio_url: audioUrl, resolution: '720p', aspect_ratio: '16:9', fit: 'contain', expressiveness: o.expressiveness ?? 'medium', ...(o.motionPrompt ? { motion_prompt: o.motionPrompt } : {}) };
+  // Formato da própria fotografia ('auto'): com 16:9 a HeyGen punha barras brancas à volta de uma fotografia quadrada,
+  // que apareciam no vídeo (a montagem já põe o clipe sobre o fundo do estúdio).
+  const body = { type: 'image', image: { type: 'url', url: imageUrl }, audio_url: audioUrl, resolution: '720p', aspect_ratio: 'auto', expressiveness: o.expressiveness ?? 'medium', ...(o.motionPrompt ? { motion_prompt: o.motionPrompt } : {}) };
   // Sem novas tentativas automáticas da criação: cada pedido aceite é cobrado.
   const sub = await jsonFetch('https://api.heygen.com/v3/videos', { method: 'POST', headers, body: JSON.stringify(body) }, 'HeyGen');
   const id = sub?.data?.video_id ?? sub?.video_id ?? sub?.data?.id ?? sub?.id;
