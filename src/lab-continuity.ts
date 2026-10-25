@@ -6,7 +6,7 @@ import { storage } from './storage.ts';
 import { saveAsset, withTemp } from './media.ts';
 import { generateFictionalPortrait } from './ai/openai.ts';
 import { veoGenerate, veoEpisodePrompt, veoPricePerSec, type VeoTier } from './talking.ts';
-import { chunkText, veoDuration, startImage, transcribeVeoClip, trimWindow } from './veo-episode.ts';
+import { chunkText, veoDuration, startImage, transcribeVeoClip, trimWindow, cutFrame } from './veo-episode.ts';
 import { mockTalkingClip, animClipFilter, PUNCH_IN, W, H, run } from './video.ts';
 
 /**
@@ -54,14 +54,7 @@ export const veoContinuity: Handler = async (job, { db, progress }) => {
     done++;
     return { buf: video, ...meta };
   };
-  /** Fotograma do clipe no ponto de corte (o último que entra na montagem), como imagem inicial do pedaço seguinte. */
-  const frameAt = (c: ClipOut) => withTemp(async dir => {
-    const i = join(dir, 'c.mp4'), o = join(dir, 'f.jpg');
-    await writeFile(i, c.buf);
-    const r = await run(ffmpeg, ['-y', '-v', 'error', '-ss', (Math.max(0, c.b - 80) / 1000).toFixed(3), '-i', i, '-frames:v', '1', '-q:v', '2', o], 60_000);
-    if (r.code !== 0) throw new Error('Falha a tirar o fotograma de corte: ' + r.stderr.slice(-200));
-    return readFile(o);
-  });
+  const frameAt = (c: ClipOut) => cutFrame(ffmpeg, c.buf, c.b);
 
   const same: ClipOut[] = [];
   for (const [k, text] of chunks.entries()) same.push(await clip(`A${k + 1}`, first.image, text));

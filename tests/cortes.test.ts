@@ -47,3 +47,14 @@ test('som dos clipes com fades curtos nas pontas: sem estalidos e com a duraçã
   assert.ok(m && Math.abs(Number(m[1]) - 1.6) < 0.1, `duração ${m?.[1]}`);
   assert.ok(readFileSync(f).length > 1000);
 });
+
+test('clipes encadeados: fotograma de corte em JPEG, à medida do clipe', async () => {
+  const { cutFrame, veoChain } = await import('../src/veo-episode.ts');
+  assert.equal(veoChain(), true, 'ligado por omissão');
+  const img = await sharp({ create: { width: 1280, height: 720, channels: 3, background: '#468' } }).jpeg().toBuffer();
+  const clip = await mockTalkingClip(ffmpeg, img, 2000);
+  const f = await cutFrame(ffmpeg, clip, 1500);
+  assert.equal(f.subarray(0, 2).toString('hex'), 'ffd8');
+  const m = await sharp(f).metadata();
+  assert.deepEqual([m.width, m.height], [1280, 720]);
+});

@@ -207,7 +207,8 @@ test('liquidação: cobra só as falas animadas e verificadas, liberta o resto, 
   assert.equal(s.spent_usd, ops.reduce((n: number, o: any) => n + o.cost_usd, 0));
   const q1 = s.selection.find((x: any) => x.segmentId === 'q1');
   // 1.ª passagem de todos os pedaços; na 2.ª, a repetição do primeiro também falha e a fala já não fica completa: pára aí
-  assert.equal(ops.filter((o: any) => o.segment_key === q1.reuseKey).length, q1.chunks + 1, 'não se gasta mais numa fala que já não fica completa');
+  // (com os clipes encadeados, os pedaços seguintes nem chegam a ser pedidos: só o 1.º e a repetição dele)
+  assert.equal(ops.filter((o: any) => o.segment_key === q1.reuseKey).length, V.veoChain() ? 2 : q1.chunks + 1, 'não se gasta mais numa fala que já não fica completa');
   // a confirmação (suporte duradouro) saiu antes de a produção começar; o resultado segue por email
   const conf = await db.one(`SELECT state, sent_at FROM emails WHERE dedupe_key=$1`, [`quote:${q.id}`]);
   assert.equal(conf.state, 'sent'); assert.ok(new Date(conf.sent_at) <= new Date(s.started_at));
@@ -759,6 +760,7 @@ test('nenhum pedaço com clipe: o vídeo não se liga ao episódio e as aprovaç
 test('fotografia recusada pelos filtros: depois de N pedaços bloqueados dessa pessoa, as falas seguintes não se tentam', async () => {
   await rejectAll();
   await db.query(`DELETE FROM veo_ops WHERE interview_id=$1`, [ivId]); // tentativas anteriores (dos testes de cima) não contam
+
   // o convidado volta a autorizar o vídeo IA (um teste de cima retirou-a)
   for (const p of ['ai_video', 'publish_photo']) await db.query(`INSERT INTO consents(interview_id, purpose, granted, text_version, text_snapshot) VALUES ($1,$2,true,'t','t')`, [ivId, p]);
   V.veoMock.outcome = c => (c.role === 'guest' ? 'filtered' : 'ok');
