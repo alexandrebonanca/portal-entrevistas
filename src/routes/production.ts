@@ -457,14 +457,15 @@ ${ep.visibility === 'public' ? `<form method="post" action="/entrevistas/${iv.id
 <form method="post" action="/entrevistas/${iv.id}/episodio/${ep.id}/retirar" onsubmit="return confirm('Retirar o episódio?')"><button class="danger">Retirar episódio</button></form>
 <p class="hint">Cópias já descarregadas ou distribuídas externamente podem não ser recuperáveis.</p>`}</div>`;
     }
-    if (submitted && !live) body += await guestPhotoCard(iv);
+    // Também com um trabalho a correr (por exemplo, a introdução do entrevistador): a escolha vale para o próximo vídeo.
+    if (submitted) body += await guestPhotoCard(iv);
     if (!live && (script || ep || ['failed', 'stale', 'editorial_review', 'ready', 'qc'].includes(iv.production_status))) {
       body += `<div class="card"><h2 style="margin-top:0">Recomeçar a produção</h2>
 <p class="hint">Arquiva o guião e o episódio atuais (não são eliminados) e volta ao passo «Processar podcast». As gravações e as transcrições originais mantêm-se. Se o episódio estiver publicado, é retirado e sai da galeria.</p>
 <form method="post" action="/entrevistas/${iv.id}/producao/recomecar" onsubmit="return confirm('Arquivar o guião e o episódio atuais e recomeçar a produção?')"><button class="danger" ${(scriptBefore && !canRegen) || jobsLow ? 'disabled' : ''}>Recomeçar produção</button></form>${scriptPay ? `${regenHint}${canRegen ? `<p class="hint">Depois de recomeçar, processar de novo custa ${cr(EXTRA_REGEN_CENTS)} crédito.</p>` : ''}` : ''}</div>`;
     }
     body += '</div>';
-    return reply.type('text/html; charset=utf-8').send(page({ title: 'Produção', body, noindex: true, script: live ? '/static/progress.js' : '/static/player.js', scripts: live ? [] : ['/static/guest-photo.js'], nav: `<a href="/painel">Painel</a>${helpNav(req.user)}` }));
+    return reply.type('text/html; charset=utf-8').send(page({ title: 'Produção', body, noindex: true, script: live ? '/static/progress.js' : '/static/player.js', scripts: ['/static/guest-photo.js'], nav: `<a href="/painel">Painel</a>${helpNav(req.user)}` }));
   });
 
   // Estado dos trabalhos em JSON, para a barra de progresso (só o dono/admin).
