@@ -437,7 +437,9 @@ ${ep.visibility === 'public' ? `<form method="post" action="/entrevistas/${iv.id
     const byPace = j.state === 'running' && total && done / total >= 0.05 ? Math.round((elapsedSec / done) * (total - done)) : null;
     const expected = j.state === 'running' ? await expectedSec(db, j) : null;
     const byExpected = expected != null ? Math.max(30, Math.round(expected - elapsedSec)) : null;
-    const etaSec = byPace != null && byExpected != null ? Math.round((byPace + byExpected) / 2) : byPace ?? byExpected;
+    // Quanto mais avançado, mais vale o ritmo observado (a estimativa inicial é por omissão ou de outros trabalhos).
+    const w = total ? Math.min(1, done / total) : 0;
+    const etaSec = byPace != null && byExpected != null ? Math.round(byPace * w + byExpected * (1 - w)) : byPace ?? byExpected;
     // Vídeo à espera na via dos vídeos: quantos estão à frente e quanto falta para a via ficar livre.
     const fila = j.state === 'queued' && laneOf(j.kind) === 'video' && !paused(j) ? await videoQueue(db, j.id) : null;
     const queued = fila ? (fila.ahead ? `Em fila: ${fila.ahead} vídeo(s) à frente (~${fila.minutes} min)` : 'Em fila: é o próximo vídeo') : 'Em fila';
