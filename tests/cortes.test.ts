@@ -58,3 +58,13 @@ test('clipes encadeados: fotograma de corte em JPEG, à medida do clipe', async 
   const m = await sharp(f).metadata();
   assert.deepEqual([m.width, m.height], [1280, 720]);
 });
+
+test('clipe com margens (HeyGen em 16:9 de uma fotografia quadrada): o recorte à proporção da fotografia tira-as', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'qi-crop-'));
+  const img = await sharp({ create: { width: 640, height: 360, channels: 3, background: '#fff' } }).jpeg().toBuffer();
+  const clip = join(dir, 'c.mp4'), out = join(dir, 'o.mp4');
+  writeFileSync(clip, await mockTalkingClip(ffmpeg, img, 1000));
+  const r = spawnSync(ffmpeg, ['-y', '-v', 'error', '-i', clip, '-vf', animClipFilter(1, 1280, 720, 1), '-an', '-frames:v', '3', out], { encoding: 'utf8' });
+  assert.equal(r.status, 0, r.stderr);
+  assert.deepEqual(dims(out), [720, 720]);
+});

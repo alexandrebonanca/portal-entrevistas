@@ -211,7 +211,7 @@ export interface Card { bg: Buffer; glow: Buffer; layers: { png: Buffer; x: numb
 
 export type Part =
   | { kind: 'still'; startMs: number; endMs: number; shots: Shot[] }
-  | { kind: 'anim'; startMs: number; endMs: number; base: Buffer; clip: Buffer | (() => Promise<Buffer>); clipOffsetMs?: number; notice?: string; cues: { startMs: number; endMs: number; text: string }[]; zoom?: number }
+  | { kind: 'anim'; startMs: number; endMs: number; base: Buffer; clip: Buffer | (() => Promise<Buffer>); clipOffsetMs?: number; notice?: string; cues: { startMs: number; endMs: number; text: string }[]; zoom?: number; cropAspect?: number }
   | { kind: 'card'; startMs: number; endMs: number; card: Card };
 
 /**
@@ -221,10 +221,12 @@ export type Part =
  */
 export const PUNCH_IN = 1.18;
 /** Filtro do clipe animado: à altura do vídeo (zoom 1) ou ampliado e recortado ao enquadramento (zoom > 1). */
-export function animClipFilter(zoom: number | undefined, w = W, h = H) {
-  if (!zoom || zoom <= 1) return `setpts=PTS-STARTPTS,scale=-2:${h},setsar=1`;
+export function animClipFilter(zoom: number | undefined, w = W, h = H, cropAspect?: number) {
+  // Recorte à proporção da fotografia (clipe com margens à volta, como os da HeyGen pedidos em 16:9): tira as margens.
+  const crop = cropAspect ? `crop=w=min(iw\\,ih*${cropAspect.toFixed(4)}):h=ih,` : '';
+  if (!zoom || zoom <= 1) return `setpts=PTS-STARTPTS,${crop}scale=-2:${h},setsar=1`;
   const zh = Math.round((h * zoom) / 2) * 2;
-  return `setpts=PTS-STARTPTS,scale=-2:${zh},crop=w=min(iw\\,${w}):h=${h}:x=(iw-min(iw\\,${w}))/2:y=(ih-${h})*0.35,setsar=1`;
+  return `setpts=PTS-STARTPTS,${crop}scale=-2:${zh},crop=w=min(iw\\,${w}):h=${h}:x=(iw-min(iw\\,${w}))/2:y=(ih-${h})*0.35,setsar=1`;
 }
 
 /** Fundo dos cartões: imagem de CARD_BG, recortada a W×H numa posição que muda a cada fotograma (expressões do FFmpeg 4.1). */
@@ -396,7 +398,7 @@ export async function encodeComposite(ffmpeg: string, parts: Part[], frameFor: (
           await writeFile(over, await animatedOverlay(text, part.notice));
           const d = ((n * 40) / 1000).toFixed(3);
           const c = await gfx('v1', part.startMs + a0, activeIn(part.startMs + a0, part.startMs + a1), 3);
-          const g = [`[1:v]${animClipFilter(part.zoom)}[c]`, `[0:v]scale=${W}:${H},setsar=1[bg]`, '[bg][c]overlay=(W-w)/2:(H-h)/2:eof_action=repeat[v0]', '[v0][2:v]overlay=0:0[v1]', ...c.g, `[${c.cur}]fps=25,format=yuv420p[out]`].join(';');
+          const g = [`[1:v]${animClipFilter(part.zoom, W, H, part.cropAspect)}[c]`, `[0:v]scale=${W}:${H},setsar=1[bg]`, '[bg][c]overlay=(W-w)/2:(H-h)/2:eof_action=repeat[v0]', '[v0][2:v]overlay=0:0[v1]', ...c.g, `[${c.cur}]fps=25,format=yuv420p[out]`].join(';');
           const r = await run(ffmpeg, ['-y', '-v', 'error', '-threads', '2', '-loop', '1', '-framerate', '25', '-i', base, '-ss', ((off + a0) / 1000).toFixed(3), '-t', d, '-i', clip, '-loop', '1', '-framerate', '25', '-i', over, ...c.ins,
             '-filter_complex', g, '-map', '[out]', ...enc, '-threads', '2', '-frames:v', String(n), '-an', piece], 600_000);
           if (r.code !== 0) throw new Error('Falha a codificar parte animada: ' + r.stderr.slice(-300));

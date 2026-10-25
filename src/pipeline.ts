@@ -382,7 +382,9 @@ export const handlers: Record<string, Handler> = {
               else if (heygen) {
                 // A HeyGen descarrega a fotografia e o áudio por URL assinado (1 h), guardados à parte (sem a entrevista).
                 const speech = await sliceAudio(ffmpeg, audio, sg.startMs, sg.startMs + sg.durationMs);
-                const pId = await saveAsset(db, { interviewId: null, kind: 'lab_portrait', mime: 'image/jpeg', ext: 'jpg', data: photo, meta: { interviewId: iv.id, heygen: true } });
+                // (sempre em JPEG: a HeyGen recusa uma fotografia PNG servida como image/jpeg)
+                const jpg = await (await import('sharp')).default(photo).rotate().jpeg({ quality: 92 }).toBuffer();
+                const pId = await saveAsset(db, { interviewId: null, kind: 'lab_portrait', mime: 'image/jpeg', ext: 'jpg', data: jpg, meta: { interviewId: iv.id, heygen: true } });
                 const aId = await saveAsset(db, { interviewId: null, kind: 'lab_audio', mime: 'audio/mpeg', ext: 'mp3', data: speech, durationMs: sg.durationMs, meta: { interviewId: iv.id, heygen: true } });
                 const r = await heygenAvatarIV(signedAssetUrl(pId), signedAssetUrl(aId));
                 clips[k] = r.video; gpuUsd += (r.billedSec ?? sg.durationMs / 1000) * 0.0385;
@@ -405,12 +407,15 @@ export const handlers: Record<string, Handler> = {
     }
     // Partes no tempo do episódio (fixas e, com retratos animados, as falas animadas); depois os cartões (título a seguir
     // ao aviso inicial e final), o som do episódio com silêncio nos cartões e o grafismo (rodapés e capítulos).
+    // HeyGen: proporção de cada fotografia (os clipes pedidos em 16:9 traziam margens brancas; o recorte tira-as).
+    const aspectOf: Record<'host' | 'guest', number | undefined> = { host: undefined, guest: undefined };
+    if (heygen) for (const [r, ph] of [['host', hostPhoto], ['guest', guestPhoto]] as const) if (ph) { const m = await (await import('sharp')).default(ph).rotate().metadata(); if (m.width && m.height) aspectOf[r] = m.width / m.height; }
     const layout = splitParts(ok.map(x => ({ startMs: x.sg.startMs, endMs: x.sg.endMs })), ep.duration_ms);
     const cues = lang ? ep.subtitles[lang] as any[] : [];
     const epParts: Part[] = layout.map(l => {
       if (l.kind === 'still') return { kind: 'still', startMs: l.startMs, endMs: l.endMs, shots: shotsWithin(shots, l.startMs, l.endMs) };
       const x = ok[l.animIndex!];
-      return { kind: 'anim', startMs: l.startMs, endMs: l.endMs, base: x.sg.role === 'host' ? bases.animHost : bases.animGuest, clip: x.clip,
+      return { kind: 'anim', startMs: l.startMs, endMs: l.endMs, base: x.sg.role === 'host' ? bases.animHost : bases.animGuest, clip: x.clip, ...(heygen ? { cropAspect: aspectOf[x.sg.role as 'host' | 'guest'] } : {}),
         cues: cues.filter(c => c.endMs > l.startMs && c.startMs < l.endMs).map(c => ({ startMs: c.startMs - l.startMs, endMs: Math.min(c.endMs, l.endMs) - l.startMs, text: c.text })) };
     });
     await progress(segs.length ? 72 : 10, 100, 'A preparar os cartões e o grafismo');
