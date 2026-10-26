@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify';
-import { rateForTier, quoteTier } from '../quotes.ts';
+import { premiumRate } from '../quotes.ts';
+import { coverWithdrawnSql } from '../approval.ts';
 import { config } from '../config.ts';
 import { esc, hashPassword, verifyPassword, isEmail, rateLimit, sha256, newToken, SESSION_DAYS } from '../lib.ts';
 import { page, flash } from '../views.ts';
@@ -38,8 +39,13 @@ export async function siteRoutes(app: FastifyInstance) {
     // A galeria só aparece no menu com pelo menos um episódio público nela (uma galeria vazia não serve a quem chega de um anúncio).
     const galleryOn = !!(await db.one(`SELECT 1 FROM episodes WHERE gallery AND status='published' AND visibility='public' AND withdrawn_at IS NULL LIMIT 1`));
     // Vídeo premium: a tarifa em créditos por minuto (só com a tarifa ativa em Definições).
-    const rate = await rateForTier(db, quoteTier());
-    return reply.type('text/html; charset=utf-8').send(landing(await db.query('SELECT * FROM plans WHERE active ORDER BY sort'), campaignQuery(tags), free, galleryOn, rate ? Math.ceil(rate.cents_per_min / 100) : null));
+    const rate = await premiumRate(db);
+    // Separador «Interviews»: o último episódio público com vídeo que o entrevistador autorizou na galeria pública.
+    const f = await db.one(`SELECT e.slug, e.title, e.duration_ms, e.subtitles, i.host_name, i.guest_name FROM episodes e JOIN interviews i ON i.id=e.interview_id
+      WHERE e.gallery AND e.status='published' AND e.visibility='public' AND e.withdrawn_at IS NULL AND e.video_asset_id IS NOT NULL AND NOT ${coverWithdrawnSql('e')}
+      ORDER BY e.published_at DESC LIMIT 1`);
+    const featured = f ? { slug: f.slug, title: f.title, host_name: f.host_name ?? '', guest_name: f.guest_name ?? '', duration_ms: f.duration_ms, subtitles: Object.keys(f.subtitles ?? {}) } : null;
+    return reply.type('text/html; charset=utf-8').send(landing(await db.query('SELECT * FROM plans WHERE active ORDER BY sort'), campaignQuery(tags), free, galleryOn, rate?.cents_per_min ?? null, featured));
   });
   app.get('/healthz', async () => ({ ok: true }));
   app.get('/robots.txt', async (_req, reply) => reply.type('text/plain').send('User-agent: *\nAllow: /$\nAllow: /privacy\nAllow: /e/\nAllow: /podcasts\nDisallow: /i/\nDisallow: /entrevista\nDisallow: /painel\nDisallow: /entrevistas\nDisallow: /admin\nDisallow: /account\nDisallow: /confirmar-email\n'));

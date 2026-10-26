@@ -26,7 +26,9 @@ const { eurPt, withVat } = await import('../src/vat.ts');
 const sharp = (await import('sharp')).default;
 
 let db: any, app: any;
-before(async () => { db = await openDb(); await migrate(db); app = await buildApp(db); });
+before(async () => { db = await openDb(); await migrate(db); app = await buildApp(db);
+  // Estes testes cobrem o motor antigo (Google Veo): reativa-o como vídeo premium (a migração 038 passou a venda à animação premium).
+  await db.query(`UPDATE animation_rates SET active = (id='veo-fast') WHERE id IN ('veo-fast','heygen')`); });
 after(async () => { await app.close(); await db.close(); });
 // Sem rede: nada vai à Google, à OpenAI nem à Stripe (o modo simulado gera os clipes localmente).
 const realFetch = globalThis.fetch;
@@ -166,7 +168,7 @@ test('orçamento: o administrador prepara o rascunho; tabela por fala, total e s
   const ok = await post(aceitar, { start_now: '1', waiver: '1' }, cli.cookie);
   assert.match(msg(ok), new RegExp(`Orçamento aceite: ${W.cr(expected)} créditos cativos`));
   const qa = await quoteOf(q.id);
-  assert.deepEqual([qa.status, qa.accepted_by, qa.terms_version, qa.acceptance.startNow, qa.acceptance.consumer, qa.acceptance.second], ['accepted', 'cliente@example.com', '2026-10-24', true, false, 'conditions']);
+  assert.deepEqual([qa.status, qa.accepted_by, qa.terms_version, qa.acceptance.startNow, qa.acceptance.consumer, qa.acceptance.second], ['accepted', 'cliente@example.com', '2026-10-26', true, false, 'conditions']);
   assert.ok(qa.accepted_ip);
   const w = await walletOf(cli.id);
   assert.deepEqual([w.available_cents, w.reserved_cents], [10000 - expected, expected]);
@@ -175,7 +177,7 @@ test('orçamento: o administrador prepara o rascunho; tabela por fala, total e s
   const em = await db.one(`SELECT * FROM emails WHERE dedupe_key=$1`, [`quote:${q.id}`]);
   for (const s of [`Total: ${W.cr(expected)} créditos`, 'Peço que a produção comece já.', 'O orçamento aceite é o máximo', 'Empresa Vendedora de Teste, Lda.', 's0 · Entrevistador']) assert.ok(em.text_body.includes(s), s);
   const au = await db.one(`SELECT meta FROM audit_events WHERE action='animation.quote_accepted' AND interview_id=$1`, [ivId]);
-  assert.deepEqual([au.meta.quote, au.meta.terms, !!au.meta.ip], [q.id, '2026-10-24', true]);
+  assert.deepEqual([au.meta.quote, au.meta.terms, !!au.meta.ip], [q.id, '2026-10-26', true]);
   // duplo clique: um só trabalho e uma só cativação
   assert.match(msg(await post(aceitar, { start_now: '1', waiver: '1' }, cli.cookie)), /já não está por aceitar/);
   assert.equal(Number((await db.one(`SELECT count(*)::int n FROM wallet_entries WHERE kind='reserve' AND ref=$1`, [`quote:${q.id}`])).n), 1);
@@ -807,7 +809,7 @@ test('administrador: na opção do Veo vê quanto o mesmo vídeo custaria a um c
 test('HeyGen Avatar IV (administrador): cada fala animada num só take com a voz do episódio; só o administrador', async () => {
   await rejectAll();
   const pg = (await get(`/entrevistas/${ivId}/producao`, admin)).body;
-  assert.match(pg, /value="heygen"> HeyGen Avatar IV \(teste do administrador\)/);
+  assert.match(pg, /value="heygen"> Vídeo premium/);
   assert.doesNotMatch((await get(`/entrevistas/${ivId}/producao`, cli.cookie)).body, /value="heygen"/);
   assert.match(msg(await post(`/entrevistas/${ivId}/episodio/${epId}/video`, { engine: 'heygen', lang: 'en' }, cli.cookie)), /reservados ao administrador/);
   assert.match(msg(await post(`/entrevistas/${ivId}/episodio/${epId}/video`, { engine: 'heygen', lang: 'en' }, admin)), /Geração do vídeo iniciada/);

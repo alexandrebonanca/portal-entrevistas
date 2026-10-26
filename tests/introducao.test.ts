@@ -26,7 +26,9 @@ const G = await import('../src/graphics.ts');
 const sharp = (await import('sharp')).default;
 
 let db: any, app: any;
-before(async () => { db = await openDb(); await migrate(db); app = await buildApp(db); });
+before(async () => { db = await openDb(); await migrate(db); app = await buildApp(db);
+  // Estes testes cobrem o motor antigo (Google Veo): reativa-o como vídeo premium (a migração 038 passou a venda à animação premium).
+  await db.query(`UPDATE animation_rates SET active = (id='veo-fast') WHERE id IN ('veo-fast','heygen')`); });
 after(async () => { await app.close(); await db.close(); });
 // Sem rede: nada vai à Google, à OpenAI nem à Stripe (o modo simulado gera os clipes localmente).
 const realFetch = globalThis.fetch;

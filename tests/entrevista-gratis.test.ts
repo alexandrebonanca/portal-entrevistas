@@ -598,7 +598,7 @@ test('administração e métricas: quem usou e quando, email confirmado; enviada
 });
 
 test('textos: termos (2-C), FAQ do assistente, privacidade; o email pessoal não aparece em nada disto', async () => {
-  assert.equal(TERMS_VERSION, '2026-10-24');
+  assert.equal(TERMS_VERSION, '2026-10-26');
   const t = (await get('/termos')).body;
   assert.match(t, /<h2 id="entrevista-gratis">2-C\. 1\.ª entrevista grátis<\/h2>/);
   for (const s of ['sem pagamento nem dados de cartão', 'uma por pessoa e por organização', 'limites por entrevista do plano Start', 'pode ser alterada ou retirada a qualquer momento, sem afetar as entrevistas grátis já enviadas', 'A indisponibilidade, a alteração ou a retirada da oferta não dão direito a créditos nem a reembolsos.',

@@ -21,7 +21,7 @@ const D = {
     nothingToView: 'Neste momento não há nenhum episódio para ver: quem o convidou envia-lhe um novo link quando houver uma versão nova.',
     // Vídeo explicativo na página do convite (só com «o entrevistado aprova»: o vídeo promete a aprovação dele).
     promoTitle: 'Como funciona, em 1 minuto',
-    promoCaption: 'Vídeo e vozes gerados por IA (Google Veo), com legendas em português e em inglês. Todas as pessoas mostradas são fictícias.',
+    promoCaption: 'Vídeo e vozes gerados por IA, com legendas em português e em inglês. Todas as pessoas mostradas são fictícias.',
     promoFallback: 'Ver o vídeo (MP4)',
     reviewAuth: 'Autorizações das fotografias (incluindo o vídeo gerado por IA)',
     invitedBy: (h: string) => `Tem um convite de ${h} para responder a uma entrevista.`,
@@ -65,7 +65,7 @@ const D = {
     limitReached: 'atingiu o tempo máximo desta resposta',
     refused: 'Registou que não pretende responder a esta pergunta.', answered: 'Resposta guardada',
     photos: 'Fotografias (opcional)', photosIntro: 'Pode tirar até três selfies à sua escolha para acompanhar a entrevista. Só usamos as que escolher, e só nas finalidades que autorizar.',
-    c_photo: 'Autorizo a captação e o armazenamento das fotografias que eu escolher.', c_cover: 'Autorizo a utilização de uma ou mais fotografias na capa do episódio.', c_pubphoto: 'Autorizo a publicação dessas fotografias no episódio.', c_animate: 'Autorizo que uma dessas fotografias seja animada por IA no vídeo do episódio (movimento da boca sincronizado com a voz sintética em inglês), sempre com o aviso visível «Retrato animado por IA». A animação é feita por um serviço externo (Replicate).', versionChanged: 'O vídeo mudou desde que abriu esta página: veja a versão atual antes de aprovar.', c_aivideo: 'Autorizo que uma dessas fotografias e o texto aprovado da minha resposta sejam enviados à Google (Veo) para gerar um vídeo por IA em que apareço a dizer esse texto em inglês, com gestos e uma voz gerados pelo modelo (não é a minha voz), sempre com o aviso visível «AI-generated video · AI voice».', photoAuth: 'Autorizações das fotografias', photoByHost: 'Acrescentada pelo entrevistador',
+    c_photo: 'Autorizo a captação e o armazenamento das fotografias que eu escolher.', c_cover: 'Autorizo a utilização de uma ou mais fotografias na capa do episódio.', c_pubphoto: 'Autorizo a publicação dessas fotografias no episódio.', c_animate: 'Autorizo que uma dessas fotografias seja animada por IA no vídeo do episódio (movimento da boca sincronizado com a voz sintética em inglês), sempre com o aviso visível «Retrato animado por IA». A animação é feita por um serviço externo (Replicate).', versionChanged: 'O vídeo mudou desde que abriu esta página: veja a versão atual antes de aprovar.', c_aivideo: 'Autorizo que uma dessas fotografias e a voz sintética das minhas falas no episódio (não é a minha voz) sejam enviadas à HeyGen para gerar um vídeo por IA em que apareço animado a dizer essas falas em inglês, sempre com o aviso visível «AI-generated video · AI voice».', photoAuth: 'Autorizações das fotografias', photoByHost: 'Acrescentada pelo entrevistador',
     openCamera: 'Abrir câmara', take: 'Tirar fotografia', keep: 'Guardar esta', discard: 'Descartar', skipPhotos: 'Terminar sem fotografias', photoUpload: 'Carregar fotografia', photosDone: 'Concluir fotografias',
     camDenied: 'A câmara não está disponível. Pode carregar uma fotografia.', max3: 'Máximo de três fotografias.',
     review: 'Rever e submeter', yourAnswers: 'As suas respostas', noPhotos: 'Sem fotografias', pendingUploads: 'Ainda há respostas por enviar ou por responder.',
@@ -131,7 +131,7 @@ const D = {
     publishedOn: (d: string) => `Published on ${d}.`,
     nothingToView: 'There is no episode to view at the moment: the person who invited you will send you a new link when there is a new version.',
     promoTitle: 'How it works, in 1 minute',
-    promoCaption: 'AI-generated video and voices (Google Veo), with English and Portuguese captions. All people shown are fictional.',
+    promoCaption: 'AI-generated video and voices, with English and Portuguese captions. All people shown are fictional.',
     promoFallback: 'Watch the video (MP4)',
     reviewAuth: 'Photo permissions (including the AI-generated video)',
     invitedBy: (h: string) => `${h} invites you to answer an interview.`,
@@ -175,7 +175,7 @@ const D = {
     limitReached: 'you reached the maximum time for this answer',
     refused: 'You chose not to answer this question.', answered: 'Answer saved',
     photos: 'Photos (optional)', photosIntro: 'You may take up to three selfies of your choice to go with the interview. We only use the ones you choose, and only for the purposes you allow.',
-    c_photo: 'I allow the capture and storage of the photos I choose.', c_cover: 'I allow one or more photos to be used on the episode cover.', c_pubphoto: 'I allow those photos to be published with the episode.', c_animate: 'I allow one of those photos to be animated by AI in the episode video (mouth movement synchronised with the synthetic English voice), always with the visible notice “AI-animated portrait”. The animation is done by an external service (Replicate).', versionChanged: 'The video changed since you opened this page: please watch the current version before approving.', c_aivideo: 'I allow one of those photos and the approved text of my answer to be sent to Google (Veo) to generate an AI video in which I appear saying that text in English, with gestures and a voice generated by the model (not my own voice), always with the visible notice “AI-generated video · AI voice”.', photoAuth: 'Photo permissions', photoByHost: 'Added by the interviewer',
+    c_photo: 'I allow the capture and storage of the photos I choose.', c_cover: 'I allow one or more photos to be used on the episode cover.', c_pubphoto: 'I allow those photos to be published with the episode.', c_animate: 'I allow one of those photos to be animated by AI in the episode video (mouth movement synchronised with the synthetic English voice), always with the visible notice “AI-animated portrait”. The animation is done by an external service (Replicate).', versionChanged: 'The video changed since you opened this page: please watch the current version before approving.', c_aivideo: 'I allow one of those photos and the synthetic voice of my lines in the episode (not my own voice) to be sent to HeyGen to generate an AI video in which I appear animated saying those lines in English, always with the visible notice “AI-generated video · AI voice”.', photoAuth: 'Photo permissions', photoByHost: 'Added by the interviewer',
     openCamera: 'Open camera', take: 'Take photo', keep: 'Keep this one', discard: 'Discard', skipPhotos: 'Finish without photos', photoUpload: 'Upload a photo', photosDone: 'Finish photos',
     camDenied: 'The camera is not available. You can upload a photo instead.', max3: 'Maximum of three photos.',
     review: 'Review and submit', yourAnswers: 'Your answers', noPhotos: 'No photos', pendingUploads: 'Some answers are still missing or not uploaded.',
@@ -229,7 +229,7 @@ export const t = (lang: Lang) => D[lang];
 
 // v2: publicação conforme a política de revisão; Replicate na animação. v3: o pedido de eliminação segue pela «Ajuda» da
 // entrevista ou pelo formulário de contacto (já não pelo «contacto de apoio», o email que deixou de se mostrar).
-export const CONSENT_VERSION = 'v6-2026-10';
+export const CONSENT_VERSION = 'v7-2026-10';
 export const CONSENT_PURPOSES = ['participation', 'processing', 'photo_capture', 'cover_use', 'publish_photo', 'animate_portrait', 'ai_video', 'publish', 'host_edit'] as const;
 export type ConsentPurpose = typeof CONSENT_PURPOSES[number];
 /** Texto de cada autorização; a de publicação depende da política de revisão da entrevista. */

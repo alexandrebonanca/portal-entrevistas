@@ -21,7 +21,8 @@ import { vatForProfile } from '../billing.ts';
 import { seller } from '../legal.ts';
 import { withVat, eurPt } from '../vat.ts';
 import { quoteSection } from './quotes.ts';
-import { rateForTier, candidateFalas, quoteTier } from '../quotes.ts';
+import { premiumRate, candidateFalas } from '../quotes.ts';
+import { premiumAllowed } from '../premium.ts';
 import { introProductionHint } from './intro.ts';
 import { helpNav, isUuid } from '../support.ts';
 import { purgeUnpublishedPhotoVideos, discardAsset } from '../uploads.ts';
@@ -100,7 +101,7 @@ export async function productionRoutes(app: FastifyInstance) {
     const cur = await videoGuestPhoto(db, iv, { coverIds: epNow?.technical?.coverPhotoIds });
     const pubPhoto = await consent(iv.id, 'publish_photo');
     const mine = photos.filter((p: any) => p.added_by === 'host');
-    const label = (p: any) => (p.added_by === 'host' ? 'acrescentada por si' : 'enviada pelo entrevistado') + (p.usable ? '' : ' · sem autorização de edição: não é usada') + (p.refused ? ' · a Google recusou animá-la no vídeo premium' : '');
+    const label = (p: any) => (p.added_by === 'host' ? 'acrescentada por si' : 'enviada pelo entrevistado') + (p.usable ? '' : ' · sem autorização de edição: não é usada') + (p.refused ? ' · o fornecedor de IA recusou animá-la' : '');
     return `<div class="card" id="foto-convidado"><h2 style="margin-top:0">Fotografia do entrevistado</h2>
 <p class="hint">É a fotografia usada no vídeo (e a que pode escolher para a capa). Se o fornecedor de IA recusar animá-la (por exemplo, por parecer uma pessoa conhecida ou uma imagem editada), escolha outra ou acrescente uma fotografia do entrevistado e gere o vídeo de novo. Com a autorização de edição que ele deu ao aceitar o convite, pode editar a entrevista; o entrevistado vê e aprova o episódio antes de qualquer publicação.</p>
 ${!pubPhoto ? '<div class="flash">O entrevistado não autorizou a publicação de fotografias: o vídeo e a capa não usam nenhuma fotografia dele.</div>' : ''}
@@ -429,10 +430,10 @@ ${episodeBefore ? REDO_BOX('gerar o episódio de novo') : ''}${episodeBefore ? p
       // O administrador não paga créditos, mas vê quanto o mesmo vídeo custaria a um cliente (para testar a oferta).
       let adminCredits = 'O administrador não usa créditos.';
       if (isAdmin) {
-        const rate = await rateForTier(db, quoteTier());
+        const rate = await premiumRate(db);
         if (!rate) adminCredits = 'A tarifa do vídeo premium está desativada em Definições (os clientes não o podem pedir); o administrador não usa créditos.';
         else {
-          const fl = candidateFalas(ep, (await db.one('SELECT segments FROM scripts WHERE id=$1', [ep.script_id]))?.segments ?? [], { host: !!(iv.host_ai_video && iv.host_photo_rights && iv.host_photo_asset_id), guest: veoOk && guestHasPhoto }, rate);
+          const fl = candidateFalas(ep, (await db.one('SELECT segments FROM scripts WHERE id=$1', [ep.script_id]))?.segments ?? [], rate.engine === 'heygen' ? await premiumAllowed(db, iv) : { host: !!(iv.host_ai_video && iv.host_photo_rights && iv.host_photo_asset_id), guest: veoOk && guestHasPhoto }, rate);
           const cents = fl.reduce((n, f) => n + f.cents, 0), sec = fl.reduce((n, f) => n + f.sec, 0);
           adminCredits = `Um cliente pagaria até <strong>${cr(cents)} créditos</strong>; o administrador não usa créditos.`;
         }
@@ -440,7 +441,9 @@ ${episodeBefore ? REDO_BOX('gerar o episódio de novo') : ''}${episodeBefore ? p
       // Animação por orçamento (titular que não é administrador; o administrador só prepara o rascunho do cliente).
       const quoteHtml = !ep.stale ? await quoteSection(db, iv, ep) : '';
       // Introdução animada do entrevistador (oferecida, fora do orçamento): só nos vídeos com o Google Veo.
-      const introHint = !ep.stale && ep.status === 'preview' ? await introProductionHint(db, iv) : '';
+      // O vídeo premium que se vende agora (sem nomes de fornecedores para o cliente); o Veo só se o premium ativo for o antigo.
+      const premEngine = (await premiumRate(db))?.engine ?? 'heygen';
+      const introHint = premEngine === 'veo' && !ep.stale && ep.status === 'preview' ? await introProductionHint(db, iv) : '';
       body += `<div class="card" id="passo-5"><h2 style="margin-top:0">5. Episódio ${pill(ep.status, ep.status === 'published' ? 'ok' : '')} ${ep.stale ? pill('desatualizado', 'bad') : ''}</h2>
 ${playerHtml(ep, { audio: `/media/${ep.audio_asset_id}`, cover: `/media/${ep.cover_asset_id}`, subs: (l, x) => `/entrevistas/${iv.id}/subs/${l}.${x}` }, { host: iv.host_name, guest: iv.guest_name })}
 <p class="hint sans">Pico máx.: ${ep.technical?.maxVolumeDb ?? '—'} dB · clipping: ${ep.technical?.clipping ? 'SIM' : 'não'}${ep.technical?.mock ? ' · <strong>gerado em modo simulado (AI_MOCK)</strong>' : ''}</p>
@@ -463,11 +466,11 @@ ${(() => { const est = animationEstimate(ep, iv, animOk, !!(iv.host_photo_rights
   const veoBlock = epScript?.status !== 'approved' ? VEO_SCRIPT_REPLACED : guestAp?.decision === 'changes' ? VEO_CHANGES : !veoKey ? VEO_NO_CREDENTIALS : !openaiKey ? 'Falta a chave da OpenAI (transcrição para verificar os clipes) em Definições.' : '';
   return `<fieldset style="flex-basis:100%;border:1px solid var(--line);border-radius:8px"><legend class="sans">Imagem e voz do vídeo</legend>
 <label class="check"><input type="radio" name="engine" value="still" checked> ${VIDEO_NORMAL}: fotografias, voz e legendas, incluído na sua subscrição</label>
-${!freeVeo ? `<p class="hint" style="margin:0 0 8px 30px">${VIDEO_PREMIUM}: veja os créditos e o seu saldo na secção «${VIDEO_PREMIUM}» abaixo.</p></fieldset>` : `${isAdmin && (config.openai.mock || S('HEYGEN_API_KEY')) ? `<label class="check"><input type="radio" name="engine" value="heygen"> HeyGen Avatar IV (teste do administrador): fotografia de cada pessoa e a voz do episódio, uma fala num só take, sem cortes</label>
-<p class="hint" style="margin:0 0 8px 30px">~$0,04 por segundo de fala animada (~$${(((ep.technical?.timing ?? []) as any[]).filter((t: any) => t.kind !== 'disclosure').reduce((n: number, t: any) => n + (t.durationMs ?? 0), 0) / 1000 * 0.0385).toFixed(2)} neste episódio), pago do saldo da API da HeyGen.</p>` : ''}
-<label class="check"><input type="radio" name="engine" value="veo" ${ve.clips && !veoBlock ? '' : 'disabled'}> ${isAdmin ? esc(veoLabel(tier)) : VIDEO_PREMIUM}: vídeo e voz gerados pelo modelo a partir da fotografia e do texto aprovado, aviso visível «AI-generated video · AI voice»</label>
+${!freeVeo || (!isAdmin && premEngine === 'heygen') ? `<p class="hint" style="margin:0 0 8px 30px">${VIDEO_PREMIUM}: veja os créditos e o seu saldo na secção «${VIDEO_PREMIUM}» abaixo.</p></fieldset>` : `${isAdmin && (config.openai.mock || S('HEYGEN_API_KEY')) ? `<label class="check"><input type="radio" name="engine" value="heygen"> ${VIDEO_PREMIUM}: cada fala animada a partir da fotografia, com a voz do episódio</label>
+<p class="hint" style="margin:0 0 8px 30px">Custo interno ~$${(((ep.technical?.timing ?? []) as any[]).filter((t: any) => t.kind !== 'disclosure').reduce((n: number, t: any) => n + (t.durationMs ?? 0), 0) / 1000 * 0.0385).toFixed(2)} neste episódio. ${adminCredits}</p>` : ''}
+${premEngine === 'heygen' ? '</fieldset>' : `<label class="check"><input type="radio" name="engine" value="veo" ${ve.clips && !veoBlock ? '' : 'disabled'}> ${isAdmin ? esc(veoLabel(tier)) : VIDEO_PREMIUM}: vídeo e voz gerados pelo modelo a partir da fotografia e do texto aprovado, aviso visível «AI-generated video · AI voice»</label>
 <p class="hint" style="margin:0 0 8px 30px">${veoBlock ? `<strong>${esc(veoBlock)}</strong><br>` : ''}Entrevistador: ${hostVeo ? '✓' : !iv.host_photo_asset_id ? 'sem fotografia (Editar)' : 'sem autorização (Editar)'} · Entrevistado: ${guestVeo ? '✓' : !guestHasPhoto ? 'sem fotografia' : 'sem autorização'}${ve.clips ? ` · ~${ve.minutes >= 60 ? `${Math.floor(ve.minutes / 60)} h ${Math.round(ve.minutes % 60)} min` : `${Math.round(ve.minutes)} min`}` : ''}${ve.clips && isAdmin ? ` · custo ~$${ve.usd.toFixed(0)} (máx. ~$${ve.usdMax.toFixed(0)})` : ''}<br>${isAdmin ? adminCredits : 'Pedido pelo gestor da entidade: sem créditos (a Google cobra no projeto Google da entidade).'}
-<details><summary>Como funciona</summary>A voz é a do modelo e pode variar entre clipes. Cada clipe é comparado com o guião; o que não coincidir é gerado de novo uma vez e, se falhar, essa fala fica com a fotografia e a voz do episódio. Se a Google recusar a fotografia de alguém, a geração pára no início. O vídeo novo exige nova aprovação.</details></p></fieldset>`}`; })()}<label for="vl" style="margin:0">Legendas no vídeo</label><select id="vl" name="lang" style="width:auto">${Object.keys(ep.subtitles ?? {}).map(l => `<option value="${esc(l)}" ${l === (ep.video_lang ?? 'pt-PT') ? 'selected' : ''}>${esc(l)}</option>`).join('')}<option value="">Sem legendas</option></select>${ep.video_asset_id ? `<span style="flex-basis:100%">${REDO_BOX('gerar o vídeo de novo')}</span>` : ''}<button class="${ep.video_asset_id ? 'ghost' : 'accent'}">${ep.video_asset_id ? 'Gerar o vídeo de novo' : 'Gerar vídeo'}</button>${ep.video_asset_id || hostAp || guestAp ? '<span class="hint" style="flex-basis:100%">Um vídeo novo exige nova aprovação de quem já aprovou.</span>' : ''}</form>`}
+<details><summary>Como funciona</summary>A voz é a do modelo e pode variar entre clipes. Cada clipe é comparado com o guião; o que não coincidir é gerado de novo uma vez e, se falhar, essa fala fica com a fotografia e a voz do episódio. Se a Google recusar a fotografia de alguém, a geração pára no início. O vídeo novo exige nova aprovação.</details></p></fieldset>`}`}`; })()}<label for="vl" style="margin:0">Legendas no vídeo</label><select id="vl" name="lang" style="width:auto">${Object.keys(ep.subtitles ?? {}).map(l => `<option value="${esc(l)}" ${l === (ep.video_lang ?? 'pt-PT') ? 'selected' : ''}>${esc(l)}</option>`).join('')}<option value="">Sem legendas</option></select>${ep.video_asset_id ? `<span style="flex-basis:100%">${REDO_BOX('gerar o vídeo de novo')}</span>` : ''}<button class="${ep.video_asset_id ? 'ghost' : 'accent'}">${ep.video_asset_id ? 'Gerar o vídeo de novo' : 'Gerar vídeo'}</button>${ep.video_asset_id || hostAp || guestAp ? '<span class="hint" style="flex-basis:100%">Um vídeo novo exige nova aprovação de quem já aprovou.</span>' : ''}</form>`}
 ${introHint}
 ${quoteHtml}
 ${ep.video_asset_id && ep.status !== 'published' ? `<form method="post" action="/entrevistas/${iv.id}/episodio/${ep.id}/video/retirar" onsubmit="return confirm('Tirar o vídeo deste episódio? O ficheiro fica guardado em privado.')"><button class="ghost">Tirar o vídeo do episódio (volta à versão sem vídeo)</button></form>` : ''}
@@ -476,13 +479,13 @@ ${!pubOk ? '<div class="flash bad">O entrevistado não autorizou a publicação.
 ${ep.status === 'withdrawn' ? `<p class="sans">Retirado em ${fmtDate(ep.withdrawn_at)}.</p><p class="hint">${esc(pubBlock ?? '')}</p>`
   : ep.status !== 'published' ? `<form method="post" action="/entrevistas/${iv.id}/episodio/${ep.id}/publicar" onsubmit="return confirm('Publicar agora?')"><label for="vis">Modalidade</label><select id="vis" name="visibility"><option value="private">Privado (só pessoas autorizadas)</option><option value="unlisted" ${iv.planned_visibility === 'unlisted' ? 'selected' : ''}>Não listado (quem tem o link; não equivale a privado)</option><option value="public" ${iv.planned_visibility === 'public' ? 'selected' : ''}>Público (indexável)</option></select>
 <fieldset style="border:1px solid var(--line);border-radius:8px;margin-top:12px"><legend class="sans">Galeria pública «Podcasts gerados»</legend>
-<label class="check"><input type="checkbox" name="gallery" value="1"> Permito que este episódio fique na galeria pública do portal, para consulta, organizada por temas (só para episódios públicos).</label>
+<label class="check"><input type="checkbox" name="gallery" value="1"> Permito que este episódio fique na galeria pública do portal, para consulta, organizada por temas, e que o último episódio com vídeo apareça como exemplo no separador «Interviews» da página inicial (só para episódios públicos).</label>
 <label for="th">Tema</label><input id="th" name="theme" type="text" list="themes" maxlength="60" placeholder="Ex.: Energia, Telecomunicações, Hotelaria"><datalist id="themes">${(await db.query(`SELECT DISTINCT theme FROM episodes WHERE theme<>'' ORDER BY theme`)).map((t: any) => `<option value="${esc(t.theme)}">`).join('')}</datalist></fieldset>
 <p><button class="accent" ${canPublish ? '' : 'disabled'}>Publicar</button></p>${canPublish ? '' : `<p class="hint">Ainda não é possível publicar: ${esc(pubBlock ?? '')} (Publicar exige a aprovação válida do entrevistador${needGuest ? ' e do entrevistado' : ''}, a autorização de publicação, a versão atual e nenhum alerta de qualidade.)</p>`}</form>`
-  : `<p class="sans">Publicado (${esc(ep.visibility)}) em ${fmtDate(ep.published_at)}${ep.visibility !== 'private' ? ` · <a href="/e/${ep.slug}">/e/${esc(ep.slug)}</a>` : ''}</p>
+  : `<p class="sans">Publicado (${esc(ep.visibility)}) em ${fmtDate(ep.published_at)}${ep.visibility !== 'private' ? ` · <a href="/e/${ep.slug}">/e/${esc(ep.slug)}</a>` : ''} · <a class="btn ghost" href="/assistir/convites?ep=${ep.id}">Convidar para assistir (email ou WhatsApp)</a></p>
 ${coverW ? '<p class="hint">O entrevistado retirou a autorização da capa: a capa, a miniatura e o vídeo (que mostra a capa) deixaram de ser mostrados neste episódio publicado, até ele voltar a autorizar.</p>' : ''}
 ${ep.visibility === 'public' ? `<form method="post" action="/entrevistas/${iv.id}/episodio/${ep.id}/galeria" class="card"><strong class="sans">Galeria pública «Podcasts gerados»</strong>
-<label class="check"><input type="checkbox" name="gallery" value="1" ${ep.gallery ? 'checked' : ''}> Mostrar na galeria pública, organizada por temas</label>
+<label class="check"><input type="checkbox" name="gallery" value="1" ${ep.gallery ? 'checked' : ''}> Mostrar na galeria pública, organizada por temas (o último com vídeo aparece como exemplo no separador «Interviews» da página inicial)</label>
 <label for="th2">Tema</label><input id="th2" name="theme" type="text" maxlength="60" value="${esc(ep.theme)}"><button class="ghost">Guardar</button></form>` : ''}
 <form method="post" action="/entrevistas/${iv.id}/episodio/${ep.id}/retirar" onsubmit="return confirm('Retirar o episódio?')"><button class="danger">Retirar episódio</button></form>
 <p class="hint">Cópias já descarregadas ou distribuídas externamente podem não ser recuperáveis.</p>`}</div>`;

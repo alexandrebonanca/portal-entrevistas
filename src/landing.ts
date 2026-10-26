@@ -64,7 +64,13 @@ const STYLES = `
  * a entrada, que as passam ao registo. `free`: os limites da 1.ª entrevista grátis (os do plano Start) quando a oferta está
  * ligada; null não a anuncia.
  */
-export function landing(plans: any[], cq = '', free: { questionLimit: number | null; answerLimitSec: number | null } | null = null, galleryOn = true, premiumPerMin: number | null = null) {
+/** Episódio de exemplo no separador «Interviews»: o último publicado como público, com vídeo e autorizado na galeria. */
+export interface FeaturedEpisode { slug: string; title: string; host_name: string; guest_name: string; duration_ms: number; subtitles: string[] }
+/** Créditos de um vídeo de m minutos à tarifa (cêntimos por minuto), arredondados ao crédito para cima. */
+const creditsFor = (m: number, centsPerMin: number) => Math.ceil((m * centsPerMin) / 100);
+const crEn = (cents: number) => (cents % 100 ? (cents / 100).toFixed(cents % 10 ? 2 : 1) : String(cents / 100));
+
+export function landing(plans: any[], cq = '', free: { questionLimit: number | null; answerLimitSec: number | null } | null = null, galleryOn = true, premiumCents: number | null = null, featured: FeaturedEpisode | null = null) {
   const b = esc(config.brand);
   const signup = (extra = '') => esc(`/registar${extra || cq ? '?' : ''}${extra}${extra && cq ? '&' : ''}${cq}`);
   const withTags = (path: string) => esc(cq ? `${path}?${cq}` : path);
@@ -90,7 +96,7 @@ export function landing(plans: any[], cq = '', free: { questionLimit: number | n
     head: `<meta property="og:type" content="website"><meta property="og:site_name" content="${b}"><meta property="og:title" content="Great interviews, recorded in your guest’s own time">
 <meta property="og:description" content="Asynchronous interviews that share professional cultures and life experience across countries and languages."><meta property="og:url" content="${esc(config.baseUrl)}/">${ogImage ? `<meta property="og:image" content="${esc(ogImage)}"><meta name="twitter:card" content="summary_large_image">` : ''}`,
     styles: STYLES,
-    nav: `<a href="#how">How it works</a>${galleryOn ? `<a href="${withTags('/podcasts')}">Gallery</a>` : ''}<a href="#pricing">Pricing</a><a href="${withTags('/entrar')}">Sign in</a><a class="btn accent" href="${signup()}">Get started</a>`,
+    nav: `<a href="#how">How it works</a>${featured ? '<a href="#interviews">Interviews</a>' : ''}${galleryOn ? `<a href="${withTags('/podcasts')}">Gallery</a>` : ''}<a href="#pricing">Pricing</a><a href="${withTags('/entrar')}">Sign in</a><a class="btn accent" href="${signup()}">Get started</a>`,
     body: `
 <section class="lp-hero"><div class="wrap lp-grid">
   <div>
@@ -108,7 +114,14 @@ ${video ? `
 <section class="wrap lp-section" id="tour" aria-labelledby="tourh"><h2 id="tourh"><span translate="no">${b}</span> in one minute</h2>
   <p class="lp-intro">Professional cultures and life lessons, shared across countries and generations: your guests answer in their own time, by default review before anything is published, and reach listeners in other languages.</p>
   <figure class="lp-video">${promoVideo('en', 'Watch the video (MP4)')}
-    <figcaption class="hint">AI-generated video and voices (Google Veo), with English and Portuguese captions. All people shown are fictional.</figcaption></figure>
+    <figcaption class="hint">AI-generated video and voices, with English and Portuguese captions. All people shown are fictional.</figcaption></figure>
+</section>
+` : ''}
+${featured ? `
+<section class="wrap lp-section" id="interviews" aria-labelledby="ivh"><h2 id="ivh">Interviews</h2>
+  <p class="lp-intro">A real interview produced with ${b}, published by its interviewer: «${esc(featured.title)}», with ${esc(featured.host_name)} and ${esc(featured.guest_name)}.</p>
+  <figure class="lp-video"><video controls playsinline preload="none" poster="/e/${esc(featured.slug)}/cover" src="/e/${esc(featured.slug)}/video" width="1280" height="720">${featured.subtitles.map(l => `<track kind="captions" srclang="${esc(l)}" label="${esc(l)}" src="/e/${esc(featured.slug)}/subs/${esc(l)}.vtt">`).join('')}<a href="/e/${esc(featured.slug)}">Watch the interview</a></video>
+    <figcaption class="hint">Translated and narrated with AI voices; the animated video carries a visible AI notice. <a href="${withTags(`/e/${featured.slug}`)}">Full episode, transcript and chapters</a>${galleryOn ? ` · <a href="${withTags('/podcasts')}">More interviews in the gallery</a>` : ''}</figcaption></figure>
 </section>
 ` : ''}
 <section class="wrap lp-section" id="how" aria-labelledby="howh"><h2 id="howh">How it works</h2>
@@ -126,7 +139,7 @@ ${video ? `
     <ul class="lp-formats">
       <li><strong>Audio podcast</strong><span>A clear English episode with chapters, transcript and an audible AI disclosure.</span></li>
       <li><strong>Standard video: photos and subtitles</strong><span>Authorized photos, close-ups of whoever is speaking and subtitles in English, Portuguese, Spanish, French or German.</span></li>
-      <li><strong>Premium video: AI animation (optional, quoted separately)</strong><span>Presenters animated from authorized photos, with a visible “AI-generated video” notice, only with each person’s specific consent. Pay as you go with prepaid credits${premiumPerMin ? `: up to ${premiumPerMin} credits per minute of video` : ''}; each production is quoted before anything is generated.</span></li>
+      <li><strong>Premium video: animated presenters (prepaid credits)</strong><span>The interviewer and the interviewee animated from their authorized photos, speaking with the episode’s voices, with a visible “AI-generated video” notice and only with each person’s specific consent. Pay as you go with prepaid credits${premiumCents ? `: ${crEn(premiumCents)} credits per minute of video` : ''}; each production is quoted before anything is generated.</span></li>
     </ul>
     ${covers.length ? `<div class="lp-covers">${covers.map(([f, c]) => `<img src="/static/img/${f}.svg" alt="Sample podcast cover: ${esc(c)}" width="400" height="400" loading="lazy">`).join('')}</div>` : ''}
   </div>
@@ -135,7 +148,7 @@ ${video ? `
 <section class="wrap lp-section" id="principles" aria-labelledby="ph"><h2 id="ph">Respectful by design</h2>
   <div class="grid3">
     <div class="card"><h3>Consent first</h3><p>Recording, AI processing, photo use, AI video and publication are separate, unticked choices, stored with the exact text shown.</p></div>
-    <div class="card"><h3>Never invented</h3><p>Every line points to what was actually said. AI video clips are checked word by word against the approved script.</p></div>
+    <div class="card"><h3>Never invented</h3><p>Every line points to what was actually said, and the animated video speaks the approved narration, line by line.</p></div>
     <div class="card"><h3>Synthetic means disclosed</h3><p>Episodes open with an audible notice, and animated portraits carry a visible label. No cloned voices.</p></div>
     <div class="card"><h3>Interviewee approves</h3><p>By default, your interviewee sees and validates the final version, and always does when they appear in an AI video. Silence is never approval.</p></div>
     <div class="card"><h3>Originals stay private</h3><p>Raw recordings and unused photos are never published. Withdrawing an episode takes one click.</p></div>
@@ -143,17 +156,20 @@ ${video ? `
   </div>
 </section>
 
-<section class="wrap lp-section" id="pricing" aria-labelledby="prh"><h2 id="prh">Simple monthly pricing</h2>
+<section class="wrap lp-section" id="pricing" aria-labelledby="prh"><h2 id="prh">Two ways to produce</h2>
+  <p class="lp-intro"><strong>1. Podcast with photos</strong>: a monthly plan, with the interviewer’s and the interviewee’s photos in the video. <strong>2. Premium video</strong>: add animated presenters to any interview, with prepaid credits, only when you want them.</p>
+  <h3>1. Podcast with photos: monthly plans</h3>
   <div class="grid3" style="max-width:760px">${plans.map(p => `<div class="card"><h3 style="margin-top:0">${esc(p.name)}</h3><p style="font-size:2.2rem;margin:.1em 0">${eur(p.price_cents)}<span class="hint"> / month</span></p>
     <p>Up to <strong>${p.interviews_per_month} interviews</strong> per month.</p><ul class="sans" style="padding-left:18px"><li>Invitations, recording and photos</li><li>Transcription, English script, narration</li><li>Subtitles, cover, player and video with photos</li><li>Cancel any time</li></ul>
     <a class="btn accent" href="${signup(`plan=${encodeURIComponent(p.id)}`)}">Choose ${esc(p.name)}</a></div>`).join('')}</div>
 ${free ? `  <div class="card" id="free" style="max-width:760px"><h3 style="margin-top:0">Your first interview is free</h3>
     <p>Create an account, confirm your email address and send your first invitation free of charge: no payment and no card details. The free interview has the Start plan limits (up to ${free.questionLimit} questions and ${Math.round(Number(free.answerLimitSec) / 60)} minutes of answers) and the same production as the plans (transcription, English script, narration, subtitles, cover and the video with photos), within a total of ${FREE_PRODUCTION_JOBS} production jobs: processing, regenerating the script and generating the episode, counting failed jobs and each «Try again», and up to ${FREE_VIDEO_RENDERS} generations of the video with photos. One per person and organisation, and each guest can receive only one free interview. A limited number of free interviews is available each day and each month; when they run out, the offer is temporarily unavailable. The offer can be withdrawn at any time (see the <a href="/termos#entrevista-gratis">terms</a>).</p>
     <a class="btn accent" href="${signup()}">Send your first interview free</a></div>
-` : ''}${premiumPerMin ? `  <div class="card" id="premium" style="max-width:760px;border:2px solid var(--accent)"><h3 style="margin-top:0">Premium video with AI animation: prepaid credits</h3>
-    <p>Add AI animation to any plan, only when you want it. Top up credits, see the quote for each production, and pay only for the speech that comes out animated and verified: the rest goes back to your balance.</p>
-    <p style="font-size:1.6rem;margin:.2em 0">Up to ${premiumPerMin} credits <span class="hint">per minute of video · 1 credit = €1</span></p>
-    <table class="sans" style="max-width:420px"><thead><tr><th>Video</th><th>Up to</th></tr></thead><tbody>${[1, 3, 5, 10, 15].map(m => `<tr><td>${m} min</td><td>${m * premiumPerMin} credits</td></tr>`).join('')}</tbody></table>
+` : ''}${premiumCents ? `  <h3>2. Premium video: prepaid credits</h3>
+  <div class="card" id="premium" style="max-width:760px;border:2px solid var(--accent)"><h3 style="margin-top:0">Premium video with animated presenters</h3>
+    <p>Add it to any plan, only when you want it. Top up credits, see the quote for each production, and pay only for the lines that come out animated: the rest goes back to your balance.</p>
+    <p style="font-size:1.6rem;margin:.2em 0">${crEn(premiumCents)} credits <span class="hint">per minute of video · 1 credit = €1</span></p>
+    <table class="sans" style="max-width:420px"><thead><tr><th>Video</th><th>Up to</th></tr></thead><tbody>${[1, 3, 5, 10, 15].map(m => `<tr><td>${m} min</td><td>${creditsFor(m, premiumCents)} credits</td></tr>`).join('')}</tbody></table>
     <p class="hint">Each person appears animated only with their specific consent, with a visible “AI-generated video” notice, and the interviewee approves the video before it is published.</p>
     <a class="btn accent" href="${signup()}">Start with a plan, add Premium anytime</a></div>
 ` : ''}  <p class="hint">Plans include photos only. AI animation is never part of a plan: each animated production is quoted before anything is generated and paid with prepaid credits. · <span lang="pt-PT">A animação por IA é orçamentada à parte e paga com créditos.</span></p>

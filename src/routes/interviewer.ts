@@ -111,7 +111,7 @@ export async function interviewerRoutes(app: FastifyInstance) {
     // Estado da 1.ª entrevista grátis (só para o entrevistador a quem a oferta se aplica; vazio nos outros casos), com a
     // resposta do «Reenviar» e da confirmação do email junto dela (#gratis).
     const free = await freeNotice(db, req.user!.role === 'interviewer' ? await freeInterviewFor(db, req.user!) : null, req.user!, { lang: 'pt', where: 'painel', back: '/painel', msg: freeMsg(q) });
-    const body = `<div class="wrap" style="padding-top:32px"><div class="row"><h1 class="grow" style="margin:0">Entrevistas</h1><a class="btn accent" href="/entrevistas/nova">Nova entrevista</a></div>
+    const body = `<div class="wrap" style="padding-top:32px"><div class="row"><h1 class="grow" style="margin:0">Entrevistas</h1><a class="btn ghost" href="/assistir/convites">Convidar para assistir</a><a class="btn accent" href="/entrevistas/nova">Nova entrevista</a></div>
 ${flash(q.ok)}${flash(q.e, 'bad')}${free}
 ${rows.length ? `<div class="card" style="overflow-x:auto"><table><thead><tr><th>Título</th><th>Convidado</th><th>Recolha</th><th>Produção</th><th>Publicação</th><th>Respostas</th></tr></thead><tbody>
 ${rows.map((r: any) => `<tr><td><a href="/entrevistas/${r.id}">${esc(r.title)}</a></td><td>${esc(r.guest_name || '—')}</td><td>${statusPill(r.collection_status)}</td><td>${statusPill(r.production_status)}</td><td>${statusPill(r.publication_status)}</td><td>${r.na}/${r.nq}</td></tr>`).join('')}
@@ -175,7 +175,7 @@ ${objT && !iv.objective_text ? `<p class="hint">Transcrição do objetivo gravad
   ? `<option value="guest_preview" selected>O entrevistado vê e aprova a versão final antes de publicar</option>`
   : sel(iv.review_policy, [['guest_preview', 'O entrevistado vê e aprova a versão final antes de publicar'], ['host_only', 'Só o entrevistador aprova (não recomendado)']])}</select>${iv.collection_status !== 'draft' && iv.review_policy === 'guest_preview' ? '<p class="hint">Depois de enviado o convite, a política já não pode passar a «só o entrevistador aprova» (o entrevistado foi informado de que vê e aprova a versão final).</p>' : ''}
 <label class="check"><input type="checkbox" name="host_photo_rights" value="1" ${iv.host_photo_rights ? 'checked' : ''}> Tenho direito a usar a minha fotografia neste projeto</label>
-<label class="check"><input type="checkbox" name="host_ai_video" value="1" ${iv.host_ai_video ? 'checked' : ''}> Autorizo que a minha fotografia e o texto aprovado das minhas falas sejam enviados à Google (Veo) para gerar um vídeo por IA em que apareço a dizer esse texto em inglês, com gestos e voz gerados pelo modelo (não é a minha voz), com o aviso visível «AI-generated video · AI voice»</label>
+<label class="check"><input type="checkbox" name="host_ai_video" value="1" ${iv.host_ai_video ? 'checked' : ''}> Autorizo que a minha fotografia e a voz sintética das minhas falas no episódio (não é a minha voz) sejam enviadas à HeyGen para gerar um vídeo por IA em que apareço animado a dizer essas falas, com o aviso visível «AI-generated video · AI voice» (vídeo premium)</label>
 <p><button class="accent">Guardar dados</button></p></form>
 
 <div class="card" id="fotografia"><h2 style="margin-top:0">A minha fotografia</h2>
@@ -222,7 +222,7 @@ ${locked ? '' : composePanel(iv, quota!, !(await inEntity(await entityOfIntervie
         guest_email=CASE WHEN collection_status='draft' THEN $7 ELSE guest_email END, interaction_lang=$8, answer_lang=$9, deadline=$10, planned_visibility=$11,
         personal_message=CASE WHEN collection_status='draft' OR free_at IS NULL THEN $12 ELSE personal_message END, subtitle_langs=$13,
         review_policy=CASE WHEN collection_status<>'draft' AND review_policy='guest_preview' THEN 'guest_preview' ELSE $14::text END,
-        host_photo_rights=$15, question_voice=$16, guest_voice=$17, host_animate=$18, host_ai_video=$19, host_title=$20, guest_title=$21 WHERE id=$1 RETURNING review_policy`,
+        host_photo_rights=$15, question_voice=$16, guest_voice=$17, host_animate=$18, host_ai_video=$19, host_title=$20, guest_title=$21, host_ai_video_provider=CASE WHEN $19 THEN 'heygen' ELSE NULL END WHERE id=$1 RETURNING review_policy`,
       // O título, os nomes e as funções vão para a capa e para os cartões do vídeo (SVG): sem os caracteres que o XML não
       // admite (xmlText), que faziam falhar a capa em cada tentativa, depois das etapas pagas.
       [iv.id, oneSpace(xmlText(b.title)).slice(0, 140), String(b.objective_text ?? '').slice(0, 4000), !!b.objective_shared,

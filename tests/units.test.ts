@@ -378,7 +378,8 @@ test('alcance da aprovação do convidado e autorizações conforme a política'
   assert.match(consentLongFor('en', 'guest_preview'), /Publication: only after you approve the result/);
   assert.doesNotMatch(consentLongFor('pt-PT', 'host_only') + consentLongFor('pt-PT'), /\{PUB\}/);
   assert.match(consentText('en', 'animate_portrait'), /Replicate/);
-  assert.equal(CONSENT_VERSION, 'v6-2026-10');
+  assert.equal(CONSENT_VERSION, 'v7-2026-10');
+  assert.match(consentText('pt-PT', 'ai_video'), /HeyGen/); assert.doesNotMatch(consentText('en', 'ai_video'), /Google|Veo/);
   // A eliminação pede-se na «Ajuda» da entrevista ou pelo formulário de contacto, nunca pelo email de apoio.
   assert.match(consentLongFor('pt-PT'), /pode pedir a sua eliminação na página «Ajuda» desta entrevista ou, depois de o link deixar de valer, pelo formulário de contacto do portal\./);
   assert.match(consentLongFor('en'), /ask for their deletion on this interview’s “Help” page or, once your link is no longer valid, through the portal’s contact form\./);

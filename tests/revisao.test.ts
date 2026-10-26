@@ -180,7 +180,7 @@ test('vídeo explicativo no convite: só com «o entrevistado aprova», sem pre�
   assert.doesNotMatch(page, /autoplay/i, 'sem reprodução automática');
   assert.match(page, /<track kind="captions" srclang="pt-PT" label="Português" src="\/static\/video\/promo\.pt\.vtt" default>/, 'legendas em português ligadas para um convite em português');
   assert.match(page, /<track kind="captions" srclang="en" label="English" src="\/static\/video\/promo\.en\.vtt">/);
-  assert.match(page, /Vídeo e vozes gerados por IA \(Google Veo\), com legendas em português e em inglês\. Todas as pessoas mostradas são fictícias\./);
+  assert.match(page, /Vídeo e vozes gerados por IA, com legendas em português e em inglês\. Todas as pessoas mostradas são fictícias\./);
   assert.doesNotMatch(page, /€|\$|\bVAT\b|\bIVA\b|preço|price|crédito|credit/i, 'sem preços');
   const en = await invite('Invitation with video', 'guest_preview', 'en');
   page = (await get(`/i/${en.tk}`)).body;

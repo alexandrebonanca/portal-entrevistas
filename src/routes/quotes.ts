@@ -10,7 +10,8 @@ import { seller, complaintsLink, TERMS_VERSION, WITHDRAWAL_DAYS } from '../legal
 import { findWallet, spendBlock, cr } from '../wallet.ts';
 import { VEO_NOTICE, veoWithoutQuote } from '../veo-episode.ts';
 import { VIDEO_PREMIUM } from '../video-offer.ts';
-import { quoteTier, createQuote, acceptQuote, cancelQuote, quoteProblem, quoteBlock, rateForTier, candidateFalas, consumerVatRate, vatRegimeOf, isConsumerOwner,
+import { premiumAllowed } from '../premium.ts';
+import { premiumRate, guaranteesOf, createQuote, acceptQuote, cancelQuote, quoteProblem, quoteBlock, candidateFalas, consumerVatRate, vatRegimeOf, isConsumerOwner,
   priceLabel, perMinuteLabel, acceptLabel, roleLabel, reasonLabel, GUARANTEES, QUOTE_STATUS, QuoteError, START_DEADLINE_HOURS, ENTITY_VEO_NO_QUOTE } from '../quotes.ts';
 import { helpNav } from '../support.ts';
 
@@ -37,15 +38,16 @@ export const creditTable = (centsPerMin: number) => `<details><summary class="sa
 export async function quoteSection(db: Db, iv: any, ep: any): Promise<string> {
   const owner = await db.one('SELECT id, role, entity_id FROM users WHERE id=$1', [iv.owner_id]);
   if (!owner || owner.role === 'admin') return '';
-  if (veoWithoutQuote(owner, owner.entity_id)) return `<h3 id="orcamento">${VIDEO_PREMIUM}</h3><p class="hint">${esc(ENTITY_VEO_NO_QUOTE)}</p>`;
+  const prem = await premiumRate(db);
+  if (prem?.engine !== 'heygen' && veoWithoutQuote(owner, owner.entity_id)) return `<h3 id="orcamento">${VIDEO_PREMIUM}</h3><p class="hint">${esc(ENTITY_VEO_NO_QUOTE)}</p>`;
   const quotes = await db.query(`SELECT * FROM animation_quotes WHERE episode_id=$1 ORDER BY created_at DESC LIMIT 5`, [ep.id]);
   return inEntity(owner.entity_id, async () => {
-    const tier = quoteTier(), rate = await rateForTier(db, tier);
+    const rate = prem;
     const vatRate = await consumerVatRate(db, owner.id, seller()), regime = await vatRegimeOf(db, owner.id, seller());
-    const block = rate ? await quoteBlock(db, iv, ep) : 'O vídeo premium não está disponível de momento.';
+    const block = rate ? await quoteBlock(db, iv, ep, rate.engine) : 'O vídeo premium não está disponível de momento.';
     const open = quotes.find((q: any) => ['accepted', 'running'].includes(q.status));
     // Quem autorizou (sem carregar as fotografias; o orçamento confirma tudo).
-    const allowed = {
+    const allowed = rate?.engine === 'heygen' ? await premiumAllowed(db, iv) : {
       host: !!(iv.host_ai_video && iv.host_photo_rights && iv.host_photo_asset_id),
       guest: (await consent(db, iv.id, 'ai_video')) && (await consent(db, iv.id, 'publish_photo')) && !!(await db.one(`SELECT 1 FROM photos p WHERE p.interview_id=$1 AND ${usablePhotoSql('p')} LIMIT 1`, [iv.id])),
     };
@@ -55,7 +57,7 @@ export async function quoteSection(db: Db, iv: any, ep: any): Promise<string> {
     const total = falas.reduce((n, f) => n + f.cents, 0), speech = falas.reduce((n, f) => n + f.sec, 0);
     const w = await findWallet(db, owner.id, owner.entity_id), avail = w?.available_cents ?? 0, missing = Math.max(0, total - avail);
     let html = `<h3 id="orcamento">${VIDEO_PREMIUM}, por orçamento</h3>
-<p class="sans">${rate ? `${esc(perMinuteLabel(rate.cents_per_min, vatRate, regime))}. ` : ''}Paga só as falas que saírem animadas e verificadas; o resto volta ao saldo.</p>
+<p class="sans">${rate ? `${esc(perMinuteLabel(rate.cents_per_min, vatRate, regime))}. ` : ''}Paga só as falas que saírem animadas${rate?.engine === 'heygen' ? '' : ' e verificadas'}; o resto volta ao saldo.</p>
 ${rate ? creditTable(rate.cents_per_min) : ''}`;
     if (quotes.length) html += `<ul class="sans">${quotes.map((q: any) => { const [l, k] = QUOTE_STATUS[q.status] ?? [q.status, '']; return `<li><a href="/entrevistas/${iv.id}/orcamentos/${q.id}">Orçamento de ${fmtDate(q.created_at)}</a> · ${pill(l, k)} · ${esc(priceLabel(q.price_cents, vatRate, regime))}${q.status === 'settled' ? ` · cobrados ${cr(q.charged_cents ?? 0)}, libertados ${cr(q.released_cents ?? 0)}` : ''}</li>`; }).join('')}</ul>`;
     if (block) return `${html}<p class="hint"><strong>${esc(block)}</strong></p>`;
@@ -63,7 +65,7 @@ ${rate ? creditTable(rate.cents_per_min) : ''}`;
       const fila = open.status === 'accepted' ? await videoQueue(db, open.job_id) : null;
       return `${html}<p class="hint">Há um orçamento aceite em curso para este episódio: aguarde que a produção termine.${fila && !fila.running ? ` ${esc(queueLabel(fila, false))}.` : ''}</p>`;
     }
-    if (!falas.length) return `${html}<p class="hint">Sem falas autorizadas para animar: o entrevistador autoriza o vídeo por IA em Editar; o convidado em «Autorizações das fotografias», e só com a política «o entrevistado aprova».</p>`;
+    if (!falas.length) return `${html}<p class="hint">Sem falas autorizadas para animar: o entrevistador autoriza o vídeo por IA em Editar (com a fotografia dele); o entrevistado nas autorizações das fotografias.</p>`;
     return `${html}<div class="card" style="margin:12px 0"><p class="sans" style="margin:0">Este episódio: <strong>${Math.round(speech / 6) / 10} min</strong> de fala animada → <strong>até ${cr(total)} créditos</strong>. Saldo: <strong>${cr(avail)} créditos</strong>.</p>
 ${missing ? `<p class="sans" style="margin:8px 0 0;color:var(--bad)">Faltam <strong>${cr(missing)} créditos</strong> para garantir a produção até ao fim. <a class="btn ghost" href="/conta/creditos">Comprar créditos</a></p>` : '<p class="sans" style="margin:8px 0 0;color:var(--ok)">O saldo chega para a produção até ao fim.</p>'}</div>
 <form method="post" action="/entrevistas/${iv.id}/episodio/${ep.id}/orcamento">
@@ -135,7 +137,7 @@ export async function quoteRoutes(app: FastifyInstance) {
       const rows = (q.selection as any[]).map(x => `<tr><td>${esc(x.segmentId)} · ${esc(roleLabel(x.role))}<br><span class="hint">${esc(excerpt(x.text ?? '', 140))}</span></td><td>${x.sec} s</td><td>${x.reused || x.dup ? '0' : cr(x.cents)}</td><td>${note(x)}</td>${settled ? `<td>${result(x)}</td>` : ''}</tr>`).join('');
       const after = avail - q.price_cents;
       const canPay = !wblock && after >= 0;
-      const second = consumer ? 'Reconheço que perco o direito de livre resolução quando a produção estiver concluída.' : 'Aceito este orçamento e as condições acima (o valor fica cativo e só se cobram as falas animadas e verificadas).';
+      const second = consumer ? 'Reconheço que perco o direito de livre resolução quando a produção estiver concluída.' : `Aceito este orçamento e as condições acima (o valor fica cativo e só se cobram as falas animadas${q.engine === 'heygen' ? '' : ' e verificadas'}).`;
       const back = `/entrevistas/${iv.id}/orcamentos/${q.id}`;
       let form = '';
       if (q.status === 'draft') {
@@ -159,17 +161,17 @@ ${settled ? `<div class="flash ok">Produção concluída: cobrados <strong>${cr(
 <tr><th>Total</th><td><strong id="total">${esc(priceLabel(q.price_cents, vatRate, regime))}</strong><br><span class="hint">É o máximo que paga. ${q.speech_sec} s de fala no total.</span></td></tr>
 <tr><th>Tarifa</th><td>${esc(perMinuteLabel(q.rate.cents_per_min, vatRate, regime))}</td></tr>
 ${q.status === 'draft' ? `<tr><th>Saldo</th><td id="saldo">${cr(avail)} créditos → ${cr(Math.max(0, after))} créditos depois de aceitar${after < 0 ? ' (insuficiente)' : ''} <span class="hint">(o valor fica cativo até ao fim da produção)</span></td></tr>` : ''}
-<tr><th>Vídeo</th><td>${VIDEO_PREMIUM}, ${esc(q.rate.resolution)}, com imagem e voz geradas por IA a partir da fotografia e do texto aprovado</td></tr>
+<tr><th>Vídeo</th><td>${VIDEO_PREMIUM}, ${esc(q.rate.resolution)}, ${q.engine === 'heygen' ? 'cada fala animada por IA a partir da fotografia, com a voz do episódio' : 'com imagem e voz geradas por IA a partir da fotografia e do texto aprovado'}</td></tr>
 <tr><th>Validade</th><td>Até ${fmtDate(q.valid_until)}, com o preço fixo</td></tr>
 <tr><th>Prazo estimado</th><td id="prazo">~${q.est_minutes ?? 2} min de geração depois de começar${fila ? `; ${esc(queueLabel(fila, q.status === 'draft'))}` : ''}<br><span class="hint">O prazo de ${START_DEADLINE_HOURS} h para começar conta a partir do momento em que a produção pode arrancar: a espera pelos vídeos à frente na fila não conta.</span></td></tr>
 </tbody></table></div>
-<div class="card"><h2 style="margin-top:0">Garantias</h2><ul>${GUARANTEES.map(g => `<li>${esc(g)}</li>`).join('')}</ul>
+<div class="card"><h2 style="margin-top:0">Garantias</h2><ul>${guaranteesOf(q.engine).map(g => `<li>${esc(g)}</li>`).join('')}</ul>
 ${consumer ? `<p><strong>Livre resolução.</strong> Tem ${WITHDRAWAL_DAYS} dias para pedir o reembolso do saldo não usado de cada carregamento. Ao pedir que a produção comece já, perde o direito de livre resolução sobre esta produção quando ela estiver concluída (DL 24/2014, art. 17.º, n.º 1, als. a) e l)).</p>` : ''}
 <p>O vídeo leva o aviso visível «${esc(VEO_NOTICE)}» (Regulamento da IA, art. 50.º).</p>
 <p class="hint">Vendedor: ${esc(s.name || s.tradeName || '—')}${s.nif ? `, NIF ${esc(s.nif)}` : ''}${s.address ? `, ${esc(s.address)}` : ''} · ${complaintsLink(s)} · <a href="/termos">Termos e condições</a> (versão ${esc(TERMS_VERSION)})</p></div>
 ${form}
 ${cancellable ? `<form method="post" action="${back}/cancelar" onsubmit="return confirm('Cancelar este orçamento?')"><button class="ghost">${q.status === 'draft' ? 'Desistir deste orçamento' : 'Cancelar antes de começar (o cativo volta ao saldo)'}</button></form>` : ''}
-${hostCharged && ep?.status === 'preview' && !ep.stale ? `<form method="post" action="${back}/reconstruir" onsubmit="return confirm('Montar de novo o vídeo só com as falas já pagas do entrevistador?')" class="card"><p class="hint">Se o convidado retirou a autorização, o vídeo pode ser reconstruído só com o entrevistador, com os clipes já pagos: 0 créditos e nada é enviado à Google.</p><button class="ghost">Reconstruir só com o entrevistador (0 créditos)</button></form>` : ''}</div>`;
+${q.engine !== 'heygen' && hostCharged && ep?.status === 'preview' && !ep.stale ? `<form method="post" action="${back}/reconstruir" onsubmit="return confirm('Montar de novo o vídeo só com as falas já pagas do entrevistador?')" class="card"><p class="hint">Se o convidado retirou a autorização, o vídeo pode ser reconstruído só com o entrevistador, com os clipes já pagos: 0 créditos e nada é enviado à Google.</p><button class="ghost">Reconstruir só com o entrevistador (0 créditos)</button></form>` : ''}</div>`;
       return send(reply, 'Orçamento da animação', body);
     });
   });

@@ -14,7 +14,8 @@ import { readQuestion, generateFictionalPortrait } from './ai/openai.ts';
 import { cuesFromWords, fixOverlaps, checkCues, splitByWeights, type Cue } from './subtitles.ts';
 import { composeCover } from './cover.ts';
 import { PermanentError, type Handler } from './jobs.ts';
-import { renderVeoVideo, releaseQuoteOfJob, VIDEO_ONLY_PREVIEW } from './veo-episode.ts';
+import { renderVeoVideo, releaseQuoteOfJob, confirmationSent, VIDEO_ONLY_PREVIEW, VEO_NOTICE } from './veo-episode.ts';
+import { videoPhotos, clipKeyOf, clipTag, startPremiumQuote, settlePremiumQuote, premiumSettledEmail } from './premium.ts';
 import { renderHostIntro, failIntro } from './veo-intro.ts';
 import { reverseDebit } from './wallet.ts';
 import { isUuid } from './support.ts';
@@ -322,7 +323,15 @@ export const handlers: Record<string, Handler> = {
     // Segunda barreira (a primeira é a rota): o Veo exige orçamento aceite ou o administrador (veo-episode.ts);
     // os retratos animados (Replicate) são só do administrador.
     if (job.input.engine === 'veo') return renderVeoVideo(job, { db, progress });
-    if (job.input.animate && !(await requestedByAdmin(db, job.input.requestedBy))) throw new PermanentError('Os retratos animados por IA só se geram a pedido do administrador: o vídeo não foi gerado.');
+    // Vídeo premium de um cliente: só com orçamento aceite (créditos cativos); sem orçamento, só a pedido do administrador.
+    const quoteId: string | null = typeof job.input.quoteId === 'string' ? job.input.quoteId : null;
+    if (quoteId && job.input.animEngine !== 'heygen') throw new PermanentError('Orçamento com um motor inválido.');
+    if (job.input.animate && !quoteId && !(await requestedByAdmin(db, job.input.requestedBy))) throw new PermanentError('O vídeo premium só se gera com um orçamento aceite: o vídeo não foi gerado.');
+    if (quoteId) {
+      // Retoma depois de liquidado (o trabalho caiu entre a liquidação e o fim): nada a refazer nem a cobrar.
+      const done = await db.one(`SELECT * FROM animation_quotes WHERE id=$1 AND interview_id=$2 AND job_id=$3 AND status='settled'`, [quoteId, job.interview_id, job.id]);
+      if (done) return { resumedAfterSettlement: true, chargedCents: done.charged_cents ?? 0, releasedCents: done.released_cents ?? 0 };
+    }
     const ep = await db.one('SELECT * FROM episodes WHERE id=$1 AND interview_id=$2', [job.input.episodeId, job.interview_id]);
     if (!ep || ep.stale || ep.status === 'superseded') throw new PermanentError('Episódio inexistente ou desatualizado');
     // Num episódio publicado o vídeo novo iria logo para o ar sem ser visto e aprovado (e num retirado não serve).
@@ -331,16 +340,13 @@ export const handlers: Record<string, Handler> = {
     const timing = ep.technical?.timing as any[] | undefined;
     if (!timing?.length) throw new PermanentError('Este episódio foi gerado antes do vídeo existir: gere o episódio de novo');
     const consent = async (p: string) => !!(await db.one(`SELECT granted FROM consents WHERE interview_id=$1 AND purpose=$2 ORDER BY created_at DESC LIMIT 1`, [iv.id, p]))?.granted;
+    // Orçamento: a confirmação por email sai antes de começar; depois passa a «em curso».
+    if (quoteId) await confirmationSent(db, quoteId);
+    const quote = quoteId ? await startPremiumQuote(db, quoteId, iv.id) : null;
     await progress(0, 100, 'A preparar as imagens');
     const asset = async (id: string | null) => { if (!id) return null; const a = await db.one('SELECT storage_key FROM assets WHERE id=$1 AND deleted_at IS NULL', [id]); return a ? storage.get(a.storage_key) : null; };
     // Só fotografias autorizadas: a do entrevistador com direitos declarados; a do convidado com autorização de publicação.
-    const hostPhoto = iv.host_photo_rights ? await asset(iv.host_photo_asset_id) : null;
-    let guestPhoto: Buffer | null = null, guestByHost = false;
-    if (await consent('publish_photo')) {
-      const ph = await videoGuestPhoto(db, iv, { pid: job.input.photoId, coverIds: ep.technical?.coverPhotoIds });
-      guestPhoto = ph ? await asset(ph.asset_id) : null;
-      guestByHost = !!guestPhoto && ph!.added_by === 'host';
-    }
+    const { host: hostPhoto, guest: guestPhoto, guestByHost } = await videoPhotos(db, iv, ep, job.input.photoId);
     const cover = await asset(ep.cover_asset_id);
     const audio = await asset(ep.audio_asset_id);
     if (!cover || !audio) throw new PermanentError('Capa ou áudio do episódio em falta');
@@ -359,8 +365,12 @@ export const handlers: Record<string, Handler> = {
     const heygen = job.input.animEngine === 'heygen';
     const animHost = !!job.input.animate && (heygen ? !!(iv.host_ai_video || iv.host_animate) : iv.host_animate) && !!hostPhoto;
     const animGuest = !!job.input.animate && !!guestPhoto && ep.status === 'preview' && (heygen ? (await consent('ai_video')) || (await consent('animate_portrait')) : await consent('animate_portrait'));
+    // Com orçamento: só as falas escolhidas (as outras ficam com a fotografia e a voz do episódio).
+    const chosen = quote ? new Set<string>((quote.selection as any[]).map(x => String(x.segmentId))) : null;
     const segs = timing.map((t: any, i: number) => ({ ...t, endMs: i + 1 < timing.length ? timing[i + 1].startMs : ep.duration_ms }))
-      .filter((t: any) => !['disclosure', 'editorial_intro', 'editorial_outro'].includes(t.kind) && ((t.role === 'host' && animHost) || (t.role === 'guest' && animGuest)) && t.durationMs >= 800);
+      .filter((t: any) => (chosen ? chosen.has(String(t.id)) : !['disclosure', 'editorial_intro', 'editorial_outro'].includes(t.kind)) && t.kind !== 'disclosure'
+        && ((t.role === 'host' && animHost) || (t.role === 'guest' && animGuest)) && t.durationMs >= 800);
+    const doneKeys = new Map<string, string>(); // fala animada → chave do clipe (para a liquidação)
     let animated = 0, failed = 0, gpuUsd = 0, guestAnimN = 0;
     let ok: { sg: any; clip: () => Promise<Buffer> }[] = [];
     if (segs.length) {
@@ -383,9 +393,9 @@ export const handlers: Record<string, Handler> = {
           try {
             const photo = sg.role === 'host' ? hostPhoto! : guestPhoto!;
             // Clipes já animados (mesma fotografia, mesma fala) são reaproveitados: uma nova tentativa não volta a pagar.
-            const clipKey = sha256(`${sha256(photo)}|${ep.audio_asset_id}|${sg.startMs}|${sg.durationMs}|${lipsyncMock() ? 'mock' : heygen ? 'heygen' : 'replicate'}`);
+            const clipKey = clipKeyOf(sha256(photo), ep.audio_asset_id, sg, clipTag(heygen));
             const cached = await db.one(`SELECT storage_key FROM assets WHERE interview_id=$1 AND kind='anim_clip' AND meta->>'clipKey'=$2 AND deleted_at IS NULL LIMIT 1`, [iv.id, clipKey]);
-            if (cached) clips[k] = cached.storage_key;
+            if (cached) { clips[k] = cached.storage_key; doneKeys.set(String(sg.id), clipKey); }
             else {
               let clip: Buffer;
               if (lipsyncMock()) clip = await stillClip(ffmpeg, photo, sg.durationMs);
@@ -408,6 +418,7 @@ export const handlers: Record<string, Handler> = {
               }
               const cid = await saveAsset(db, { interviewId: iv.id, kind: 'anim_clip', mime: 'video/mp4', ext: 'mp4', data: clip, durationMs: sg.durationMs, meta: { clipKey, segmentId: sg.id, role: sg.role } });
               clips[k] = (await db.one('SELECT storage_key FROM assets WHERE id=$1', [cid])).storage_key;
+              doneKeys.set(String(sg.id), clipKey);
             }
           } catch (e: any) { failed++; console.error(`[video] animação da fala ${sg.id} falhou: ${String(e?.message ?? e).slice(0, 200)}`); }
           doneN++;
@@ -429,7 +440,7 @@ export const handlers: Record<string, Handler> = {
     const epParts: Part[] = layout.map(l => {
       if (l.kind === 'still') return { kind: 'still', startMs: l.startMs, endMs: l.endMs, shots: shotsWithin(shots, l.startMs, l.endMs) };
       const x = ok[l.animIndex!];
-      return { kind: 'anim', startMs: l.startMs, endMs: l.endMs, base: x.sg.role === 'host' ? bases.animHost : bases.animGuest, clip: x.clip, ...(heygen ? { cropAspect: aspectOf[x.sg.role as 'host' | 'guest'] } : {}),
+      return { kind: 'anim', startMs: l.startMs, endMs: l.endMs, base: x.sg.role === 'host' ? bases.animHost : bases.animGuest, clip: x.clip, ...(heygen ? { cropAspect: aspectOf[x.sg.role as 'host' | 'guest'], notice: VEO_NOTICE } : {}),
         cues: cues.filter(c => c.endMs > l.startMs && c.startMs < l.endMs).map(c => ({ startMs: c.startMs - l.startMs, endMs: Math.min(c.endMs, l.endMs) - l.startMs, text: c.text })) };
     });
     await progress(segs.length ? 72 : 10, 100, 'A preparar os cartões e o grafismo');
@@ -441,14 +452,16 @@ export const handlers: Record<string, Handler> = {
     // Por papel: quem tem de aprovar depende de quem aparece de facto animado.
     const guestAnimated = guestAnimN > 0, hostAnimated = animated - guestAnimN > 0;
     const id = await saveAsset(db, { interviewId: iv.id, kind: 'episode_video', mime: 'video/mp4', ext: 'mp4', data: mp4, durationMs: tl.totalMs,
-      meta: { lang, shots: shots.length, ...(heygen ? { engine: 'heygen' } : {}), guestPhoto: !!guestPhoto, guestPhotoByHost: guestByHost, hostPhoto: !!hostPhoto, animatedSegments: animated, failedAnimations: failed, guestAnimated, hostAnimated, lipsyncUsd: gpuUsd, graphics: tl.meta } });
+      meta: { lang, shots: shots.length, ...(heygen ? { engine: 'heygen', quoteId: quote?.id ?? null, paidBy: quote ? 'credits' : 'internal' } : {}), guestPhoto: !!guestPhoto, guestPhotoByHost: guestByHost, hostPhoto: !!hostPhoto, animatedSegments: animated, failedAnimations: failed, guestAnimated, hostAnimated, lipsyncUsd: gpuUsd, graphics: tl.meta } });
     // Ligação com as autorizações lidas no próprio momento: uma retirada durante a geração não volta a pôr o vídeo no ar,
     // e o vídeo só se liga a um episódio ainda em pré-visualização: publicado a meio da geração, o vídeo novo não entra
     // no ar sem nova aprovação (as aprovações ficam presas ao vídeo que foi visto).
     // O vídeo que estava no episódio (ainda por publicar): lido antes de ligar o novo, para sair do disco se for só com
     // fotografias (uploads.ts). Um trabalho de cada vez por entrevista, por isso não muda entre a leitura e a ligação.
     const before = (await db.one('SELECT video_asset_id FROM episodes WHERE id=$1', [ep.id]))?.video_asset_id ?? null;
-    const linked = await db.one(
+    let settled: { charged: number; released: number; owner: string } | null = null;
+    const linked = await db.tx(async tx => {
+    const row = await tx.one(
       `UPDATE episodes e SET video_asset_id=$2, video_lang=$3 FROM interviews i
        WHERE e.id=$1 AND i.id=e.interview_id AND NOT e.stale AND e.status='preview'
          AND (NOT $4::boolean OR i.host_photo_rights) AND (NOT $5::boolean OR ((i.host_animate OR ($9::boolean AND i.host_ai_video)) AND i.host_photo_rights))
@@ -458,11 +471,16 @@ export const handlers: Record<string, Handler> = {
          AND (NOT $8::boolean OR (COALESCE((SELECT c.granted FROM consents c WHERE c.interview_id=i.id AND c.purpose='host_edit' ORDER BY c.created_at DESC LIMIT 1), false)))
        RETURNING e.id`,
       [ep.id, id, lang, !!hostPhoto, hostAnimated, !!guestPhoto, guestAnimated, guestByHost, heygen]);
+    // Liquidação do orçamento na mesma transação: cobra só as falas que saíram animadas; o resto volta ao saldo.
+    if (row && quote) settled = await settlePremiumQuote(tx, quote.id, new Map([...doneKeys].filter(([sid]) => ok.some((x: any) => String(x.sg.id) === sid))));
+    return row;
+    });
     if (!linked) throw new PermanentError('Uma autorização foi retirada ou o episódio mudou durante a geração (publicado, retirado ou substituído): o vídeo não foi ligado ao episódio e fica privado. Um vídeo novo só entra num episódio em pré-visualização, para ser visto e aprovado antes de ir para o ar.');
     if (before && before !== id) await purgeUnpublishedPhotoVideos(db, iv.id, before);
-    await notifyJob(db, job, 'video_ready');
+    if (quote && settled) await premiumSettledEmail(db, quote, settled, iv);
+    else await notifyJob(db, job, 'video_ready');
     await progress(100, 100, 'Concluído');
-    return { videoAssetId: id, shots: shots.length, animated, failed, lipsyncUsd: gpuUsd };
+    return { videoAssetId: id, shots: shots.length, animated, failed, lipsyncUsd: gpuUsd, ...(settled ? { chargedCents: (settled as any).charged, releasedCents: (settled as any).released } : {}) };
   },
 
   // Introdução animada do entrevistador (oferecida, custo interno; veo-intro.ts).

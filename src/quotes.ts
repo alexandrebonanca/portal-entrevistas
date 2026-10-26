@@ -11,6 +11,7 @@ import { veoPlan, inputsHashOf, chunkExhausted, chunkKeyOf, releaseQuote, namesU
 import { walletFor, reserve, spendBlock, cr } from './wallet.ts';
 import { seller, checkoutBlock, sellerBlock, TERMS_VERSION, WITHDRAWAL_DAYS, type Seller } from './legal.ts';
 import { vatForProfile } from './billing.ts';
+import { premiumAllowed, premiumKeys, premiumConfigured, PREMIUM_ONLY_PREVIEW, PREMIUM_SCRIPT_REPLACED, PREMIUM_CHANGES, PREMIUM_UNAVAILABLE } from './premium.ts';
 import { withVat, eurPt } from './vat.ts';
 
 /**
@@ -48,6 +49,16 @@ export async function rateForTier(db: Db, tier: VeoTier): Promise<AnimationRate 
   return r?.active && r.available && (!r.valid_until || new Date(r.valid_until).getTime() > Date.now()) ? r : null;
 }
 
+/**
+ * Tarifa do vídeo premium que se vende agora: a da animação premium (heygen) se estiver ativa; senão, a do Veo Fast (o
+ * motor antigo, inativo desde a migração 038; mantém-se para os orçamentos antigos e os testes).
+ */
+export async function premiumRate(db: Db): Promise<AnimationRate | null> {
+  const r = await db.one<AnimationRate>(`SELECT * FROM animation_rates WHERE (engine='heygen' OR (engine='veo' AND tier='fast')) AND active AND available
+    AND (valid_until IS NULL OR valid_until > now()) ORDER BY (engine='heygen') DESC LIMIT 1`);
+  return r ?? null;
+}
+
 export class QuoteError extends Error {}
 /**
  * Nível do Veo de um orçamento: o das Definições globais. Um orçamento é pago com créditos e gera-se sempre com as
@@ -78,7 +89,15 @@ export async function consumerVatRate(db: Db, userId: string, s: Seller): Promis
 }
 
 /** Porque é que não se pode orçamentar (nem gerar) a animação deste episódio agora; null = pode. As mesmas regras do trabalho. */
-export async function quoteBlock(db: Db, iv: any, ep: any): Promise<string | null> {
+export async function quoteBlock(db: Db, iv: any, ep: any, engine?: string): Promise<string | null> {
+  engine ??= (await premiumRate(db))?.engine ?? 'heygen';
+  if (engine === 'heygen') {
+    if (ep.stale || ep.status !== 'preview') return PREMIUM_ONLY_PREVIEW;
+    if ((await db.one('SELECT status FROM scripts WHERE id=$1', [ep.script_id]))?.status !== 'approved') return PREMIUM_SCRIPT_REPLACED;
+    if (await guestAskedChanges(db, ep.script_id)) return PREMIUM_CHANGES;
+    if (!premiumConfigured()) return PREMIUM_UNAVAILABLE;
+    return null;
+  }
   if (ep.stale || ep.status !== 'preview') return VEO_ONLY_PREVIEW;
   if ((await db.one('SELECT status FROM scripts WHERE id=$1', [ep.script_id]))?.status !== 'approved') return VEO_SCRIPT_REPLACED;
   if (await guestAskedChanges(db, ep.script_id)) return VEO_CHANGES;
@@ -128,7 +147,9 @@ async function quoteTakes(db: Db, iv: any, segs: PlanSeg[], plan: { start: Recor
 /** Rascunho grátis (não cativa nada): calcula a tabela por fala, o total, o teto interno e a impressão das entradas. */
 export async function createQuote(db: Db, o: { iv: any; ep: any; actor: { email: string }; segmentIds: string[]; lang: string | null }) {
   const { iv, ep } = o;
-  const block = await quoteBlock(db, iv, ep);
+  const prem = await premiumRate(db);
+  if (prem?.engine === 'heygen') return createPremiumQuote(db, o, prem);
+  const block = await quoteBlock(db, iv, ep, 'veo');
   if (block) throw new QuoteError(block);
   const owner = await ownerOf(db, iv);
   if (!owner) throw new QuoteError('Entrevista sem titular.');
@@ -182,6 +203,64 @@ export async function createQuote(db: Db, o: { iv: any; ep: any; actor: { email:
 }
 
 /**
+ * Orçamento do vídeo premium (animação de cada fala, com a voz do episódio): as falas escolhidas ainda não animadas, a
+ * tarifa por minuto de fala. Uma fala já animada com a mesma fotografia e o mesmo áudio passa a 0 créditos.
+ */
+async function createPremiumQuote(db: Db, o: { iv: any; ep: any; actor: { email: string }; segmentIds: string[]; lang: string | null }, rate: AnimationRate) {
+  const { iv, ep } = o;
+  const block = await quoteBlock(db, iv, ep, 'heygen');
+  if (block) throw new QuoteError(block);
+  const owner = await ownerOf(db, iv);
+  if (!owner) throw new QuoteError('Entrevista sem titular.');
+  if (owner.role === 'admin') throw new QuoteError('Esta entrevista é do administrador: o vídeo premium gera-se sem orçamento (custo interno).');
+  if (await db.one(`SELECT 1 FROM animation_quotes WHERE episode_id=$1 AND status IN ('accepted','running')`, [ep.id])) throw new QuoteError('Já há um orçamento aceite em curso para este episódio: aguarde que a produção termine.');
+  const allowed = await premiumAllowed(db, iv);
+  if (!allowed.host && !allowed.guest) throw new QuoteError('Ninguém autorizou o vídeo premium (entrevistador: em Editar; entrevistado: nas autorizações das fotografias).');
+  const script = await db.one('SELECT segments FROM scripts WHERE id=$1', [ep.script_id]);
+  const pick = new Set(o.segmentIds);
+  const falas = candidateFalas(ep, script?.segments ?? [], allowed, rate).filter(f => pick.has(f.id));
+  if (!falas.length) throw new QuoteError('Escolha pelo menos uma fala autorizada para animar.');
+  const keys = await premiumKeys(db, iv, ep);
+  const timing = new Map<string, any>(((ep.technical?.timing ?? []) as any[]).map(t => [String(t.id), t]));
+  const selection: any[] = [];
+  for (const f of falas) {
+    const t = timing.get(f.id), key = keys.keyOf(t);
+    if (!key) continue; // sem fotografia autorizada dessa pessoa
+    const reused = !!(await db.one(`SELECT 1 FROM assets WHERE interview_id=$1 AND kind='anim_clip' AND meta->>'clipKey'=$2 AND deleted_at IS NULL LIMIT 1`, [iv.id, key]))
+      || !!(await db.one('SELECT 1 FROM animation_charges WHERE interview_id=$1 AND reuse_key=$2', [iv.id, key]));
+    selection.push({ segmentId: f.id, role: f.role, kind: f.kind, text: f.text, durationMs: t.durationMs, sec: f.sec, cents: reused ? 0 : f.cents, fullCents: f.cents, reused, dup: false, reuseKey: key, take: 1, realNames: [] });
+  }
+  if (!selection.length) throw new QuoteError('Falta a fotografia autorizada de quem fala: acrescente-a antes do vídeo premium.');
+  const lang = o.lang && ep.subtitles?.[o.lang] ? o.lang : null;
+  const price = selection.reduce((n, x) => n + x.cents, 0);
+  const validMs = Math.min(Date.now() + QUOTE_VALID_DAYS * 86400_000, rate.valid_until ? new Date(rate.valid_until).getTime() : Infinity);
+  const snapshot = { id: rate.id, label: rate.label, cents_per_min: rate.cents_per_min, cost_usd_per_sec: rate.cost_usd_per_sec, usd_eur: rate.usd_eur, max_clip_sec: rate.max_clip_sec, resolution: rate.resolution, version: rate.version };
+  const speech = selection.reduce((n, x) => n + x.sec, 0);
+  const hash = `${keys.hash}|${lang ?? ''}|${selection.map(x => x.segmentId).join(',')}`;
+  return db.tx(async t => {
+    await t.query(`UPDATE animation_quotes SET status='cancelled', void_reason='substituído por um orçamento novo', updated_at=now() WHERE episode_id=$1 AND status='draft'`, [ep.id]);
+    return t.one(`INSERT INTO animation_quotes(interview_id, episode_id, script_id, owner_id, entity_id, created_by, rate_id, rate, engine, model, tier, lang, selection, inputs_hash, speech_sec, price_cents, cap_usd, est_minutes, valid_until)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'heygen','premium',NULL,$9,$10,$11,$12,$13,$14,$15,$16) RETURNING *`,
+    [iv.id, ep.id, ep.script_id, owner.id, owner.entity_id ?? null, o.actor.email, rate.id, JSON.stringify(snapshot), lang, JSON.stringify(selection), hash,
+      speech, price, Math.round(speech * rate.cost_usd_per_sec * 10000) / 10000, Math.ceil(selection.length * 0.6 + 4), new Date(validMs)]);
+  });
+}
+
+/** Porque é que um rascunho do vídeo premium já não pode ser aceite (null = pode). */
+async function premiumQuoteProblem(db: Db, q: any, iv: any, ep: any): Promise<string | null> {
+  const block = await quoteBlock(db, iv, ep, 'heygen');
+  if (block) return block;
+  const allowed = await premiumAllowed(db, iv);
+  for (const x of q.selection as any[]) if (x.role === 'host' ? !allowed.host : !allowed.guest)
+    return x.role === 'host' ? 'A autorização do entrevistador para o vídeo premium foi retirada.' : 'A autorização do entrevistado para o vídeo premium foi retirada.';
+  for (const x of q.selection as any[]) if (!x.reused && x.cents > 0 && (await db.one('SELECT 1 FROM animation_charges WHERE interview_id=$1 AND reuse_key=$2', [iv.id, x.reuseKey])))
+    return 'Há falas deste orçamento que já foram pagas noutro: peça um orçamento novo (passam a 0 créditos).';
+  const keys = await premiumKeys(db, iv, ep);
+  if (`${keys.hash}|${q.lang ?? ''}|${(q.selection as any[]).map(x => x.segmentId).join(',')}` !== q.inputs_hash) return 'O guião, as fotografias ou o áudio mudaram depois deste orçamento: peça um orçamento novo.';
+  return null;
+}
+
+/**
  * Porque é que um rascunho já não pode ser aceite (null = pode): validade, tarifa e motor, episódio, guião, autorizações,
  * falas entretanto pagas e a impressão das entradas recalculada (guião, fotografias, vozes e pedaços).
  */
@@ -195,7 +274,8 @@ export async function quoteProblem(db: Db, q: any): Promise<string | null> {
   const ep = await db.one('SELECT * FROM episodes WHERE id=$1', [q.episode_id]);
   if (!iv || !ep) return 'O episódio já não existe.';
   if (ep.script_id !== q.script_id) return 'O guião do episódio mudou: peça um orçamento novo.';
-  const block = await quoteBlock(db, iv, ep);
+  if (q.engine === 'heygen') return premiumQuoteProblem(db, q, iv, ep);
+  const block = await quoteBlock(db, iv, ep, 'veo');
   if (block) return block;
   const owner = await ownerOf(db, iv);
   return inEntity(owner?.entity_id, async () => {
@@ -224,7 +304,7 @@ export async function acceptQuote(db: Db, user: any, quoteId: string, body: any,
   if (!q0) return { error: 'Orçamento inexistente.' };
   if (user.role === 'admin' || user.id !== q0.owner_id) return { error: 'Só o titular da entrevista aceita o orçamento: o administrador pode prepará-lo, mas nunca o aceita em nome do cliente.' };
   // (orçamento feito antes de a entidade ter credenciais próprias: com elas, pagaria duas vezes, à Google e em créditos)
-  if (veoWithoutQuote(user, user.entity_id)) return { error: ENTITY_VEO_NO_QUOTE };
+  if (q0.engine !== 'heygen' && veoWithoutQuote(user, user.entity_id)) return { error: ENTITY_VEO_NO_QUOTE };
   const consumer = await isConsumerOwner(db, user.id);
   if (body?.start_now !== '1' || body?.waiver !== '1')
     return { error: consumer ? 'Para aceitar, assinale as duas caixas: o pedido de início imediato e o reconhecimento sobre a livre resolução.' : 'Para aceitar, assinale as duas caixas: o pedido de início imediato e a aceitação das condições do orçamento.' };
@@ -252,7 +332,10 @@ export async function acceptQuote(db: Db, user: any, quoteId: string, body: any,
         const done = await t.one(`UPDATE animation_quotes SET status='accepted', wallet_id=$2, accepted_by=$3, accepted_at=now(), accepted_ip=$4, terms_version=$5, acceptance=$6, updated_at=now() WHERE id=$1 AND status='draft' RETURNING *`,
           [q.id, w.id, user.email, ip, TERMS_VERSION, JSON.stringify(acceptance)]);
         if (!done) return { error: 'Este orçamento já não está por aceitar.' };
-        const jobId = await enqueue(t, { kind: 'render_video', interviewId: q.interview_id, input: { episodeId: q.episode_id, lang: q.lang, engine: 'veo', quoteId: q.id, veoRetries: 1, requestedBy: user.id }, dedupe: `video:quote:${q.id}` });
+        const input = q.engine === 'heygen'
+          ? { episodeId: q.episode_id, lang: q.lang, animate: true, animEngine: 'heygen', quoteId: q.id, requestedBy: user.id }
+          : { episodeId: q.episode_id, lang: q.lang, engine: 'veo', quoteId: q.id, veoRetries: 1, requestedBy: user.id };
+        const jobId = await enqueue(t, { kind: 'render_video', interviewId: q.interview_id, input, dedupe: `video:quote:${q.id}` });
         if (!jobId) throw new Error('Trabalho do orçamento já existente');
         await t.query('UPDATE animation_quotes SET job_id=$2 WHERE id=$1', [q.id, jobId]);
         const iv = await t.one('SELECT id, title FROM interviews WHERE id=$1', [q.interview_id]);
@@ -337,20 +420,31 @@ export const GUARANTEES = [
   'Se uma autorização for retirada depois da entrega, o que foi entregue continua cobrado; o vídeo pode ser reconstruído só com o entrevistador, a 0 créditos, e os clipes do convidado são apagados.',
 ];
 
+/** Garantias do vídeo premium (sem nomes de fornecedores). */
+export const PREMIUM_GUARANTEES = [
+  'O orçamento aceite é o máximo: nunca se cobra mais.',
+  'Nada começa sem a sua aceitação. Na aceitação o valor fica cativo; no fim cobram-se só as falas que saírem animadas.',
+  'Uma fala que não saia animada (recusa ou falha do fornecedor, autorização retirada) fica com a fotografia e a voz do episódio e não se paga: o valor volta ao saldo e o relatório mostra o resultado de cada fala.',
+  `Uma produção falhada, anulada, que não arranque nas ${START_DEADLINE_HOURS} h seguintes ao momento em que pode começar (a espera pelos vídeos à frente na fila não conta) ou cujo vídeo não fique ligado ao episódio custa 0 créditos.`,
+  'As falas já animadas reaproveitam-se a 0 créditos noutras versões do vídeo (mesma fotografia e mesmo áudio).',
+  'Se uma autorização for retirada depois da entrega, o que foi entregue continua cobrado e os clipes com a imagem dessa pessoa são apagados.',
+];
+export const guaranteesOf = (engine: string) => (engine === 'heygen' ? PREMIUM_GUARANTEES : GUARANTEES);
+
 /** Email com o orçamento aceite, os consentimentos e as condições (suporte duradouro), antes de o trabalho começar. */
 export function quoteEmail(q: any, iv: any, user: any, s: Seller, consumer: boolean, vatRate: number | null, regime: string | null = null) {
   const sel = q.selection as any[];
   const cents = (x: any) => (x.reused ? 'reaproveitado: 0 cr' : x.dup ? 'igual a outra fala: incluída' : `${cr(x.cents)} cr`);
   const url = `${config.baseUrl}/entrevistas/${iv.id}/orcamentos/${q.id}`;
-  const second = consumer ? 'Reconheço que perco o direito de livre resolução quando a produção estiver concluída.' : 'Aceito este orçamento e as condições (o valor fica cativo e só se cobram as falas animadas e verificadas).';
-  const head = [`Orçamento aceite para a animação do episódio de «${iv.title}».`, `Motor: ${q.rate.label}, ${q.rate.resolution}. Tarifa: ${perMinuteLabel(q.rate.cents_per_min, vatRate, regime)}.`];
+  const second = consumer ? 'Reconheço que perco o direito de livre resolução quando a produção estiver concluída.' : `Aceito este orçamento e as condições (o valor fica cativo e só se cobram as falas animadas${q.engine === 'heygen' ? '' : ' e verificadas'}).`;
+  const head = [`Orçamento aceite para a animação do episódio de «${iv.title}».`, `${q.engine === 'heygen' ? 'Vídeo premium' : `Motor: ${q.rate.label}`}, ${q.rate.resolution}. Tarifa: ${perMinuteLabel(q.rate.cents_per_min, vatRate, regime)}.`];
   const total = `Total: ${priceLabel(q.price_cents, vatRate, regime)}. É o máximo que paga; o valor ficou cativo na sua carteira.`;
   const proof = [
     `Aceite por ${user.email} em ${new Date(q.accepted_at ?? Date.now()).toISOString()} (IP ${q.accepted_ip ?? '—'}), termos de venda versão ${q.terms_version ?? TERMS_VERSION}.`,
     `Consentimentos assinalados: «Peço que a produção comece já.» e «${second}»`,
   ];
   const terms = [
-    ...GUARANTEES,
+    ...guaranteesOf(q.engine),
     ...(consumer ? [`Livre resolução: tem ${WITHDRAWAL_DAYS} dias para pedir o reembolso do saldo não usado de cada carregamento; ao pedir o início imediato, perde o direito de livre resolução sobre esta produção quando ela estiver concluída (DL 24/2014, art. 17.º, n.º 1, als. a) e l)).`] : []),
     `O vídeo leva o aviso visível «${VEO_NOTICE}» (Regulamento da IA, art. 50.º).`,
   ];
@@ -364,4 +458,4 @@ export function quoteEmail(q: any, iv: any, user: any, s: Seller, consumer: bool
 }
 
 /** Motivo de uma fala em fotografia, para o relatório. */
-export const reasonLabel = (r: string | null) => (r ? FALA_REASON[r] ?? r : '');
+export const reasonLabel = (r: string | null) => (r === 'premium_failed' ? 'não saiu animada (o fornecedor recusou ou falhou): fica com a fotografia e a voz do episódio, sem custo' : r ? FALA_REASON[r] ?? r : '');

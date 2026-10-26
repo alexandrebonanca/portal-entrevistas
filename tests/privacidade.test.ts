@@ -55,12 +55,14 @@ test('privacidade: completa, sem o aviso «por completar» e sem o email pessoal
 
 test('privacidade: lista os terceiros integrados, as transferências e as bases legais', () => {
   const rec = section('Who receives data');
-  for (const p of ['Render', 'OpenAI', 'Google', 'Replicate', 'MailerSend', 'Stripe', 'Moloni']) assert.ok(rec.includes(`<strong>${p}</strong>`), `${p} na lista`);
+  for (const p of ['Render', 'OpenAI', 'HeyGen', 'Google', 'Replicate', 'MailerSend', 'Stripe', 'Moloni']) assert.ok(rec.includes(`<strong>${p}</strong>`), `${p} na lista`);
   assert.match(rec, /Veo, through Vertex AI or the Gemini API/); assert.match(rec, /us-central1/); assert.match(rec, /We do not sell personal data/);
   // Com a autorização só do entrevistador (veoPlan: hostVeo), as falas dele vão para o Veo com o texto literal, e as boas-vindas
   // e o agradecimento nomeiam o convidado (prepareScript): a página diz que o nome do convidado pode chegar à Google sem ele autorizar.
-  assert.match(rec, /<strong>Google<\/strong> \(optional, only with the permission of the person shown\)[^<]*The interviewer’s lines can name the guest \(for example in the welcome and the thank-you\), so the guest’s name can reach Google with the interviewer’s permission alone\./);
-  assert.match(section('AI processing'), /when only the interviewer allows AI video, the guest’s name can still be sent to Google without the guest’s permission/);
+  assert.match(rec, /<strong>HeyGen<\/strong> \(optional, only with the permission of the person shown\)[^<]*The interviewer’s lines can name the guest \(for example in the welcome and the thank-you\), so the guest’s name, spoken in the interviewer’s synthetic voice, can reach HeyGen with the interviewer’s permission alone\./);
+  assert.match(rec, /<strong>Google<\/strong> \(only for videos made before 26 October 2026/);
+  assert.match(section('AI processing'), /when only the interviewer allows AI video, the guest’s name, spoken in the interviewer’s synthetic voice, can still be sent to HeyGen without the guest’s permission/);
+  assert.match(section('International transfers'), /OpenAI, HeyGen and Replicate are based there/);
   assert.match(rec, /<strong>Replicate<\/strong>[^<]*the interviewer’s lines can mention the guest by name/);
   // O gestor de entidade só chega às chaves e aos dados de vendedora (canManage em routes/entities.ts); os utilizadores são do administrador.
   assert.ok(rec.includes('entity managers manage their organisation’s service accounts and seller details, but cannot see its members’ accounts or open their interviews'));
@@ -269,9 +271,9 @@ test('privacidade: a FAQ do assistente não contradiz a /privacy nem manda escre
   assert.doesNotMatch(answers, /ou por email|or by email|contacte-nos|contact us|contacto de apoio|support contact/i);
   const by = (k: string) => FAQ_SEED.find(e => e.key === k)!;
   // retirar a autorização do vídeo IA: apagam-se os vídeos e os clipes do Veo; os do retrato animado ficam (eraseGuestAiVideo)
-  assert.match(by('convidado-video-ia').pt[1], /os vídeos do episódio em que aparece animado deixam de ser mostrados e são apagados, tal como os clipes do Google Veo com a sua imagem; os clipes do retrato animado ficam guardados em privado até pedir ao suporte/);
-  assert.match(by('convidado-video-ia').en[1], /together with the Google Veo clips of you; the animated-portrait clips are kept privately until you ask support/);
-  assert.match(section('How long we keep data'), /together with their Google Veo clips; animated-portrait clips are kept privately until deletion is requested/);
+  assert.match(by('convidado-video-ia').pt[1], /os vídeos do episódio em que aparece animado deixam de ser mostrados e são apagados, tal como os clipes do vídeo IA com a sua imagem; os clipes do retrato animado ficam guardados em privado até pedir ao suporte/);
+  assert.match(by('convidado-video-ia').en[1], /together with the AI video clips of you; the animated-portrait clips are kept privately until you ask support/);
+  assert.match(section('How long we keep data'), /together with their AI video clips; animated-portrait clips are kept privately until deletion is requested/);
   assert.match(by('convidado-privacidade').pt[1], /depois de o link deixar de valer, use o formulário de contacto do portal/);
   assert.match(by('convidado-suporte').en[1], /for a new request, use the portal’s contact form/);
   assert.match(by('convidado-aprovar').en[1], /use the link «Ask for a correction or the withdrawal of the episode» \(it opens the portal’s contact form with the episode filled in\)/);

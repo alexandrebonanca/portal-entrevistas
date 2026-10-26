@@ -219,3 +219,18 @@ Custos mostrados são estimativas (preços configuráveis por variáveis PRICE_*
   guardados e são reaproveitados ao gerar de novo.
 - 26/10 (2): regeneração HeyGen concluída (23 falas animadas, sem falhas), mas a memória chegou a 510 de 512 MB. sharp sem
   cache e com uma thread (server.ts) e a fotografia de cada pessoa convertida e guardada uma só vez (não fala a fala).
+
+## 26/10: vídeo premium com a HeyGen, sem o Veo
+- Duas ofertas para o cliente, sem nomes de tecnologia: «Vídeo normal (fotografias)» nos planos Start/Pro e «Vídeo premium
+  (animação por IA)» por créditos. Tarifa `heygen` (migração 038): custo ~2,35 $/min (2,31 $ da animação + ~0,04 $ do
+  processamento) × 0,95 €/$ ≈ 2,23 €/min × 2 = **4,5 créditos por minuto de fala**. O Veo fica inativo (código mantido para os
+  orçamentos antigos e os testes; `premiumRate()` escolhe a tarifa heygen se ativa, senão a do Veo Fast).
+- Orçamento → aceitação (cativo) → trabalho `render_video` com `animEngine:'heygen'` e `quoteId` → liquidação na transação que
+  liga o vídeo (só as falas animadas; chave do clipe = reaproveitamento a 0 créditos) — `src/premium.ts`.
+- Autorizações: o texto do convidado (`ai_video`, CONSENT_VERSION v7) e o do entrevistador nomeiam a HeyGen; só valem para o
+  premium as dadas com esse texto (`interviews.host_ai_video_provider='heygen'`; consentimento com «HeyGen» no texto).
+  Privacidade e termos (versão 2026-10-26) atualizados. A introdução animada (Veo) deixa de aparecer.
+- Página inicial: «Two ways to produce» (1. Podcast with photos: planos; 2. Premium video: créditos) e separador «Interviews»
+  com o último episódio público com vídeo autorizado na galeria.
+- Convites para assistir (`/assistir/convites`, migração 039): link pessoal `/ver/:token` (também para episódios privados),
+  por email (pelo portal, 50/dia) ou WhatsApp (wa.me com a mensagem pronta), visualizações e revogação.

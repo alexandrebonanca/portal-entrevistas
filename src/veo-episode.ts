@@ -542,7 +542,7 @@ async function startQuote(db: Db, quoteId: string, interviewId: string) {
 }
 
 /** A confirmação do orçamento (suporte duradouro) sai antes de o trabalho começar; enquanto não sair, o trabalho espera. */
-async function confirmationSent(db: Db, quoteId: string) {
+export async function confirmationSent(db: Db, quoteId: string) {
   const key = `quote:${quoteId}`;
   let m = await db.one('SELECT state FROM emails WHERE dedupe_key=$1', [key]);
   if (m && m.state !== 'sent') { await flushOutbox(db); m = await db.one('SELECT state FROM emails WHERE dedupe_key=$1', [key]); }

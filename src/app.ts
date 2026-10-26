@@ -19,6 +19,7 @@ import { quoteRoutes } from './routes/quotes.ts';
 import { introRoutes } from './routes/intro.ts';
 import { supportRoutes } from './routes/support.ts';
 import { assistantAdminRoutes } from './routes/assistant.ts';
+import { watchRoutes } from './routes/watch.ts';
 import { metricsRoutes } from './routes/metrics.ts';
 import { seedAssistant } from './assistant-faq.ts';
 import { loadSettings } from './settings.ts';
@@ -127,6 +128,7 @@ export async function buildApp(db: Db): Promise<FastifyInstance> {
   await supportRoutes(app);
   await assistantAdminRoutes(app);
   await metricsRoutes(app);
+  await watchRoutes(app);
 
   app.setNotFoundHandler((req, reply) => {
     reply.code(404).type('text/html').send('<!doctype html><meta charset=utf-8><title>404</title><p style="font:18px system-ui;padding:40px">404 — página não encontrada. <a href="/">Início</a>');

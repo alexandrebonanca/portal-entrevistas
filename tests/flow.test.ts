@@ -19,7 +19,9 @@ const { makeToneWav, stripJpegMetadata } = await import('../src/media.ts');
 const sharp = (await import('sharp')).default;
 
 let db: any, app: any;
-before(async () => { db = await openDb(); await migrate(db); app = await buildApp(db); });
+before(async () => { db = await openDb(); await migrate(db); app = await buildApp(db);
+  // Estes testes cobrem também o motor antigo (Google Veo): reativa-o como vídeo premium (a migração 038 passou a venda à animação premium).
+  await db.query(`UPDATE animation_rates SET active = (id='veo-fast') WHERE id IN ('veo-fast','heygen')`); });
 after(async () => { await app.close(); await db.close(); });
 
 const cookies = (r: any) => Object.fromEntries((r.cookies as any[]).map(c => [c.name, c.value]));
@@ -49,7 +51,7 @@ test('landing em inglês e primeira conta administradora', async () => {
   assert.match(r.body, /<video controls playsinline preload="none" poster="\/static\/video\/promo\.jpg"/);
   assert.match(r.body, /<track kind="captions" srclang="en" label="English" src="\/static\/video\/promo\.en\.vtt" default>/);
   assert.match(r.body, /<track kind="captions" srclang="pt-PT" label="Português" src="\/static\/video\/promo\.pt\.vtt">/, 'legendas em português disponíveis');
-  assert.match(r.body, /AI-generated video and voices \(Google Veo\)[^<]*All people shown are fictional/);
+  assert.match(r.body, /AI-generated video and voices, with English and Portuguese captions\. All people shown are fictional/);
   assert.match(r.body, /by default review before anything is published/, 'a política «só o entrevistador aprova» dispensa o convidado');
   assert.match(r.body, /<h3>Interviewee approves<\/h3><p>By default, your interviewee sees and validates/, '«interviewee» (a tradução do browser de «guest» dava «hóspede»)');
   assert.doesNotMatch(r.body, /Guest approves/);
@@ -379,7 +381,7 @@ test('animação por fala: só com autorização específica; aviso e reserva', 
   const g = `gs=${cookies(await post(`/i/${gtoken}/abrir`, {}, '')).gs}`;
   const pg = await get('/entrevista/fotos', g);
   assert.doesNotMatch(pg.body, /Replicate/, 'a sincronização labial deixou de ser oferecida ao convidado');
-  assert.match(pg.body, /Google \(Veo\)/);
+  assert.match(pg.body, /HeyGen/);
   assert.doesNotMatch(pg.body, /id="cam"/, 'depois de submeter não há captação nova');
   await post('/entrevista/fotos/autorizacoes', { photo_capture: '1', cover_use: '1', publish_photo: '1', animate_portrait: '1' }, g);
   const c = await db.one(`SELECT granted, text_snapshot FROM consents WHERE interview_id=$1 AND purpose='animate_portrait' ORDER BY created_at DESC LIMIT 1`, [ivId]);
@@ -469,7 +471,7 @@ test('vídeo com o Google Veo: autorização própria, som dos clipes, verifica�
   await db.query('UPDATE interviews SET host_ai_video=true WHERE id=$1', [ivId]);
   const tk = (await post(`/entrevistas/${ivId}/episodio/${ep.id}/enviar-previa`, {}, owner), await flushOutbox(db), await db.one(`SELECT text_body FROM emails WHERE interview_id=$1 AND subject LIKE 'Please review%' ORDER BY created_at DESC LIMIT 1`, [ivId]));
   const g = `gs=${cookies(await post(`/i/${/\/i\/([A-Za-z0-9_-]{40,})/.exec(tk.text_body)![1]}/abrir`, {}, '')).gs}`;
-  assert.match((await get('/entrevista/fotos', g)).body, /Google \(Veo\)/);
+  assert.match((await get('/entrevista/fotos', g)).body, /HeyGen/);
   await post('/entrevista/fotos/autorizacoes', { photo_capture: '1', cover_use: '1', publish_photo: '1', ai_video: '1' }, g);
   const c = await db.one(`SELECT granted, text_snapshot FROM consents WHERE interview_id=$1 AND purpose='ai_video' ORDER BY created_at DESC LIMIT 1`, [ivId]);
   assert.equal(c.granted, true); assert.match(c.text_snapshot, /not my own voice|não é a minha voz/);
@@ -643,7 +645,7 @@ test('vídeo IA: o Veo de quem não é administrador só por orçamento; os retr
       const j = await db.one(`INSERT INTO jobs(interview_id, kind, input) VALUES ($1,'render_video',$2) RETURNING id`, [ivId, JSON.stringify(input)]);
       await drain();
       const r = await db.one('SELECT state, error FROM jobs WHERE id=$1', [j.id]);
-      assert.equal(r.state, 'failed'); assert.match(r.error, input.engine ? /faz-se por orçamento/ : /só se geram a pedido do administrador/);
+      assert.equal(r.state, 'failed'); assert.match(r.error, input.engine ? /faz-se por orçamento/ : /só se gera com um orçamento aceite/);
     }
     assert.equal(Number((await db.one(`SELECT count(*)::int n FROM veo_ops WHERE interview_id=$1`, [ivId])).n), clips, 'nada foi enviado à Google');
     // (o último trabalho volta a ser um vídeo concluído, para o teste do progresso)

@@ -9,7 +9,7 @@ import { S, inEntity } from '../settings.ts';
 import { seller, sellerId, checkoutBlock, contactEmail, homeConsumerRate, termsBody, paymentsPrivacyBody, complaintsLink, CONSENT_START_NOW, CONSENT_WAIVER, TERMS_VERSION, WITHDRAWAL_DAYS, type Seller } from '../legal.ts';
 import { withVat, eurEn, eurPt, fmtRate, normNif, normPostal, normVatNumber, isEuCountry, outsideVatTerritory, countryName, EU_COUNTRIES, OUTSIDE_EU, type VatDecision } from '../vat.ts';
 import { queueEmail, emailShell } from '../mail.ts';
-import { rateForTier, quoteTier } from '../quotes.ts';
+import { premiumRate } from '../quotes.ts';
 import { helpNav } from '../support.ts';
 import { freeInterviewFor, freeNotice, freeMsg } from '../free-interview.ts';
 
@@ -268,7 +268,7 @@ ${customerId ? '<form method="post" action="/billing/portal"><button class="ghos
   app.get('/termos', async (req, reply) => {
     const plans = await db.query('SELECT * FROM plans WHERE active ORDER BY sort');
     // Só a tarifa que os orçamentos usam hoje (o nível do Veo das Definições globais), ativa e dentro da validade.
-    const rate = await rateForTier(db, quoteTier());
+    const rate = await premiumRate(db);
     const rates = rate ? [rate] : [];
     return send(reply, page({ title: 'Termos e condições de venda', body: termsBody(plans, inEntity(req.user?.entity_id, seller), rates) }));
   });

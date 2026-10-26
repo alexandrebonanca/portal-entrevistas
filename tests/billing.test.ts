@@ -383,10 +383,12 @@ test('planos Start e Pro (só imagens) à venda; os antigos inativos, mas as sub
   assert.match(home.body, /Start from €19 \/ month/);
   assert.match(home.body, /VAT, where it applies, depends on your country; the final price is always shown before you pay\./);
   assert.match(home.body, /AI animation is never part of a plan: each animated production is quoted before anything is generated and paid with prepaid credits/);
-  assert.match(home.body, /Premium video: AI animation \(optional, quoted separately\)/);
+  assert.match(home.body, /Premium video: animated presenters \(prepaid credits\)/);
+  assert.match(home.body, /1\. Podcast with photos: monthly plans/);
+  assert.doesNotMatch(home.body, /Veo|HeyGen|Google/, 'sem nomes de tecnologia na página inicial');
   // Premium por créditos: só com a tarifa ativa (na fixture, a do Fast)
-  const rate = await db.one(`SELECT active, available FROM animation_rates WHERE engine='veo' AND tier='fast'`);
-  if (rate?.active && rate?.available) { assert.match(home.body, /Premium video with AI animation: prepaid credits/); assert.match(home.body, /<td>10 min<\/td><td>300 credits<\/td>/); }
+  const rate = await db.one(`SELECT active, available FROM animation_rates WHERE id='heygen'`);
+  if (rate?.active && rate?.available) { assert.match(home.body, /2\. Premium video: prepaid credits/); assert.match(home.body, /4\.5 credits <span class="hint">per minute of video/); assert.match(home.body, /<td>10 min<\/td><td>45 credits<\/td>/); assert.match(home.body, /<td>15 min<\/td><td>68 credits<\/td>/); }
   else assert.doesNotMatch(home.body, /id="premium"/);
   // a landing mostra preços e a vendedora: com o acesso ao Livro de Reclamações Eletrónico (o rodapé fica só com a Certif)
   assert.match(home.body, /Sold by [^<]+\. <a href="\/termos">Terms of sale · Termos e condições<\/a> · (<a href="https:\/\/[^"]+" rel="noopener" target="_blank">)?Livro de Reclamações Eletrónico/);
@@ -492,7 +494,7 @@ test('checkout: só cartão, morada obrigatória, NIF e taxa de IVA manual criad
     assert.equal(fs.find('POST', 'customers').length, 1, 'o mesmo cliente Stripe');
     assert.match(S('STRIPE_TAX_RATES'), /"PT:22":"txr_PT22_/);
     const a = await db.one(`SELECT meta FROM audit_events WHERE action='billing.checkout_started' ORDER BY created_at DESC LIMIT 1`);
-    assert.equal(a.meta.terms, '2026-10-24'); assert.equal(a.meta.regime, 'domestic');
+    assert.equal(a.meta.terms, '2026-10-26'); assert.equal(a.meta.regime, 'domestic');
     assert.ok((await db.one('SELECT last_checkout_ip FROM billing_profiles WHERE user_id=$1', [biz.id])).last_checkout_ip, 'IP guardado como prova');
   } finally { fs.restore(); }
 });

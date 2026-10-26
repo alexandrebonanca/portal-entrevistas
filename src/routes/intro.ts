@@ -1,3 +1,4 @@
+import { premiumRate } from '../quotes.ts';
 import type { FastifyInstance } from 'fastify';
 import type { Db } from '../db.ts';
 import { config } from '../config.ts';
@@ -45,6 +46,8 @@ async function generateBlock(db: Db, iv: any, owner: any, user: any, ent: string
 
 /** Cartão da introdução na página «Editar» da entrevista. */
 export async function introCard(db: Db, iv: any, user: any): Promise<string> {
+  // A introdução animada é do motor antigo (Google Veo): só aparece enquanto ele for o vídeo premium à venda.
+  if ((await premiumRate(db))?.engine !== 'veo') return '';
   const owner = await db.one('SELECT id, role, entity_id, intro_phrase FROM users WHERE id=$1', [iv.owner_id]);
   if (!owner) return '';
   const ent = await entityOfInterview(db, iv.id);
