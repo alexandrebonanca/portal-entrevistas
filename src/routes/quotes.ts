@@ -30,7 +30,7 @@ const consent = async (db: Db, id: string, p: string) => !!(await db.one(`SELECT
  * Tabela de referência: créditos máximos do vídeo premium pela duração do vídeo (fala ≈ toda a duração, menos ~8 s de
  * cartões; cada fala conta pelo menos 4 s). É o máximo: paga-se só o que sai animado e verificado.
  */
-export const VIDEO_MINUTES = [1, 3, 5, 10, 15, 20, 30];
+export const VIDEO_MINUTES = [1, 3, 5, 10, 15]; // os episódios têm no máximo ~15 min de respostas
 export const creditsForVideoMin = (min: number, centsPerMin: number) => Math.ceil((min * centsPerMin) / 100);
 export const creditTable = (centsPerMin: number) => `<details><summary class="sans">Tabela de créditos por duração do vídeo</summary><table class="sans" style="max-width:360px"><thead><tr><th>Vídeo</th><th>Até</th></tr></thead><tbody>${VIDEO_MINUTES.map(m => `<tr><td>${m} min</td><td>${creditsForVideoMin(m, centsPerMin)} créditos</td></tr>`).join('')}</tbody></table><p class="hint">1 crédito = 1 € sem IVA. Valores máximos: paga só as falas animadas e verificadas.</p></details>`;
 

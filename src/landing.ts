@@ -153,7 +153,7 @@ ${free ? `  <div class="card" id="free" style="max-width:760px"><h3 style="margi
 ` : ''}${premiumPerMin ? `  <div class="card" id="premium" style="max-width:760px;border:2px solid var(--accent)"><h3 style="margin-top:0">Premium video with AI animation: prepaid credits</h3>
     <p>Add AI animation to any plan, only when you want it. Top up credits, see the quote for each production, and pay only for the speech that comes out animated and verified: the rest goes back to your balance.</p>
     <p style="font-size:1.6rem;margin:.2em 0">Up to ${premiumPerMin} credits <span class="hint">per minute of video · 1 credit = €1</span></p>
-    <table class="sans" style="max-width:420px"><thead><tr><th>Video</th><th>Up to</th></tr></thead><tbody>${[1, 5, 10, 15, 20, 30].map(m => `<tr><td>${m} min</td><td>${m * premiumPerMin} credits</td></tr>`).join('')}</tbody></table>
+    <table class="sans" style="max-width:420px"><thead><tr><th>Video</th><th>Up to</th></tr></thead><tbody>${[1, 3, 5, 10, 15].map(m => `<tr><td>${m} min</td><td>${m * premiumPerMin} credits</td></tr>`).join('')}</tbody></table>
     <p class="hint">Each person appears animated only with their specific consent, with a visible “AI-generated video” notice, and the interviewee approves the video before it is published.</p>
     <a class="btn accent" href="${signup()}">Start with a plan, add Premium anytime</a></div>
 ` : ''}  <p class="hint">Plans include photos only. AI animation is never part of a plan: each animated production is quoted before anything is generated and paid with prepaid credits. · <span lang="pt-PT">A animação por IA é orçamentada à parte e paga com créditos.</span></p>
