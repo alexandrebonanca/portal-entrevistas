@@ -211,3 +211,9 @@ Faturação: emissão automática no Moloni (fatura-recibo, nota de crédito), c
 Introdução animada do entrevistador: apagar o clipe quando o entrevistador o pedir (hoje fica guardado em privado, mesmo sem autorização, e só deixa de entrar nos vídeos) e mostrar o custo interno das introduções numa lista do administrador (hoje só em «Editar» de cada entrevista).
 Vídeo novo para um episódio já publicado, com aprovação antes de substituir o que está no ar (hoje só se gera antes de publicar; depois, regenerar o guião ou recomeçar), e voltar a publicar um episódio retirado. Upload em chunks retomável e checkpoint em IndexedDB; MFA de administradores; gestão de utilizadores/convites de entrevistadores; políticas de retenção e apagamento automatizadas; RSS; exportação MP4; mais línguas com resegmentação; testes Playwright; acordo de tratamento de dados (art. 28.º) com os clientes, prazos de conservação, apagamento a pedido (procedimento e depois botão) e versão portuguesa da /privacy (ver «Privacidade — por confirmar pelo dono»).
 Custos mostrados são estimativas (preços configuráveis por variáveis PRICE_*).
+
+- 26/10: regeneração HeyGen não terminou — o servidor (512 MB) foi morto por falta de memória 3 vezes (OOM) porque todos os
+  clipes animados ficavam em memória até à montagem; o trabalho esgotou as tentativas. Agora só a chave de cada clipe fica em
+  memória (lido do armazenamento na montagem, como no Veo). Os 400 «Could not download the file» da HeyGen logo após cada
+  reinício (o servidor ainda não aceitava pedidos) são repetidos até 2 vezes (não são cobrados). Os clipes já pagos ficam
+  guardados e são reaproveitados ao gerar de novo.

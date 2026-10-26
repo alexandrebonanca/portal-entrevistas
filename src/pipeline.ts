@@ -362,9 +362,11 @@ export const handlers: Record<string, Handler> = {
     const segs = timing.map((t: any, i: number) => ({ ...t, endMs: i + 1 < timing.length ? timing[i + 1].startMs : ep.duration_ms }))
       .filter((t: any) => !['disclosure', 'editorial_intro', 'editorial_outro'].includes(t.kind) && ((t.role === 'host' && animHost) || (t.role === 'guest' && animGuest)) && t.durationMs >= 800);
     let animated = 0, failed = 0, gpuUsd = 0, guestAnimN = 0;
-    let ok: { sg: any; clip: Buffer }[] = [];
+    let ok: { sg: any; clip: () => Promise<Buffer> }[] = [];
     if (segs.length) {
-      const clips: (Buffer | null)[] = new Array(segs.length).fill(null);
+      // Só a chave de cada clipe fica em memória (lido do armazenamento na montagem): com dezenas de clipes HeyGen em
+      // memória o servidor passava os 512 MB e era reiniciado a meio (OOM), sem nunca acabar o vídeo.
+      const clips: (string | null)[] = new Array(segs.length).fill(null);
       let doneN = 0, next = 0;
       await progress(5, 100, `A animar os retratos (0 de ${segs.length} falas)`);
       // Até 3 animações em paralelo; uma falha cai para a imagem fixa (o vídeo nunca fica incompleto).
@@ -376,9 +378,10 @@ export const handlers: Record<string, Handler> = {
             // Clipes já animados (mesma fotografia, mesma fala) são reaproveitados: uma nova tentativa não volta a pagar.
             const clipKey = sha256(`${sha256(photo)}|${ep.audio_asset_id}|${sg.startMs}|${sg.durationMs}|${lipsyncMock() ? 'mock' : heygen ? 'heygen' : 'replicate'}`);
             const cached = await db.one(`SELECT storage_key FROM assets WHERE interview_id=$1 AND kind='anim_clip' AND meta->>'clipKey'=$2 AND deleted_at IS NULL LIMIT 1`, [iv.id, clipKey]);
-            if (cached) clips[k] = await storage.get(cached.storage_key);
+            if (cached) clips[k] = cached.storage_key;
             else {
-              if (lipsyncMock()) clips[k] = await stillClip(ffmpeg, photo, sg.durationMs);
+              let clip: Buffer;
+              if (lipsyncMock()) clip = await stillClip(ffmpeg, photo, sg.durationMs);
               else if (heygen) {
                 // A HeyGen descarrega a fotografia e o áudio por URL assinado (1 h), guardados à parte (sem a entrevista).
                 const speech = await sliceAudio(ffmpeg, audio, sg.startMs, sg.startMs + sg.durationMs);
@@ -386,14 +389,20 @@ export const handlers: Record<string, Handler> = {
                 const jpg = await (await import('sharp')).default(photo).rotate().jpeg({ quality: 92 }).toBuffer();
                 const pId = await saveAsset(db, { interviewId: null, kind: 'lab_portrait', mime: 'image/jpeg', ext: 'jpg', data: jpg, meta: { interviewId: iv.id, heygen: true } });
                 const aId = await saveAsset(db, { interviewId: null, kind: 'lab_audio', mime: 'audio/mpeg', ext: 'mp3', data: speech, durationMs: sg.durationMs, meta: { interviewId: iv.id, heygen: true } });
-                const r = await heygenAvatarIV(signedAssetUrl(pId), signedAssetUrl(aId));
-                clips[k] = r.video; gpuUsd += (r.billedSec ?? sg.durationMs / 1000) * 0.0385;
+                // A HeyGen às vezes não consegue descarregar (servidor a arrancar): esse 400 não é cobrado; tenta de novo.
+                let r: Awaited<ReturnType<typeof heygenAvatarIV>> | undefined;
+                for (let t = 0; !r; t++) {
+                  try { r = await heygenAvatarIV(signedAssetUrl(pId), signedAssetUrl(aId)); }
+                  catch (e: any) { if (t >= 2 || !/could not download|invalid url/i.test(String(e?.message ?? e))) throw e; await new Promise(res => setTimeout(res, 20_000 * (t + 1))); }
+                }
+                clip = r.video; gpuUsd += (r.billedSec ?? sg.durationMs / 1000) * 0.0385;
               } else {
                 const speech = await sliceAudio(ffmpeg, audio, sg.startMs, sg.startMs + sg.durationMs);
                 const r = await lipsync({ data: photo, mime: 'image/jpeg' }, { data: speech, mime: 'audio/mpeg' });
-                clips[k] = r.video; gpuUsd += r.estCostUsd ?? 0;
+                clip = r.video; gpuUsd += r.estCostUsd ?? 0;
               }
-              await saveAsset(db, { interviewId: iv.id, kind: 'anim_clip', mime: 'video/mp4', ext: 'mp4', data: clips[k]!, durationMs: sg.durationMs, meta: { clipKey, segmentId: sg.id, role: sg.role } });
+              const cid = await saveAsset(db, { interviewId: iv.id, kind: 'anim_clip', mime: 'video/mp4', ext: 'mp4', data: clip, durationMs: sg.durationMs, meta: { clipKey, segmentId: sg.id, role: sg.role } });
+              clips[k] = (await db.one('SELECT storage_key FROM assets WHERE id=$1', [cid])).storage_key;
             }
           } catch (e: any) { failed++; console.error(`[video] animação da fala ${sg.id} falhou: ${String(e?.message ?? e).slice(0, 200)}`); }
           doneN++;
@@ -401,7 +410,7 @@ export const handlers: Record<string, Handler> = {
         }
       };
       await Promise.all([worker(), worker(), worker()]);
-      ok = segs.map((sg: any, k: number) => ({ sg, clip: clips[k]! })).filter((x: any) => x.clip);
+      ok = segs.map((sg: any, k: number) => ({ sg, key: clips[k] })).filter((x: any) => x.key).map((x: any) => ({ sg: x.sg, clip: () => storage.get(x.key) }));
       animated = ok.length; guestAnimN = ok.filter((x: any) => x.sg.role === 'guest').length;
       if (gpuUsd) await usage(db, iv.id, heygen ? 'heygen_usd' : 'lipsync_usd', gpuUsd, gpuUsd);
     }
