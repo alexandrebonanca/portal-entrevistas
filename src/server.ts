@@ -5,6 +5,10 @@ import { openDb, migrate } from './db.ts';
 import { buildApp } from './app.ts';
 import { startWorker } from './worker.ts';
 
+// sharp (libvips): sem cache de operações e uma thread — com 512 MB a cache e a fragmentação da memória somavam-se
+// fala a fala durante a animação até o servidor ser morto por falta de memória.
+{ const sharp = (await import('sharp')).default; sharp.cache(false); sharp.concurrency(1); }
+
 const db = await openDb();
 await migrate(db);
 const app = await buildApp(db);

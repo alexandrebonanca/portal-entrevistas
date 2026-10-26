@@ -217,3 +217,5 @@ Custos mostrados são estimativas (preços configuráveis por variáveis PRICE_*
   memória (lido do armazenamento na montagem, como no Veo). Os 400 «Could not download the file» da HeyGen logo após cada
   reinício (o servidor ainda não aceitava pedidos) são repetidos até 2 vezes (não são cobrados). Os clipes já pagos ficam
   guardados e são reaproveitados ao gerar de novo.
+- 26/10 (2): regeneração HeyGen concluída (23 falas animadas, sem falhas), mas a memória chegou a 510 de 512 MB. sharp sem
+  cache e com uma thread (server.ts) e a fotografia de cada pessoa convertida e guardada uma só vez (não fala a fala).

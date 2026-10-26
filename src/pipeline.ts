@@ -367,6 +367,13 @@ export const handlers: Record<string, Handler> = {
       // Só a chave de cada clipe fica em memória (lido do armazenamento na montagem): com dezenas de clipes HeyGen em
       // memória o servidor passava os 512 MB e era reiniciado a meio (OOM), sem nunca acabar o vídeo.
       const clips: (string | null)[] = new Array(segs.length).fill(null);
+      // HeyGen: a fotografia de cada pessoa é convertida e guardada uma só vez (em JPEG: a HeyGen recusa uma fotografia PNG
+      // servida como image/jpeg), não fala a fala.
+      const portraitOf: Partial<Record<'host' | 'guest', Promise<string>>> = {};
+      const heygenPortrait = (role: 'host' | 'guest', photo: Buffer) => portraitOf[role] ??= (async () => {
+        const jpg = await (await import('sharp')).default(photo).rotate().jpeg({ quality: 92 }).toBuffer();
+        return saveAsset(db, { interviewId: null, kind: 'lab_portrait', mime: 'image/jpeg', ext: 'jpg', data: jpg, meta: { interviewId: iv.id, heygen: true } });
+      })();
       let doneN = 0, next = 0;
       await progress(5, 100, `A animar os retratos (0 de ${segs.length} falas)`);
       // Até 3 animações em paralelo; uma falha cai para a imagem fixa (o vídeo nunca fica incompleto).
@@ -385,9 +392,7 @@ export const handlers: Record<string, Handler> = {
               else if (heygen) {
                 // A HeyGen descarrega a fotografia e o áudio por URL assinado (1 h), guardados à parte (sem a entrevista).
                 const speech = await sliceAudio(ffmpeg, audio, sg.startMs, sg.startMs + sg.durationMs);
-                // (sempre em JPEG: a HeyGen recusa uma fotografia PNG servida como image/jpeg)
-                const jpg = await (await import('sharp')).default(photo).rotate().jpeg({ quality: 92 }).toBuffer();
-                const pId = await saveAsset(db, { interviewId: null, kind: 'lab_portrait', mime: 'image/jpeg', ext: 'jpg', data: jpg, meta: { interviewId: iv.id, heygen: true } });
+                const pId = await heygenPortrait(sg.role === 'host' ? 'host' : 'guest', photo);
                 const aId = await saveAsset(db, { interviewId: null, kind: 'lab_audio', mime: 'audio/mpeg', ext: 'mp3', data: speech, durationMs: sg.durationMs, meta: { interviewId: iv.id, heygen: true } });
                 // A HeyGen às vezes não consegue descarregar (servidor a arrancar): esse 400 não é cobrado; tenta de novo.
                 let r: Awaited<ReturnType<typeof heygenAvatarIV>> | undefined;
