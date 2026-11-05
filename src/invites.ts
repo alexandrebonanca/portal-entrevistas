@@ -24,7 +24,7 @@ export function inviteLastDay(deadline: unknown, preview: boolean, days = config
  * mesma transação, antes de revogar e de criar (por exemplo, com a entrevista bloqueada, o total de reenvios da entrevista
  * grátis): se devolver uma razão, nada muda e a função devolve-a em `refused`.
  */
-export async function createInvitation(db: Db, interview: any, host: { name: string }, opts: { followup?: boolean; preview?: boolean; guard?: (tx: Db) => Promise<string | null> } = {}) {
+export async function createInvitation(db: Db, interview: any, host: { name: string }, opts: { followup?: boolean; preview?: boolean; redo?: { positions: number[]; note: string }; guard?: (tx: Db) => Promise<string | null> } = {}) {
   const token = newToken(32);
   // O link vale até ao fim do último dia em qualquer fuso (UTC−12), e é esse dia que o email mostra.
   const endOfDay = (day: string) => new Date(`${day}T23:59:59Z`).getTime() + 12 * 3600_000;
@@ -35,7 +35,7 @@ export async function createInvitation(db: Db, interview: any, host: { name: str
     if (refused) return { refused };
     await tx.query(`UPDATE invitations SET revoked_at=now() WHERE interview_id=$1 AND revoked_at IS NULL`, [interview.id]);
     return tx.one(`INSERT INTO invitations(interview_id, token_hash, question_version, expires_at, purpose) VALUES ($1,$2,$3,$4,$5) RETURNING id`,
-      [interview.id, sha256(token), interview.version, exp, opts.preview ? 'preview' : opts.followup ? 'followup' : 'invite']);
+      [interview.id, sha256(token), interview.version, exp, opts.preview ? 'preview' : opts.followup || opts.redo ? 'followup' : 'invite']);
   });
   if (inv.refused) return { refused: inv.refused as string };
   const nQ = Number((await db.one('SELECT count(*)::int AS n FROM questions WHERE interview_id=$1', [interview.id]))?.n);
@@ -58,6 +58,18 @@ export async function createInvitation(db: Db, interview: any, host: { name: str
     const body = `<p>${esc(d.reviewIntro(hostName))}</p><p><strong>${esc(interview.title)}</strong></p><p>${esc(c.steps)}</p>`;
     const text = [c.title, d.reviewIntro(hostName), interview.title, c.steps, `${c.open}: ${url}`, help, footerText].join('\n\n');
     await queueEmail(db, { key: `invite:${inv.id}`, interviewId: interview.id, to: interview.guest_email, subject: c.subject(interview.title), html: emailShell(c.title, body, { label: c.open, url }, { footer, after: small(help) }), text });
+    return { invitationId: inv.id, url, expires: exp };
+  }
+  if (opts.redo) {
+    // Pedido para gravar de novo algumas respostas: quais, porquê (a nota do entrevistador) e como evitar o problema.
+    const n = opts.redo.positions.length, note = opts.redo.note.trim();
+    const until = d.linkUntil(new Date(`${lastDay}T12:00:00Z`).toLocaleDateString(lang === 'en' ? 'en-GB' : 'pt-PT', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' }));
+    const which = opts.redo.positions.map(p => d.redoQ(p));
+    const body = `<p>${esc(d.redoLead(hostName))} <strong>${esc(interview.title)}</strong>.</p>${note ? `<blockquote style="border-left:3px solid #b4691f;margin:16px 0;padding:4px 16px;color:#4a443b">${esc(note).replace(/\r?\n/g, '<br>')}</blockquote>` : ''}
+<p><strong>${esc(d.redoWhich)}</strong> ${esc(which.join(', '))}.</p><p>${esc(d.redoTip)}</p><p>${esc(until)}</p>`;
+    const text = [d.redoHeading(n), `${d.redoLead(hostName)} ${interview.title}.`, note, `${d.redoWhich} ${which.join(', ')}.`, d.redoTip, until, `${d.open}: ${url}`, help, footerText].filter(Boolean).join('\n\n');
+    await queueEmail(db, { key: `invite:${inv.id}`, interviewId: interview.id, to: interview.guest_email, subject: d.redoSubject(oneSpace(hostName), oneSpace(interview.title), n),
+      html: emailShell(d.redoHeading(n), body, { label: d.open, url }, { footer, after: small(help) }), text });
     return { invitationId: inv.id, url, expires: exp };
   }
   // Convite: quem convida e sobre quê, a mensagem pessoal, como funciona o portal (para quem não o conhece) e até quando vale o link.

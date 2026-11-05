@@ -26,7 +26,7 @@ import { premiumAllowed } from '../premium.ts';
 import { introProductionHint } from './intro.ts';
 import { helpNav, isUuid } from '../support.ts';
 import { purgeUnpublishedPhotoVideos, discardAsset } from '../uploads.ts';
-import { usablePhotoSql, hostPhotoBlock, videoGuestPhoto } from '../guest-photos.ts';
+import { usablePhotoSql, hostPhotoBlock, videoGuestPhoto, HOST_GUEST_PHOTOS_MAX } from '../guest-photos.ts';
 import { videoSummary, VIDEO_NORMAL, VIDEO_PREMIUM } from '../video-offer.ts';
 import { takeAiUse, giveBackAiUse, aiUsed, FREE_SCRIPT_REVIEWS, FREE_REVIEWS_USED, FREE_PRODUCTION_JOBS, FREE_JOBS_USED, FREE_JOBS_USED_HTML, FREE_JOBS_LOW, FREE_JOBS_LOW_HTML, FREE_JOBS_LOW_NO_SCRIPT_HTML, FREE_JOBS_FOR_SCRIPT, freeJobsBlock, freeJobsDoneHtml, freeProductionJobs, FREE_VIDEO_RENDERS, FREE_VIDEOS_USED, FREE_VIDEOS_USED_HTML, freeVideoRenders } from '../free-interview.ts';
 
@@ -35,7 +35,7 @@ const ANIMATE_ADMIN_ONLY = 'Os retratos animados por IA (Replicate) estão reser
 
 /** Trabalho em pausa (volta à fila mais tarde, ex.: a aguardar quota da Google): mostra-se o motivo em vez de «Em fila». */
 const paused = (j: any) => j.state === 'queued' && !!j.progress_label && new Date(j.run_after).getTime() > (j.server_now ? new Date(j.server_now).getTime() : Date.now());
-const JOB_LABEL: Record<string, string> = { render_video: 'A gerar o vídeo do podcast', render_intro: 'A gerar a introdução animada do entrevistador', process_submission: 'A transcrever e a preparar o guião', prepare_script: 'A preparar o guião', generate_episode: 'A gerar o episódio', transcribe_asset: 'A transcrever' };
+const JOB_LABEL: Record<string, string> = { render_video: 'A gerar o vídeo do podcast', render_intro: 'A gerar a introdução animada do entrevistador', process_submission: 'A transcrever e a preparar o guião', prepare_script: 'A preparar o guião', generate_episode: 'A gerar o episódio', transcribe_asset: 'A transcrever', check_answers: 'A verificar as respostas' };
 const SUBS = SUBTITLE_LANGS;
 
 
@@ -90,7 +90,7 @@ export async function productionRoutes(app: FastifyInstance) {
     reply.redirect(`/entrevistas/${id}/producao${ok ? '?ok=' + encodeURIComponent(ok) : e ? '?e=' + encodeURIComponent(e) : ''}`);
 
   // ---- fotografia do entrevistado (capa e vídeo): escolher entre as dele ou acrescentar outra (guest-photos.ts) ----
-  const HOST_GUEST_PHOTOS = 2;
+  const HOST_GUEST_PHOTOS = HOST_GUEST_PHOTOS_MAX;
   // Ações que refazem trabalho pago: caixa obrigatória no formulário (um clique por descuido já não volta a gastar).
   const REDO_BOX = (what: string) => `<label class="check"><input type="checkbox" required> <span>Confirmo que quero ${what}: o trabalho volta a ser feito e pago de novo.</span></label>`;
   const guestPhotoCard = async (iv: any) => {

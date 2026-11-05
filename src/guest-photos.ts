@@ -10,9 +10,14 @@ import type { Db } from './db.ts';
 export const usablePhotoSql = (p = 'p') => `(${p}.added_by<>'host' OR COALESCE((SELECT c.granted AND (c.text_snapshot ILIKE '%fotografia%' OR c.text_snapshot ILIKE '%photo%')
   FROM consents c WHERE c.interview_id=${p}.interview_id AND c.purpose='host_edit' ORDER BY c.created_at DESC LIMIT 1), false))`;
 
+/** Fotografias do entrevistado que o entrevistador pode acrescentar (as que ele recebeu por WhatsApp, email…). */
+export const HOST_GUEST_PHOTOS_MAX = 3;
+
 /** O entrevistador pode acrescentar ou escolher uma fotografia do convidado nesta entrevista? (motivo da recusa, ou null) */
 export async function hostPhotoBlock(db: Db, iv: { id: string; review_policy?: string; collection_status?: string }): Promise<string | null> {
-  if (iv.collection_status !== 'submitted') return 'Só depois de o entrevistado submeter a entrevista.';
+  // Logo que o entrevistado aceita o convite (dá a autorização de edição), também antes de submeter: por exemplo, quando ele
+  // manda a fotografia por WhatsApp ou email em vez de a enviar pela página.
+  if (!['started', 'reopened', 'submitted', 'expired'].includes(String(iv.collection_status))) return 'Só depois de o entrevistado abrir o convite e aceitar a entrevista.';
   // A autorização tem de cobrir a fotografia (o texto da política «só o entrevistador aprova» só passou a cobri-la na v6).
   const c = await db.one(`SELECT granted, text_snapshot FROM consents WHERE interview_id=$1 AND purpose='host_edit' ORDER BY created_at DESC LIMIT 1`, [iv.id]);
   const ok = !!c?.granted && /fotografia|photo/i.test(String(c.text_snapshot ?? ''));

@@ -241,3 +241,8 @@ Custos mostrados são estimativas (preços configuráveis por variáveis PRICE_*
   apanhava. Agora: silenciosa também com média < -50 dB; `assets.meta.silent`; aviso forte ao convidado; aviso durante a
   gravação se em 5 s não se ouvir o microfone (AnalyserNode em recorder.js); na página da entrevista, «Respondida, mas sem voz
   audível» e a duração de cada resposta.
+- 05/11 (2): «Verificar as respostas» (trabalho `check_answers`: mede a voz de cada gravação, transcreve as que têm voz;
+  transcrições reaproveitadas no processamento), antes ou depois da submissão; «Pedir ao entrevistado para gravar de novo»
+  (answers.redo_requested_at, interviews.redo_note, migração 040; reabre uma entrevista submetida; email próprio com link
+  novo; aviso ao entrevistado nas páginas; uma resposta nova limpa o pedido). O entrevistador acrescenta fotografias do
+  entrevistado (até 3) logo que ele aceita o convite, também antes de submeter (ex.: enviadas por WhatsApp).

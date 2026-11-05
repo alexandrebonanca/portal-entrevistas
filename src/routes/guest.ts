@@ -161,13 +161,15 @@ ${iv.objective_shared && iv.objective_text ? `<h2>${esc(d.objective)}</h2><p>${e
 <p><button class="accent" style="width:100%">${esc(d.start)}</button></p></form>
 <p class="hint">${esc(d.helpLine)} <a href="/entrevista/ajuda">${esc(d.supportTitle)}</a></p>`);
     }
-    const qs = await db.query(`SELECT q.*, a.status FROM questions q LEFT JOIN answers a ON a.question_id=q.id WHERE q.interview_id=$1 ORDER BY q.position`, [iv.id]);
-    const next = qs.find((q: any) => !q.status) ?? qs[0];
+    const qs = await db.query(`SELECT q.*, a.status, a.redo_requested_at FROM questions q LEFT JOIN answers a ON a.question_id=q.id WHERE q.interview_id=$1 ORDER BY q.position`, [iv.id]);
+    const redo = qs.filter((q: any) => q.redo_requested_at);
+    const next = redo[0] ?? qs.find((q: any) => !q.status) ?? qs[0];
     const left = iv.answer_limit_sec == null ? null : secondsLeft(iv.answer_limit_sec, await answeredMs(db, iv.id));
     return gpage(reply, lang, iv.title, `<h1>${esc(iv.title)}</h1>
 ${iv.objective_shared && iv.objective_text ? `<p>${esc(iv.objective_text)}</p>` : ''}
 ${left != null ? `<p class="hint sans">${esc(d.answerTime(mmss(iv.answer_limit_sec), mmss(left)))}</p>` : ''}
-<ol class="sans" style="padding-left:20px">${qs.map((q: any) => `<li style="margin:8px 0"><a href="/entrevista/p/${q.position}">${esc(q.text) || '…'}</a> ${q.status === 'answered' ? pill(d.answered, 'ok') : q.status === 'refused' ? pill('—', 'warn') : ''}</li>`).join('')}</ol>
+${redo.length ? `<div class="flash bad"><strong>${esc(d.redoBanner)}</strong> ${redo.map((q: any) => `<a href="/entrevista/p/${q.position}">${esc(d.redoQ(q.position))}</a>`).join(', ')}.${iv.redo_note ? `<br><span style="white-space:pre-wrap">${esc(iv.redo_note)}</span>` : ''}</div>` : ''}
+<ol class="sans" style="padding-left:20px">${qs.map((q: any) => `<li style="margin:8px 0"><a href="/entrevista/p/${q.position}">${esc(q.text) || '…'}</a> ${q.redo_requested_at ? pill(d.redoPill, 'bad') : q.status === 'answered' ? pill(d.answered, 'ok') : q.status === 'refused' ? pill('—', 'warn') : ''}</li>`).join('')}</ol>
 <p><a class="btn accent" style="width:100%;text-align:center" href="/entrevista/p/${next.position}">${esc(d.continue)}</a></p>
 <p><a href="/entrevista/fotos">${esc(d.photos)}</a> · <a href="/entrevista/rever">${esc(d.review)}</a></p>`);
   });
@@ -204,7 +206,7 @@ ${left != null ? `<p class="hint sans">${esc(d.answerTime(mmss(iv.answer_limit_s
     const noTime = base != null && base < 1;
     const msg = JSON.stringify({ micDenied: d.micDenied, micNone: d.micNone, empty: d.empty, silent: d.silent, noInput: d.noInput, tooLong: d.tooLong, stLocal: d.stLocal, stUp: d.stUp, stSaved: d.stSaved, stFail: d.stFail, retry: d.retry, record: d.record, stop: d.stop, redo: d.redo,
       overTotal: d.overTotal, noTimeLeft: d.noTimeLeft, limitReached: d.limitReached, docFormat: d.docFormat, docEmpty: d.docEmpty, docTooBig: d.docTooBig(DOC_MAX_MB), docMaxBytes: DOC_MAX_BYTES, maxSec: base == null ? config.limits.maxAnswerSeconds : Math.min(config.limits.maxAnswerSeconds, base), base, saved: Math.round(savedMs / 1000) });
-    return gpage(reply, lang, `${d.question} ${n}`, `<p class="qnum">${esc(d.question)} ${n} ${esc(d.of)} ${total}${q.followup ? ' · +' : ''}</p>
+    return gpage(reply, lang, `${d.question} ${n}`, `${ans?.redo_requested_at ? `<div class="flash bad"><strong>${esc(d.redoBanner)}</strong> ${esc(d.redoQ(n))}.${iv.redo_note ? `<br><span style="white-space:pre-wrap">${esc(iv.redo_note)}</span>` : ''}</div>` : ''}<p class="qnum">${esc(d.question)} ${n} ${esc(d.of)} ${total}${q.followup ? ' · +' : ''}</p>
 <h1 style="font-size:1.6rem">${esc(q.text) || ''}</h1>
 ${q.audio_asset_id ? `<p><audio id="qaudio" controls preload="none" src="/api/g/media/${q.audio_asset_id}"></audio></p>` : ''}
 <p><button type="button" class="ghost" id="listen" data-q="${q.id}" data-text="${esc(q.text)}" data-lang="${lang}">🔊 ${esc(d.listen)}</button>${q.audio_asset_id ? '' : `<br><span class="hint">${esc(d.listenSynth)}</span>`}</p>
@@ -268,7 +270,7 @@ ${q.audio_asset_id ? `<p><audio id="qaudio" controls preload="none" src="/api/g/
       if (noSpace) return { noSpace };
       const ans = await tx.one(`INSERT INTO answers(interview_id, question_id, status) VALUES ($1,$2,'answered') ON CONFLICT (question_id) DO UPDATE SET status='answered', updated_at=now() RETURNING id`, [iv.id, q.id]);
       const tk = await tx.one(`INSERT INTO answer_takes(answer_id, asset_id, uploaded_via) VALUES ($1,$2,$3) RETURNING id`, [ans.id, assetId, String(req.headers['x-upload-via'] ?? 'recording') === 'upload' ? 'upload' : 'recording']);
-      await tx.query('UPDATE answers SET selected_take_id=$2 WHERE id=$1', [ans.id, tk.id]);
+      await tx.query('UPDATE answers SET selected_take_id=$2, redo_requested_at=NULL WHERE id=$1', [ans.id, tk.id]); // uma resposta nova cumpre o pedido de gravar de novo
       return { take: tk, prevTakeId: prev?.take_id as string | undefined, remainingSec: secondsLeft(cur.answer_limit_sec, othersMs + p.durationMs) };
     });
     if (r.refused || r.noSpace) { // o ficheiro não chega a ser usado: sai do armazenamento
@@ -334,7 +336,7 @@ ${q.audio_asset_id ? `<p><audio id="qaudio" controls preload="none" src="/api/g/
       if (noSpace) return { noSpace };
       const ans = await tx.one(`INSERT INTO answers(interview_id, question_id, status) VALUES ($1,$2,'answered') ON CONFLICT (question_id) DO UPDATE SET status='answered', updated_at=now() RETURNING id`, [iv.id, q.id]);
       const tk = await tx.one(`INSERT INTO answer_takes(answer_id, asset_id, uploaded_via) VALUES ($1,$2,'document') RETURNING id`, [ans.id, assetId]);
-      await tx.query('UPDATE answers SET selected_take_id=$2 WHERE id=$1', [ans.id, tk.id]);
+      await tx.query('UPDATE answers SET selected_take_id=$2, redo_requested_at=NULL WHERE id=$1', [ans.id, tk.id]); // uma resposta nova cumpre o pedido de gravar de novo
       // O texto do convidado é a transcrição (revisão 1, origem «document»); o editor pode revê-la como as outras.
       await tx.query(`INSERT INTO transcripts(interview_id, source_kind, source_id, revision, text, language, origin) VALUES ($1,'answer_take',$2,1,$3,$4,'document')`,
         [iv.id, tk.id, doc.text, iv.answer_lang && iv.answer_lang !== 'auto' ? iv.answer_lang : null]);

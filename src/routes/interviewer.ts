@@ -1,5 +1,5 @@
 import type { FastifyInstance } from 'fastify';
-import { hostPhotoBlock } from '../guest-photos.ts';
+import { hostPhotoBlock, HOST_GUEST_PHOTOS_MAX } from '../guest-photos.ts';
 import type { Db } from '../db.ts';
 import { config } from '../config.ts';
 import { esc, oneSpace, isEmail, fmtDate, fmtDuration, rateLimit, xmlText } from '../lib.ts';
@@ -7,6 +7,7 @@ import { page, flash, pill, writtenAnswer, STATUS_LABEL } from '../views.ts';
 import { requireUser, ownedInterview, audit, sendAsset } from '../app.ts';
 import { sniff, stripJpegMetadata, saveAsset, probeAudio } from '../media.ts';
 import { createInvitation } from '../invites.ts';
+import { enqueue } from '../jobs.ts';
 import { aiAvailable } from '../ai/openai.ts';
 import { quotaFor, vatForProfile } from '../billing.ts';
 import { inEntity, entityOfInterview } from '../settings.ts';
@@ -415,7 +416,7 @@ ${locked ? '' : composePanel(iv, quota!, !(await inEntity(await entityOfIntervie
     if (block) return reply.code(409).send({ error: block });
     if (req.headers['x-photo-rights'] !== '1') return reply.code(422).send({ error: 'Confirme que é uma fotografia real do entrevistado e que tem o direito de a usar.' });
     const n = Number((await db.one(`SELECT count(*)::int AS n FROM photos WHERE interview_id=$1 AND added_by='host'`, [r.iv.id]))?.n ?? 0);
-    if (n >= 2) return reply.code(409).send({ error: 'Já acrescentou 2 fotografias: retire uma para acrescentar outra.' });
+    if (n >= HOST_GUEST_PHOTOS_MAX) return reply.code(409).send({ error: `Já acrescentou ${HOST_GUEST_PHOTOS_MAX} fotografias: retire uma para acrescentar outra.` });
     const data = r.kind.mime === 'image/jpeg' ? stripJpegMetadata(r.data) : r.data;
     if (!(await photoDecodes(data))) return reply.code(415).send({ error: 'A fotografia não se consegue abrir (ficheiro danificado ou com mais de 50 megapíxeis).' });
     if (!(await roomFor(reply, r, data.length))) return;
@@ -665,6 +666,47 @@ ${iv.objective_shared && iv.objective_text ? `<p class="hint">O entrevistado vê
     return reply.redirect(`/entrevistas/${iv.id}?ok=` + encodeURIComponent('Pergunta adicional enviada ao entrevistado.'));
   });
 
+  // ---------- verificar respostas e pedir para gravar de novo ----------
+  // Verificação: mede se cada gravação tem voz e transcreve as que têm (com a autorização de processamento por IA), antes ou
+  // depois da submissão. As transcrições são reaproveitadas no processamento (não se paga duas vezes).
+  app.post('/entrevistas/:id/verificar', async (req, reply) => {
+    if (!requireUser(req, reply)) return;
+    const iv = await ownedInterview(app, req, (req.params as any).id);
+    if (!iv || ['draft', 'cancelled'].includes(iv.collection_status)) return reply.code(404).send('Indisponível');
+    const no = (e: string) => reply.redirect(`/entrevistas/${iv.id}?e=${encodeURIComponent(e)}#verificar`);
+    if (await db.one(`SELECT 1 FROM jobs WHERE interview_id=$1 AND state IN ('queued','running')`, [iv.id])) return no('Há um processamento em curso nesta entrevista: aguarde que termine.');
+    if (!rateLimit(`check:${iv.id}`, 3, 10 * 60_000)) return no('Já verificou as respostas há pouco: aguarde uns minutos.');
+    await enqueue(db, { kind: 'check_answers', interviewId: iv.id, input: { requestedBy: req.user!.id }, dedupe: `check:${iv.id}:${Date.now()}` });
+    await audit(db, req.user!.email, 'answers.check_requested', iv.id);
+    return reply.redirect(`/entrevistas/${iv.id}?ok=${encodeURIComponent('Verificação pedida: em poucos minutos cada resposta mostra se tem voz e a transcrição. Atualize a página.')}#verificar`);
+  });
+
+  // Pedido ao entrevistado para gravar de novo algumas respostas: marca-as, reabre a entrevista se já foi submetida e envia-lhe
+  // um link novo (o anterior é revogado) com a lista e a nota do entrevistador.
+  app.post('/entrevistas/:id/gravar-de-novo', async (req, reply) => {
+    if (!requireUser(req, reply)) return;
+    const iv = await ownedInterview(app, req, (req.params as any).id);
+    if (!iv || !['invited', 'started', 'reopened', 'submitted', 'expired'].includes(iv.collection_status)) return reply.code(404).send('Indisponível');
+    const no = (e: string) => reply.redirect(`/entrevistas/${iv.id}?e=${encodeURIComponent(e)}#gravar-de-novo`);
+    if (await db.one(`SELECT 1 FROM episodes WHERE interview_id=$1 AND status='published' AND withdrawn_at IS NULL`, [iv.id])) return no('O episódio já está publicado: retire-o antes de pedir novas gravações.');
+    if (await db.one(`SELECT 1 FROM jobs WHERE interview_id=$1 AND state IN ('queued','running')`, [iv.id])) return no('Há um processamento em curso nesta entrevista: aguarde que termine.');
+    const b = (req.body ?? {}) as any;
+    const ids = ([] as string[]).concat(b.q ?? []).map(String).filter(x => /^[0-9a-f-]{36}$/i.test(x)).slice(0, 100);
+    const note = String(b.note ?? '').trim().slice(0, 1000);
+    const qs = ids.length ? await db.query(`SELECT q.id, q.position FROM questions q JOIN answers a ON a.question_id=q.id WHERE q.interview_id=$1 AND q.id = ANY($2::uuid[]) AND a.status='answered' ORDER BY q.position`, [iv.id, ids]) : [];
+    if (!qs.length) return no('Escolha as respostas que o entrevistado deve gravar de novo.');
+    if (!rateLimit(`redo:${iv.id}`, 1, config.limits.resendCooldownSec * 1000)) return no('Aguarde antes de enviar outro pedido.');
+    const fresh = await db.tx(async tx => {
+      await tx.query('UPDATE answers SET redo_requested_at=NULL WHERE interview_id=$1', [iv.id]);
+      await tx.query('UPDATE answers SET redo_requested_at=now() WHERE question_id = ANY($1::uuid[])', [qs.map((q: any) => q.id)]);
+      return tx.one(`UPDATE interviews SET redo_note=$2, collection_status=CASE WHEN collection_status IN ('submitted','expired') THEN 'reopened' ELSE collection_status END WHERE id=$1 RETURNING *`, [iv.id, note || null]);
+    });
+    const sent = await createInvitation(db, fresh, { name: req.user!.name }, { redo: { positions: qs.map((q: any) => q.position), note } });
+    if (sent.refused) return no(sent.refused);
+    await audit(db, req.user!.email, 'answers.redo_requested', iv.id, { questions: qs.map((q: any) => q.position) });
+    return reply.redirect(`/entrevistas/${iv.id}?ok=${encodeURIComponent(`Pedido enviado ao entrevistado (perguntas ${qs.map((q: any) => q.position).join(', ')}), com um link novo; o anterior foi revogado.`)}#gravar-de-novo`);
+  });
+
   // ---------- detalhe ----------
   app.get('/entrevistas/:id', async (req, reply) => {
     if (!requireUser(req, reply)) return;
@@ -672,10 +714,15 @@ ${iv.objective_shared && iv.objective_text ? `<p class="hint">O entrevistado vê
     if (!iv) return reply.code(404).send('Não encontrada');
     const q = req.query as any;
     const rows = await db.query(
-      `SELECT q.*, a.status AS ans_status, t.asset_id AS take_asset, t.uploaded_via, tr.text AS written, (SELECT (x.meta->>'silent')::boolean FROM assets x WHERE x.id=t.asset_id) AS silent, (SELECT x.duration_ms FROM assets x WHERE x.id=t.asset_id) AS take_ms FROM questions q LEFT JOIN answers a ON a.question_id=q.id
+      `SELECT q.*, a.status AS ans_status, t.asset_id AS take_asset, t.uploaded_via, tr.text AS written, (SELECT (x.meta->>'silent')::boolean FROM assets x WHERE x.id=t.asset_id) AS silent, (SELECT x.duration_ms FROM assets x WHERE x.id=t.asset_id) AS take_ms, a.redo_requested_at,
+         (SELECT tx.text FROM transcripts tx WHERE tx.source_kind='answer_take' AND tx.source_id=t.id ORDER BY tx.revision DESC LIMIT 1) AS check_text FROM questions q LEFT JOIN answers a ON a.question_id=q.id
        LEFT JOIN answer_takes t ON t.id=a.selected_take_id
        LEFT JOIN transcripts tr ON t.uploaded_via='document' AND tr.source_kind='answer_take' AND tr.source_id=t.id AND tr.revision=1 WHERE q.interview_id=$1 ORDER BY q.position`, [iv.id]);
     const photos = await db.query('SELECT p.*, a.id AS aid FROM photos p JOIN assets a ON a.id=p.asset_id WHERE p.interview_id=$1 ORDER BY p.created_at', [iv.id]);
+    // Fotografias que o entrevistado mandou por fora (WhatsApp, email): o entrevistador acrescenta-as com a autorização de edição.
+    const photoBlock = await hostPhotoBlock(db, iv);
+    const hostAdded = photos.filter((p: any) => p.added_by === 'host').length;
+    const pubPhoto = !!(await db.one(`SELECT granted FROM consents WHERE interview_id=$1 AND purpose='publish_photo' ORDER BY created_at DESC LIMIT 1`, [iv.id]))?.granted;
     const consents = await db.query(`SELECT DISTINCT ON (purpose) purpose, granted, text_version, created_at FROM consents WHERE interview_id=$1 ORDER BY purpose, created_at DESC`, [iv.id]);
     const inv = await db.one(`SELECT * FROM invitations WHERE interview_id=$1 ORDER BY created_at DESC LIMIT 1`, [iv.id]);
     const emails = await db.query(`SELECT subject, state, created_at, error, attempts FROM emails WHERE interview_id=$1 ORDER BY created_at DESC LIMIT 6`, [iv.id]);
@@ -693,12 +740,30 @@ ${inv ? `<br><strong>Convite:</strong> ${inv.revoked_at ? 'revogado' : inv.decli
 ${resendable ? `${resendBlock ? `<span class="hint sans">${esc(resendBlock)}</span>` : `<form method="post" action="/entrevistas/${iv.id}/reenviar"><button class="ghost">Reenviar convite (revoga o anterior)</button></form>`}<form method="post" action="/entrevistas/${iv.id}/cancelar" onsubmit="return confirm('Cancelar a entrevista?')"><button class="danger">Cancelar</button></form>` : ''}
 ${sub || iv.production_status !== 'not_requested' ? `<a class="btn accent" href="/entrevistas/${iv.id}/producao">Produção do podcast →</a>` : ''}</div></div>
 <div class="card"><h2 style="margin-top:0">Respostas</h2><table><thead><tr><th>#</th><th>Pergunta</th><th>Estado</th><th>Resposta</th></tr></thead><tbody>
-${rows.map((r: any) => `<tr><td>${r.position}</td><td>${esc(r.text) || '(áudio)'}${r.followup ? ' ' + pill('adicional') : ''}</td><td>${r.ans_status === 'answered' && r.silent ? `${pill('Respondida, mas sem voz audível', 'bad')}<br><span class="hint">A gravação parece silenciosa: peça ao entrevistado que a grave de novo antes de submeter.</span>` : r.ans_status === 'answered' ? pill('Respondida', 'ok') : r.ans_status === 'refused' ? pill('Recusada', 'warn') : pill('Pendente')}</td>
-<td>${r.take_asset && r.uploaded_via === 'document' ? writtenAnswer(r.written) : r.take_asset ? `<audio controls preload="none" src="/media/${r.take_asset}"></audio>${r.take_ms ? `<br><span class="hint">${mmss(Math.round(r.take_ms / 1000))}</span>` : ''}` : ''}</td></tr>`).join('')}</tbody></table></div>
-<div class="card"><h2 style="margin-top:0">Fotografias do convidado</h2>${photos.length ? `<div class="thumbs">${photos.map((p: any) => `<img alt="Selfie" src="/media/${p.aid}">`).join('')}</div>` : '<p class="hint">Sem fotografias.</p>'}</div>
+${rows.map((r: any) => `<tr><td>${r.position}</td><td>${esc(r.text) || '(áudio)'}${r.followup ? ' ' + pill('adicional') : ''}</td><td>${r.redo_requested_at && r.ans_status === 'answered' ? `${pill('pedido para gravar de novo', 'warn')}<br>` : ''}${r.ans_status === 'answered' && r.silent ? `${pill('Respondida, mas sem voz audível', 'bad')}<br><span class="hint">A gravação parece silenciosa: peça ao entrevistado que a grave de novo antes de submeter.</span>` : r.ans_status === 'answered' ? pill('Respondida', 'ok') : r.ans_status === 'refused' ? pill('Recusada', 'warn') : pill('Pendente')}</td>
+<td>${r.take_asset && r.uploaded_via === 'document' ? writtenAnswer(r.written) : r.take_asset ? `<audio controls preload="none" src="/media/${r.take_asset}"></audio>${r.take_ms ? `<br><span class="hint">${mmss(Math.round(r.take_ms / 1000))}</span>` : ''}${r.check_text && r.uploaded_via !== 'document' ? `<details><summary class="hint">Transcrição de verificação</summary><p class="written">${esc(r.check_text)}</p></details>` : ''}` : ''}</td></tr>`).join('')}</tbody></table></div>
+${(() => {
+  const answered = rows.filter((r: any) => r.ans_status === 'answered' && r.take_asset);
+  if (!answered.length || ['draft', 'cancelled'].includes(iv.collection_status)) return '';
+  const canRedo = ['invited', 'started', 'reopened', 'submitted', 'expired'].includes(iv.collection_status);
+  return `<div class="card" id="verificar"><h2 style="margin-top:0">Verificar as respostas</h2>
+<p class="hint">Antes de pedir a produção (ou mesmo antes de o entrevistado submeter), verifique se cada gravação tem voz e leia a transcrição. As transcrições ficam e são usadas no processamento, por isso não se pagam duas vezes.${iv.answers_checked_at ? ` Última verificação: ${fmtDate(iv.answers_checked_at)}.` : ''}</p>
+<form method="post" action="/entrevistas/${iv.id}/verificar"><button class="ghost">Verificar as respostas</button></form></div>
+${canRedo ? `<div class="card" id="gravar-de-novo"><h2 style="margin-top:0">Pedir ao entrevistado para gravar de novo</h2>
+<p class="hint">Escolha as respostas que correram mal e explique o que aconteceu. O entrevistado recebe um email com um link novo (o anterior deixa de valer)${iv.collection_status === 'submitted' ? '; a entrevista é reaberta para ele gravar e submeter de novo' : ''}. As outras respostas ficam como estão.</p>
+<form method="post" action="/entrevistas/${iv.id}/gravar-de-novo">${answered.map((r: any) => `<label class="check"><input type="checkbox" name="q" value="${esc(r.id)}" ${r.silent || r.redo_requested_at ? 'checked' : ''}> <span>Pergunta ${r.position}${r.take_ms ? ` (${mmss(Math.round(r.take_ms / 1000))})` : ''}${r.silent ? ' · sem voz audível' : ''} — ${esc(String(r.text || '').slice(0, 90))}${String(r.text || '').length > 90 ? '…' : ''}</span></label>`).join('')}
+<label for="rn">Mensagem ao entrevistado (o que correu mal)</label><textarea id="rn" name="note" maxlength="1000">${esc(iv.redo_note ?? (iv.interaction_lang === 'en' ? 'Some recordings have no sound: the microphone did not pick up your voice. Could you record them again? If it happens again, try Chrome or a computer, without Bluetooth earphones.' : 'Algumas gravações ficaram sem som: o microfone não captou a sua voz. Pode gravá-las de novo? Se acontecer outra vez, experimente o Chrome ou um computador, sem auriculares Bluetooth.'))}</textarea>
+<p><button class="accent">Enviar pedido ao entrevistado</button></p></form></div>` : ''}`;
+})()}
+<div class="card" id="foto-convidado"><h2 style="margin-top:0">Fotografias do convidado</h2>${photos.length ? `<div class="thumbs">${photos.map((p: any) => `<figure style="margin:0"><img alt="${p.added_by === 'host' ? 'Fotografia acrescentada pelo entrevistador' : 'Selfie'}" src="/media/${p.aid}"><figcaption class="hint">${p.added_by === 'host' ? 'acrescentada por si' : 'enviada pelo entrevistado'}</figcaption></figure>`).join('')}</div>` : '<p class="hint">Sem fotografias.</p>'}
+${photoBlock ? `<p class="hint"><strong>Acrescentar uma fotografia:</strong> ${esc(photoBlock)}</p>` : hostAdded >= HOST_GUEST_PHOTOS_MAX ? `<p class="hint">Já acrescentou ${HOST_GUEST_PHOTOS_MAX} fotografias: retire uma na página da produção para acrescentar outra.</p>` : `<fieldset style="border:1px solid var(--line);border-radius:8px"><legend class="sans">Acrescentar uma fotografia que o entrevistado lhe enviou (por exemplo, pelo WhatsApp ou por email)</legend>
+<input type="file" id="gphoto" accept="image/jpeg,image/png,image/webp">
+<label class="check"><input type="checkbox" id="gphotoRights"> É uma fotografia real do entrevistado (sem montagens nem rostos de outras pessoas), foi ele que ma enviou para esta entrevista e tenho o direito de a usar neste episódio.</label>
+<button type="button" class="ghost" id="gphotoBtn" data-url="/api/entrevistas/${iv.id}/foto-convidado">Acrescentar fotografia</button> <span class="status" id="gphotoSt" role="status"></span>
+<p class="hint">Pode acrescentar até ${HOST_GUEST_PHOTOS_MAX}. O entrevistado vê-as na página dele e pode retirá-las. Só entram na capa e no vídeo com a autorização de publicação de fotografias dele${pubPhoto ? '' : ' — <strong>que ainda não deu</strong>: peça-lha (ele dá-a em «Fotografias», no link do convite; pode dizê-lo na mensagem do pedido para gravar de novo)'}.</p></fieldset>`}</div>
 <div class="card"><h2 style="margin-top:0">Autorizações</h2>${consents.length ? `<table><tbody>${consents.map((c: any) => `<tr><td>${esc(c.purpose)}</td><td>${c.granted ? pill('Autorizado', 'ok') : pill('Recusado', 'bad')}</td><td>${esc(c.text_version)}</td><td>${fmtDate(c.created_at)}</td></tr>`).join('')}</tbody></table>` : '<p class="hint">Ainda sem registos.</p>'}</div>
 <div class="card"><h2 style="margin-top:0">Emails</h2><table><tbody>${emails.map((e: any) => `<tr><td>${esc(e.subject)}</td><td>${pill(e.state === 'pending' ? 'por enviar' : e.state, e.state === 'sent' ? 'ok' : e.state === 'failed' ? 'bad' : 'warn')}</td><td>${fmtDate(e.created_at)}</td><td class="hint">${e.state === 'pending' ? 'Ainda não enviado: confirme que o MailerSend está configurado em Definições.' : esc(e.error ?? '')}</td></tr>`).join('') || '<tr><td class="hint">Sem emails.</td></tr>'}</tbody></table></div>
 ${ep ? `<p><a href="/entrevistas/${iv.id}/producao">Episódio: ${esc(ep.title)} (${fmtDuration(ep.duration_ms)})</a></p>` : ''}</div>`;
-    return view(req, reply, iv.title, body);
+    return view(req, reply, iv.title, body, photoBlock ? undefined : '/static/guest-photo.js');
   });
 }

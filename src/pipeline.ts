@@ -112,6 +112,31 @@ export const handlers: Record<string, Handler> = {
     }
   },
 
+  // Verificação das respostas pelo entrevistador (antes ou depois da submissão): mede se cada gravação tem voz e transcreve
+  // as que têm (com a autorização de processamento por IA). As transcrições ficam e são reaproveitadas no processamento.
+  async check_answers(job, { db, progress }) {
+    const iv = await db.one('SELECT * FROM interviews WHERE id=$1', [job.interview_id]);
+    if (!iv) throw new PermanentError('Entrevista inexistente');
+    const processingOk = (await db.one(`SELECT granted FROM consents WHERE interview_id=$1 AND purpose='processing' ORDER BY created_at DESC LIMIT 1`, [iv.id]))?.granted;
+    const rows = await db.query(`SELECT t.id AS take_id, t.uploaded_via, a.id AS asset_id, a.kind, a.storage_key, a.meta FROM answers an JOIN answer_takes t ON t.id=an.selected_take_id JOIN assets a ON a.id=t.asset_id
+      JOIN questions q ON q.id=an.question_id WHERE an.interview_id=$1 AND an.status='answered' AND a.deleted_at IS NULL ORDER BY q.position`, [iv.id]);
+    let k = 0;
+    for (const r of rows) {
+      await progress(k++, rows.length, `A verificar as respostas (${k} de ${rows.length})`);
+      if (r.kind !== 'answer_audio') continue;
+      let silent = r.meta?.silent;
+      if (typeof silent !== 'boolean') {
+        const p = await probeAudio(await storage.get(r.storage_key), r.storage_key.split('.').pop()!);
+        silent = !p.ok || p.silent;
+        await db.query(`UPDATE assets SET meta = meta || $2::jsonb WHERE id=$1`, [r.asset_id, JSON.stringify({ silent })]);
+      }
+      if (!silent && processingOk) await transcribeAsset(db, iv, r.asset_id, 'answer_take', r.take_id);
+    }
+    await db.query('UPDATE interviews SET answers_checked_at=now() WHERE id=$1', [iv.id]);
+    await progress(rows.length, rows.length, 'Concluído');
+    return { checked: rows.length, transcribed: !!processingOk };
+  },
+
   async process_submission(job, { db, progress }) {
     const iv = await db.one('SELECT * FROM interviews WHERE id=$1', [job.interview_id]);
     if (!iv) throw new PermanentError('Entrevista inexistente');
