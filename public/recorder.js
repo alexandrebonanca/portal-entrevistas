@@ -39,6 +39,16 @@
     } catch (e) {
       throw Object.assign(e, { code: e.name === 'NotFoundError' ? 'none' : 'denied' });
     }
+    // Nível do microfone durante a gravação: há telemóveis que entregam uma faixa «muda» (só ruído); heard() diz se já se
+    // ouviu voz, para avisar logo em vez de guardar minutos de silêncio.
+    let heard = false, actx = null, meter = null;
+    try {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      actx = new AC(); const an = actx.createAnalyser(); an.fftSize = 2048;
+      actx.createMediaStreamSource(stream).connect(an);
+      const buf = new Float32Array(an.fftSize);
+      meter = setInterval(() => { an.getFloatTimeDomainData(buf); let s = 0; for (let i = 0; i < buf.length; i++) s += buf[i] * buf[i]; if (Math.sqrt(s / buf.length) > 0.01) heard = true; }, 150);
+    } catch (_) { heard = true; } // sem medição: não avisa
     const mime = PE.pickMime();
     const mr = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
     const chunks = [];
@@ -48,7 +58,8 @@
     mr.ondataavailable = (e) => e.data && e.data.size && chunks.push(e.data);
     mr.onstop = () => {
       busy = Math.max(0, busy - 1);
-      clearInterval(timer);
+      clearInterval(timer); clearInterval(meter);
+      if (actx) actx.close().catch(() => {});
       stream.getTracks().forEach((t) => t.stop()); // liberta o microfone
       document.removeEventListener('visibilitychange', onVis);
       stopped(new Blob(chunks, { type: (mr.mimeType || mime || 'audio/webm').split(';')[0] }));
@@ -63,7 +74,7 @@
       onTick && onTick(s);
       if (maxSec && s >= maxSec && mr.state !== 'inactive') { mr.stop(); if (onLimit) setTimeout(onLimit, 0); }
     }, 250);
-    return { stop: () => { if (mr.state !== 'inactive') mr.stop(); return done; }, wasInterrupted: () => interrupted, seconds: () => (Date.now() - t0) / 1000 };
+    return { stop: () => { if (mr.state !== 'inactive') mr.stop(); return done; }, wasInterrupted: () => interrupted, seconds: () => (Date.now() - t0) / 1000, heard: () => heard };
   };
 
   /** Envio com repetição e chave de idempotência; só "guardado" quando o servidor confirma. */

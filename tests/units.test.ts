@@ -54,6 +54,13 @@ test('WebM em fluxo (como o MediaRecorder do Chrome/Android, sem duração no ca
   assert.equal(p.ok, true);
   assert.ok(p.durationMs > 2800 && p.durationMs < 3300, String(p.durationMs));
   assert.equal(p.silent, false);
+  // Microfone «mudo» (visto num Android com o Samsung Internet): só ruído de fundo, com um estalido de -33 dB e média de
+  // ~-62 dB. O pico não pode esconder que não há voz.
+  const mute = spawnSync(ffmpeg, ['-v', 'error', '-f', 'lavfi', '-i', 'anoisesrc=d=6:c=pink:a=0.0008', '-f', 'lavfi', '-i', 'sine=f=1000:d=0.05,volume=0.022', '-filter_complex', '[1]adelay=2000,apad[b];[0][b]amix=inputs=2:duration=first,volume=2', '-c:a', 'libopus', '-f', 'webm', '-live', '1', 'pipe:1'], { maxBuffer: 1e8 });
+  assert.equal(mute.status, 0, String(mute.stderr));
+  const m = await probeAudio(mute.stdout, 'webm');
+  assert.equal(m.ok, true);
+  assert.equal(m.silent, true, 'só ruído: silenciosa');
 });
 test('sniff identifica pelo conteúdo', () => {
   assert.equal(sniff(Buffer.concat([Buffer.from([0x1a, 0x45, 0xdf, 0xa3]), Buffer.alloc(20)]))?.mime, 'audio/webm');

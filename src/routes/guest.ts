@@ -202,7 +202,7 @@ ${left != null ? `<p class="hint sans">${esc(d.answerTime(mmss(iv.answer_limit_s
     const savedMs = ans?.asset_id ? Number(ans.take_ms ?? 0) : 0;
     const left = secondsLeft(iv.answer_limit_sec, others + savedMs);
     const noTime = base != null && base < 1;
-    const msg = JSON.stringify({ micDenied: d.micDenied, micNone: d.micNone, empty: d.empty, silent: d.silent, tooLong: d.tooLong, stLocal: d.stLocal, stUp: d.stUp, stSaved: d.stSaved, stFail: d.stFail, retry: d.retry, record: d.record, stop: d.stop, redo: d.redo,
+    const msg = JSON.stringify({ micDenied: d.micDenied, micNone: d.micNone, empty: d.empty, silent: d.silent, noInput: d.noInput, tooLong: d.tooLong, stLocal: d.stLocal, stUp: d.stUp, stSaved: d.stSaved, stFail: d.stFail, retry: d.retry, record: d.record, stop: d.stop, redo: d.redo,
       overTotal: d.overTotal, noTimeLeft: d.noTimeLeft, limitReached: d.limitReached, docFormat: d.docFormat, docEmpty: d.docEmpty, docTooBig: d.docTooBig(DOC_MAX_MB), docMaxBytes: DOC_MAX_BYTES, maxSec: base == null ? config.limits.maxAnswerSeconds : Math.min(config.limits.maxAnswerSeconds, base), base, saved: Math.round(savedMs / 1000) });
     return gpage(reply, lang, `${d.question} ${n}`, `<p class="qnum">${esc(d.question)} ${n} ${esc(d.of)} ${total}${q.followup ? ' · +' : ''}</p>
 <h1 style="font-size:1.6rem">${esc(q.text) || ''}</h1>
@@ -257,7 +257,7 @@ ${q.audio_asset_id ? `<p><audio id="qaudio" controls preload="none" src="/api/g/
     }
     const room = await uploadRoom(db, iv.id, data.length, { except: [await currentAnswerAsset(q.id)] });
     if (room) return noRoom(reply, iv, room);
-    const assetId = await saveAsset(db, { interviewId: iv.id, kind: 'answer_audio', mime: kind.mime, ext: kind.ext, data, durationMs: p.durationMs, meta: { uploadId: upId || null, via: String(req.headers['x-upload-via'] ?? 'recording') } });
+    const assetId = await saveAsset(db, { interviewId: iv.id, kind: 'answer_audio', mime: kind.mime, ext: kind.ext, data, durationMs: p.durationMs, meta: { uploadId: upId || null, via: String(req.headers['x-upload-via'] ?? 'recording'), silent: p.silent } });
     const r = await db.tx(async tx => {
       // Soma de todas as respostas com a entrevista bloqueada: gravações em paralelo (ou uma pergunta adicional) não passam o limite.
       const cur = await tx.one('SELECT answer_limit_sec FROM interviews WHERE id=$1 FOR UPDATE', [iv.id]);

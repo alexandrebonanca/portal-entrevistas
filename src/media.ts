@@ -107,8 +107,10 @@ export async function probeAudio(data: Buffer, ext: string): Promise<{ ok: boole
       dur = Math.max(...times) / 1_000_000; // out_time_ms também vem em microssegundos (particularidade do FFmpeg)
     }
     const vol = await run(ffmpeg, ['-v', 'info', '-i', f, '-af', 'volumedetect', '-f', 'null', '-'], 60_000);
-    const mm = /max_volume:\s*(-?[\d.]+) dB/.exec(vol.stderr);
-    const silent = mm ? parseFloat(mm[1]) < -55 : false;
+    const mm = /max_volume:\s*(-?[\d.]+) dB/.exec(vol.stderr), mean = /mean_volume:\s*(-?[\d.]+) dB/.exec(vol.stderr);
+    // Silenciosa: sem picos (máx. < -55 dB) ou só ruído de fundo (média < -50 dB). Um microfone que não captou a voz (visto
+    // num Android com o Samsung Internet) dá picos de ~-33 dB mas média de ~-62 dB; uma resposta falada fica perto de -20 dB.
+    const silent = (mm ? parseFloat(mm[1]) < -55 : false) || (mean ? parseFloat(mean[1]) < -50 : false);
     return { ok: true, durationMs: Math.round(dur * 1000), silent };
   });
 }

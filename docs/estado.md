@@ -234,3 +234,10 @@ Custos mostrados são estimativas (preços configuráveis por variáveis PRICE_*
   com o último episódio público com vídeo autorizado na galeria.
 - Convites para assistir (`/assistir/convites`, migração 039): link pessoal `/ver/:token` (também para episódios privados),
   por email (pelo portal, 50/dia) ou WhatsApp (wa.me com a mensagem pronta), visualizações e revogação.
+
+## 05/11: respostas «sem voz» (entrevista de Jorge Beldade, HTA)
+- Android 10 + Samsung Internet: 5 das 10 respostas guardadas são só ruído (média ~-62 dB, picos ~-33 dB); ele repetiu várias
+  vezes (até 10 envios na 1.ª pergunta) e cada nova gravação substituiu a anterior. A deteção antiga (só máx. < -55 dB) não as
+  apanhava. Agora: silenciosa também com média < -50 dB; `assets.meta.silent`; aviso forte ao convidado; aviso durante a
+  gravação se em 5 s não se ouvir o microfone (AnalyserNode em recorder.js); na página da entrevista, «Respondida, mas sem voz
+  audível» e a duração de cada resposta.

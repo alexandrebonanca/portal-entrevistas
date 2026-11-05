@@ -50,7 +50,7 @@
     const doc = via === 'document';
     try {
       const j = await PE.upload(doc ? docIn.dataset.upload : rec.dataset.upload, blob, { 'X-Upload-Via': via });
-      say(msg.stSaved + (hitLimit ? ' — ' + msg.limitReached : '') + (j.silent ? ' — ' + msg.silent : ''));
+      say(j.silent ? msg.silent : msg.stSaved + (hitLimit ? ' — ' + msg.limitReached : ''));
       if (doc) showText(j.text || '');
       pending = null; enableNext();
       if (redo) redo.hidden = false;
@@ -101,7 +101,11 @@
     try {
       hitLimit = false;
       // Pára sozinho no limite (5 min por resposta, ou o tempo que resta da entrevista) e envia.
-      ctl = await PE.startRecording((s) => { timer.textContent = PE.fmt(s); showLeft(msg.base - s); }, msg.maxSec, () => { if (ctl) { hitLimit = true; btn.click(); } });
+      let warned = false;
+      ctl = await PE.startRecording((s) => {
+        timer.textContent = PE.fmt(s); showLeft(msg.base - s);
+        if (!warned && s > 5 && ctl && ctl.heard && !ctl.heard()) { warned = true; say(msg.noInput || msg.silent); }
+      }, msg.maxSec, () => { if (ctl) { hitLimit = true; btn.click(); } });
       btn.classList.add('on'); btn.textContent = msg.stop; say('●');
     } catch (e) {
       ctl = null; say(e.code === 'none' ? msg.micNone : msg.micDenied);
