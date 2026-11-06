@@ -254,3 +254,8 @@ Custos mostrados são estimativas (preços configuráveis por variáveis PRICE_*
 - 06/11 (2): o Jorge guardou as autorizações das fotografias com tudo recusado (provavelmente assinalou capa/publicação/vídeo
   sem a 1.ª caixa, a captação, de que as outras dependem). Agora uma escolha incompleta não se grava: a página diz que caixa
   falta; e uma gravação bem feita mostra «Autorizações guardadas».
+- 06/11 (3): imagem do entrevistado simplificada (decisão do Alex): ao aceitar e responder autoriza o uso das fotografias que
+  enviar ou entregar ao entrevistador (capa, episódio, vídeo, incluindo a animação por IA com a HeyGen), texto no convite e no
+  ecrã de aceitação, com a caixa «Não autorizo o uso da minha imagem» (por assinalar). Regista photo_capture, cover_use,
+  publish_photo e ai_video com esse texto (CONSENT_VERSION v8). A página «Fotografias» tem uma só caixa para a imagem, que
+  serve para retirar. Privacidade atualizada. Entrevistas já aceites mantêm o que o entrevistado escolheu.

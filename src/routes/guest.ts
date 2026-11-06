@@ -144,11 +144,11 @@ export async function guestRoutes(app: FastifyInstance) {
   };
   const granted = async (interviewId: string, purpose: string) =>
     !!(await db.one(`SELECT granted FROM consents WHERE interview_id=$1 AND purpose=$2 ORDER BY created_at DESC LIMIT 1`, [interviewId, purpose]))?.granted;
-  const recordConsent = async (iv: any, lang: Lang, purpose: ConsentPurpose, ok: boolean) => {
+  const recordConsent = async (iv: any, lang: Lang, purpose: ConsentPurpose, ok: boolean, snapshot?: string) => {
     const prev = await db.one(`SELECT granted, text_version FROM consents WHERE interview_id=$1 AND purpose=$2 ORDER BY created_at DESC LIMIT 1`, [iv.id, purpose]);
     if (prev && prev.granted === ok && prev.text_version === CONSENT_VERSION) return;
     await db.query(`INSERT INTO consents(interview_id, purpose, granted, text_version, text_snapshot) VALUES ($1,$2,$3,$4,$5)`,
-      [iv.id, purpose, ok, CONSENT_VERSION, consentText(lang, purpose, iv.review_policy) + (purpose === 'participation' ? '\n' + consentLongFor(lang, iv.review_policy) : '')]);
+      [iv.id, purpose, ok, CONSENT_VERSION, snapshot ?? consentText(lang, purpose, iv.review_policy) + (purpose === 'participation' ? '\n' + consentLongFor(lang, iv.review_policy) : '')]);
   };
   const cb = (name: string, label: string, checked: boolean, req = false) => `<label class="check"><input type="checkbox" name="${name}" value="1" ${checked ? 'checked' : ''} ${req ? 'required' : ''}> <span>${esc(label)}</span></label>`;
 
@@ -160,7 +160,7 @@ export async function guestRoutes(app: FastifyInstance) {
       return gpage(reply, lang, iv.title, `<h1>${esc(iv.title)}</h1>
 ${iv.objective_shared && iv.objective_text ? `<h2>${esc(d.objective)}</h2><p>${esc(iv.objective_text)}</p>` : ''}
 <h2>${esc(d.beforeStart)}</h2><p>${esc(consentLongFor(lang, iv.review_policy))}</p><p class="hint">${esc(d.consentIntro)}</p>
-<form method="post" action="/entrevista/consentimentos" class="card">${cb('participation', d.c_participation, false, true)}${cb('processing', d.c_processing, processing)}${cb('publish', consentText(lang, 'publish', iv.review_policy), publish)}${cb('host_edit', consentText(lang, 'host_edit', iv.review_policy), false, true)}${cb('adult', d.adults, false, true)}
+<form method="post" action="/entrevista/consentimentos" class="card">${cb('participation', d.c_participation, false, true)}${cb('processing', d.c_processing, processing)}${cb('publish', consentText(lang, 'publish', iv.review_policy), publish)}${cb('host_edit', consentText(lang, 'host_edit', iv.review_policy), false, true)}${cb('adult', d.adults, false, true)}<p class="hint" style="margin:14px 0 4px">${esc(d.imageTerms)}</p>${cb('no_image', d.imageOptOut, false)}
 <p><button class="accent" style="width:100%">${esc(d.start)}</button></p></form>
 <p class="hint">${esc(d.helpLine)} <a href="/entrevista/ajuda">${esc(d.supportTitle)}</a></p>`);
     }
@@ -186,9 +186,14 @@ ${redo.length ? `<div class="flash bad"><strong>${esc(d.redoBanner)}</strong> ${
     await recordConsent(c.iv, c.lang, 'host_edit', true);
     await recordConsent(c.iv, c.lang, 'processing', !!b.processing);
     await recordConsent(c.iv, c.lang, 'publish', !!b.publish);
+    // Imagem: ao aceitar e responder, autoriza o uso das fotografias que enviar ou entregar ao entrevistador (texto mostrado
+    // no ecrã de aceitação e no convite), salvo se assinalar «Não autorizo». Fica registado com esse texto; retira-se em «Fotografias».
+    const d0 = t(c.lang), image = !b.no_image;
+    const snap = image ? d0.imageTerms : d0.imageOptOut;
+    for (const p of ['photo_capture', 'cover_use', 'publish_photo', 'ai_video'] as const) await recordConsent(c.iv, c.lang, p, image, snap);
     await audit(db, 'guest', 'consent.recorded', c.iv.id);
     await notice(db, c.iv.id, 'accepted', `${c.iv.guest_name || 'O entrevistado'} aceitou participar`, { level: b.processing ? 'ok' : 'warn',
-      body: `Processamento por IA: ${b.processing ? 'autorizado' : 'não autorizado (as respostas não podem ser transcritas nem produzidas)'} · Publicação: ${b.publish ? 'autorizada' : 'não autorizada'}.` });
+      body: `Processamento por IA: ${b.processing ? 'autorizado' : 'não autorizado (as respostas não podem ser transcritas nem produzidas)'} · Publicação: ${b.publish ? 'autorizada' : 'não autorizada'} · Imagem (fotografias na capa e no vídeo, incluindo a animação por IA): ${b.no_image ? 'não autorizada' : 'autorizada'}.` });
     return reply.redirect('/entrevista');
   });
 
@@ -434,7 +439,7 @@ ${q.audio_asset_id ? `<p><audio id="qaudio" controls preload="none" src="/api/g/
     const msg = JSON.stringify({ camDenied: d.camDenied, max3: d.max3, stUp: d.stUp, stFail: d.stFail });
     return gpage(reply, lang, d.photos, `<h1>${esc(d.photos)}</h1><p>${esc(d.photosIntro)}</p>
 ${(req.query as any).e === 'capture' ? `<div class="flash bad" id="autorizacoes">${esc(d.needCapture)}</div>` : (req.query as any).e === 'publish' ? `<div class="flash bad" id="autorizacoes">${esc(d.needPublish)}</div>` : (req.query as any).ok ? `<div class="flash ok" id="autorizacoes">${esc(d.photoAuthSaved)}</div>` : ''}
-<form method="post" action="/entrevista/fotos/autorizacoes" class="card">${cb('photo_capture', d.c_photo, pc)}${cb('cover_use', d.c_cover, cu)}${cb('publish_photo', d.c_pubphoto, pp)}${cb('ai_video', d.c_aivideo, av)}${cb('host_edit', consentText(lang, 'host_edit', iv.review_policy), he)}<button class="ghost">${esc(d.save)}</button></form>
+<form method="post" action="/entrevista/fotos/autorizacoes" class="card"><input type="hidden" name="simple" value="1">${cb('image', d.c_image, pc && pp && av)}${cb('host_edit', consentText(lang, 'host_edit', iv.review_policy), he)}<button class="ghost">${esc(d.save)}</button></form>
 ${pc && !done ? `<div class="card" id="cam" data-max="3" data-msg='${esc(msg)}'>
 <div class="thumbs" id="thumbs">${photos.map((p: any) => `<div><img alt="" src="/api/g/media/${p.asset_id}">${p.added_by === 'host' ? `<span class="hint">${esc(d.photoByHost)}</span>` : ''}<form method="post" action="/api/g/fotos/${p.id}/eliminar-form"><button class="ghost" style="width:100%">${esc(d.discard)}</button></form></div>`).join('')}</div>
 <video id="vid" class="cam" autoplay playsinline muted hidden></video><canvas id="cv" hidden></canvas><div class="status" id="pst" role="status"></div>
@@ -447,17 +452,20 @@ ${done && photos.some((p: any) => p.added_by === 'host') ? `<div class="card"><p
 
   app.post('/entrevista/fotos/autorizacoes', async (req, reply) => {
     const c = await need(req, reply); if (!c) return;
-    const b = req.body as any;
+    const b = { ...(req.body as any) };
+    // Página simples: uma só caixa para a imagem (fotografias na capa, no episódio e no vídeo, incluindo a animação por IA).
+    if (b.simple) { const v = b.image ? '1' : ''; b.photo_capture = v; b.cover_use = v; b.publish_photo = v; b.ai_video = v; }
     // As autorizações dependem umas das outras (capa e publicação exigem a captação; o vídeo por IA exige a publicação). Uma
     // escolha incompleta não se grava como recusa silenciosa: a página explica o que falta (visto com um entrevistado que
     // assinalou a capa, a publicação e o vídeo sem a captação, e ficou tudo recusado).
     if (!b.photo_capture && (b.cover_use || b.publish_photo || b.ai_video || b.animate_portrait)) return reply.redirect('/entrevista/fotos?e=capture#autorizacoes');
     if (!b.publish_photo && (b.ai_video || b.animate_portrait)) return reply.redirect('/entrevista/fotos?e=publish#autorizacoes');
-    await recordConsent(c.iv, c.lang, 'photo_capture', !!b.photo_capture);
-    await recordConsent(c.iv, c.lang, 'cover_use', !!b.photo_capture && !!b.cover_use);
-    await recordConsent(c.iv, c.lang, 'publish_photo', !!b.photo_capture && !!b.publish_photo);
+    const simpleSnap = b.simple ? t(c.lang).c_image : undefined;
+    await recordConsent(c.iv, c.lang, 'photo_capture', !!b.photo_capture, simpleSnap);
+    await recordConsent(c.iv, c.lang, 'cover_use', !!b.photo_capture && !!b.cover_use, simpleSnap);
+    await recordConsent(c.iv, c.lang, 'publish_photo', !!b.photo_capture && !!b.publish_photo, simpleSnap);
     await recordConsent(c.iv, c.lang, 'animate_portrait', !!b.photo_capture && !!b.publish_photo && !!b.animate_portrait);
-    await recordConsent(c.iv, c.lang, 'ai_video', !!b.photo_capture && !!b.publish_photo && !!b.ai_video);
+    await recordConsent(c.iv, c.lang, 'ai_video', !!b.photo_capture && !!b.publish_photo && !!b.ai_video, simpleSnap);
     await recordConsent(c.iv, c.lang, 'host_edit', !!b.host_edit);
     // Autorização retirada: o vídeo que usava a fotografia (ou a animação) deixa de ser servido; o ficheiro fica privado.
     const noPhoto = !(b.photo_capture && b.publish_photo), noAnim = noPhoto || !b.animate_portrait, noVeo = noPhoto || !b.ai_video, noHostPhoto = noPhoto || !b.host_edit;

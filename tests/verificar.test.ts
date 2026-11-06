@@ -74,7 +74,7 @@ test('preparação: entrevista enviada, entrevistado responde (uma resposta sem 
   await flushOutbox(db);
   const mail = await db.one(`SELECT text_body FROM emails WHERE interview_id=$1 AND dedupe_key LIKE 'invite:%' ORDER BY created_at DESC LIMIT 1`, [ivId]);
   guest = `gs=${cookies(await post(`/i/${/\/i\/([A-Za-z0-9_-]{40,})/.exec(mail.text_body)![1]}/abrir`, {})).gs}`;
-  await post('/entrevista/consentimentos', { participation: '1', adult: '1', host_edit: '1', processing: '1', publish: '1' }, guest);
+  await post('/entrevista/consentimentos', { participation: '1', adult: '1', host_edit: '1', processing: '1', publish: '1', no_image: '1' }, guest); // «não autorizo a minha imagem»: o caminho das autorizações à parte
   const qs = await db.query('SELECT id FROM questions WHERE interview_id=$1 ORDER BY position', [ivId]);
   const up = async (i: number, wav: Buffer) => (await raw(`/api/g/respostas/${qs[i].id}`, wav, 'audio/wav', guest)).json();
   assert.equal((await up(0, makeToneWav(3))).silent, false);
@@ -182,4 +182,30 @@ test('autorizações das fotografias: uma escolha incompleta (capa, publicação
   const c = await db.one(`SELECT granted FROM consents WHERE interview_id=$1 AND purpose='ai_video' ORDER BY created_at DESC LIMIT 1`, [ivId]);
   assert.equal(c.granted, true);
   assert.match((await get('/avisos', cli.cookie)).body, /Rui atualizou as autorizações das fotografias/);
+});
+
+test('imagem: ao aceitar e responder, autoriza o uso das fotografias (texto no convite e no ecrã de aceitação), salvo «não autorizo»', async () => {
+  const c = await post('/entrevistas', { title: 'Imagem' }, cli.cookie);
+  const id = /entrevistas\/([0-9a-f-]{36})/.exec(c.headers.location as string)![1];
+  await post(`/entrevistas/${id}/perguntas`, { text: 'Uma?' }, cli.cookie);
+  await post(`/entrevistas/${id}/guardar`, { title: 'Imagem', objective_text: 'O', host_name: 'Zé', guest_name: 'Ana', guest_email: 'ana2@example.com', interaction_lang: 'pt-PT', review_policy: 'guest_preview', subtitle_langs: 'en' }, cli.cookie);
+  await post(`/entrevistas/${id}/convidar`, {}, cli.cookie);
+  await flushOutbox(db);
+  const mail = await db.one(`SELECT text_body FROM emails WHERE interview_id=$1 AND dedupe_key LIKE 'invite:%' ORDER BY created_at DESC LIMIT 1`, [id]);
+  assert.match(mail.text_body, /Ao aceitar e responder, autoriza o uso das fotografias que enviar aqui ou entregar ao entrevistador \(por exemplo, pelo WhatsApp\)/);
+  const g = `gs=${cookies(await post(`/i/${/\/i\/([A-Za-z0-9_-]{40,})/.exec(mail.text_body)![1]}/abrir`, {})).gs}`;
+  const acc = (await get('/entrevista', g)).body;
+  assert.match(acc, /Ao aceitar e responder, autoriza o uso das fotografias/);
+  assert.match(acc, /name="no_image" value="1" +>/, 'a recusa existe e não vem assinalada');
+  await post('/entrevista/consentimentos', { participation: '1', adult: '1', host_edit: '1', processing: '1', publish: '1' }, g);
+  const rows = await db.query(`SELECT DISTINCT ON (purpose) purpose, granted, text_snapshot FROM consents WHERE interview_id=$1 ORDER BY purpose, created_at DESC`, [id]);
+  const by = Object.fromEntries(rows.map((r: any) => [r.purpose, r]));
+  for (const p of ['photo_capture', 'cover_use', 'publish_photo', 'ai_video']) { assert.equal(by[p]?.granted, true, p); assert.match(by[p].text_snapshot, /HeyGen/); }
+  // a página das fotografias tem uma só caixa para a imagem, que serve para retirar
+  const ph = (await get('/entrevista/fotos', g)).body;
+  assert.match(ph, /name="image" value="1" checked/);
+  assert.doesNotMatch(ph, /name="cover_use"|name="publish_photo"|name="ai_video"/);
+  await post('/entrevista/fotos/autorizacoes', { simple: '1', host_edit: '1' }, g);
+  const off = await db.one(`SELECT granted FROM consents WHERE interview_id=$1 AND purpose='publish_photo' ORDER BY created_at DESC LIMIT 1`, [id]);
+  assert.equal(off.granted, false, 'retirada com uma caixa');
 });

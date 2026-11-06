@@ -129,7 +129,7 @@ test('gravar sem consentimento é recusado; depois do consentimento funciona', a
   const wav = makeToneWav(2);
   const no = await app.inject({ method: 'POST', url: `/api/g/respostas/${qs[0].id}`, payload: wav, headers: { 'content-type': 'audio/wav', cookie: guest } });
   assert.equal(no.statusCode, 403);
-  await post('/entrevista/consentimentos', { participation: '1', adult: '1', host_edit: '1', processing: '1', publish: '1' }, guest);
+  await post('/entrevista/consentimentos', { participation: '1', adult: '1', host_edit: '1', processing: '1', publish: '1', no_image: '1' }, guest); // estes testes cobrem as autorizações das fotografias dadas à parte
   const up = await app.inject({ method: 'POST', url: `/api/g/respostas/${qs[0].id}`, payload: wav, headers: { 'content-type': 'audio/wav', cookie: guest, 'x-upload-id': 'abc' } });
   assert.equal(up.statusCode, 200, up.body);
   assert.ok(up.json().durationMs > 1500);

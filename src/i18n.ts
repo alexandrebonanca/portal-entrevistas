@@ -58,6 +58,9 @@ const D = {
     stLocal: 'Gravado neste dispositivo', stUp: 'A enviar…', stSaved: 'Guardado no servidor', stFail: 'Falhou o envio. Pode tentar de novo.', retry: 'Tentar de novo',
     micDenied: 'O acesso ao microfone foi recusado. Pode carregar um áudio já gravado.', micNone: 'Não foi encontrado nenhum microfone.', empty: 'A gravação ficou vazia. Tente novamente.',
     silent: 'Não ouvimos a sua voz nesta gravação: verifique o microfone (sem auriculares Bluetooth, nenhuma outra app a usá-lo) e grave de novo antes de continuar.',
+    imageTerms: 'Ao aceitar e responder, autoriza o uso das fotografias que enviar aqui ou entregar ao entrevistador (por exemplo, pelo WhatsApp) na capa, no episódio e no vídeo, incluindo a animação por IA feita pela HeyGen com a voz sintética do episódio, sempre com o aviso visível «AI-generated video · AI voice». Pode retirar esta autorização a qualquer momento em «Fotografias».',
+    imageOptOut: 'Não autorizo o uso da minha imagem (nenhuma fotografia minha na capa nem no vídeo).',
+    c_image: 'Autorizo o uso das fotografias que enviei ou entreguei ao entrevistador na capa, no episódio e no vídeo, incluindo a animação por IA feita pela HeyGen com a voz sintética do episódio, com o aviso visível «AI-generated video · AI voice».',
     needCapture: 'Para autorizar a capa, a publicação das fotografias ou o vídeo por IA, assinale também a primeira caixa («Autorizo a captação e o armazenamento das fotografias…»). Nada foi alterado.',
     needPublish: 'Para autorizar o vídeo por IA, assinale também «Autorizo a publicação dessas fotografias no episódio». Nada foi alterado.',
     photoAuthSaved: 'Autorizações guardadas.',
@@ -177,6 +180,9 @@ const D = {
     stLocal: 'Recorded on this device', stUp: 'Uploading…', stSaved: 'Saved on the server', stFail: 'Upload failed. You can try again.', retry: 'Try again',
     micDenied: 'Microphone access was refused. You can upload an existing recording.', micNone: 'No microphone was found.', empty: 'The recording is empty. Please try again.',
     silent: 'We could not hear your voice in this recording: check the microphone (no Bluetooth earphones, no other app using it) and record again before continuing.',
+    imageTerms: 'By accepting and answering, you allow the photos you send here or hand to the interviewer (for example, by WhatsApp) to be used on the cover, in the episode and in the video, including AI animation by HeyGen with the episode’s synthetic voice, always with the visible notice “AI-generated video · AI voice”. You can withdraw this permission at any time under “Photos”.',
+    imageOptOut: 'I do not allow my image to be used (no photo of me on the cover or in the video).',
+    c_image: 'I allow the photos I sent or handed to the interviewer to be used on the cover, in the episode and in the video, including AI animation by HeyGen with the episode’s synthetic voice, with the visible notice “AI-generated video · AI voice”.',
     needCapture: 'To allow the cover, publishing the photos or the AI video, also tick the first box (“I allow the capture and storage of the photos…”). Nothing was changed.',
     needPublish: 'To allow the AI video, also tick “I allow those photos to be published with the episode”. Nothing was changed.',
     photoAuthSaved: 'Permissions saved.',
@@ -247,7 +253,7 @@ export const t = (lang: Lang) => D[lang];
 
 // v2: publicação conforme a política de revisão; Replicate na animação. v3: o pedido de eliminação segue pela «Ajuda» da
 // entrevista ou pelo formulário de contacto (já não pelo «contacto de apoio», o email que deixou de se mostrar).
-export const CONSENT_VERSION = 'v7-2026-10';
+export const CONSENT_VERSION = 'v8-2026-11';
 export const CONSENT_PURPOSES = ['participation', 'processing', 'photo_capture', 'cover_use', 'publish_photo', 'animate_portrait', 'ai_video', 'publish', 'host_edit'] as const;
 export type ConsentPurpose = typeof CONSENT_PURPOSES[number];
 /** Texto de cada autorização; a de publicação depende da política de revisão da entrevista. */
