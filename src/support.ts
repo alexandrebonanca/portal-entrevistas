@@ -98,8 +98,16 @@ const countLink = (href: string, label: string, n: number, sr: string) =>
   `<a href="${href}">${esc(label)}${n > 0 ? ` <span class="badge" aria-hidden="true">${n}</span><span class="vh"> (${esc(sr)})</span>` : ''}</a>`;
 
 /** Navegação de quem tem sessão: «Ajuda» com as respostas por ler; o administrador vê «Suporte» com os pedidos por ler. */
-export function helpNav(u: { role?: string; support_unread?: number; support_inbox?: number } | undefined, lang: 'pt' | 'en' = 'pt') {
+export function helpNav(u: { role?: string; support_unread?: number; support_inbox?: number; notices_unread?: number } | undefined, lang: 'pt' | 'en' = 'pt') {
   if (!u) return '';
+  return noticesNav(u, lang) + helpOnly(u, lang);
+}
+/** «Avisos»: o que aconteceu nas entrevistas de quem tem sessão (notices.ts), com o número por ler. */
+const noticesNav = (u: { notices_unread?: number }, lang: 'pt' | 'en') => {
+  const n = Number(u.notices_unread) || 0;
+  return countLink('/avisos', lang === 'en' ? 'Notices' : 'Avisos', n, lang === 'en' ? `${n} unread` : `${n} por ler`);
+};
+function helpOnly(u: { role?: string; support_unread?: number; support_inbox?: number }, lang: 'pt' | 'en') {
   if (u.role === 'admin') {
     const n = Number(u.support_inbox) || 0;
     return countLink('/admin/suporte', 'Suporte', n, `${n} ${n === 1 ? 'pedido por ler' : 'pedidos por ler'}`);

@@ -7,6 +7,7 @@ import { toVtt, toSrt, type Cue } from '../subtitles.ts';
 import { t, normLang } from '../i18n.ts';
 import { approvalScope, videoMeta, guestDecides, reviewCopy, coverWithdrawnSql } from '../approval.ts';
 import { guestHelpNav, contactHref } from '../support.ts';
+import { notice } from '../notices.ts';
 import { carriedTags, campaignQuery, ownHosts, withCampaign, fromOwnSite, trackVisit } from '../metrics.ts';
 
 export interface PlayerUrls { audio: string; cover: string; subs: (lang: string, ext: 'vtt' | 'srt') => string }
@@ -168,6 +169,8 @@ ${!decides ? '' : `<form method="post" action="/entrevista/episodio/decisao" cla
     await db.query(`UPDATE approvals SET valid=false WHERE episode_id=$1 AND actor='guest'`, [ep.id]);
     await db.query(`INSERT INTO approvals(interview_id, kind, actor, episode_id, script_id, decision, note, video_asset_id) VALUES ($1,'episode','guest',$2,$3,$4,$5,$6)`, [ep.interview_id, ep.id, ep.script_id, decision, String(b.note ?? '').slice(0, 2000), ep.video_asset_id ?? null]);
     await audit(db, 'guest', `episode.${decision}`, ep.interview_id);
+    await notice(db, ep.interview_id, `episode_${decision}`, decision === 'approved' ? `${ep.guest_name || 'O entrevistado'} aprovou o episódio${ep.video_asset_id ? ' com o vídeo' : ''}` : `${ep.guest_name || 'O entrevistado'} pediu alterações ao episódio`,
+      { level: decision === 'approved' ? 'ok' : 'warn', body: String(b.note ?? '').slice(0, 600), url: `/entrevistas/${ep.interview_id}/producao#passo-5` });
     return reply.redirect('/entrevista/episodio?ok=1');
   });
 }

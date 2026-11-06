@@ -8,6 +8,7 @@ import { requireUser, ownedInterview, audit, sendAsset } from '../app.ts';
 import { sniff, stripJpegMetadata, saveAsset, probeAudio } from '../media.ts';
 import { createInvitation } from '../invites.ts';
 import { enqueue } from '../jobs.ts';
+import { interviewActivity } from './notices.ts';
 import { aiAvailable } from '../ai/openai.ts';
 import { quotaFor, vatForProfile } from '../billing.ts';
 import { inEntity, entityOfInterview } from '../settings.ts';
@@ -739,6 +740,7 @@ ${inv ? `<br><strong>Convite:</strong> ${inv.revoked_at ? 'revogado' : inv.decli
 <a class="btn ghost" href="/entrevistas/${iv.id}/editar">Editar</a>
 ${resendable ? `${resendBlock ? `<span class="hint sans">${esc(resendBlock)}</span>` : `<form method="post" action="/entrevistas/${iv.id}/reenviar"><button class="ghost">Reenviar convite (revoga o anterior)</button></form>`}<form method="post" action="/entrevistas/${iv.id}/cancelar" onsubmit="return confirm('Cancelar a entrevista?')"><button class="danger">Cancelar</button></form>` : ''}
 ${sub || iv.production_status !== 'not_requested' ? `<a class="btn accent" href="/entrevistas/${iv.id}/producao">Produção do podcast →</a>` : ''}</div></div>
+${await interviewActivity(db, iv.id, req.user!.id)}
 <div class="card"><h2 style="margin-top:0">Respostas</h2><table><thead><tr><th>#</th><th>Pergunta</th><th>Estado</th><th>Resposta</th></tr></thead><tbody>
 ${rows.map((r: any) => `<tr><td>${r.position}</td><td>${esc(r.text) || '(áudio)'}${r.followup ? ' ' + pill('adicional') : ''}</td><td>${r.redo_requested_at && r.ans_status === 'answered' ? `${pill('pedido para gravar de novo', 'warn')}<br>` : ''}${r.ans_status === 'answered' && r.silent ? `${pill('Respondida, mas sem voz audível', 'bad')}<br><span class="hint">A gravação parece silenciosa: peça ao entrevistado que a grave de novo antes de submeter.</span>` : r.ans_status === 'answered' ? pill('Respondida', 'ok') : r.ans_status === 'refused' ? pill('Recusada', 'warn') : pill('Pendente')}</td>
 <td>${r.take_asset && r.uploaded_via === 'document' ? writtenAnswer(r.written) : r.take_asset ? `<audio controls preload="none" src="/media/${r.take_asset}"></audio>${r.take_ms ? `<br><span class="hint">${mmss(Math.round(r.take_ms / 1000))}</span>` : ''}${r.check_text && r.uploaded_via !== 'document' ? `<details><summary class="hint">Transcrição de verificação</summary><p class="written">${esc(r.check_text)}</p></details>` : ''}` : ''}</td></tr>`).join('')}</tbody></table></div>

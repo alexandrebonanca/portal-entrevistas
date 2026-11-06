@@ -2,6 +2,7 @@ import type { Db } from './db.ts';
 import { config } from './config.ts';
 import { esc } from './lib.ts';
 import { queueEmail, emailShell } from './mail.ts';
+import { notice } from './notices.ts';
 
 /**
  * Aviso por email quando um trabalho longo termina (o vídeo pode levar dezenas de minutos e a página diz que se pode
@@ -25,6 +26,7 @@ export async function notifyJob(db: Db, job: { id: string; interview_id: string 
     video_ready: { subject: `Vídeo pronto: ${t}`, title: 'O vídeo está pronto', body: `O vídeo de «${t}» foi gerado. Veja-o na página de produção antes de o aprovar e publicar.` },
     video_failed: { subject: `Não foi possível gerar o vídeo: ${t}`, title: 'O vídeo não foi gerado', body: `O vídeo de «${t}» não foi gerado.${detail ? ` Motivo: ${detail.slice(0, 400)}` : ''} O episódio continua como estava; na página de produção pode tentar de novo ou pedir ajuda.` },
   }[what];
+  await notice(db, iv.id, what, m.title, { level: what === 'video_failed' ? 'bad' : 'ok', body: m.body, url: '/entrevistas/' + iv.id + '/producao', dedupe: `job-${what}:${job.id}` });
   await queueEmail(db, { key: `job-${what}:${job.id}`, interviewId: iv.id, to: u.email, subject: m.subject,
     text: `${m.body}\n\n${url}`, html: emailShell(m.title, `<p>${esc(m.body)}</p>`, { label: 'Abrir a produção', url }) });
 }

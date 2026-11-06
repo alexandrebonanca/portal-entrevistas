@@ -153,3 +153,17 @@ test('gravar de novo depois da submissão: a entrevista é reaberta para o entre
   assert.match(msg(r), /Pedido enviado/);
   assert.equal((await db.one('SELECT collection_status FROM interviews WHERE id=$1', [ivId])).collection_status, 'reopened');
 });
+
+test('avisos: o titular vê no portal o que o entrevistado fez (abriu, aceitou, respostas sem voz, submeteu), com o número por ler', async () => {
+  const pd = (await get('/painel', cli.cookie)).body;
+  assert.match(pd, /<a href="\/avisos">Avisos <span class="badge" aria-hidden="true">\d+<\/span>/);
+  const pg = (await get('/avisos', cli.cookie)).body;
+  for (const s of ['Rui abriu o convite', 'Rui aceitou participar', 'A resposta à pergunta 2 parece não ter voz', 'Rui respondeu a todas as perguntas', 'Rui submeteu a entrevista'])
+    assert.ok(pg.includes(s), s);
+  assert.match(pg, /Respostas: 3 de 3 \(3 gravadas/);
+  assert.doesNotMatch((await get('/painel', cli.cookie)).body, /<a href="\/avisos">Avisos <span class="badge"/, 'abrir os avisos marca-os como lidos');
+  // a atividade aparece na página da entrevista e não passa para outra conta
+  assert.match((await get(`/entrevistas/${ivId}`, cli.cookie)).body, /Atividade do entrevistado e da produção/);
+  const other = `sid=${cookies(await post('/entrar', { email: 'outro@example.com', password: PW })).sid}`;
+  assert.doesNotMatch((await get('/avisos', other)).body, /Rui/);
+});

@@ -73,10 +73,10 @@ test('utilizador ↔ administrador: pedido, resposta, contadores de por ler e ne
   assert.match((await get('/painel', ana)).body, /<a href="\/ajuda">Ajuda<\/a>/, 'no painel também');
   assert.match((await get('/account', ana)).body, /<a href="\/ajuda">Help<\/a>/, 'na conta (em inglês)');
   // Páginas da faturação deste ramo: créditos e conta mantêm «Credits» e ganham «Help».
-  assert.match((await get('/conta/creditos', ana)).body, /<a href="\/conta\/creditos">Credits<\/a><a href="\/ajuda">Help<\/a>/, 'nos créditos (em inglês)');
-  assert.match((await get('/account', ana)).body, /<a href="\/conta\/creditos">Credits<\/a><a href="\/ajuda">Help<\/a>/);
-  assert.match((await get('/painel', ana)).body, /<a href="\/account">Conta<\/a><a href="\/conta\/creditos">Créditos<\/a><a href="\/ajuda">Ajuda<\/a>/, 'painel com «Créditos» e «Ajuda»');
-  assert.match((await get('/admin/creditos', admin)).body, /<a href="\/admin\/faturacao">Faturação<\/a><a href="\/admin\/creditos">Créditos<\/a><a href="\/admin\/laboratorio">Laboratório<\/a><a href="\/admin\/suporte">Suporte<\/a><a href="\/admin\/assistente">Assistente<\/a>/, 'navegação do administrador com a faturação, o suporte e o assistente');
+  assert.match((await get('/conta/creditos', ana)).body, /<a href="\/conta\/creditos">Credits<\/a><a href="\/avisos">Notices<\/a><a href="\/ajuda">Help<\/a>/, 'nos créditos (em inglês)');
+  assert.match((await get('/account', ana)).body, /<a href="\/conta\/creditos">Credits<\/a><a href="\/avisos">Notices<\/a><a href="\/ajuda">Help<\/a>/);
+  assert.match((await get('/painel', ana)).body, /<a href="\/account">Conta<\/a><a href="\/conta\/creditos">Créditos<\/a><a href="\/avisos">Avisos<\/a><a href="\/ajuda">Ajuda<\/a>/, 'painel com «Créditos» e «Ajuda»');
+  assert.match((await get('/admin/creditos', admin)).body, /<a href="\/admin\/faturacao">Faturação<\/a><a href="\/admin\/creditos">Créditos<\/a><a href="\/admin\/laboratorio">Laboratório<\/a><a href="\/avisos">Avisos(?: <span class="badge"[^>]*>\d+<\/span><span class="vh">[^<]*<\/span>)?<\/a><a href="\/admin\/suporte">Suporte<\/a><a href="\/admin\/assistente">Assistente<\/a>/, 'navegação do administrador com a faturação, o suporte e o assistente');
 
   const r = await post('/ajuda', { subject: 'Convite <img src=x onerror=alert(1)>', message: 'Linha 1\r\nLinha 2 <script>alert(1)</script>\n\n  indentada' }, ana);
   assert.equal(r.statusCode, 302);
@@ -107,7 +107,7 @@ test('utilizador ↔ administrador: pedido, resposta, contadores de por ler e ne
   assert.match(at.body, /<strong>Utilizador:<\/strong> <a href="\/admin\/utilizadores\/[0-9a-f-]{36}">Ana<\/a> · ana@example\.com/);
   assert.match(at.body, /<strong>Perfil:<\/strong> Entrevistador · <strong>Entidade:<\/strong> Telecert Formação/);
   assert.match(at.body, /<p class="msgbody">Linha 1\nLinha 2 &lt;script&gt;/);
-  assert.doesNotMatch(at.body, /<span class="badge"/, 'lido ao abrir: o contador desta página já desconta');
+  assert.doesNotMatch(at.body, /Suporte <span class="badge"/, 'lido ao abrir: o contador desta página já desconta');
   assert.equal((await db.one('SELECT unread_admin FROM support_threads WHERE id=$1', [anaThread])).unread_admin, false);
 
   const rep = await post(`/admin/suporte/${anaThread}/responder`, { message: 'Olá Ana,\nveja em Definições <b>MailerSend</b>.' }, admin);

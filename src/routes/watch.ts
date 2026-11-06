@@ -8,6 +8,7 @@ import { coverWithdrawnSql } from '../approval.ts';
 import { toVtt, toSrt } from '../subtitles.ts';
 import { playerHtml } from './episode.ts';
 import { helpNav } from '../support.ts';
+import { notice } from '../notices.ts';
 
 /**
  * Convites para assistir: o entrevistador escolhe um episódio publicado (com vídeo, de preferência) e envia um link pessoal
@@ -101,7 +102,8 @@ ${wa ? `<div class="card" style="border:2px solid var(--ok)"><p class="sans" sty
     const t = (req.params as any).token;
     const ep = await invited(t);
     if (!ep) return reply.code(404).type('text/html; charset=utf-8').send(page({ lang: 'en', title: 'Link not available', noindex: true, body: '<div class="narrow" style="padding-top:48px"><h1>Link not available</h1><p>This invitation link was revoked or the episode is no longer published. · Este link foi revogado ou o episódio deixou de estar publicado.</p></div>' }));
-    await db.query('UPDATE watch_invites SET views=views+1, last_viewed_at=now() WHERE id=$1', [ep.wid]);
+    const v = await db.one('UPDATE watch_invites SET views=views+1, last_viewed_at=now() WHERE id=$1 RETURNING views, recipient_name, recipient_email, channel', [ep.wid]);
+    if (v?.views === 1) await notice(db, ep.interview_id, 'watch_viewed', `${v.recipient_name || v.recipient_email || 'Um convidado (WhatsApp)'} abriu o seu convite para assistir`, { body: `«${ep.title}»`, url: `/assistir/convites?ep=${ep.id}`, dedupe: `watch:${ep.wid}` });
     const base = `/ver/${t}`, showCover = !ep.cover_withdrawn;
     reply.header('Referrer-Policy', 'no-referrer');
     return send(reply, page({

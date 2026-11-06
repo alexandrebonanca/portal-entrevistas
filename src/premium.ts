@@ -8,6 +8,7 @@ import { settle, cr } from './wallet.ts';
 import { PermanentError } from './jobs.ts';
 import { queueEmail, emailShell } from './mail.ts';
 import { esc, sha256 } from './lib.ts';
+import { notice } from './notices.ts';
 
 /**
  * Vídeo premium (animação de cada fala a partir da fotografia, com a voz do episódio), vendido por créditos.
@@ -117,6 +118,7 @@ export async function premiumSettledEmail(db: Db, quote: any, s: { charged: numb
   if (!u) return;
   const url = `${config.baseUrl}/entrevistas/${iv.id}/orcamentos/${quote.id}`;
   const text = `O vídeo premium de «${iv.title}» está pronto. Cobrados: ${cr(s.charged)} créditos (só as falas animadas). Libertados e de volta ao saldo: ${cr(s.released)} créditos. Veja o vídeo e aprove-o na página da produção; o relatório por fala está em ${url}`;
+  await notice(db, iv.id, 'premium_ready', 'Vídeo premium pronto', { level: 'ok', body: `Cobrados ${cr(s.charged)} créditos (só as falas animadas); ${cr(s.released)} voltaram ao saldo.`, url: `/entrevistas/${iv.id}/producao`, dedupe: `premium:${quote.id}` });
   await queueEmail(db, { key: `quote-settled:${quote.id}`, interviewId: iv.id, to: u.email, subject: `Vídeo premium pronto: ${cr(s.charged)} créditos cobrados`, text,
     html: emailShell('Vídeo premium pronto', `<p>${esc(text.replace(url, ''))}</p>`, { label: 'Ver o relatório', url }) });
 }

@@ -20,6 +20,7 @@ import { introRoutes } from './routes/intro.ts';
 import { supportRoutes } from './routes/support.ts';
 import { assistantAdminRoutes } from './routes/assistant.ts';
 import { watchRoutes } from './routes/watch.ts';
+import { noticeRoutes } from './routes/notices.ts';
 import { metricsRoutes } from './routes/metrics.ts';
 import { seedAssistant } from './assistant-faq.ts';
 import { loadSettings } from './settings.ts';
@@ -28,7 +29,7 @@ declare module 'fastify' {
   interface FastifyInstance { db: Db }
   interface FastifyRequest {
     // support_unread: respostas do suporte por ler; support_inbox: pedidos por ler na caixa do administrador.
-    user?: { id: string; email: string; name: string; role: string; entity_id: string | null; support_unread?: number; support_inbox?: number };
+    user?: { id: string; email: string; name: string; role: string; entity_id: string | null; support_unread?: number; support_inbox?: number; notices_unread?: number };
     guest?: { interviewId: string; invitationId: string; supportUnread?: number };
     // Sessão de convidado cujo convite deixou de valer (cancelado, recusado ou substituído): só lê os pedidos ao suporte.
     guestHelp?: { interviewId: string; supportUnread?: number };
@@ -97,7 +98,8 @@ export async function buildApp(db: Db): Promise<FastifyInstance> {
       // Contadores do suporte interno para a navegação (índices parciais: só as linhas por ler).
       const u = await db.one(`SELECT u.id,u.email,u.name,u.role,u.entity_id,
           (SELECT count(*)::int FROM support_threads t WHERE t.user_id=u.id AND t.unread_user) AS support_unread,
-          CASE WHEN u.role='admin' THEN (SELECT count(*)::int FROM support_threads t WHERE t.unread_admin) ELSE 0 END AS support_inbox
+          CASE WHEN u.role='admin' THEN (SELECT count(*)::int FROM support_threads t WHERE t.unread_admin) ELSE 0 END AS support_inbox,
+          (SELECT count(*)::int FROM notices n WHERE n.user_id=u.id AND n.read_at IS NULL) AS notices_unread
         FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.id=$1 AND s.expires_at>now() AND u.active`, [sha256(sid)]);
       if (u) req.user = u;
     }
@@ -129,6 +131,7 @@ export async function buildApp(db: Db): Promise<FastifyInstance> {
   await assistantAdminRoutes(app);
   await metricsRoutes(app);
   await watchRoutes(app);
+  await noticeRoutes(app);
 
   app.setNotFoundHandler((req, reply) => {
     reply.code(404).type('text/html').send('<!doctype html><meta charset=utf-8><title>404</title><p style="font:18px system-ui;padding:40px">404 — página não encontrada. <a href="/">Início</a>');

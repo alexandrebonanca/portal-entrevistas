@@ -246,3 +246,8 @@ Custos mostrados são estimativas (preços configuráveis por variáveis PRICE_*
   (answers.redo_requested_at, interviews.redo_note, migração 040; reabre uma entrevista submetida; email próprio com link
   novo; aviso ao entrevistado nas páginas; uma resposta nova limpa o pedido). O entrevistador acrescenta fotografias do
   entrevistado (até 3) logo que ele aceita o convite, também antes de submeter (ex.: enviadas por WhatsApp).
+- 06/11: «Avisos» no portal para o titular da entrevista (migração 041, src/notices.ts, /avisos com o número por ler na
+  navegação e «Atividade» na página da entrevista): convite aberto, aceitação (e autorizações), resposta sem voz, todas
+  respondidas, fotografia enviada, autorizações das fotografias alteradas, submissão (resumo: respostas, duração, recusas,
+  fotografias, sem voz), aprovação ou pedido de alterações, episódio/vídeo prontos ou falhados, vídeo premium e 1.ª
+  visualização de um convite para assistir. Nunca levam o conteúdo das respostas.

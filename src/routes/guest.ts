@@ -1,4 +1,5 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
+import { notice, mmssMs } from '../notices.ts';
 import { eraseGuestAiVideo } from '../veo-episode.ts';
 import { config } from '../config.ts';
 import { esc, sha256, newToken, rateLimit, fmtDate } from '../lib.ts';
@@ -67,7 +68,8 @@ export async function guestRoutes(app: FastifyInstance) {
     const inv = await loadInvitation((req.params as any).token);
     if (!inv || inv.revoked_at || inv.declined_at || new Date(inv.expires_at) < new Date()) return reply.redirect(`/i/${(req.params as any).token}`);
     if (!rateLimit(`open:${req.ip}`, 30, 10 * 60_000)) return reply.code(429).send('Too many requests');
-    await db.query('UPDATE invitations SET first_opened_at=COALESCE(first_opened_at, now()) WHERE id=$1', [inv.id]);
+    const first = await db.one('UPDATE invitations SET first_opened_at=COALESCE(first_opened_at, now()) WHERE id=$1 RETURNING (first_opened_at > now() - interval \'2 seconds\') AS fresh', [inv.id]);
+    if (first?.fresh) await notice(db, inv.iid, 'opened', inv.purpose === 'preview' ? `${inv.guest_name || 'O entrevistado'} abriu a pré-visualização do episódio` : `${inv.guest_name || 'O entrevistado'} abriu o convite`, { dedupe: `opened:${inv.id}` });
     if (['invited', 'reopened'].includes(inv.collection_status)) await db.query(`UPDATE interviews SET collection_status='started' WHERE id=$1`, [inv.iid]);
     const token = newToken();
     await db.query(`INSERT INTO guest_sessions(id, interview_id, invitation_id, expires_at) VALUES ($1,$2,$3,$4)`, [sha256(token), inv.iid, inv.id, inv.expires_at]);
@@ -83,6 +85,7 @@ export async function guestRoutes(app: FastifyInstance) {
       await db.query('UPDATE invitations SET declined_at=now() WHERE id=$1', [inv.id]);
       const owner = await db.one('SELECT u.email FROM users u JOIN interviews i ON i.owner_id=u.id WHERE i.id=$1', [inv.iid]);
       await audit(db, 'guest', 'invitation.declined', inv.iid);
+      await notice(db, inv.iid, 'declined', `${inv.guest_name || 'O entrevistado'} recusou o convite`, { level: 'bad', body: 'Indicou que não pretende participar nesta entrevista.', dedupe: `declined:${inv.id}` });
       if (owner) await queueEmail(db, { key: `declined:${inv.id}`, interviewId: inv.iid, to: owner.email, subject: `Convite recusado — ${inv.title}`,
         html: emailShell('Convite recusado', `<p>${esc(inv.guest_name)} indicou que não pretende participar na entrevista “${esc(inv.title)}”.</p>`), text: `${inv.guest_name} não pretende participar em "${inv.title}".` });
     }
@@ -184,6 +187,8 @@ ${redo.length ? `<div class="flash bad"><strong>${esc(d.redoBanner)}</strong> ${
     await recordConsent(c.iv, c.lang, 'processing', !!b.processing);
     await recordConsent(c.iv, c.lang, 'publish', !!b.publish);
     await audit(db, 'guest', 'consent.recorded', c.iv.id);
+    await notice(db, c.iv.id, 'accepted', `${c.iv.guest_name || 'O entrevistado'} aceitou participar`, { level: b.processing ? 'ok' : 'warn',
+      body: `Processamento por IA: ${b.processing ? 'autorizado' : 'não autorizado (as respostas não podem ser transcritas nem produzidas)'} · Publicação: ${b.publish ? 'autorizada' : 'não autorizada'}.` });
     return reply.redirect('/entrevista');
   });
 
@@ -279,6 +284,10 @@ ${q.audio_asset_id ? `<p><audio id="qaudio" controls preload="none" src="/api/g/
     }
     // A resposta anterior desta pergunta (nunca submetida) sai do disco: só a escolhida é usada.
     await discardReplacedTake(db, iv.id, r.prevTakeId);
+    // Avisos ao titular: uma resposta sem voz (logo, para poder pedir que a grave de novo) e todas as perguntas respondidas.
+    if (p.silent) await notice(db, iv.id, 'silent_answer', `A resposta à pergunta ${q.position} parece não ter voz`, { level: 'bad', body: `${iv.guest_name || 'O entrevistado'} gravou ${mmssMs(p.durationMs)} sem voz audível (o microfone pode não ter captado). Verifique as respostas e, se for o caso, peça-lhe que a grave de novo.`, dedupe: `silent:${r.take.id}` });
+    else if (!(await db.one(`SELECT 1 FROM questions q LEFT JOIN answers a ON a.question_id=q.id WHERE q.interview_id=$1 AND (a.status IS NULL OR a.status NOT IN ('answered','refused')) LIMIT 1`, [iv.id])))
+      await notice(db, iv.id, 'all_answered', `${iv.guest_name || 'O entrevistado'} respondeu a todas as perguntas`, { body: 'Falta ele rever e submeter.', dedupe: `all-answered:${iv.id}:v${iv.version}` });
     // Resposta alterada depois de guião/episódio aprovado: invalida derivados (sem apagar versões).
     await invalidateDerived(db, iv.id);
     return { ok: true, takeId: r.take.id, assetId, durationMs: p.durationMs, silent: p.silent, remainingSec: r.remainingSec };
@@ -457,6 +466,12 @@ ${done && photos.some((p: any) => p.added_by === 'host') ? `<div class="card"><p
     }
     if (!b.photo_capture && c.iv.collection_status !== 'submitted') await removeAllPhotos(c.iv.id);
     await audit(db, 'guest', 'consent.photos_updated', c.iv.id);
+    {
+      const yes = (v: any) => (v ? 'sim' : 'não');
+      const pub = !!b.photo_capture && !!b.publish_photo;
+      await notice(db, c.iv.id, 'photo_consents', `${c.iv.guest_name || 'O entrevistado'} atualizou as autorizações das fotografias`, { level: pub ? 'ok' : 'warn',
+        body: `Capa: ${yes(b.photo_capture && b.cover_use)} · Publicação das fotografias: ${yes(pub)} · Vídeo premium (animação por IA): ${yes(pub && b.ai_video)} · Edição pelo entrevistador (incluindo a fotografia): ${yes(b.host_edit)}.${pub ? '' : ' Sem a publicação, a capa e o vídeo não usam fotografias dele.'}` });
+    }
     return reply.redirect('/entrevista/fotos');
   });
 
@@ -488,6 +503,7 @@ ${done && photos.some((p: any) => p.added_by === 'host') ? `<div class="card"><p
       return noSpace ? { noSpace } : tx.one('INSERT INTO photos(interview_id, asset_id) VALUES ($1,$2) RETURNING id', [iv.id, assetId]);
     });
     if (ph.noSpace) { await discardAsset(db, assetId, 'refused'); return noRoom(reply, iv, ph.noSpace); }
+    await notice(db, iv.id, 'guest_photo', `${iv.guest_name || 'O entrevistado'} enviou uma fotografia`, { body: 'Veja-a na página da entrevista; só é usada com as autorizações das fotografias dele.', dedupe: `gphoto:${ph.id}` });
     return { ok: true, id: ph.id, assetId };
   });
   app.post('/api/g/fotos/:id/eliminar-form', async (req, reply) => {
@@ -554,6 +570,14 @@ ${s.complete ? `<form method="post" action="/entrevista/submeter" onsubmit="retu
       text: `${iv.guest_name} concluiu a entrevista "${iv.title}". Respostas: ${s.qs.length - refused}/${s.qs.length}; fotografias: ${s.photos.length}; recusas: ${refused}.\nRever e processar podcast: ${url}`,
     });
     await audit(db, 'guest', 'interview.submitted', iv.id, { submissionId: sub.id });
+    {
+      const rec = s.qs.filter((q: any) => q.status === 'answered' && q.uploaded_via !== 'document');
+      const totalMs = rec.reduce((n: number, q: any) => n + (Number(q.duration_ms) || 0), 0);
+      const silent = Number((await db.one(`SELECT count(*)::int AS n FROM answers an JOIN answer_takes t ON t.id=an.selected_take_id JOIN assets a ON a.id=t.asset_id WHERE an.interview_id=$1 AND an.status='answered' AND (a.meta->>'silent')::boolean`, [iv.id]))?.n ?? 0);
+      const written = s.qs.filter((q: any) => q.status === 'answered' && q.uploaded_via === 'document').length;
+      await notice(db, iv.id, 'submitted', `${iv.guest_name || 'O entrevistado'} submeteu a entrevista`, { level: silent ? 'warn' : 'ok', url: `/entrevistas/${iv.id}`,
+        body: `Respostas: ${s.qs.length - refused} de ${s.qs.length} (${rec.length} gravadas, ${mmssMs(totalMs)} no total${written ? `; ${written} escritas` : ''}) · Recusadas: ${refused} · Fotografias: ${s.photos.length}${silent ? ` · ${silent} resposta(s) sem voz audível: verifique-as antes de processar` : ''}.`, dedupe: `submitted:${sub.id}` });
+    }
     return reply.redirect('/entrevista/obrigado');
   });
 
