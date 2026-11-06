@@ -5,7 +5,7 @@ import { esc } from './lib.ts';
  * Marca quietinterview (logótipo A: balão de fala com onda sonora).
  * O símbolo usa a cor de destaque da página (cobre); o nome é texto, para acompanhar o modo escuro e ser legível.
  */
-const MARK_PATHS = (bubble: string, bars: string) =>
+export const MARK_PATHS = (bubble: string, bars: string) =>
   `<rect x="2" y="2" width="76" height="56" rx="18" fill="${bubble}"/><path d="M18 56 L10 74 L34 56 Z" fill="${bubble}"/>` +
   `<rect x="21" y="25" width="5" height="12" rx="2.5" fill="${bars}"/><rect x="31" y="18" width="5" height="26" rx="2.5" fill="${bars}"/>` +
   `<rect x="41" y="22" width="5" height="18" rx="2.5" fill="${bars}"/><rect x="51" y="27" width="5" height="8" rx="2.5" fill="${bars}"/>`;

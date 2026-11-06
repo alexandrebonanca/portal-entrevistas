@@ -5,7 +5,7 @@ import { page, flash } from '../views.ts';
 import { requireUser, sendAsset, audit } from '../app.ts';
 import { queueEmail, emailShell } from '../mail.ts';
 import { coverWithdrawnSql } from '../approval.ts';
-import { toVtt, toSrt } from '../subtitles.ts';
+import { toVtt, toSrt, shiftCues, videoSubsOffset, videoTracks } from '../subtitles.ts';
 import { playerHtml } from './episode.ts';
 import { helpNav } from '../support.ts';
 import { notice } from '../notices.ts';
@@ -108,7 +108,7 @@ ${wa ? `<div class="card" style="border:2px solid var(--ok)"><p class="sans" sty
     reply.header('Referrer-Policy', 'no-referrer');
     return send(reply, page({
       lang: 'en', title: ep.title, noindex: true,
-      body: `<div class="wrap" style="padding-top:28px">${ep.video_asset_id && showCover ? `<video controls preload="metadata" poster="${base}/cover" src="${base}/video" style="width:100%;border-radius:12px;background:#000;margin-bottom:18px"></video>` : ''}${playerHtml(ep, { audio: `${base}/audio`, cover: showCover ? `${base}/cover` : '', subs: (l, x) => `${base}/subs/${l}.${x}` }, { host: ep.host_name, guest: ep.guest_name })}
+      body: `<div class="wrap" style="padding-top:28px">${ep.video_asset_id && showCover ? `<video controls preload="metadata" poster="${base}/cover" src="${base}/video" style="width:100%;border-radius:12px;background:#000;margin-bottom:18px">${videoTracks(ep, l => `${base}/subs/${l}.vtt?video=1`)}</video>` : ''}${playerHtml(ep, { audio: `${base}/audio`, cover: showCover ? `${base}/cover` : '', subs: (l, x) => `${base}/subs/${l}.${x}` }, { host: ep.host_name, guest: ep.guest_name })}
 <p class="hint sans" style="margin-top:28px">Personal link: please do not share it. · Link pessoal: por favor não o partilhe.</p></div>`,
       script: '/static/player.js', nav: '',
     }));
@@ -126,8 +126,9 @@ ${wa ? `<div class="card" style="border:2px solid var(--ok)"><p class="sans" sty
   app.get('/ver/:token/subs/:file', async (req, reply) => {
     const ep = await invited((req.params as any).token);
     const m = /^([A-Za-z-]{2,8})\.(vtt|srt)$/.exec((req.params as any).file);
-    const cues = ep && m ? ep.subtitles?.[m[1]] : undefined;
+    let cues = ep && m ? ep.subtitles?.[m[1]] : undefined;
     if (!cues) return reply.code(404).send();
+    if ((req.query as any)?.video === '1') cues = shiftCues(cues, await videoSubsOffset(db, ep.video_asset_id));
     return m![2] === 'srt' ? reply.type('application/x-subrip; charset=utf-8').send(toSrt(cues)) : reply.type('text/vtt; charset=utf-8').send(toVtt(cues));
   });
 }

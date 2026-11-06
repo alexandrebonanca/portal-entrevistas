@@ -158,6 +158,13 @@ test('premium: orçamento, aceitação, produção e liquidação só das falas 
   assert.deepEqual([w.available_cents, w.reserved_cents], [10000 - qs.charged_cents, 0]);
   const meta = (await db.one('SELECT a.meta FROM episodes e JOIN assets a ON a.id=e.video_asset_id WHERE e.id=$1', [epId])).meta;
   assert.deepEqual([meta.engine, meta.quoteId, meta.paidBy], ['heygen', q.id, 'credits']);
+  // estilo editorial (por omissão): animado por cima do fundo claro, temas, legendas em ficheiro e o pacote de entrega
+  assert.equal(meta.style, 'editorial'); assert.equal(meta.subsOffsetMs, 3000); assert.equal(meta.graphics.size, '1280x720');
+  assert.ok(meta.graphics.animatedParts > 0); assert.ok(meta.graphics.topics > 0); assert.ok(meta.chapters.length > 0);
+  assert.equal((await db.one('SELECT video_lang FROM episodes WHERE id=$1', [epId])).video_lang, null, 'sem legendas gravadas na imagem');
+  const zip = await get(`/entrevistas/${ivId}/episodio/${epId}/entrega.zip`, cli.cookie);
+  assert.equal(zip.statusCode, 200); assert.equal(zip.rawPayload.subarray(0, 4).toString('hex'), '504b0304');
+  assert.match(zip.rawPayload.toString('latin1'), /chapters\.json[\s\S]*LEIA-ME\.txt/);
   assert.ok(await db.one(`SELECT 1 FROM emails WHERE dedupe_key=$1`, [`quote-settled:${q.id}`]));
   await check();
   // um orçamento novo para o mesmo vídeo: as falas já animadas passam a 0 créditos

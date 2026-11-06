@@ -120,7 +120,7 @@ ${video ? `
 ${featured ? `
 <section class="wrap lp-section" id="interviews" aria-labelledby="ivh"><h2 id="ivh">Interviews</h2>
   <p class="lp-intro">A real interview produced with ${b}, published by its interviewer: «${esc(featured.title)}», with ${esc(featured.host_name)} and ${esc(featured.guest_name)}.</p>
-  <figure class="lp-video"><video controls playsinline preload="none" poster="/e/${esc(featured.slug)}/cover" src="/e/${esc(featured.slug)}/video" width="1280" height="720">${featured.subtitles.map(l => `<track kind="captions" srclang="${esc(l)}" label="${esc(l)}" src="/e/${esc(featured.slug)}/subs/${esc(l)}.vtt">`).join('')}<a href="/e/${esc(featured.slug)}">Watch the interview</a></video>
+  <figure class="lp-video"><video controls playsinline preload="none" poster="/e/${esc(featured.slug)}/cover" src="/e/${esc(featured.slug)}/video" width="1280" height="720">${featured.subtitles.map(l => `<track kind="captions" srclang="${esc(l)}" label="${esc(l)}" src="/e/${esc(featured.slug)}/subs/${esc(l)}.vtt?video=1">`).join('')}<a href="/e/${esc(featured.slug)}">Watch the interview</a></video>
     <figcaption class="hint">Translated and narrated with AI voices; the animated video carries a visible AI notice. <a href="${withTags(`/e/${featured.slug}`)}">Full episode, transcript and chapters</a>${galleryOn ? ` · <a href="${withTags('/podcasts')}">More interviews in the gallery</a>` : ''}</figcaption></figure>
 </section>
 ` : ''}

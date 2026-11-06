@@ -44,6 +44,20 @@ const ts = (ms: number, sep: string) => {
 };
 const clean = (t: string) => t.replace(/-->/g, '→').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
+/** Legendas no tempo do vídeo (o vídeo editorial começa com o cartão de abertura: tudo desliza esse tempo). */
+export const shiftCues = <T extends { startMs: number; endMs: number }>(cues: T[], ms: number): T[] => (ms ? cues.map(c => ({ ...c, startMs: c.startMs + ms, endMs: c.endMs + ms })) : cues);
+/** Desvio das legendas no vídeo de um episódio (0 no vídeo clássico, onde o episódio começa no início). */
+export async function videoSubsOffset(db: { one: (q: string, p?: any[]) => Promise<any> }, videoAssetId: string | null | undefined): Promise<number> {
+  if (!videoAssetId) return 0;
+  const a = await db.one('SELECT meta FROM assets WHERE id=$1', [videoAssetId]);
+  return Number(a?.meta?.subsOffsetMs) || 0;
+}
+
+/** Faixas de legendas do leitor de vídeo (o vídeo editorial não as tem gravadas na imagem). */
+const LANG_LABEL: Record<string, string> = { en: 'English', 'pt-PT': 'Português', pt: 'Português', es: 'Español', fr: 'Français', de: 'Deutsch' };
+export const videoTracks = (ep: { subtitles?: Record<string, unknown> | null }, src: (lang: string) => string) =>
+  Object.keys(ep.subtitles ?? {}).filter(l => /^[A-Za-z-]{2,8}$/.test(l)).map(l => `<track kind="subtitles" srclang="${l}" label="${LANG_LABEL[l] ?? l}" src="${src(l).replace(/&/g, '&amp;').replace(/"/g, '&quot;')}">`).join('');
+
 export function toVtt(cues: Cue[]) {
   return 'WEBVTT\n\n' + cues.map((c, i) => `${i + 1}\n${ts(c.startMs, '.')} --> ${ts(c.endMs, '.')}\n${c.speakerRole === 'host' ? '' : ''}${clean(c.text)}\n`).join('\n');
 }

@@ -28,6 +28,8 @@ export const SETTING_DEFS: SettingDef[] = [
   { key: 'VERTEX_SA_JSON', label: 'Conta de serviço do Vertex AI (JSON)', group: 'Google', secret: true, hint: 'cole aqui o ficheiro .json da chave da conta de serviço' },
   { key: 'VERTEX_LOCATION', label: 'Região do Vertex AI', group: 'Google', secret: false, hint: 'us-central1' },
   { key: 'VEO_TIER', label: 'Modelo do Google Veo', group: 'Google', secret: false, options: [['fast', 'Veo 3.1 Fast (~$0,10/s)'], ['lite', 'Veo 3.1 Lite (~$0,05/s, metade do preço)']] },
+  { key: 'VIDEO_STYLE', label: 'Estilo do vídeo', group: 'Vídeo', secret: false, default: 'editorial', options: [['editorial', 'Editorial (cartões, temas, ideias-chave e promotor; legendas em ficheiro)'], ['classic', 'Clássico (estúdio com legendas na imagem)']] },
+  { key: 'VIDEO_SIZE', label: 'Resolução do vídeo editorial', group: 'Vídeo', secret: false, default: '720', options: [['720', '1280×720 (cabe em 512 MB de memória)'], ['1080', '1920×1080 (precisa de ~2 GB de memória no servidor)']] },
   { key: 'GEMINI_API_KEY', label: 'Gemini API key (reserva enquanto a Google a mantiver)', group: 'Google', secret: true, hint: 'AIza…' },
   { key: 'MOLONI_CLIENT_ID', label: 'Client ID (developer id)', group: 'Moloni ON', secret: false },
   { key: 'MOLONI_CLIENT_SECRET', label: 'Client secret', group: 'Moloni ON', secret: true },

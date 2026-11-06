@@ -1,3 +1,4 @@
+import { ownerEntityName } from '../editorial.ts';
 import type { FastifyInstance } from 'fastify';
 import { hostPhotoBlock, HOST_GUEST_PHOTOS_MAX } from '../guest-photos.ts';
 import type { Db } from '../db.ts';
@@ -146,6 +147,7 @@ ${rows.map((r: any) => `<tr><td><a href="/entrevistas/${r.id}">${esc(r.title)}</
     const locked = iv.collection_status !== 'draft';
     // Entrevista grátis enviada: o nome do entrevistador (vai no assunto do convite) e a mensagem pessoal ficam como foram enviados.
     const freeFixed = locked && !!iv.free_at;
+    const promoterDefault = await ownerEntityName(db, iv.owner_id);
     const qs = await db.query('SELECT * FROM questions WHERE interview_id=$1 ORDER BY position', [iv.id]);
     const objT = iv.objective_asset_id ? await db.one(`SELECT text FROM transcripts WHERE source_kind='objective' AND source_id=$1 ORDER BY revision DESC LIMIT 1`, [iv.id]) : null;
     const fu = locked ? await followupState(iv, req.user) : null;
@@ -162,6 +164,8 @@ ${objT && !iv.objective_text ? `<p class="hint">Transcrição do objetivo gravad
 <div class="grow"><label for="gn">Nome do entrevistado</label><input id="gn" name="guest_name" type="text" value="${esc(iv.guest_name)}"></div></div>
 <div class="row"><div class="grow"><label for="ht">Função do entrevistador no vídeo (opcional)</label><input id="ht" name="host_title" type="text" maxlength="60" placeholder="Host" value="${esc(iv.host_title ?? '')}"></div>
 <div class="grow"><label for="gt">Função do entrevistado no vídeo (opcional)</label><input id="gt" name="guest_title" type="text" maxlength="60" placeholder="Guest" value="${esc(iv.guest_title ?? '')}"></div></div>
+<label for="pn">Promotor da entrevista no vídeo (opcional)</label><input id="pn" name="promoter_name" type="text" maxlength="60" placeholder="${esc(promoterDefault)}" value="${esc(iv.promoter_name ?? '')}">
+<p class="hint">Aparece no cartão de abertura e no final («Produced by …», com o apoio do QuietInterview). Vazio: ${promoterDefault ? `«${esc(promoterDefault)}»` : 'só a marca do portal'}.</p>
 <p class="hint">O nome e a função aparecem num rodapé animado quando cada um fala pela primeira vez no vídeo. Escreva a função em inglês, como o episódio (ex.: «Chief engineer, Lisbon»); sem função, aparece «Host» ou «Guest».</p>
 <label for="ge">Email do entrevistado</label><input id="ge" name="guest_email" type="email" value="${esc(iv.guest_email)}" ${locked ? 'readonly' : ''}>${iv.collection_status === 'submitted' ? `<p class="hint">A fotografia do entrevistado usada no vídeo escolhe-se (ou acrescenta-se) em <a href="/entrevistas/${iv.id}/producao#foto-convidado">Produção → Fotografia do entrevistado</a>.</p>` : ''}
 <div class="row"><div class="grow"><label for="il">Idioma da interação do entrevistado</label><select id="il" name="interaction_lang">${sel(iv.interaction_lang, LANGS)}</select></div>
@@ -224,7 +228,7 @@ ${locked ? '' : composePanel(iv, quota!, !(await inEntity(await entityOfIntervie
         guest_email=CASE WHEN collection_status='draft' THEN $7 ELSE guest_email END, interaction_lang=$8, answer_lang=$9, deadline=$10, planned_visibility=$11,
         personal_message=CASE WHEN collection_status='draft' OR free_at IS NULL THEN $12 ELSE personal_message END, subtitle_langs=$13,
         review_policy=CASE WHEN collection_status<>'draft' AND review_policy='guest_preview' THEN 'guest_preview' ELSE $14::text END,
-        host_photo_rights=$15, question_voice=$16, guest_voice=$17, host_animate=$18, host_ai_video=$19, host_title=$20, guest_title=$21, host_ai_video_provider=CASE WHEN $19 THEN 'heygen' ELSE NULL END WHERE id=$1 RETURNING review_policy`,
+        host_photo_rights=$15, question_voice=$16, guest_voice=$17, host_animate=$18, host_ai_video=$19, host_title=$20, guest_title=$21, promoter_name=$22, host_ai_video_provider=CASE WHEN $19 THEN 'heygen' ELSE NULL END WHERE id=$1 RETURNING review_policy`,
       // O título, os nomes e as funções vão para a capa e para os cartões do vídeo (SVG): sem os caracteres que o XML não
       // admite (xmlText), que faziam falhar a capa em cada tentativa, depois das etapas pagas.
       [iv.id, oneSpace(xmlText(b.title)).slice(0, 140), String(b.objective_text ?? '').slice(0, 4000), !!b.objective_shared,
@@ -232,7 +236,7 @@ ${locked ? '' : composePanel(iv, quota!, !(await inEntity(await entityOfIntervie
         ['auto', 'pt', 'en', 'es', 'fr', 'de'].includes(b.answer_lang) ? b.answer_lang : 'auto', b.deadline || null,
         ['private', 'unlisted', 'public'].includes(b.planned_visibility) ? b.planned_visibility : 'private', String(b.personal_message ?? '').slice(0, 1500),
         subs.length ? subs : ['en'], b.review_policy === 'host_only' ? 'host_only' : 'guest_preview', !!b.host_photo_rights, b.question_voice === 'male' ? 'male' : 'female', b.guest_voice === 'male' ? 'male' : 'female', !!b.host_animate && !!b.host_photo_rights, !!b.host_ai_video && !!b.host_photo_rights,
-        xmlText(b.host_title).replace(/\s+/g, ' ').trim().slice(0, 60), xmlText(b.guest_title).replace(/\s+/g, ' ').trim().slice(0, 60)]);
+        xmlText(b.host_title).replace(/\s+/g, ' ').trim().slice(0, 60), xmlText(b.guest_title).replace(/\s+/g, ' ').trim().slice(0, 60), oneSpace(xmlText(b.promoter_name)).slice(0, 60)]);
     const policy = saved.review_policy;
     // Autorização retirada pelo entrevistador: o vídeo que usava a fotografia, a animação ou o Veo deixa de ser servido (o ficheiro fica privado).
     const photo = !!b.host_photo_rights, anim = photo && !!b.host_animate, ai = photo && !!b.host_ai_video;

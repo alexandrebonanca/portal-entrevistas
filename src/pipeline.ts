@@ -8,6 +8,8 @@ import { saveAsset, assembleEpisode, probeAudio } from './media.ts';
 import { transcribeAudio, transcribeWords, prepareEnglishScript, translateSubtitleCues, synthesizeSpeech, coverBriefing, generateCoverBackground, episodeVoice, newMeter, meterUsd, AiCutError, UNTRANSLATED, type ScriptSegment, type TokenMeter } from './ai/openai.ts';
 import { planShots, renderBases, subtitleFrame, encodeVideo, encodeComposite, splitParts, shotsWithin, sliceAudio, stillClip, buildAudioTrack, type Part } from './video.ts';
 import { photoTimeline, peopleOf } from './graphics.ts';
+import { editorialVideo, editorialPlan, OPEN_MS } from './editorial.ts';
+import { inEntity, S } from './settings.ts';
 import { lipsync, lipsyncMock, estimateLipsyncUsd } from './lipsync.ts';
 import { PROVIDERS, runProvider, signedAssetUrl, heygenAvatarIV } from './talking.ts';
 import { readQuestion, generateFictionalPortrait } from './ai/openai.ts';
@@ -375,10 +377,13 @@ export const handlers: Record<string, Handler> = {
     const cover = await asset(ep.cover_asset_id);
     const audio = await asset(ep.audio_asset_id);
     if (!cover || !audio) throw new PermanentError('Capa ou áudio do episódio em falta');
-    const lang: string | null = job.input.lang && ep.subtitles?.[job.input.lang] ? job.input.lang : null;
+    // Estilo editorial (por omissão; o formato do ensaio HTA): cartões, temas, ideias-chave, promotor e legendas em ficheiro
+    // (nunca gravadas na imagem). O clássico (estúdio com legendas na imagem) continua nas Definições → Vídeo.
+    const editorial = inEntity(null, () => S('VIDEO_STYLE')) !== 'classic';
+    const lang: string | null = !editorial && job.input.lang && ep.subtitles?.[job.input.lang] ? job.input.lang : null;
     const shots = planShots(timing, ep.duration_ms, lang ? ep.subtitles[lang] : null);
     const people = peopleOf(iv);
-    const bases = await renderBases({ cover, title: ep.title, brand: config.brand, host: { name: people.host.name || 'Host', role: people.host.role, photo: hostPhoto }, guest: { name: people.guest.name || 'Guest', role: people.guest.role, photo: guestPhoto } });
+    const bases = editorial ? ({} as any) : await renderBases({ cover, title: ep.title, brand: config.brand, host: { name: people.host.name || 'Host', role: people.host.role, photo: hostPhoto }, guest: { name: people.guest.name || 'Guest', role: people.guest.role, photo: guestPhoto } });
     const { default: ff } = await import('@ffmpeg-installer/ffmpeg');
     const ffmpeg = process.env.FFMPEG_PATH || ff.path;
     const frameFor = (sh: any) => subtitleFrame((bases as any)[sh.scene], sh.text);
@@ -455,29 +460,45 @@ export const handlers: Record<string, Handler> = {
       animated = ok.length; guestAnimN = ok.filter((x: any) => x.sg.role === 'guest').length;
       if (gpuUsd) await usage(db, iv.id, heygen ? 'heygen_usd' : 'lipsync_usd', gpuUsd, gpuUsd);
     }
-    // Partes no tempo do episódio (fixas e, com retratos animados, as falas animadas); depois os cartões (título a seguir
-    // ao aviso inicial e final), o som do episódio com silêncio nos cartões e o grafismo (rodapés e capítulos).
-    // HeyGen: proporção de cada fotografia (os clipes pedidos em 16:9 traziam margens brancas; o recorte tira-as).
-    const aspectOf: Record<'host' | 'guest', number | undefined> = { host: undefined, guest: undefined };
-    if (heygen) for (const [r, ph] of [['host', hostPhoto], ['guest', guestPhoto]] as const) if (ph) { const m = await (await import('sharp')).default(ph).rotate().metadata(); if (m.width && m.height) aspectOf[r] = m.width / m.height; }
-    const layout = splitParts(ok.map(x => ({ startMs: x.sg.startMs, endMs: x.sg.endMs })), ep.duration_ms);
-    const cues = lang ? ep.subtitles[lang] as any[] : [];
-    const epParts: Part[] = layout.map(l => {
-      if (l.kind === 'still') return { kind: 'still', startMs: l.startMs, endMs: l.endMs, shots: shotsWithin(shots, l.startMs, l.endMs) };
-      const x = ok[l.animIndex!];
-      return { kind: 'anim', startMs: l.startMs, endMs: l.endMs, base: x.sg.role === 'host' ? bases.animHost : bases.animGuest, clip: x.clip, ...(heygen ? { cropAspect: aspectOf[x.sg.role as 'host' | 'guest'], notice: VEO_NOTICE } : {}),
-        cues: cues.filter(c => c.endMs > l.startMs && c.startMs < l.endMs).map(c => ({ startMs: c.startMs - l.startMs, endMs: Math.min(c.endMs, l.endMs) - l.startMs, text: c.text })) };
-    });
-    await progress(segs.length ? 72 : 10, 100, 'A preparar os cartões e o grafismo');
-    const tl = await photoTimeline({ parts: epParts, timing, durationMs: ep.duration_ms, audio, cover, title: ep.title, people, chapters: ep.chapters, animated: new Set(ok.map(x => x.sg.id)), subtitles: !!lang });
-    const track = await buildAudioTrack(ffmpeg, tl.audio);
-    const p0 = segs.length ? 74 : 14, span = segs.length ? 16 : 76;
-    const mp4 = await encodeComposite(ffmpeg, tl.parts, frameFor, track, async (i, n) => progress(p0 + Math.round((i / n) * span), 100, `A montar o vídeo (${i} de ${n} partes)`), 'm4a', tl.overlays);
+    let mp4: Buffer, totalMs: number, gfxMeta: any, extraMeta: any = {};
+    if (editorial) {
+      await progress(segs.length ? 72 : 8, 100, 'A preparar os temas e as ideias-chave');
+      const size = inEntity(null, () => S('VIDEO_SIZE')) === '1080' ? { w: 1920, h: 1080 } : { w: 1280, h: 720 };
+      const vsegs = timing.map((t: any, i: number) => ({ id: String(t.id), role: t.role, kind: String(t.kind ?? ''), startMs: t.startMs, endMs: i + 1 < timing.length ? timing[i + 1].startMs : ep.duration_ms }));
+      const ed = await editorialPlan(db, iv, ep, vsegs);
+      const byId = new Map(ok.map(x => [String(x.sg.id), x.clip]));
+      const p0 = segs.length ? 74 : 12, span = segs.length ? 16 : 78;
+      const r = await editorialVideo({ ffmpeg, size, audio, durationMs: ep.duration_ms, segs: vsegs, clip: id => byId.get(id) ?? null,
+        photos: { host: hostPhoto, guest: guestPhoto }, people, promoter: ed.promoter, title: ep.title, chapters: ed.chapters, keyPoints: ed.keyPoints,
+        writtenAnswers: ed.writtenAnswers, animated: ok.length > 0, onProgress: async (i, n) => progress(p0 + Math.round((i / n) * span), 100, `A montar o vídeo (${i} de ${n} partes)`) });
+      mp4 = r.mp4; totalMs = r.totalMs; gfxMeta = r.meta;
+      extraMeta = { style: 'editorial', subsOffsetMs: OPEN_MS, chapters: r.chapters, promoter: ed.promoter };
+    } else {
+      // Partes no tempo do episódio (fixas e, com retratos animados, as falas animadas); depois os cartões (título a seguir
+      // ao aviso inicial e final), o som do episódio com silêncio nos cartões e o grafismo (rodapés e capítulos).
+      // HeyGen: proporção de cada fotografia (os clipes pedidos em 16:9 traziam margens brancas; o recorte tira-as).
+      const aspectOf: Record<'host' | 'guest', number | undefined> = { host: undefined, guest: undefined };
+      if (heygen) for (const [r, ph] of [['host', hostPhoto], ['guest', guestPhoto]] as const) if (ph) { const m = await (await import('sharp')).default(ph).rotate().metadata(); if (m.width && m.height) aspectOf[r] = m.width / m.height; }
+      const layout = splitParts(ok.map(x => ({ startMs: x.sg.startMs, endMs: x.sg.endMs })), ep.duration_ms);
+      const cues = lang ? ep.subtitles[lang] as any[] : [];
+      const epParts: Part[] = layout.map(l => {
+        if (l.kind === 'still') return { kind: 'still', startMs: l.startMs, endMs: l.endMs, shots: shotsWithin(shots, l.startMs, l.endMs) };
+        const x = ok[l.animIndex!];
+        return { kind: 'anim', startMs: l.startMs, endMs: l.endMs, base: x.sg.role === 'host' ? bases.animHost : bases.animGuest, clip: x.clip, ...(heygen ? { cropAspect: aspectOf[x.sg.role as 'host' | 'guest'], notice: VEO_NOTICE } : {}),
+          cues: cues.filter(c => c.endMs > l.startMs && c.startMs < l.endMs).map(c => ({ startMs: c.startMs - l.startMs, endMs: Math.min(c.endMs, l.endMs) - l.startMs, text: c.text })) };
+      });
+      await progress(segs.length ? 72 : 10, 100, 'A preparar os cartões e o grafismo');
+      const tl = await photoTimeline({ parts: epParts, timing, durationMs: ep.duration_ms, audio, cover, title: ep.title, people, chapters: ep.chapters, animated: new Set(ok.map(x => x.sg.id)), subtitles: !!lang });
+      const track = await buildAudioTrack(ffmpeg, tl.audio);
+      const p0 = segs.length ? 74 : 14, span = segs.length ? 16 : 76;
+      const mp4c = await encodeComposite(ffmpeg, tl.parts, frameFor, track, async (i, n) => progress(p0 + Math.round((i / n) * span), 100, `A montar o vídeo (${i} de ${n} partes)`), 'm4a', tl.overlays);
+      mp4 = mp4c; totalMs = tl.totalMs; gfxMeta = tl.meta;
+    }
     await progress(92, 100, 'A guardar o vídeo');
     // Por papel: quem tem de aprovar depende de quem aparece de facto animado.
     const guestAnimated = guestAnimN > 0, hostAnimated = animated - guestAnimN > 0;
-    const id = await saveAsset(db, { interviewId: iv.id, kind: 'episode_video', mime: 'video/mp4', ext: 'mp4', data: mp4, durationMs: tl.totalMs,
-      meta: { lang, shots: shots.length, ...(heygen ? { engine: 'heygen', quoteId: quote?.id ?? null, paidBy: quote ? 'credits' : 'internal' } : {}), guestPhoto: !!guestPhoto, guestPhotoByHost: guestByHost, hostPhoto: !!hostPhoto, animatedSegments: animated, failedAnimations: failed, guestAnimated, hostAnimated, lipsyncUsd: gpuUsd, graphics: tl.meta } });
+    const id = await saveAsset(db, { interviewId: iv.id, kind: 'episode_video', mime: 'video/mp4', ext: 'mp4', data: mp4, durationMs: totalMs,
+      meta: { lang, shots: shots.length, ...(heygen ? { engine: 'heygen', quoteId: quote?.id ?? null, paidBy: quote ? 'credits' : 'internal' } : {}), guestPhoto: !!guestPhoto, guestPhotoByHost: guestByHost, hostPhoto: !!hostPhoto, animatedSegments: animated, failedAnimations: failed, guestAnimated, hostAnimated, lipsyncUsd: gpuUsd, graphics: gfxMeta, ...extraMeta } });
     // Ligação com as autorizações lidas no próprio momento: uma retirada durante a geração não volta a pôr o vídeo no ar,
     // e o vídeo só se liga a um episódio ainda em pré-visualização: publicado a meio da geração, o vídeo novo não entra
     // no ar sem nova aprovação (as aprovações ficam presas ao vídeo que foi visto).

@@ -3,7 +3,7 @@ import { config } from '../config.ts';
 import { esc, fmtDuration, fmtDate } from '../lib.ts';
 import { page, flash } from '../views.ts';
 import { sendAsset, audit } from '../app.ts';
-import { toVtt, toSrt, type Cue } from '../subtitles.ts';
+import { toVtt, toSrt, shiftCues, videoSubsOffset, videoTracks, type Cue } from '../subtitles.ts';
 import { t, normLang } from '../i18n.ts';
 import { approvalScope, videoMeta, guestDecides, reviewCopy, coverWithdrawnSql } from '../approval.ts';
 import { guestHelpNav, contactHref } from '../support.ts';
@@ -61,7 +61,7 @@ export async function episodeRoutes(app: FastifyInstance) {
     const s = ep.slug, showCover = !ep.cover_withdrawn;
     return send(reply, page({
       lang: 'en', title: ep.title, noindex: ep.visibility !== 'public', desc: ep.description || undefined,
-      body: `<div class="wrap" style="padding-top:28px">${ep.video_asset_id && showCover ? `<video controls preload="metadata" poster="/e/${s}/cover" src="/e/${s}/video" style="width:100%;border-radius:12px;background:#000;margin-bottom:18px"></video>` : ''}${playerHtml(ep, { audio: `/e/${s}/audio`, cover: showCover ? `/e/${s}/cover` : '', subs: (l, x) => `/e/${s}/subs/${l}.${x}` }, { host: ep.host_name, guest: ep.guest_name })}
+      body: `<div class="wrap" style="padding-top:28px">${ep.video_asset_id && showCover ? `<video controls preload="metadata" poster="/e/${s}/cover" src="/e/${s}/video" style="width:100%;border-radius:12px;background:#000;margin-bottom:18px">${videoTracks(ep, l => `/e/${s}/subs/${l}.vtt?video=1`)}</video>` : ''}${playerHtml(ep, { audio: `/e/${s}/audio`, cover: showCover ? `/e/${s}/cover` : '', subs: (l, x) => `/e/${s}/subs/${l}.${x}` }, { host: ep.host_name, guest: ep.guest_name })}
 <p class="hint sans" style="margin-top:28px">To ask for a correction or the withdrawal of this episode, use the <a href="${esc(contactHref('episode', s))}">contact form</a>.</p></div>`,
       script: '/static/player.js', nav: '',
     }));
@@ -108,7 +108,10 @@ ${groups.size ? [...groups].map(([t, eps]) => `<section style="margin-top:28px">
     const ep = await live((req.params as any).slug);
     const m = /^([A-Za-z-]{2,8})\.(vtt|srt)$/.exec((req.params as any).file);
     if (!ep || !m) return reply.code(404).send();
-    return subsReply(ep.subtitles?.[m[1]], m[2], reply);
+    // ?video=1: no tempo do vídeo (o editorial começa com o cartão de abertura).
+    const cues = ep.subtitles?.[m[1]];
+    const off = (req.query as any)?.video === '1' && cues ? await videoSubsOffset(db, ep.video_asset_id) : 0;
+    return subsReply(cues ? shiftCues(cues, off) : cues, m[2], reply);
   });
 
   // ---- pré-visualização do entrevistador ----

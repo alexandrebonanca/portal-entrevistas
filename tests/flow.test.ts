@@ -324,6 +324,7 @@ test('vozes escolhidas, agradecimento final, vídeo MP4 e galeria', async () => 
   assert.match(decodeURIComponent((await post(`/entrevistas/${ivId}/episodio/${ep.id}/publicar`, { visibility: 'unlisted' }, owner)).headers.location as string), /bloqueada: Este episódio foi retirado/);
   await db.query(`UPDATE episodes SET status='preview', withdrawn_at=NULL WHERE id=$1`, [ep.id]);
 
+  process.env.VIDEO_STYLE = 'classic'; // o estilo clássico (legendas na imagem); o editorial está em editorial.test.ts
   const v = await post(`/entrevistas/${ivId}/episodio/${ep.id}/video`, { lang: 'pt-PT' }, owner);
   assert.match(v.headers.location as string, /ok=/);
   const again = await post(`/entrevistas/${ivId}/episodio/${ep.id}/video`, { lang: 'pt-PT' }, owner);
@@ -344,6 +345,7 @@ test('vozes escolhidas, agradecimento final, vídeo MP4 e galeria', async () => 
   assert.deepEqual(meta.graphics, { titleCard: true, endCard: true, lowerThirds: 2, chapters: ep.chapters.length });
   assert.ok(ep.chapters.length > 0);
   assert.equal(vrow.duration_ms, Math.round(ep.duration_ms / 40) * 40 + 8000, 'episódio + 4 s do cartão de título + 4 s do cartão final');
+  delete process.env.VIDEO_STYLE;
 
   // galeria: só episódios públicos e com autorização do entrevistador
   await db.query(`UPDATE episodes SET status='published', visibility='unlisted', withdrawn_at=NULL WHERE id=$1`, [ep.id]);
