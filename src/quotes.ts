@@ -217,8 +217,9 @@ async function createPremiumQuote(db: Db, o: { iv: any; ep: any; actor: { email:
   const allowed = await premiumAllowed(db, iv);
   if (!allowed.host && !allowed.guest) throw new QuoteError('Ninguém autorizou o vídeo premium (entrevistador: em Editar; entrevistado: nas autorizações das fotografias).');
   const script = await db.one('SELECT segments FROM scripts WHERE id=$1', [ep.script_id]);
+  // Sem escolha (o botão único «Gerar vídeo animado»): todas as falas autorizadas.
   const pick = new Set(o.segmentIds);
-  const falas = candidateFalas(ep, script?.segments ?? [], allowed, rate).filter(f => pick.has(f.id));
+  const falas = candidateFalas(ep, script?.segments ?? [], allowed, rate).filter(f => !pick.size || pick.has(f.id));
   if (!falas.length) throw new QuoteError('Escolha pelo menos uma fala autorizada para animar.');
   const keys = await premiumKeys(db, iv, ep);
   const timing = new Map<string, any>(((ep.technical?.timing ?? []) as any[]).map(t => [String(t.id), t]));

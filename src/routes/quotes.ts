@@ -35,7 +35,27 @@ export const VIDEO_MINUTES = [1, 3, 5, 10, 15]; // os episódios têm no máximo
 export const creditsForVideoMin = (min: number, centsPerMin: number) => Math.ceil((min * centsPerMin) / 100);
 export const creditTable = (centsPerMin: number) => `<details><summary class="sans">Tabela de créditos por duração do vídeo</summary><table class="sans" style="max-width:360px"><thead><tr><th>Vídeo</th><th>Até</th></tr></thead><tbody>${VIDEO_MINUTES.map(m => `<tr><td>${m} min</td><td>${creditsForVideoMin(m, centsPerMin)} créditos</td></tr>`).join('')}</tbody></table><p class="hint">1 crédito = 1 € sem IVA. Valores máximos: paga só as falas animadas e verificadas.</p></details>`;
 
-export async function quoteSection(db: Db, iv: any, ep: any): Promise<string> {
+/**
+ * O que o cartão «Vídeo animado» da produção precisa (titular que não é administrador): créditos até onde pode custar, saldo,
+ * o que falta, e se há impedimento (autorizações, orçamento em curso). Nada é cativado aqui.
+ */
+export async function premiumOffer(db: Db, iv: any, ep: any) {
+  const owner = await db.one('SELECT id, role, entity_id FROM users WHERE id=$1', [iv.owner_id]);
+  const rate = await premiumRate(db);
+  return inEntity(owner?.entity_id ?? null, async () => {
+    const block = !rate ? 'O vídeo animado não está disponível de momento.' : await quoteBlock(db, iv, ep, rate.engine);
+    const open = await db.one(`SELECT id, status FROM animation_quotes WHERE episode_id=$1 AND status IN ('accepted','running') ORDER BY created_at DESC LIMIT 1`, [ep.id]);
+    const allowed = await premiumAllowed(db, iv);
+    const script = await db.one('SELECT segments FROM scripts WHERE id=$1', [ep.script_id]);
+    const falas = rate ? candidateFalas(ep, script?.segments ?? [], allowed, rate) : [];
+    const total = falas.reduce((n, f) => n + f.cents, 0), speechSec = falas.reduce((n, f) => n + f.sec, 0);
+    const w = owner ? await findWallet(db, owner.id, owner.entity_id) : null, avail = w?.available_cents ?? 0;
+    return { rate, block, open, allowed, falas: falas.length, total, speechSec, avail, missing: Math.max(0, total - avail) };
+  });
+}
+
+/** Com `historyOnly`, só a lista dos orçamentos já feitos (o pedido faz-se no cartão «Vídeo animado» da produção). */
+export async function quoteSection(db: Db, iv: any, ep: any, opts: { historyOnly?: boolean } = {}): Promise<string> {
   const owner = await db.one('SELECT id, role, entity_id FROM users WHERE id=$1', [iv.owner_id]);
   if (!owner || owner.role === 'admin') return '';
   const prem = await premiumRate(db);
@@ -60,6 +80,7 @@ export async function quoteSection(db: Db, iv: any, ep: any): Promise<string> {
 <p class="sans">${rate ? `${esc(perMinuteLabel(rate.cents_per_min, vatRate, regime))}. ` : ''}Paga só as falas que saírem animadas${rate?.engine === 'heygen' ? '' : ' e verificadas'}; o resto volta ao saldo.</p>
 ${rate ? creditTable(rate.cents_per_min) : ''}`;
     if (quotes.length) html += `<ul class="sans">${quotes.map((q: any) => { const [l, k] = QUOTE_STATUS[q.status] ?? [q.status, '']; return `<li><a href="/entrevistas/${iv.id}/orcamentos/${q.id}">Orçamento de ${fmtDate(q.created_at)}</a> · ${pill(l, k)} · ${esc(priceLabel(q.price_cents, vatRate, regime))}${q.status === 'settled' ? ` · cobrados ${cr(q.charged_cents ?? 0)}, libertados ${cr(q.released_cents ?? 0)}` : ''}</li>`; }).join('')}</ul>`;
+    if (opts.historyOnly) return quotes.length ? `<h3 id="orcamento">Orçamentos do vídeo animado</h3>${html.slice(html.indexOf('<ul class="sans">'))}` : '';
     if (block) return `${html}<p class="hint"><strong>${esc(block)}</strong></p>`;
     if (open) {
       const fila = open.status === 'accepted' ? await videoQueue(db, open.job_id) : null;

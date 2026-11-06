@@ -25,7 +25,7 @@ import { paidConsentHtml, paidConsentOk, isConsumer } from './credits.ts';
 import { vatForProfile } from '../billing.ts';
 import { seller } from '../legal.ts';
 import { withVat, eurPt } from '../vat.ts';
-import { quoteSection } from './quotes.ts';
+import { quoteSection, premiumOffer } from './quotes.ts';
 import { premiumRate, candidateFalas } from '../quotes.ts';
 import { premiumAllowed } from '../premium.ts';
 import { introProductionHint } from './intro.ts';
@@ -424,7 +424,7 @@ ${episodeBefore ? REDO_BOX('gerar o episódio de novo') : ''}${episodeBefore ? p
       if (ep.status === 'preview' && !ep.stale) {
         // O convidado só entra no vídeo premium com «o entrevistado aprova»: avisa-se antes de gerar, não depois.
         const guestOk = guestAp?.decision === 'approved' && guestSameVideo;
-        if (!ep.video_asset_id && !hostAp) next = { text: 'O episódio está pronto. Gere o vídeo (normal, com fotografias, ou premium, com animação), ou aprove já a versão só com áudio.', href: '#passo-video', label: 'Gerar vídeo' };
+        if (!ep.video_asset_id && !hostAp) next = { text: 'O episódio está pronto. Escolha o produto: podcast com fotos (incluído) ou vídeo animado (créditos); ou aprove já a versão só com áudio.', href: '#passo-video', label: 'Escolher o produto' };
         else if (!hostAp) next = { text: 'Veja o episódio e o vídeo e aprove esta versão.', href: '#passo-5', label: 'Ver e aprovar' };
         else if (needGuest && !guestOk) next = { text: 'Envie a pré-visualização ao entrevistado: a publicação espera pela aprovação dele.', href: '#passo-5', label: 'Enviar pré-visualização' };
         else if (canPublish) next = { text: 'Tudo aprovado: escolha a modalidade e publique.', href: '#passo-5', label: 'Publicar' };
@@ -444,10 +444,39 @@ ${episodeBefore ? REDO_BOX('gerar o episódio de novo') : ''}${episodeBefore ? p
         }
       }
       // Animação por orçamento (titular que não é administrador; o administrador só prepara o rascunho do cliente).
-      const quoteHtml = !ep.stale ? await quoteSection(db, iv, ep) : '';
-      // Introdução animada do entrevistador (oferecida, fora do orçamento): só nos vídeos com o Google Veo.
       // O vídeo premium que se vende agora (sem nomes de fornecedores para o cliente); o Veo só se o premium ativo for o antigo.
       const premEngine = (await premiumRate(db))?.engine ?? 'heygen';
+      const quoteHtml = !ep.stale ? await quoteSection(db, iv, ep, { historyOnly: premEngine === 'heygen' }) : '';
+      // Os dois produtos, cada um com um só botão: «Podcast com fotos» (subscrição) e «Vídeo animado» (créditos).
+      const productCards = premEngine === 'heygen' && editorialStyle() && !ep.stale && ep.status === 'preview' ? await (async () => {
+        const vurl = `/entrevistas/${iv.id}/episodio/${ep.id}/video`;
+        const busy = live ? '<p class="hint" style="margin:0"><strong>Há uma produção em curso.</strong> Aguarde que termine (recebe um email); depois pode gerar o outro produto.</p>' : '';
+        const redo = ep.video_asset_id ? REDO_BOX('gerar um vídeo novo (substitui o atual neste episódio)') : '';
+        const approvals = ep.video_asset_id || hostAp || guestAp ? '<p class="hint" style="margin:6px 0 0">Um vídeo novo exige nova aprovação de quem já aprovou.</p>' : '';
+        const isAnimated = !!videoMeta?.animatedSegments;
+        const cardA = `<div class="card" style="margin:0;flex:1 1 280px"><h3 style="margin-top:0">Podcast com fotos</h3>
+<p class="sans" style="margin:.2em 0">${pill('incluído na subscrição', 'ok')}</p>
+<p class="hint">As fotografias autorizadas, as vozes do episódio, os temas e as ideias-chave, com a marca do promotor.${isAnimated ? ' <strong>Substitui o vídeo animado atual.</strong>' : ''}</p>
+${busy || `<form method="post" action="${vurl}" onsubmit="return confirm('Gerar o podcast com fotos? Não gasta créditos.')"><input type="hidden" name="engine" value="still">${redo}<button class="${ep.video_asset_id && !isAnimated ? 'ghost' : 'accent'}">Gerar podcast com fotos</button>${approvals}</form>`}</div>`;
+        let cardB: string;
+        const headB = `<div class="card" style="margin:0;flex:1 1 280px"><h3 style="margin-top:0">Vídeo animado</h3>`;
+        if (isAdmin) {
+          const sec = ((ep.technical?.timing ?? []) as any[]).filter((t: any) => t.kind !== 'disclosure').reduce((n: number, t: any) => n + (t.durationMs ?? 0), 0) / 1000;
+          const ok = config.openai.mock || !!inEntity(null, () => S('HEYGEN_API_KEY'));
+          cardB = `${headB}<p class="sans" style="margin:.2em 0">${pill('pago com créditos', '')}</p>
+<p class="hint">Cada fala animada a partir da fotografia, com a voz do episódio. Custo interno ~$${(sec * 0.0385).toFixed(2)}. ${adminCredits}</p>
+${busy || (!ok ? '<p class="hint"><strong>Falta a chave do fornecedor nas Definições.</strong></p>' : `<form method="post" action="${vurl}" onsubmit="return confirm('Gerar o vídeo animado? Tem custo de produção.')"><input type="hidden" name="engine" value="heygen">${redo}<button class="accent">Gerar vídeo animado</button>${approvals}</form>`)}</div>`;
+        } else {
+          const o = await premiumOffer(db, iv, ep);
+          const why = o.block ?? (o.open ? 'Há um vídeo animado em produção para este episódio.' : !o.falas ? 'Falta autorização: o entrevistador autoriza o vídeo por IA em Editar (com a fotografia dele); o entrevistado autoriza a imagem ao responder.' : null);
+          cardB = `${headB}<p class="sans" style="margin:.2em 0">${pill('pago com créditos', '')} <strong>até ${cr(o.total)} créditos</strong> · saldo ${cr(o.avail)}</p>
+<p class="hint">Cada fala animada a partir da fotografia, com a voz do episódio. Só paga as falas que saírem animadas; o resto volta ao saldo. Antes de cativar créditos, vê o orçamento e confirma.</p>
+${busy || (why ? `<p class="hint"><strong>${esc(why)}</strong></p>` : o.missing ? `<p class="sans" style="color:var(--bad);margin:0 0 8px">Faltam ${cr(o.missing)} créditos.</p><a class="btn accent" href="/conta/creditos/carregar?falta=${o.missing}&amp;voltar=${encodeURIComponent(`/entrevistas/${iv.id}/producao#passo-video`)}">Comprar créditos para o vídeo animado</a>`
+  : `<form method="post" action="/entrevistas/${iv.id}/episodio/${ep.id}/orcamento"><button class="accent">Gerar vídeo animado</button></form>`)}</div>`;
+        }
+        return `<div class="row" id="passo-video" style="align-items:stretch;gap:12px;flex-wrap:wrap">${cardA}${cardB}</div>`;
+      })() : '';
+      // Introdução animada do entrevistador (oferecida, fora do orçamento): só nos vídeos com o Google Veo.
       const introHint = premEngine === 'veo' && !ep.stale && ep.status === 'preview' ? await introProductionHint(db, iv) : '';
       body += `<div class="card" id="passo-5"><h2 style="margin-top:0">5. Episódio ${pill(ep.status, ep.status === 'published' ? 'ok' : '')} ${ep.stale ? pill('desatualizado', 'bad') : ''}</h2>
 ${playerHtml(ep, { audio: `/media/${ep.audio_asset_id}`, cover: `/media/${ep.cover_asset_id}`, subs: (l, x) => `/entrevistas/${iv.id}/subs/${l}.${x}` }, { host: iv.host_name, guest: iv.guest_name })}
@@ -464,7 +493,7 @@ ${videoMeta?.googleBusy ? '<div class="flash">O Google Veo estava com procura el
 ${videoMeta?.engine === 'veo' ? `<details ${videoMeta.fidelityIssues || videoMeta.fallbackSegments?.length ? 'open' : ''}><summary class="sans">Fidelidade ao guião: ${videoMeta.fidelityIssues ? `${videoMeta.fidelityIssues} pedaço(s) sem clipe aprovado (não disseram o texto aprovado ou não foi possível verificar); essas falas ficaram com a fotografia fixa e a voz do episódio` : 'todos os clipes dizem o texto aprovado'}</summary>
 <table class="sans"><thead><tr><th>Fala</th><th>Guião</th><th>Ouvido no vídeo</th><th>Resultado</th></tr></thead><tbody>${(videoMeta.fidelity ?? []).map((f: any) => `<tr><td>${esc(f.segmentId)}</td><td>${esc(f.expected)}</td><td>${esc(f.heard || '—')}</td><td>${f.ok ? pill(f.edits ? 'coincide (grafia de nome)' : 'coincide', 'ok') : f.problem === 'busy' ? pill('Google indisponível (procura elevada): fotografia fixa', 'warn') : f.problem === 'busycap' ? pill('em pausa após 4 falhas da Google em 36 h (gere de novo mais tarde): fotografia fixa', 'warn') : f.problem === 'filtered' ? `${pill('bloqueado pelos filtros da Google: fotografia fixa', 'warn')}${filterWhy(f.cause)}` : f.problem === 'filtered_role' ? `${pill('não tentado: a Google recusa animar esta fotografia (outras falas desta pessoa foram bloqueadas): fotografia fixa', 'warn')}${filterWhy(f.cause)}` : f.problem === 'skipped' ? pill('não tentado: outra parte da fala falhou (sem custo): fotografia fixa', 'warn') : f.problem === 'capped' ? pill(`limite de tentativas esgotado${f.cause ? ` (${f.cause})` : ''}: fotografia fixa`, 'warn') : f.problem === 'capped_budget' ? pill('teto do orçamento atingido: fotografia fixa, não cobrada', 'warn') : f.problem === 'breaker' ? pill('disjuntor (demasiadas repetições falhadas): fotografia fixa, não cobrada', 'warn') : f.problem === 'no_clips' ? pill('clipes já pagos indisponíveis: fotografia fixa', 'warn') : f.problem === 'unchecked' ? pill('não verificado: fotografia fixa', 'warn') : f.problem === 'error' ? pill('falhou na Google: fotografia fixa', 'warn') : !f.checked ? pill('não verificado: fotografia fixa', 'warn') : pill(`${f.edits ?? '?'} diferença(s): fotografia fixa`, 'bad')}${f.ok && !f.used ? ' <span class="hint">(outra parte da fala falhou: fala em fotografia fixa)</span>' : ''}${f.attempts > 1 ? ` <span class="hint">${f.attempts} tentativas</span>` : ''}${f.reused ? ' <span class="hint">(reaproveitado: fala já paga)</span>' : ''}</td></tr>`).join('')}</tbody></table></details>` : ''}` : '<p class="hint">Ainda não foi gerado.</p>'}
 ${!live && lastVideoJob?.state === 'failed' ? `<div class="flash bad">A última geração do vídeo não terminou: ${esc(String(lastVideoJob.error ?? '').slice(0, 400))}</div>` : ''}
-${!ep.stale ? `${ep.status !== 'preview' ? `<p class="hint"><strong>${esc(VIDEO_ONLY_PREVIEW)}</strong></p>` : videosOut ? `<div class="flash" id="videos-aviso">${FREE_VIDEOS_USED_HTML}</div>` : `<form method="post" action="/entrevistas/${iv.id}/episodio/${ep.id}/video" class="row" id="passo-video" onsubmit="return confirm('Gerar o vídeo?')">
+${!ep.stale ? `${ep.status !== 'preview' ? `<p class="hint"><strong>${esc(VIDEO_ONLY_PREVIEW)}</strong></p>` : videosOut ? `<div class="flash" id="videos-aviso">${FREE_VIDEOS_USED_HTML}</div>` : (productCards || `<form method="post" action="/entrevistas/${iv.id}/episodio/${ep.id}/video" class="row" id="passo-video" onsubmit="return confirm('Gerar o vídeo?')">
 ${(() => { const est = animationEstimate(ep, iv, animOk, !!(iv.host_photo_rights && iv.host_photo_asset_id), guestHasPhoto);
   const hostVeo = !!(iv.host_ai_video && iv.host_photo_rights && iv.host_photo_asset_id), guestVeo = veoOk && guestHasPhoto;
   const ve = veoEstimate(ep.technical?.timing ?? [], epSegs, hostVeo, guestVeo, tier);
@@ -475,7 +504,7 @@ ${!freeVeo || (!isAdmin && premEngine === 'heygen') ? `<p class="hint" style="ma
 <p class="hint" style="margin:0 0 8px 30px">Custo interno ~$${(((ep.technical?.timing ?? []) as any[]).filter((t: any) => t.kind !== 'disclosure').reduce((n: number, t: any) => n + (t.durationMs ?? 0), 0) / 1000 * 0.0385).toFixed(2)} neste episódio. ${adminCredits}</p>` : ''}
 ${premEngine === 'heygen' ? '</fieldset>' : `<label class="check"><input type="radio" name="engine" value="veo" ${ve.clips && !veoBlock ? '' : 'disabled'}> ${isAdmin ? esc(veoLabel(tier)) : VIDEO_PREMIUM}: vídeo e voz gerados pelo modelo a partir da fotografia e do texto aprovado, aviso visível «AI-generated video · AI voice»</label>
 <p class="hint" style="margin:0 0 8px 30px">${veoBlock ? `<strong>${esc(veoBlock)}</strong><br>` : ''}Entrevistador: ${hostVeo ? '✓' : !iv.host_photo_asset_id ? 'sem fotografia (Editar)' : 'sem autorização (Editar)'} · Entrevistado: ${guestVeo ? '✓' : !guestHasPhoto ? 'sem fotografia' : 'sem autorização'}${ve.clips ? ` · ~${ve.minutes >= 60 ? `${Math.floor(ve.minutes / 60)} h ${Math.round(ve.minutes % 60)} min` : `${Math.round(ve.minutes)} min`}` : ''}${ve.clips && isAdmin ? ` · custo ~$${ve.usd.toFixed(0)} (máx. ~$${ve.usdMax.toFixed(0)})` : ''}<br>${isAdmin ? adminCredits : 'Pedido pelo gestor da entidade: sem créditos (a Google cobra no projeto Google da entidade).'}
-<details><summary>Como funciona</summary>A voz é a do modelo e pode variar entre clipes. Cada clipe é comparado com o guião; o que não coincidir é gerado de novo uma vez e, se falhar, essa fala fica com a fotografia e a voz do episódio. Se a Google recusar a fotografia de alguém, a geração pára no início. O vídeo novo exige nova aprovação.</details></p></fieldset>`}`}`; })()}${editorialStyle() ? '' : `<label for="vl" style="margin:0">Legendas no vídeo</label><select id="vl" name="lang" style="width:auto">${Object.keys(ep.subtitles ?? {}).map(l => `<option value="${esc(l)}" ${l === (ep.video_lang ?? 'pt-PT') ? 'selected' : ''}>${esc(l)}</option>`).join('')}<option value="">Sem legendas</option></select>`}${ep.video_asset_id ? `<span style="flex-basis:100%">${REDO_BOX('gerar o vídeo de novo')}</span>` : ''}<button class="${ep.video_asset_id ? 'ghost' : 'accent'}">${ep.video_asset_id ? 'Gerar o vídeo de novo' : 'Gerar vídeo'}</button>${ep.video_asset_id || hostAp || guestAp ? '<span class="hint" style="flex-basis:100%">Um vídeo novo exige nova aprovação de quem já aprovou.</span>' : ''}</form>`}
+<details><summary>Como funciona</summary>A voz é a do modelo e pode variar entre clipes. Cada clipe é comparado com o guião; o que não coincidir é gerado de novo uma vez e, se falhar, essa fala fica com a fotografia e a voz do episódio. Se a Google recusar a fotografia de alguém, a geração pára no início. O vídeo novo exige nova aprovação.</details></p></fieldset>`}`}`; })()}${editorialStyle() ? '' : `<label for="vl" style="margin:0">Legendas no vídeo</label><select id="vl" name="lang" style="width:auto">${Object.keys(ep.subtitles ?? {}).map(l => `<option value="${esc(l)}" ${l === (ep.video_lang ?? 'pt-PT') ? 'selected' : ''}>${esc(l)}</option>`).join('')}<option value="">Sem legendas</option></select>`}${ep.video_asset_id ? `<span style="flex-basis:100%">${REDO_BOX('gerar o vídeo de novo')}</span>` : ''}<button class="${ep.video_asset_id ? 'ghost' : 'accent'}">${ep.video_asset_id ? 'Gerar o vídeo de novo' : 'Gerar vídeo'}</button>${ep.video_asset_id || hostAp || guestAp ? '<span class="hint" style="flex-basis:100%">Um vídeo novo exige nova aprovação de quem já aprovou.</span>' : ''}</form>`)}
 ${introHint}
 ${quoteHtml}
 ${ep.video_asset_id && ep.status !== 'published' ? `<form method="post" action="/entrevistas/${iv.id}/episodio/${ep.id}/video/retirar" onsubmit="return confirm('Tirar o vídeo deste episódio? O ficheiro fica guardado em privado.')"><button class="ghost">Tirar o vídeo do episódio (volta à versão sem vídeo)</button></form>` : ''}

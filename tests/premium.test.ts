@@ -122,10 +122,20 @@ test('premium: o cliente só vê «normal» e «premium», sem nomes de tecnolog
   const pg = (await get(`/entrevistas/${ivId}/producao`, cli.cookie)).body;
   assert.doesNotMatch(pg, /value="veo"|value="heygen"|value="lipsync"/);
   assert.doesNotMatch(pg, /Veo|HeyGen|Google|Avatar IV/);
-  assert.match(pg, /Vídeo normal \(fotografias\)/);
-  assert.match(pg, /Vídeo premium \(animação por IA\), por orçamento/);
-  assert.match(pg, /≈ 4,50 créditos por minuto de fala/);
-  assert.match(pg, /<td>10 min<\/td><td>45 créditos<\/td>/);
+  // dois produtos, um botão cada: «Podcast com fotos» (subscrição) e «Vídeo animado» (créditos), sem escolhas técnicas
+  assert.match(pg, /<h3 style="margin-top:0">Podcast com fotos<\/h3>[\s\S]*incluído na subscrição[\s\S]*>Gerar podcast com fotos<\/button>/);
+  assert.match(pg, /<h3 style="margin-top:0">Vídeo animado<\/h3>[\s\S]*pago com créditos[\s\S]*<strong>até [\d,]+ créditos<\/strong> · saldo/);
+  // sem saldo, o botão do vídeo animado leva a comprar exatamente o que falta (e volta à produção)
+  assert.match(pg, /Faltam [\d,]+ créditos\.<\/p><a class="btn accent" href="\/conta\/creditos\/carregar\?falta=\d+&amp;voltar=[^"]+passo-video">Comprar créditos para o vídeo animado<\/a>/);
+  assert.doesNotMatch(pg, /name="engine" value="still" checked|Legendas no vídeo|Calcular orçamento/, 'sem rádios, sem legendas na imagem, sem formulário de orçamento');
+  assert.equal((pg.match(/>Gerar podcast com fotos<\/button>/g) ?? []).length, 1);
+  // o botão único pede o orçamento de todas as falas autorizadas; o cliente vê-o e confirma antes de cativar
+  const r = await post(`/entrevistas/${ivId}/episodio/${epId}/orcamento`, {}, cli.cookie);
+  const qid = /orcamentos\/([0-9a-f-]{36})/.exec(String(r.headers.location))?.[1];
+  assert.ok(qid, msg(r));
+  assert.deepEqual(((await quoteOf(qid!)).selection as any[]).map(x => x.segmentId).sort(), [...ALL].sort(), 'todas as falas autorizadas');
+  const qp = (await get(`/entrevistas/${ivId}/orcamentos/${qid}`, cli.cookie)).body;
+  assert.match(qp, /≈ 4,50 créditos por minuto de fala|4,50/);
   assert.equal((await db.one(`SELECT active FROM animation_rates WHERE id='veo-fast'`)).active, false, 'o Veo deixa de se vender');
   assert.equal((await Q.premiumRate(db)).engine, 'heygen');
 });
@@ -140,6 +150,7 @@ test('premium: orçamento, aceitação, produção e liquidação só das falas 
   assert.doesNotMatch(pc, /Veo|HeyGen|Google/);
   assert.ok(pc.includes('cada fala animada por IA a partir da fotografia, com a voz do episódio'));
   await credit(cli.id, 10000);
+  assert.match((await get(`/entrevistas/${ivId}/producao`, cli.cookie)).body, /action="\/entrevistas\/[^"]+\/orcamento"><button class="accent">Gerar vídeo animado<\/button>/, 'com saldo, um só botão');
   const qa = await accept(q);
   const job = await db.one(`SELECT * FROM jobs WHERE id=$1`, [qa.job_id]);
   assert.deepEqual([job.input.animEngine, job.input.quoteId, job.input.animate, job.input.engine], ['heygen', q.id, true, undefined]);
@@ -175,7 +186,8 @@ test('premium: orçamento, aceitação, produção e liquidação só das falas 
 test('premium: sem orçamento o cliente não gera o vídeo animado; o administrador gera-o sem créditos', async () => {
   assert.match(msg(await post(`/entrevistas/${ivId}/episodio/${epId}/video`, { engine: 'heygen', lang: 'en' }, cli.cookie)), /reservados ao administrador/);
   const pg = (await get(`/entrevistas/${ivId}/producao`, admin)).body;
-  assert.match(pg, /value="heygen"> Vídeo premium/);
+  assert.match(pg, /name="engine" value="heygen">[\s\S]{0,400}>Gerar vídeo animado<\/button>/);
+  assert.match(pg, /name="engine" value="still">[\s\S]{0,400}>Gerar podcast com fotos<\/button>/);
   assert.doesNotMatch(pg, /value="veo"/);
 });
 
