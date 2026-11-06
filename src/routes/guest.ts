@@ -433,6 +433,7 @@ ${q.audio_asset_id ? `<p><audio id="qaudio" controls preload="none" src="/api/g/
     const own = photos.filter((p: any) => p.added_by !== 'host').length;
     const msg = JSON.stringify({ camDenied: d.camDenied, max3: d.max3, stUp: d.stUp, stFail: d.stFail });
     return gpage(reply, lang, d.photos, `<h1>${esc(d.photos)}</h1><p>${esc(d.photosIntro)}</p>
+${(req.query as any).e === 'capture' ? `<div class="flash bad" id="autorizacoes">${esc(d.needCapture)}</div>` : (req.query as any).e === 'publish' ? `<div class="flash bad" id="autorizacoes">${esc(d.needPublish)}</div>` : (req.query as any).ok ? `<div class="flash ok" id="autorizacoes">${esc(d.photoAuthSaved)}</div>` : ''}
 <form method="post" action="/entrevista/fotos/autorizacoes" class="card">${cb('photo_capture', d.c_photo, pc)}${cb('cover_use', d.c_cover, cu)}${cb('publish_photo', d.c_pubphoto, pp)}${cb('ai_video', d.c_aivideo, av)}${cb('host_edit', consentText(lang, 'host_edit', iv.review_policy), he)}<button class="ghost">${esc(d.save)}</button></form>
 ${pc && !done ? `<div class="card" id="cam" data-max="3" data-msg='${esc(msg)}'>
 <div class="thumbs" id="thumbs">${photos.map((p: any) => `<div><img alt="" src="/api/g/media/${p.asset_id}">${p.added_by === 'host' ? `<span class="hint">${esc(d.photoByHost)}</span>` : ''}<form method="post" action="/api/g/fotos/${p.id}/eliminar-form"><button class="ghost" style="width:100%">${esc(d.discard)}</button></form></div>`).join('')}</div>
@@ -447,6 +448,11 @@ ${done && photos.some((p: any) => p.added_by === 'host') ? `<div class="card"><p
   app.post('/entrevista/fotos/autorizacoes', async (req, reply) => {
     const c = await need(req, reply); if (!c) return;
     const b = req.body as any;
+    // As autorizações dependem umas das outras (capa e publicação exigem a captação; o vídeo por IA exige a publicação). Uma
+    // escolha incompleta não se grava como recusa silenciosa: a página explica o que falta (visto com um entrevistado que
+    // assinalou a capa, a publicação e o vídeo sem a captação, e ficou tudo recusado).
+    if (!b.photo_capture && (b.cover_use || b.publish_photo || b.ai_video || b.animate_portrait)) return reply.redirect('/entrevista/fotos?e=capture#autorizacoes');
+    if (!b.publish_photo && (b.ai_video || b.animate_portrait)) return reply.redirect('/entrevista/fotos?e=publish#autorizacoes');
     await recordConsent(c.iv, c.lang, 'photo_capture', !!b.photo_capture);
     await recordConsent(c.iv, c.lang, 'cover_use', !!b.photo_capture && !!b.cover_use);
     await recordConsent(c.iv, c.lang, 'publish_photo', !!b.photo_capture && !!b.publish_photo);
@@ -466,13 +472,14 @@ ${done && photos.some((p: any) => p.added_by === 'host') ? `<div class="card"><p
     }
     if (!b.photo_capture && c.iv.collection_status !== 'submitted') await removeAllPhotos(c.iv.id);
     await audit(db, 'guest', 'consent.photos_updated', c.iv.id);
+    const savedOk = true;
     {
       const yes = (v: any) => (v ? 'sim' : 'não');
       const pub = !!b.photo_capture && !!b.publish_photo;
       await notice(db, c.iv.id, 'photo_consents', `${c.iv.guest_name || 'O entrevistado'} atualizou as autorizações das fotografias`, { level: pub ? 'ok' : 'warn',
         body: `Capa: ${yes(b.photo_capture && b.cover_use)} · Publicação das fotografias: ${yes(pub)} · Vídeo premium (animação por IA): ${yes(pub && b.ai_video)} · Edição pelo entrevistador (incluindo a fotografia): ${yes(b.host_edit)}.${pub ? '' : ' Sem a publicação, a capa e o vídeo não usam fotografias dele.'}` });
     }
-    return reply.redirect('/entrevista/fotos');
+    return reply.redirect(savedOk ? '/entrevista/fotos?ok=1#autorizacoes' : '/entrevista/fotos');
   });
 
   const removeAllPhotos = async (interviewId: string) => {

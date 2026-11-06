@@ -167,3 +167,19 @@ test('avisos: o titular vê no portal o que o entrevistado fez (abriu, aceitou, 
   const other = `sid=${cookies(await post('/entrar', { email: 'outro@example.com', password: PW })).sid}`;
   assert.doesNotMatch((await get('/avisos', other)).body, /Rui/);
 });
+
+test('autorizações das fotografias: uma escolha incompleta (capa, publicação ou vídeo sem a captação) não se grava como recusa', async () => {
+  const em = await db.one(`SELECT text_body FROM emails WHERE interview_id=$1 AND dedupe_key LIKE 'invite:%' ORDER BY created_at DESC LIMIT 1`, [ivId]);
+  const g = `gs=${cookies(await post(`/i/${/\/i\/([A-Za-z0-9_-]{40,})/.exec(em.text_body)![1]}/abrir`, {})).gs}`;
+  const before = Number((await db.one(`SELECT count(*)::int AS n FROM consents WHERE interview_id=$1`, [ivId])).n);
+  const r = await post('/entrevista/fotos/autorizacoes', { cover_use: '1', publish_photo: '1', ai_video: '1', host_edit: '1' }, g);
+  assert.equal(r.headers.location, '/entrevista/fotos?e=capture#autorizacoes');
+  assert.match((await get('/entrevista/fotos?e=capture', g)).body, /assinale também a primeira caixa/);
+  assert.equal(Number((await db.one(`SELECT count(*)::int AS n FROM consents WHERE interview_id=$1`, [ivId])).n), before, 'nada gravado');
+  assert.equal((await post('/entrevista/fotos/autorizacoes', { photo_capture: '1', ai_video: '1', host_edit: '1' }, g)).headers.location, '/entrevista/fotos?e=publish#autorizacoes');
+  const ok = await post('/entrevista/fotos/autorizacoes', { photo_capture: '1', cover_use: '1', publish_photo: '1', ai_video: '1', host_edit: '1' }, g);
+  assert.equal(ok.headers.location, '/entrevista/fotos?ok=1#autorizacoes');
+  const c = await db.one(`SELECT granted FROM consents WHERE interview_id=$1 AND purpose='ai_video' ORDER BY created_at DESC LIMIT 1`, [ivId]);
+  assert.equal(c.granted, true);
+  assert.match((await get('/avisos', cli.cookie)).body, /Rui atualizou as autorizações das fotografias/);
+});

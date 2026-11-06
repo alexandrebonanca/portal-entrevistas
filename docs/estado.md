@@ -251,3 +251,6 @@ Custos mostrados são estimativas (preços configuráveis por variáveis PRICE_*
   respondidas, fotografia enviada, autorizações das fotografias alteradas, submissão (resumo: respostas, duração, recusas,
   fotografias, sem voz), aprovação ou pedido de alterações, episódio/vídeo prontos ou falhados, vídeo premium e 1.ª
   visualização de um convite para assistir. Nunca levam o conteúdo das respostas.
+- 06/11 (2): o Jorge guardou as autorizações das fotografias com tudo recusado (provavelmente assinalou capa/publicação/vídeo
+  sem a 1.ª caixa, a captação, de que as outras dependem). Agora uma escolha incompleta não se grava: a página diz que caixa
+  falta; e uma gravação bem feita mostra «Autorizações guardadas».
