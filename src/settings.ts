@@ -29,6 +29,7 @@ export const SETTING_DEFS: SettingDef[] = [
   { key: 'VERTEX_LOCATION', label: 'Região do Vertex AI', group: 'Google', secret: false, hint: 'us-central1' },
   { key: 'VEO_TIER', label: 'Modelo do Google Veo', group: 'Google', secret: false, options: [['fast', 'Veo 3.1 Fast (~$0,10/s)'], ['lite', 'Veo 3.1 Lite (~$0,05/s, metade do preço)']] },
   { key: 'VIDEO_STYLE', label: 'Estilo do vídeo', group: 'Vídeo', secret: false, default: 'editorial', options: [['editorial', 'Editorial (cartões, temas, ideias-chave e promotor; legendas em ficheiro)'], ['classic', 'Clássico (estúdio com legendas na imagem)']] },
+  { key: 'COST_VIEWERS', label: 'Quem vê os custos internos (emails de administradores, separados por vírgulas; os outros veem só créditos)', group: 'Vídeo', secret: false, hint: 'alexandrebonanca@gmail.com' },
   { key: 'VIDEO_SIZE', label: 'Resolução do vídeo editorial', group: 'Vídeo', secret: false, default: '720', options: [['720', '1280×720 (cabe em 512 MB de memória)'], ['1080', '1920×1080 (precisa de ~2 GB de memória no servidor)']] },
   { key: 'GEMINI_API_KEY', label: 'Gemini API key (reserva enquanto a Google a mantiver)', group: 'Google', secret: true, hint: 'AIza…' },
   { key: 'MOLONI_CLIENT_ID', label: 'Client ID (developer id)', group: 'Moloni ON', secret: false },

@@ -8,6 +8,7 @@ process.env.AI_MOCK = '1';
 process.env.PGLITE_MEMORY = '1';
 process.env.STORAGE_DIR = mkdtempSync(join(tmpdir(), 'pe-test-'));
 process.env.BASE_URL = 'http://test.local';
+process.env.COST_VIEWERS = 'ana@example.com'; // o administrador que vê os custos internos (costs.ts)
 process.env.ALLOW_SIGNUP = 'false';
 
 const { openDb, migrate } = await import('../src/db.ts');

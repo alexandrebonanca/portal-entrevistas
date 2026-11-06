@@ -66,3 +66,15 @@ test('editorial: monta o vídeo (abertura, aviso, falas com tema, ideias-chave, 
   const pr = await probeAudio(r.mp4, 'mp4');
   assert.ok(Math.abs(pr.durationMs - r.totalMs) < 400, `duração ${pr.durationMs} vs ${r.totalMs}`);
 });
+
+test('custos internos: só os administradores listados em COST_VIEWERS (por omissão, o dono) veem dólares', async () => {
+  const { seesCosts } = await import('../src/costs.ts');
+  const prev = process.env.COST_VIEWERS; delete process.env.COST_VIEWERS;
+  assert.equal(seesCosts({ role: 'admin', email: 'AlexandreBonanca@gmail.com' }), true, 'o dono, sem configurar nada');
+  assert.equal(seesCosts({ role: 'admin', email: 'hoteltrainingacademy@gmail.com' }), false, 'outro administrador vê como cliente');
+  assert.equal(seesCosts({ role: 'user', email: 'alexandrebonanca@gmail.com' }), false, 'só administradores');
+  process.env.COST_VIEWERS = 'a@x.pt, b@x.pt';
+  assert.equal(seesCosts({ role: 'admin', email: 'b@x.pt' }), true);
+  assert.equal(seesCosts({ role: 'admin', email: 'alexandrebonanca@gmail.com' }), false, 'a lista substitui o valor por omissão');
+  if (prev === undefined) delete process.env.COST_VIEWERS; else process.env.COST_VIEWERS = prev;
+});

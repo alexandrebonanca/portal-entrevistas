@@ -1,3 +1,4 @@
+import { seesCosts } from '../costs.ts';
 import { premiumRate } from '../quotes.ts';
 import type { FastifyInstance } from 'fastify';
 import type { Db } from '../db.ts';
@@ -63,7 +64,7 @@ export async function introCard(db: Db, iv: any, user: any): Promise<string> {
     : s.last?.status === 'failed' ? `${pill('falhou', 'bad')} ${esc(s.last.error ?? '')}`
     : pill('por gerar');
   let cost = '';
-  if (isAdmin) {
+  if (isAdmin && seesCosts(user)) {
     const m = await db.one(`SELECT COALESCE(sum(cost_usd),0)::float AS usd, COALESCE(sum(failed_usd),0)::float AS failed, COALESCE(sum(billed_sec),0)::int AS sec, count(*)::int AS n FROM host_intros WHERE user_id=$1 AND created_at >= date_trunc('month', now())`, [owner.id]);
     cost = `<p class="hint">Custo interno (só o administrador o vê; estimativa a ~$${(await veoCostPerSec(db, tier)).toFixed(2)}/s da duração faturada, o custo da tarifa)${shown ? `: esta introdução ~$${Number(shown.cost_usd).toFixed(2)} (${shown.billed_sec} s faturados, ${shown.sent} envio(s) à Google${Number(shown.failed_usd) ? `, ~$${Number(shown.failed_usd).toFixed(2)} em operações falhadas na Google` : ''})` : ''}; este mês, ${m.n} pedido(s) deste entrevistador, ~$${m.usd.toFixed(2)} (${m.sec} s)${m.failed ? ` e ~$${m.failed.toFixed(2)} falhados` : ''}. Registado no usage_ledger como «veo_usd_intro».</p>`;
   }

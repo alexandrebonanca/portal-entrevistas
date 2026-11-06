@@ -8,6 +8,7 @@ process.env.AI_MOCK = '1';
 process.env.PGLITE_MEMORY = '1';
 process.env.STORAGE_DIR = mkdtempSync(join(tmpdir(), 'pe-test-'));
 process.env.BASE_URL = 'http://test.local';
+process.env.COST_VIEWERS = 'admin@example.com'; // o administrador que vê os custos internos (costs.ts)
 process.env.VEO_BUSY_WAIT_MS = '400'; // espera depois de uma «procura elevada» simulada (45 s na produção)
 
 const { openDb, migrate } = await import('../src/db.ts');
