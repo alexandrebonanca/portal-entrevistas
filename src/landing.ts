@@ -124,6 +124,15 @@ ${featured ? `
     <figcaption class="hint">Translated and narrated with AI voices; the animated video carries a visible AI notice. <a href="${withTags(`/e/${featured.slug}`)}">Full episode, transcript and chapters</a>${galleryOn ? ` · <a href="${withTags('/podcasts')}">More interviews in the gallery</a>` : ''}</figcaption></figure>
 </section>
 ` : ''}
+<section class="wrap lp-section" id="hta-interview" aria-labelledby="hta-interview-title">
+  <p class="lp-eyebrow">Hotel Training Academy × QuietInterview</p>
+  <h2 id="hta-interview-title">Hospitality, leadership and the guest experience</h2>
+  <p class="lp-intro">Alex Rodrigues, CEO of Hotel Training Academy, interviews Jorge Beldade, former Minor Hotels Director for the Iberian Peninsula, about his career, luxury hospitality and advice for the next generation.</p>
+  <figure class="lp-video">
+    <iframe width="1280" height="720" style="display:block;width:100%;height:auto;aspect-ratio:16/9;border:0;border-radius:16px;background:#000" loading="lazy" src="https://www.youtube-nocookie.com/embed/eUNAKrgGUvc?cc_load_policy=1&amp;cc_lang_pref=pt" title="Jorge Beldade interviewed by Alex Rodrigues — full interview" allow="encrypted-media; picture-in-picture; fullscreen" allowfullscreen referrerpolicy="strict-origin-when-cross-origin"></iframe>
+    <figcaption class="hint">Full interview · 12 min 30 sec · English audio · Selectable Portuguese subtitles.<br>A real remote interview: the guest received an invitation and recorded his answers on his phone. Produced by Hotel Training Academy with QuietInterview, using animated avatars and synthetic English voices.<br><a href="https://www.youtube.com/watch?v=eUNAKrgGUvc" target="_blank" rel="noopener">Watch the full interview on YouTube</a> · <a href="https://hoteltrainingacademy.com/" target="_blank" rel="noopener">Hotel Training Academy</a></figcaption>
+  </figure>
+</section>
 <section class="wrap lp-section" id="how" aria-labelledby="howh"><h2 id="howh">How it works</h2>
   <p class="lp-intro">The people worth hearing are rarely free for a live recording. ${b} removes the scheduling and the pressure: no ambush, no chasing, no hidden recording.</p>
   <div class="lp-steps">
