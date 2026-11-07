@@ -1647,7 +1647,7 @@ test('línguas das legendas: só as oferecidas e cada uma uma vez (no máximo 5)
   const gj = await db.one(`SELECT id, input FROM jobs WHERE interview_id=$1 AND kind='generate_episode'`, [id]);
   assert.deepEqual([...gj.input.subtitleLangs].sort(), ['de', 'en']);
   // «Tentar de novo» de uma geração falhada com as línguas repetidas (um pedido de antes desta correção): cada uma uma vez
-  await db.query(`UPDATE jobs SET state='failed', error='simulado', input=jsonb_set(input, '{subtitleLangs}', $2::jsonb) WHERE id=$1`, [gj.id, JSON.stringify(['en', 'es', 'es', 'es', 'it'])]);
+  await db.query(`UPDATE jobs SET state='failed', error='simulado', input=jsonb_set(input, '{subtitleLangs}', $2::jsonb) WHERE id=$1`, [gj.id, JSON.stringify(['en', 'es', 'es', 'es', 'ru'])]);
   await db.query(`UPDATE interviews SET production_status='failed' WHERE id=$1`, [id]);
   assert.match(msgOf(await post(`/entrevistas/${id}/gerar/repetir`, {}, li.ck)), /ok=Geração iniciada de novo/);
   assert.deepEqual((await db.one(`SELECT input FROM jobs WHERE interview_id=$1 AND kind='generate_episode' AND state='queued'`, [id])).input.subtitleLangs, ['en', 'es']);
@@ -1667,7 +1667,7 @@ test('línguas das legendas: só as oferecidas e cada uma uma vez (no máximo 5)
       (e: any) => e instanceof PermanentError && e.message === 'Línguas das legendas inválidas');
     assert.deepEqual(labels, [], 'nenhuma etapa começou');
   };
-  await refused({ subtitleLangs: ['en', 'it'] });
+  await refused({ subtitleLangs: ['en', 'ru'] });
   await refused({ subtitleLangs: 'de' });
   await db.query(`UPDATE interviews SET subtitle_langs=ARRAY['en','zz'] WHERE id=$1`, [id]);
   await refused({});

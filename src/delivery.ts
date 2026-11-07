@@ -2,7 +2,7 @@ import { storeZip } from './zip.ts';
 import { toSrt, toVtt, shiftCues } from './subtitles.ts';
 import { fmtDuration } from './lib.ts';
 
-const LANG_NAME: Record<string, string> = { en: 'English', 'pt-PT': 'Português (Portugal)', pt: 'Português', es: 'Español', fr: 'Français', de: 'Deutsch' };
+const LANG_NAME: Record<string, string> = { en: 'English', 'pt-PT': 'Português (Portugal)', pt: 'Português', es: 'Español', fr: 'Français', de: 'Deutsch', it: 'Italiano', 'zh-CN': 'Chinês (mandarim, simplificado)' };
 const mmss = (s: number) => `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
 
 /**

@@ -46,7 +46,9 @@ export const mmss = (sec: number) => `${Math.floor(sec / 60)}:${String(Math.floo
 
 // ---- línguas das legendas ----
 /** Línguas das legendas que o portal oferece (o inglês do guião e as quatro traduções), com o nome na página. */
-export const SUBTITLE_LANGS: readonly (readonly [code: string, label: string])[] = [['en', 'English'], ['pt-PT', 'Português (PT)'], ['es', 'Español'], ['fr', 'Français'], ['de', 'Deutsch']];
+/** Nome da língua para a tradução das legendas (a IA percebe melhor o nome do que o código). */
+export const SUBTITLE_TARGET: Record<string, string> = { 'pt-PT': 'European Portuguese (pt-PT)', es: 'Spanish', fr: 'French', de: 'German', it: 'Italian', 'zh-CN': 'Simplified Chinese (Mandarin, zh-CN)' };
+export const SUBTITLE_LANGS: readonly (readonly [code: string, label: string])[] = [['en', 'English'], ['pt-PT', 'Português (PT)'], ['es', 'Español'], ['fr', 'Français'], ['de', 'Deutsch'], ['it', 'Italiano'], ['zh-CN', '中文 (Mandarim, simplificado)']];
 /**
  * Línguas das legendas pedidas: só as oferecidas e cada uma uma vez, pela ordem do pedido (no máximo as de
  * SUBTITLE_LANGS). Antes, o /gerar, o /gerar/repetir e o «Guardar» só tiravam as desconhecidas: um pedido com ['en',

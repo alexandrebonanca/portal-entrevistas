@@ -460,7 +460,7 @@ ${episodeBefore ? REDO_BOX('gerar o episódio de novo') : ''}${episodeBefore ? p
         // Legendas gravadas na imagem (para redes sociais, onde o som costuma estar desligado); os ficheiros SRT/VTT vêm sempre no pacote.
         const langs = Object.keys(ep.subtitles ?? {});
         const defLang = ep.video_lang && langs.includes(ep.video_lang) ? ep.video_lang : langs.includes('pt-PT') ? 'pt-PT' : langs[0] ?? '';
-        const LANG_NAMES: Record<string, string> = { en: 'Inglês', 'pt-PT': 'Português', es: 'Espanhol', fr: 'Francês', de: 'Alemão' };
+        const LANG_NAMES: Record<string, string> = { en: 'Inglês', 'pt-PT': 'Português', es: 'Espanhol', fr: 'Francês', de: 'Alemão', it: 'Italiano', 'zh-CN': 'Mandarim (chinês simplificado)' };
         const subsSel = (id: string) => langs.length ? `<p class="sans" style="margin:0 0 8px"><label for="${id}" style="display:inline;margin:0">Legendas na imagem</label> <select id="${id}" name="lang" style="width:auto">${langs.map(l => `<option value="${esc(l)}" ${l === defLang ? 'selected' : ''}>${esc(LANG_NAMES[l] ?? l)}</option>`).join('')}<option value="">Sem legendas</option></select></p>` : '';
         const cardA = `<div class="card" style="margin:0;flex:1 1 280px"><h3 style="margin-top:0">Podcast com fotos</h3>
 <p class="sans" style="margin:.2em 0">${pill('incluído na subscrição', 'ok')}</p>

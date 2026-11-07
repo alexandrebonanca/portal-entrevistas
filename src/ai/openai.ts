@@ -1,3 +1,4 @@
+import { SUBTITLE_TARGET } from '../limits.ts';
 import { config } from '../config.ts';
 import { S } from '../settings.ts';
 import { makeToneWav, toMp3ForTranscription } from '../media.ts';
@@ -244,7 +245,8 @@ export const UNTRANSLATED = 'untranslated';
  */
 export async function translateSubtitleCues(cues: { id: string; text: string }[], target: string, meter?: TokenMeter) {
   const out: { sourceCueId: string; translatedText: string; reviewFlags: string[] }[] = [];
-  const system = SUBTITLE_SYSTEM.replace(/TARGET_LANGUAGE/g, target);
+  // O nome da língua (ex.: «Simplified Chinese (Mandarin, zh-CN)») é mais claro para a IA do que o código.
+  const system = SUBTITLE_SYSTEM.replace(/TARGET_LANGUAGE/g, SUBTITLE_TARGET[target] ?? target);
   for (let i = 0; i < cues.length; i += 60) {
     const block = cues.slice(i, i + 60);
     const user = `<interview_data>\n${JSON.stringify(block)}\n</interview_data>`;

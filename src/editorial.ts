@@ -4,6 +4,8 @@ import { withTemp } from './media.ts';
 import { escXml } from './lib.ts';
 import { run } from './video.ts';
 import { MARK_PATHS } from './brand.ts';
+import { isCjk } from './subtitles.ts';
+import { cjkFontFile } from './fonts.ts';
 import type { People } from './graphics.ts';
 import type { Db } from './db.ts';
 import { answerKeyPoints, newMeter, meterUsd } from './ai/openai.ts';
@@ -140,6 +142,16 @@ ${o.aiNotice ? `<rect x="${w - 470 * k}" y="${o.raise ? 45 * k : h - 64 * k}" wi
 async function subtitlePng(size: { w: number; h: number }, text: string) {
   const { default: sharp } = await import('sharp');
   const { w, h } = size, k = w / 1920, fs = 46 * k;
+  if (isCjk(text)) {
+    // Chinês: o texto desenha-se com a letra CJK (Pango, sem depender das letras do sistema) e cola-se sobre a faixa.
+    const fontfile = await cjkFontFile();
+    const markup = String(text).replace(/\s+/g, '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const txt = await sharp({ text: { text: `<span foreground="#ffffff">${markup}</span>`, font: `Noto Sans SC ${Math.round(fs * 0.75)}`, fontfile, rgba: true, width: Math.round(w - 200 * k), align: 'centre', dpi: 96 } }).png().toBuffer();
+    const m = await sharp(txt).metadata();
+    const tw = m.width ?? 0, th = m.height ?? 0, bw = tw + 70 * k, bh = th + 34 * k, y0 = h - 40 * k - bh;
+    return sharp(svg(w, h, `<rect x="${(w - bw) / 2}" y="${y0}" width="${bw}" height="${bh}" rx="${10 * k}" fill="#111" fill-opacity=".78"/>`))
+      .composite([{ input: txt, left: Math.round((w - tw) / 2), top: Math.round(y0 + 17 * k) }]).png().toBuffer();
+  }
   const ls = wrap(text, 50, 3);
   const bw = Math.min(w - 80 * k, Math.max(...ls.map(l => l.length)) * fs * 0.56 + 90 * k), bh = ls.length * fs * 1.3 + 34 * k;
   const y0 = h - 40 * k - bh;

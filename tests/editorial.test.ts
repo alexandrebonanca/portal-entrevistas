@@ -80,3 +80,14 @@ test('custos internos: só os administradores listados em COST_VIEWERS (por omis
   assert.equal(seesCosts({ role: 'admin', email: 'alexandrebonanca@gmail.com' }), false, 'a lista substitui o valor por omissão');
   if (prev === undefined) delete process.env.COST_VIEWERS; else process.env.COST_VIEWERS = prev;
 });
+
+test('legendas: italiano e mandarim disponíveis; o chinês divide-se por caracteres, sem espaços', async () => {
+  const { SUBTITLE_LANGS, SUBTITLE_TARGET } = await import('../src/limits.ts');
+  const { splitByWeights, isCjk } = await import('../src/subtitles.ts');
+  assert.deepEqual(SUBTITLE_LANGS.map(l => l[0]), ['en', 'pt-PT', 'es', 'fr', 'de', 'it', 'zh-CN']);
+  assert.match(SUBTITLE_TARGET['zh-CN'], /Simplified Chinese/);
+  assert.equal(isCjk('首先是品牌'), true); assert.equal(isCjk('Brand first'), false);
+  const parts = splitByWeights('首先是品牌，然后是规模：当地团队做决定。', [10, 10]);
+  assert.equal(parts.length, 2); assert.equal(parts.join(''), '首先是品牌，然后是规模：当地团队做决定。');
+  assert.ok(parts.every(p => p.length > 0 && !p.includes(' ')));
+});

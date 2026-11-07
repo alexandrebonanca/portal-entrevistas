@@ -54,7 +54,7 @@ export async function videoSubsOffset(db: { one: (q: string, p?: any[]) => Promi
 }
 
 /** Faixas de legendas do leitor de vídeo (o vídeo editorial não as tem gravadas na imagem). */
-const LANG_LABEL: Record<string, string> = { en: 'English', 'pt-PT': 'Português', pt: 'Português', es: 'Español', fr: 'Français', de: 'Deutsch' };
+const LANG_LABEL: Record<string, string> = { en: 'English', 'pt-PT': 'Português', pt: 'Português', es: 'Español', fr: 'Français', de: 'Deutsch', it: 'Italiano', 'zh-CN': '中文 (普通话)' };
 export const videoTracks = (ep: { subtitles?: Record<string, unknown> | null }, src: (lang: string) => string) =>
   Object.keys(ep.subtitles ?? {}).filter(l => /^[A-Za-z-]{2,8}$/.test(l)).map(l => `<track kind="subtitles" srclang="${l}" label="${LANG_LABEL[l] ?? l}" src="${src(l).replace(/&/g, '&amp;').replace(/"/g, '&quot;')}">`).join('');
 
@@ -83,10 +83,13 @@ export function checkCues(cues: Cue[], durationMs: number): string[] {
  * Assim a tradução é feita à fala inteira (frases completas, sem texto a passar de uma legenda para a vizinha) e os
  * tempos continuam a ser os medidos no áudio. Nenhuma parte fica vazia enquanto houver palavras para todas.
  */
+/** Escrita sem espaços entre palavras (chinês, japonês): corta-se carácter a carácter e junta-se sem espaços. */
+export const isCjk = (text: string) => /[\u3040-\u30ff\u3400-\u9fff\uf900-\ufaff]/.test(text);
 export function splitByWeights(text: string, weights: number[]): string[] {
-  const words = text.trim().split(/\s+/).filter(Boolean);
+  const cjk = isCjk(text), sep = cjk ? '' : ' ';
+  const words = cjk ? Array.from(text.replace(/\s+/g, '')) : text.trim().split(/\s+/).filter(Boolean);
   const n = weights.length;
-  if (n <= 1 || !words.length) return n ? [words.join(' '), ...Array(n - 1).fill('')].slice(0, n) : [];
+  if (n <= 1 || !words.length) return n ? [words.join(sep), ...Array(n - 1).fill('')].slice(0, n) : [];
   if (words.length <= n) return Array.from({ length: n }, (_, k) => words[k] ?? ''); // poucas palavras: uma por legenda, pela ordem
   const total = weights.reduce((a, b) => a + Math.max(1, b), 0);
   const len = words.reduce((a, w) => a + w.length + 1, 0);
@@ -101,7 +104,7 @@ export function splitByWeights(text: string, weights: number[]): string[] {
       pos += words[j].length + 1;
       const end = j + 1;
       if (end < minEnd || end > maxEnd) continue;
-      const punct = /[.,;:!?…)»"]$/.test(words[j]) ? 0.6 : 1; // um corte depois de pontuação vale mais
+      const punct = /[.,;:!?…)»"，。！？、；：」』）]$/.test(words[j]) ? 0.6 : 1; // um corte depois de pontuação vale mais
       const score = Math.abs(pos - target) * punct;
       if (score < bestScore) { bestScore = score; best = end; }
     }
@@ -110,5 +113,5 @@ export function splitByWeights(text: string, weights: number[]): string[] {
   }
   ends.push(words.length);
   let from = 0;
-  return ends.map(e => { const part = words.slice(from, e).join(' '); from = e; return part; });
+  return ends.map(e => { const part = words.slice(from, e).join(sep); from = e; return part; });
 }

@@ -12,7 +12,7 @@ import { carriedTags, campaignQuery, ownHosts, withCampaign, fromOwnSite, trackV
 
 export interface PlayerUrls { audio: string; cover: string; subs: (lang: string, ext: 'vtt' | 'srt') => string }
 
-const LANG_NAME: Record<string, string> = { en: 'English', 'pt-PT': 'Português (PT)', es: 'Español', fr: 'Français', de: 'Deutsch' };
+const LANG_NAME: Record<string, string> = { en: 'English', 'pt-PT': 'Português (PT)', es: 'Español', fr: 'Français', de: 'Deutsch', it: 'Italiano', 'zh-CN': '中文 (普通话)' };
 
 export function playerHtml(ep: any, urls: PlayerUrls, opts: { host?: string; guest?: string } = {}) {
   const langs = Object.keys(ep.subtitles ?? {});
