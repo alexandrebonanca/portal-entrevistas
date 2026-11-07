@@ -378,9 +378,9 @@ export const handlers: Record<string, Handler> = {
     const audio = await asset(ep.audio_asset_id);
     if (!cover || !audio) throw new PermanentError('Capa ou áudio do episódio em falta');
     // Estilo editorial (por omissão; o formato do ensaio HTA): cartões, temas, ideias-chave, promotor e legendas em ficheiro
-    // (nunca gravadas na imagem). O clássico (estúdio com legendas na imagem) continua nas Definições → Vídeo.
+    // (e, se pedidas, gravadas na imagem numa língua). O clássico (estúdio) continua nas Definições → Vídeo.
     const editorial = inEntity(null, () => S('VIDEO_STYLE')) !== 'classic';
-    const lang: string | null = !editorial && job.input.lang && ep.subtitles?.[job.input.lang] ? job.input.lang : null;
+    const lang: string | null = job.input.lang && ep.subtitles?.[job.input.lang] ? job.input.lang : null;
     const shots = planShots(timing, ep.duration_ms, lang ? ep.subtitles[lang] : null);
     const people = peopleOf(iv);
     const bases = editorial ? ({} as any) : await renderBases({ cover, title: ep.title, brand: config.brand, host: { name: people.host.name || 'Host', role: people.host.role, photo: hostPhoto }, guest: { name: people.guest.name || 'Guest', role: people.guest.role, photo: guestPhoto } });
@@ -470,7 +470,7 @@ export const handlers: Record<string, Handler> = {
       const p0 = segs.length ? 74 : 12, span = segs.length ? 16 : 78;
       const r = await editorialVideo({ ffmpeg, size, audio, durationMs: ep.duration_ms, segs: vsegs, clip: id => byId.get(id) ?? null,
         photos: { host: hostPhoto, guest: guestPhoto }, people, promoter: ed.promoter, title: ep.title, chapters: ed.chapters, keyPoints: ed.keyPoints,
-        writtenAnswers: ed.writtenAnswers, animated: ok.length > 0, onProgress: async (i, n) => progress(p0 + Math.round((i / n) * span), 100, `A montar o vídeo (${i} de ${n} partes)`) });
+        writtenAnswers: ed.writtenAnswers, animated: ok.length > 0, cues: lang ? (ep.subtitles[lang] as any[]) : undefined, onProgress: async (i, n) => progress(p0 + Math.round((i / n) * span), 100, `A montar o vídeo (${i} de ${n} partes)`) });
       mp4 = r.mp4; totalMs = r.totalMs; gfxMeta = r.meta;
       extraMeta = { style: 'editorial', subsOffsetMs: OPEN_MS, chapters: r.chapters, promoter: ed.promoter };
     } else {

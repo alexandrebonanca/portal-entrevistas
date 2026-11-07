@@ -117,10 +117,12 @@ ${groups.size ? [...groups].map(([t, eps]) => `<section style="margin-top:28px">
   // ---- pré-visualização do entrevistador ----
   app.get('/entrevistas/:id/subs/:file', async (req, reply) => {
     if (!req.user) return reply.code(401).send();
-    const ep = await db.one(`SELECT e.subtitles FROM episodes e JOIN interviews i ON i.id=e.interview_id WHERE i.id=$1 AND (i.owner_id=$2 OR $3='admin') AND e.status<>'superseded' ORDER BY e.created_at DESC LIMIT 1`, [(req.params as any).id, req.user.id, req.user.role]);
+    const ep = await db.one(`SELECT e.subtitles, e.video_asset_id FROM episodes e JOIN interviews i ON i.id=e.interview_id WHERE i.id=$1 AND (i.owner_id=$2 OR $3='admin') AND e.status<>'superseded' ORDER BY e.created_at DESC LIMIT 1`, [(req.params as any).id, req.user.id, req.user.role]);
     const m = /^([A-Za-z-]{2,8})\.(vtt|srt)$/.exec((req.params as any).file);
     if (!ep || !m) return reply.code(404).send();
-    return subsReply(ep.subtitles?.[m[1]], m[2], reply);
+    const cues = ep.subtitles?.[m[1]];
+    const off = (req.query as any)?.video === '1' && cues ? await videoSubsOffset(db, ep.video_asset_id) : 0;
+    return subsReply(cues ? shiftCues(cues, off) : cues, m[2], reply);
   });
 
   // ---- pré-visualização do entrevistado ----
@@ -133,7 +135,9 @@ ${groups.size ? [...groups].map(([t, eps]) => `<section style="margin-top:28px">
     const ep = await guestEpisode(req);
     const m = /^([A-Za-z-]{2,8})\.(vtt|srt)$/.exec((req.params as any).file);
     if (!ep || !m) return reply.code(404).send();
-    return subsReply(ep.subtitles?.[m[1]], m[2], reply);
+    const cues = ep.subtitles?.[m[1]];
+    const off = (req.query as any)?.video === '1' && cues ? await videoSubsOffset(db, ep.video_asset_id) : 0;
+    return subsReply(cues ? shiftCues(cues, off) : cues, m[2], reply);
   });
   app.get('/entrevista/episodio', async (req, reply) => {
     const ep = await guestEpisode(req);
@@ -151,7 +155,7 @@ ${groups.size ? [...groups].map(([t, eps]) => `<section style="margin-top:28px">
       body: `<div class="wrap" style="padding-top:28px">${flash(q.ok)}${q.changed ? `<div class="flash bad">${esc(d.versionChanged)}</div>` : ''}<h1>${esc(d.episodePreview)}</h1>
 <p class="sans"><strong>${esc(c.title)}</strong></p><p>${esc(d.reviewIntro(ep.host_label ?? ''))} ${esc(c.steps)}</p>
 ${review.published ? `<p class="hint">${pubDay ? `${esc(d.publishedOn(pubDay))} ` : ''}<a href="${esc(contactHref('episode', ep.slug))}">${esc(d.correctionsLink)}</a></p>` : ''}
-${ep.video_asset_id ? `<video controls preload="metadata" poster="/api/g/media/${ep.cover_asset_id}" src="/api/g/media/${ep.video_asset_id}" style="width:100%;border-radius:12px;background:#000;margin-bottom:18px"></video>` : ''}
+${ep.video_asset_id ? `<video controls preload="metadata" poster="/api/g/media/${ep.cover_asset_id}" src="/api/g/media/${ep.video_asset_id}" style="width:100%;border-radius:12px;background:#000;margin-bottom:18px">${videoTracks(ep, l => `/entrevista/subs/${l}.vtt?video=1`)}</video>` : ''}
 ${playerHtml(ep, { audio: `/api/g/media/${ep.audio_asset_id}`, cover: `/api/g/media/${ep.cover_asset_id}`, subs: (l, x) => `/entrevista/subs/${l}.${x}` }, { host: ep.host_name, guest: ep.guest_name })}
 ${decides && dec ? `<div class="flash">${esc(dec.decision === 'approved' ? d.approve : d.requestChanges)} — ${esc(fmtDate(dec.created_at))}${dec.decision === 'approved' && String(dec.video_asset_id ?? '') !== String(ep.video_asset_id ?? '') ? ` (${esc(d.versionChanged)})` : ''}</div>` : ''}
 ${!decides ? '' : `<form method="post" action="/entrevista/episodio/decisao" class="card"><input type="hidden" name="video" value="${esc(ep.video_asset_id ?? '')}"><input type="hidden" name="episode" value="${esc(ep.id)}"><input type="hidden" name="audio" value="${esc(ep.audio_asset_id ?? '')}"><label for="nt">${esc(d.notePlaceholder)}</label><textarea id="nt" name="note"></textarea>

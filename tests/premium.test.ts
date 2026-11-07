@@ -150,7 +150,7 @@ test('premium: orçamento, aceitação, produção e liquidação só das falas 
   assert.doesNotMatch(pc, /Veo|HeyGen|Google/);
   assert.ok(pc.includes('cada fala animada por IA a partir da fotografia, com a voz do episódio'));
   await credit(cli.id, 10000);
-  assert.match((await get(`/entrevistas/${ivId}/producao`, cli.cookie)).body, /action="\/entrevistas\/[^"]+\/orcamento"><button class="accent">Gerar vídeo animado<\/button>/, 'com saldo, um só botão');
+  assert.match((await get(`/entrevistas/${ivId}/producao`, cli.cookie)).body, /action="\/entrevistas\/[^"]+\/orcamento"><p class="sans"[^>]*><label for="lg-b"[^>]*>Legendas na imagem<\/label> <select id="lg-b" name="lang"[\s\S]{0,400}<option value="">Sem legendas<\/option><\/select><\/p><button class="accent">Gerar vídeo animado<\/button>/, 'com saldo, um só botão (e a língua das legendas na imagem)');
   const qa = await accept(q);
   const job = await db.one(`SELECT * FROM jobs WHERE id=$1`, [qa.job_id]);
   assert.deepEqual([job.input.animEngine, job.input.quoteId, job.input.animate, job.input.engine], ['heygen', q.id, true, undefined]);
@@ -172,7 +172,8 @@ test('premium: orçamento, aceitação, produção e liquidação só das falas 
   // estilo editorial (por omissão): animado por cima do fundo claro, temas, legendas em ficheiro e o pacote de entrega
   assert.equal(meta.style, 'editorial'); assert.equal(meta.subsOffsetMs, 3000); assert.equal(meta.graphics.size, '1280x720');
   assert.ok(meta.graphics.animatedParts > 0); assert.ok(meta.graphics.topics > 0); assert.ok(meta.chapters.length > 0);
-  assert.equal((await db.one('SELECT video_lang FROM episodes WHERE id=$1', [epId])).video_lang, null, 'sem legendas gravadas na imagem');
+  assert.equal((await db.one('SELECT video_lang FROM episodes WHERE id=$1', [epId])).video_lang, 'en', 'legendas gravadas na imagem na língua do orçamento');
+  assert.ok(meta.graphics.subtitles > 0, 'legendas na imagem');
   const zip = await get(`/entrevistas/${ivId}/episodio/${epId}/entrega.zip`, cli.cookie);
   assert.equal(zip.statusCode, 200); assert.equal(zip.rawPayload.subarray(0, 4).toString('hex'), '504b0304');
   assert.match(zip.rawPayload.toString('latin1'), /chapters\.json[\s\S]*LEIA-ME\.txt/);
@@ -186,8 +187,8 @@ test('premium: orçamento, aceitação, produção e liquidação só das falas 
 test('premium: sem orçamento o cliente não gera o vídeo animado; o administrador gera-o sem créditos', async () => {
   assert.match(msg(await post(`/entrevistas/${ivId}/episodio/${epId}/video`, { engine: 'heygen', lang: 'en' }, cli.cookie)), /reservados ao administrador/);
   const pg = (await get(`/entrevistas/${ivId}/producao`, admin)).body;
-  assert.match(pg, /name="engine" value="heygen">[\s\S]{0,400}>Gerar vídeo animado<\/button>/);
-  assert.match(pg, /name="engine" value="still">[\s\S]{0,400}>Gerar podcast com fotos<\/button>/);
+  assert.match(pg, /name="engine" value="heygen">[\s\S]{0,900}>Gerar vídeo animado<\/button>/);
+  assert.match(pg, /name="engine" value="still">[\s\S]{0,900}>Gerar podcast com fotos<\/button>/);
   assert.doesNotMatch(pg, /value="veo"/);
 });
 

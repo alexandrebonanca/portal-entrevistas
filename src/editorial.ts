@@ -29,6 +29,8 @@ export interface EditorialInput {
   clip: (id: string) => (() => Promise<Buffer>) | null; photos: { host: Buffer | null; guest: Buffer | null };
   people: People; promoter: string; title: string; chapters: Map<string, string>; keyPoints: Map<string, string[]>;
   writtenAnswers: boolean; animated: boolean; onProgress?: (i: number, n: number) => Promise<void>;
+  /** Legendas gravadas na imagem (tempos do episódio), numa língua; sem elas, só os ficheiros SRT/VTT. */
+  cues?: { startMs: number; endMs: number; text: string }[];
 }
 
 /** Nome da entidade do dono da entrevista (o promotor por omissão), ou vazio. */
@@ -121,16 +123,27 @@ ${c.footer ? `<text x="${w / 2}" y="${h * 0.86}" text-anchor="middle" font-famil
 }
 
 /** Camada transparente por cima do plano de quem fala: marca, identificação, tema da pergunta e o aviso de IA. */
-async function overlayPng(size: { w: number; h: number }, o: { lower?: { name: string; role: string }; topic?: { n: number; total: number; title: string }; aiNotice?: boolean }) {
+async function overlayPng(size: { w: number; h: number }, o: { lower?: { name: string; role: string }; topic?: { n: number; total: number; title: string }; aiNotice?: boolean; raise?: boolean }) {
   const { default: sharp } = await import('sharp');
-  const { w, h } = size, k = w / 1920;
+  const { w, h } = size, k = w / 1920, dy = o.raise ? 190 : 0; // com legendas na imagem, o rodapé sobe
   const body = `<rect x="${45 * k}" y="${35 * k}" width="${445 * k}" height="${98 * k}" rx="${10 * k}" fill="${EDITORIAL.bg}" fill-opacity=".9"/>${logo(62 * k, 53 * k, 0.83 * k)}
-${o.lower ? `<rect x="${60 * k}" y="${820 * k}" width="${1090 * k}" height="${150 * k}" fill="${EDITORIAL.bg}" fill-opacity=".95"/><rect x="${60 * k}" y="${820 * k}" width="${9 * k}" height="${150 * k}" fill="${EDITORIAL.accent}"/>
-<text x="${100 * k}" y="${884 * k}" font-family="${SANS}" font-size="${48 * k}" font-weight="700" fill="${EDITORIAL.ink}">${escXml(o.lower.name)}</text>
-<text x="${100 * k}" y="${940 * k}" font-family="${SANS}" font-size="${30 * k}" fill="${EDITORIAL.muted}">${escXml(o.lower.role.slice(0, 70))}</text>` : ''}
+${o.lower ? `<rect x="${60 * k}" y="${(820 - dy) * k}" width="${1090 * k}" height="${150 * k}" fill="${EDITORIAL.bg}" fill-opacity=".95"/><rect x="${60 * k}" y="${(820 - dy) * k}" width="${9 * k}" height="${150 * k}" fill="${EDITORIAL.accent}"/>
+<text x="${100 * k}" y="${(884 - dy) * k}" font-family="${SANS}" font-size="${48 * k}" font-weight="700" fill="${EDITORIAL.ink}">${escXml(o.lower.name)}</text>
+<text x="${100 * k}" y="${(940 - dy) * k}" font-family="${SANS}" font-size="${30 * k}" fill="${EDITORIAL.muted}">${escXml(o.lower.role.slice(0, 70))}</text>` : ''}
 ${o.topic ? `<text x="${68 * k}" y="${340 * k}" font-family="${SANS}" font-size="${32 * k}" font-weight="700" fill="${EDITORIAL.accent}">${String(o.topic.n).padStart(2, '0')} / ${o.topic.total}</text>
 ${lines(wrap(o.topic.title, 16, 4), 68 * k, 420 * k, 54 * k, { family: SERIF, anchor: 'start', gap: 1.2 })}` : ''}
-${o.aiNotice ? `<rect x="${w - 470 * k}" y="${h - 64 * k}" width="${440 * k}" height="${40 * k}" rx="${8 * k}" fill="${EDITORIAL.ink}" fill-opacity=".72"/><text x="${w - 250 * k}" y="${h - 36 * k}" text-anchor="middle" font-family="${SANS}" font-size="${22 * k}" fill="#fff">AI-generated video · AI voice</text>` : ''}`;
+${o.aiNotice ? `<rect x="${w - 470 * k}" y="${o.raise ? 45 * k : h - 64 * k}" width="${440 * k}" height="${40 * k}" rx="${8 * k}" fill="${EDITORIAL.ink}" fill-opacity=".72"/><text x="${w - 250 * k}" y="${o.raise ? 73 * k : h - 36 * k}" text-anchor="middle" font-family="${SANS}" font-size="${22 * k}" fill="#fff">AI-generated video · AI voice</text>` : ''}`;
+  return sharp(svg(w, h, body)).png().toBuffer();
+}
+
+/** Uma legenda (imagem transparente do tamanho do vídeo): faixa escura ao fundo, ao centro, até duas linhas. */
+async function subtitlePng(size: { w: number; h: number }, text: string) {
+  const { default: sharp } = await import('sharp');
+  const { w, h } = size, k = w / 1920, fs = 46 * k;
+  const ls = wrap(text, 50, 3);
+  const bw = Math.min(w - 80 * k, Math.max(...ls.map(l => l.length)) * fs * 0.56 + 90 * k), bh = ls.length * fs * 1.3 + 34 * k;
+  const y0 = h - 40 * k - bh;
+  const body = `<rect x="${(w - bw) / 2}" y="${y0}" width="${bw}" height="${bh}" rx="${10 * k}" fill="#111" fill-opacity=".78"/>${ls.map((l, i) => `<text x="${w / 2}" y="${y0 + 17 * k + fs * (1 + i * 1.3) - fs * 0.22}" text-anchor="middle" font-family="${SANS}" font-size="${fs}" fill="#fff">${escXml(l)}</text>`).join('')}`;
   return sharp(svg(w, h, body)).png().toBuffer();
 }
 
@@ -162,7 +175,11 @@ export async function editorialVideo(o: EditorialInput): Promise<{ mp4: Buffer; 
   const total = questions.length;
   const seen = new Set<string>();
   const chapters: { title: string; time: number }[] = [];
-  const meta = { style: 'editorial', size: `${w}x${h}`, lowerThirds: 0, topics: 0, keyPointCards: 0, animatedParts: 0, stillParts: 0 };
+  const meta = { style: 'editorial', size: `${w}x${h}`, lowerThirds: 0, topics: 0, keyPointCards: 0, animatedParts: 0, stillParts: 0, subtitles: 0 };
+  const raise = !!o.cues?.length;
+  // Legendas de um troço do episódio [a, b], em tempos locais (segundos), cortadas ao troço.
+  const cuesIn = (a: number, b: number) => (o.cues ?? []).filter(c => c.endMs > a && c.startMs < b && c.text.trim())
+    .map(c => ({ from: Math.max(0, c.startMs - a) / 1000, to: (Math.min(b, c.endMs) - a) / 1000, text: c.text }));
   return withTemp(async dir => {
     const audioIn = join(dir, 'ep.mp3');
     await writeFile(audioIn, o.audio);
@@ -175,8 +192,19 @@ export async function editorialVideo(o: EditorialInput): Promise<{ mp4: Buffer; 
       const img = join(dir, `c${n}.png`), out = join(dir, `p${String(n).padStart(3, '0')}.mp4`);
       await writeFile(img, png);
       const d = (ms / 1000).toFixed(3);
+      // Legendas por cima (só nos cartões com o som do episódio: o aviso inicial).
+      const subIn: string[] = [];
+      let vf = `[0:v]fade=t=in:d=0.25,fade=t=out:st=${Math.max(0, ms / 1000 - 0.3).toFixed(3)}:d=0.3[c0]`, cl = 'c0';
+      if (epAudio) for (const [q, c] of cuesIn(epAudio[0], epAudio[1]).entries()) {
+        const f = join(dir, `cs${n}_${q}.png`);
+        await writeFile(f, await subtitlePng(size, c.text));
+        subIn.push('-i', f); // uma só imagem: o overlay repete-a (sem descodificar fotograma a fotograma)
+        vf += `;[${cl}][${q + 1}:v]overlay=0:0:eof_action=repeat:enable='between(t,${c.from.toFixed(3)},${c.to.toFixed(3)})'[cs${q}]`; cl = `cs${q}`; meta.subtitles++;
+      }
+      vf += `;[${cl}]format=yuv420p[v]`;
+      const aIdx = 1 + subIn.length / 2;
       const aIn = epAudio ? ['-ss', (epAudio[0] / 1000).toFixed(3), '-t', d, '-i', audioIn] : ['-f', 'lavfi', '-i', chime(ms)];
-      const r = await run(ffmpeg, ['-y', '-v', 'error', '-loop', '1', '-t', d, '-i', img, ...aIn, '-filter_complex', `[0:v]fade=t=in:d=0.25,fade=t=out:st=${Math.max(0, ms / 1000 - 0.3).toFixed(3)}:d=0.3,format=yuv420p[v];[1:a]apad,atrim=0:${d}[a]`, '-map', '[v]', '-map', '[a]', '-t', d, ...enc, out], 300_000);
+      const r = await run(ffmpeg, ['-y', '-v', 'error', '-loop', '1', '-t', d, '-i', img, ...subIn, ...aIn, '-filter_complex', `${vf};[${aIdx}:a]apad,atrim=0:${d}[a]`, '-map', '[v]', '-map', '[a]', '-t', d, ...enc, out], 300_000);
       if (r.code !== 0) throw new Error('Falha num cartão do vídeo: ' + r.stderr.slice(-300));
       files.push(out); n++; t += ms;
     };
@@ -201,7 +229,7 @@ export async function editorialVideo(o: EditorialInput): Promise<{ mp4: Buffer; 
       const clip = o.clip(s.id);
       const still = join(dir, `s${i}.jpg`), ov = join(dir, `o${i}.png`), out = join(dir, `p${String(n).padStart(3, '0')}.mp4`);
       await writeFile(still, await stageStill(size, o.photos[s.role], person.name));
-      await writeFile(ov, await overlayPng(size, { lower: lower ? { name: person.name, role: person.role } : undefined, topic: qn && topicTitle ? { n: qn, total, title: topicTitle } : undefined, aiNotice: !!clip }));
+      await writeFile(ov, await overlayPng(size, { lower: lower ? { name: person.name, role: person.role } : undefined, topic: qn && topicTitle ? { n: qn, total, title: topicTitle } : undefined, aiNotice: !!clip, raise }));
       if (lower) meta.lowerThirds++; if (s.kind === 'translated_question' && topicTitle) meta.topics++;
       const d = (ms / 1000).toFixed(3);
       const inputs = ['-loop', '1', '-t', d, '-i', still];
@@ -220,7 +248,7 @@ export async function editorialVideo(o: EditorialInput): Promise<{ mp4: Buffer; 
       // Identificação só nos primeiros segundos da primeira fala; o resto da camada (marca, tema, aviso) fica a fala toda.
       if (lower) {
         const ov2 = join(dir, `o${i}b.png`);
-        await writeFile(ov2, await overlayPng(size, { topic: qn && topicTitle ? { n: qn, total, title: topicTitle } : undefined, aiNotice: !!clip }));
+        await writeFile(ov2, await overlayPng(size, { topic: qn && topicTitle ? { n: qn, total, title: topicTitle } : undefined, aiNotice: !!clip, raise }));
         inputs.push('-loop', '1', '-t', d, '-i', ov2);
         v += `;[base2][${ovIdx}:v]overlay=0:0:enable='lt(t,${lowerEnd.toFixed(3)})'[l1];[l1][${ovIdx + 1}:v]overlay=0:0:enable='gte(t,${lowerEnd.toFixed(3)})'[l2]`;
       } else v += `;[base2][${ovIdx}:v]overlay=0:0[l2]`;
@@ -240,6 +268,14 @@ export async function editorialVideo(o: EditorialInput): Promise<{ mp4: Buffer; 
           last = `k${k}`; idx++;
         }
         meta.keyPointCards += 3;
+      }
+      // Legendas por último: ficam por cima de tudo (também dos cartões de ideias-chave).
+      for (const [q, c] of cuesIn(s.startMs, s.endMs).entries()) {
+        const f = join(dir, `sb${i}_${q}.png`);
+        await writeFile(f, await subtitlePng(size, c.text));
+        inputs.push('-i', f); // uma só imagem: o overlay repete-a
+        v += `;[${last}][${idx}:v]overlay=0:0:eof_action=repeat:enable='between(t,${c.from.toFixed(3)},${c.to.toFixed(3)})'[sb${q}]`;
+        last = `sb${q}`; idx++; meta.subtitles++;
       }
       v += `;[${last}]format=yuv420p[v]`;
       const r = await run(ffmpeg, ['-y', '-v', 'error', ...inputs, '-ss', (s.startMs / 1000).toFixed(3), '-t', d, '-i', audioIn,
