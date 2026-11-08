@@ -99,3 +99,35 @@ ${steps.length ? `<p style="margin:18px 0 6px"><strong>${esc(d.howTitle(config.b
   });
   return { invitationId: inv.id, url, expires: exp };
 }
+
+/**
+ * Convite pelo WhatsApp: cria um link pessoal a mais (o do email continua válido), com a mesma finalidade e validade do
+ * convite em vigor, e devolve a mensagem pronta na língua do convidado. Nada é enviado pelo portal: é o entrevistador que
+ * abre o WhatsApp e escolhe o contacto. O código do link só existe nesta resposta (na base fica o hash).
+ * Reenviar o convite por email, cancelar a entrevista ou a recusa do convidado revogam também este link.
+ */
+export async function createWhatsappInvitation(db: Db, interview: any, host: { name: string }, guard?: (tx: Db) => Promise<string | null>) {
+  const token = newToken(32);
+  const r = await db.tx(async tx => {
+    await tx.query('SELECT id FROM interviews WHERE id=$1 FOR UPDATE', [interview.id]);
+    const refused = guard ? await guard(tx) : null;
+    if (refused) return { refused };
+    const cur = await tx.one(`SELECT * FROM invitations WHERE interview_id=$1 AND purpose<>'preview' AND revoked_at IS NULL AND declined_at IS NULL AND expires_at>now() ORDER BY created_at DESC LIMIT 1`, [interview.id]);
+    if (!cur) return { refused: 'Não há um convite em vigor: reenvie o convite primeiro.' };
+    const row = await tx.one(`INSERT INTO invitations(interview_id, token_hash, question_version, expires_at, purpose, channel) VALUES ($1,$2,$3,$4,$5,'whatsapp') RETURNING id, expires_at`,
+      [interview.id, sha256(token), cur.question_version, cur.expires_at, cur.purpose]);
+    return { row, followup: cur.purpose === 'followup' };
+  });
+  if ('refused' in r && r.refused) return { refused: r.refused as string };
+  const { row, followup } = r as { row: any; followup: boolean };
+  const lang = normLang(interview.interaction_lang), en = lang === 'en';
+  const url = `${config.baseUrl}/i/${token}`;
+  const hostName = oneSpace(interview.host_name || (await db.one('SELECT name FROM users WHERE id=$1', [interview.owner_id ?? null]))?.name || host.name);
+  const guest = oneSpace(String(interview.guest_name ?? '').split(/\s+/)[0] ?? '');
+  const lastDay = new Date(new Date(row.expires_at).getTime() - 12 * 3600_000).toLocaleDateString(en ? 'en-GB' : 'pt-PT', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' });
+  const title = oneSpace(interview.title);
+  const text = en
+    ? `${guest ? `Hello ${guest}, ` : 'Hello, '}${followup ? `${hostName} added new questions to our interview «${title}».` : `${hostName} invites you to an interview: «${title}».`} You answer in your own time, from your phone, by voice or in writing. Your personal link (valid until ${lastDay}):\n${url}\nPlease do not share it.`
+    : `${guest ? `Olá ${guest}, ` : 'Olá, '}${followup ? `${hostName} acrescentou perguntas à nossa entrevista «${title}».` : `${hostName} convida-o para uma entrevista: «${title}».`} Responde no seu tempo, pelo telemóvel, por voz ou por escrito. O seu link pessoal (válido até ${lastDay}):\n${url}\nPor favor, não o partilhe.`;
+  return { invitationId: row.id as string, url, text };
+}

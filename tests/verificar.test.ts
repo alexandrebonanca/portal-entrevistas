@@ -209,3 +209,29 @@ test('imagem: ao aceitar e responder, autoriza o uso das fotografias (texto no c
   const off = await db.one(`SELECT granted FROM consents WHERE interview_id=$1 AND purpose='publish_photo' ORDER BY created_at DESC LIMIT 1`, [id]);
   assert.equal(off.granted, false, 'retirada com uma caixa');
 });
+
+test('convite pelo WhatsApp: link pessoal a mais (o do email continua válido), mensagem pronta, sem guardar o código; recusa revoga todos', async () => {
+  const page = (await get(`/entrevistas/${ivId}`, cli.cookie)).body;
+  assert.match(page, /action="\/entrevistas\/[^"]+\/whatsapp"[\s\S]{0,400}Enviar convite pelo WhatsApp/);
+  const before = Number((await db.one(`SELECT count(*)::int n FROM invitations WHERE interview_id=$1 AND revoked_at IS NULL`, [ivId])).n);
+  const r = await post(`/entrevistas/${ivId}/whatsapp`, { phone: '912 345 678' }, cli.cookie);
+  assert.equal(r.statusCode, 200);
+  assert.equal(r.headers['cache-control'], 'no-store');
+  const href = /href="(https:\/\/wa\.me\/[^"]+)"/.exec(r.body)![1].replace(/&amp;/g, '&');
+  assert.match(href, /^https:\/\/wa\.me\/351912345678\?text=/, 'número português com o indicativo');
+  const text = decodeURIComponent(href.split('?text=')[1]);
+  assert.match(text, /^Olá Rui, Zé (convida-o para uma entrevista: «Hotelaria»|acrescentou perguntas)/);
+  const token = /\/i\/([A-Za-z0-9_-]{40,})/.exec(text)![1];
+  const rows = await db.query(`SELECT channel, token_hash, revoked_at FROM invitations WHERE interview_id=$1 ORDER BY created_at`, [ivId]);
+  assert.equal(rows.at(-1).channel, 'whatsapp');
+  assert.ok(!rows.some((x: any) => x.token_hash === token), 'só o hash fica na base');
+  assert.equal(Number((await db.one(`SELECT count(*)::int n FROM invitations WHERE interview_id=$1 AND revoked_at IS NULL`, [ivId])).n), before + 1, 'o link do email continua válido');
+  // o link do WhatsApp abre a entrevista
+  assert.ok(cookies(await post(`/i/${token}/abrir`, {})).gs, 'abre como o do email');
+  // sem número: o WhatsApp abre para escolher o contacto
+  const r2 = await post(`/entrevistas/${ivId}/whatsapp`, {}, cli.cookie);
+  assert.match(r2.body, /href="https:\/\/wa\.me\/\?text=/);
+  // outra conta não cria links desta entrevista
+  const o = await post('/registar', { name: 'Outra', email: 'outra@example.com', password: PW, terms: 1 });
+  assert.equal((await post(`/entrevistas/${ivId}/whatsapp`, {}, `sid=${cookies(o).sid}`)).statusCode, 404);
+});

@@ -83,6 +83,8 @@ export async function guestRoutes(app: FastifyInstance) {
     const inv = await loadInvitation((req.params as any).token);
     if (inv && !inv.declined_at && !inv.revoked_at && inv.purpose !== 'preview') { // um link de validação não serve para recusar
       await db.query('UPDATE invitations SET declined_at=now() WHERE id=$1', [inv.id]);
+      // Os outros links do mesmo convite (por exemplo, o enviado pelo WhatsApp) deixam de valer.
+      await db.query(`UPDATE invitations SET revoked_at=now() WHERE interview_id=$1 AND id<>$2 AND revoked_at IS NULL AND purpose<>'preview'`, [inv.iid, inv.id]);
       const owner = await db.one('SELECT u.email FROM users u JOIN interviews i ON i.owner_id=u.id WHERE i.id=$1', [inv.iid]);
       await audit(db, 'guest', 'invitation.declined', inv.iid);
       await notice(db, inv.iid, 'declined', `${inv.guest_name || 'O entrevistado'} recusou o convite`, { level: 'bad', body: 'Indicou que não pretende participar nesta entrevista.', dedupe: `declined:${inv.id}` });

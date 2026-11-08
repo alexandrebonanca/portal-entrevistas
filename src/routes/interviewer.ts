@@ -7,7 +7,7 @@ import { esc, oneSpace, isEmail, fmtDate, fmtDuration, rateLimit, xmlText } from
 import { page, flash, pill, writtenAnswer, STATUS_LABEL } from '../views.ts';
 import { requireUser, ownedInterview, audit, sendAsset } from '../app.ts';
 import { sniff, stripJpegMetadata, saveAsset, probeAudio } from '../media.ts';
-import { createInvitation } from '../invites.ts';
+import { createInvitation, createWhatsappInvitation } from '../invites.ts';
 import { enqueue } from '../jobs.ts';
 import { interviewActivity } from './notices.ts';
 import { aiAvailable } from '../ai/openai.ts';
@@ -639,6 +639,33 @@ ${iv.objective_shared && iv.objective_text ? `<p class="hint">O entrevistado vê
     return reply.redirect(`/entrevistas/${iv.id}?ok=` + encodeURIComponent('Novo convite enviado; o link anterior foi revogado.'));
   });
 
+  // Convite pelo WhatsApp: um link pessoal a mais (o do email continua válido), mostrado só nesta resposta com o botão que
+  // abre o WhatsApp com a mensagem pronta; é o entrevistador que a envia, do telemóvel dele, ao contacto que escolher.
+  app.post('/entrevistas/:id/whatsapp', async (req, reply) => {
+    if (!requireUser(req, reply)) return;
+    const iv = await ownedInterview(app, req, (req.params as any).id);
+    if (!iv || !['invited', 'started', 'reopened'].includes(iv.collection_status)) return reply.code(404).send('Indisponível');
+    const no = (e: string) => reply.redirect(`/entrevistas/${iv.id}?e=` + encodeURIComponent(e));
+    if (!rateLimit(`wa-invite:${iv.id}`, 5, 3600_000)) return no('Já criou vários links para o WhatsApp nesta hora: use o último ou aguarde.');
+    // Entrevista grátis: conta como um reenvio (o mesmo total).
+    const guard = iv.free_at ? (tx: Db) => freeSendBlock(tx, iv.id, { resend: true }) : undefined;
+    const r = await createWhatsappInvitation(db, iv, { name: req.user!.name }, guard);
+    if ('refused' in r && r.refused) return no(r.refused);
+    const { url, text } = r as { url: string; text: string };
+    const phone = String((req.body as any)?.phone ?? '').replace(/[^\d]/g, '').replace(/^00/, '');
+    const to = phone.length >= 9 ? (phone.length === 9 && /^9/.test(phone) ? '351' + phone : phone) : '';
+    await audit(db, req.user!.email, 'invitation.whatsapp', iv.id, { phone: !!to });
+    const wa = `https://wa.me/${to}?text=${encodeURIComponent(text)}`;
+    const body = `<div class="narrow" style="padding-top:32px"><h1>Convite pelo WhatsApp</h1>
+<div class="card" style="border:2px solid var(--ok)"><p class="sans" style="margin-top:0"><strong>Link pessoal criado para ${esc(iv.guest_name || 'o entrevistado')}.</strong> ${to ? 'Abra o WhatsApp e envie a mensagem:' : 'Abra o WhatsApp, escolha o contacto e envie a mensagem:'}</p>
+<p><a class="btn accent" href="${esc(wa)}" target="_blank" rel="noopener">Abrir no WhatsApp</a></p>
+<details><summary class="sans">Ver a mensagem</summary><p class="written" style="white-space:pre-wrap">${esc(text)}</p></details>
+<p class="hint">O link do email continua válido. Este link só aparece agora (por segurança, o portal não o guarda): se precisar de outro, crie um novo. Reenviar o convite por email, cancelar a entrevista ou a recusa do entrevistado revogam também este link.</p></div>
+<p><a class="btn ghost" href="/entrevistas/${iv.id}">← Voltar à entrevista</a></p></div>`;
+    reply.header('Cache-Control', 'no-store').header('Referrer-Policy', 'no-referrer');
+    return view(req, reply, 'Convite pelo WhatsApp', body);
+  });
+
   app.post('/entrevistas/:id/cancelar', async (req, reply) => {
     if (!requireUser(req, reply)) return;
     const iv = await ownedInterview(app, req, (req.params as any).id);
@@ -742,7 +769,7 @@ ${flash(q.ok)}${flash(q.e, 'bad')}
 ${inv ? `<br><strong>Convite:</strong> ${inv.revoked_at ? 'revogado' : inv.declined_at ? 'recusado pelo convidado' : new Date(inv.expires_at) < new Date() ? 'expirado' : 'válido até ' + new Date(new Date(inv.expires_at).getTime() - 12 * 3600_000).toLocaleDateString('pt-PT', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' })}${inv.first_opened_at ? ' · aberto em ' + fmtDate(inv.first_opened_at) : ''}` : ''}${lim?.info ? `<br><span class="hint">${esc(lim.info)}</span>` : ''}</p>
 <div class="row">${iv.collection_status === 'draft' ? `<a class="btn accent" href="/entrevistas/${iv.id}/convidar">Convidar</a>` : ''}
 <a class="btn ghost" href="/entrevistas/${iv.id}/editar">Editar</a>
-${resendable ? `${resendBlock ? `<span class="hint sans">${esc(resendBlock)}</span>` : `<form method="post" action="/entrevistas/${iv.id}/reenviar"><button class="ghost">Reenviar convite (revoga o anterior)</button></form>`}<form method="post" action="/entrevistas/${iv.id}/cancelar" onsubmit="return confirm('Cancelar a entrevista?')"><button class="danger">Cancelar</button></form>` : ''}
+${resendable ? `${resendBlock ? `<span class="hint sans">${esc(resendBlock)}</span>` : `<form method="post" action="/entrevistas/${iv.id}/reenviar"><button class="ghost">Reenviar convite (revoga o anterior)</button></form>`}${!resendBlock && iv.collection_status !== 'expired' ? `<form method="post" action="/entrevistas/${iv.id}/whatsapp" class="row" style="gap:6px"><input name="phone" type="tel" inputmode="tel" placeholder="Telemóvel (opcional)" aria-label="Telemóvel do entrevistado (opcional)" style="width:12em;margin:0"><button class="ghost">Enviar convite pelo WhatsApp</button></form>` : ''}<form method="post" action="/entrevistas/${iv.id}/cancelar" onsubmit="return confirm('Cancelar a entrevista?')"><button class="danger">Cancelar</button></form>` : ''}
 ${sub || iv.production_status !== 'not_requested' ? `<a class="btn accent" href="/entrevistas/${iv.id}/producao">Produção do podcast →</a>` : ''}</div></div>
 ${await interviewActivity(db, iv.id, req.user!.id)}
 <div class="card"><h2 style="margin-top:0">Respostas</h2><table><thead><tr><th>#</th><th>Pergunta</th><th>Estado</th><th>Resposta</th></tr></thead><tbody>
