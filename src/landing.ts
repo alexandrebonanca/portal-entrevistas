@@ -71,6 +71,7 @@ const creditsFor = (m: number, centsPerMin: number) => Math.ceil((m * centsPerMi
 const crEn = (cents: number) => (cents % 100 ? (cents / 100).toFixed(cents % 10 ? 2 : 1) : String(cents / 100));
 
 export function landing(plans: any[], cq = '', free: { questionLimit: number | null; answerLimitSec: number | null } | null = null, galleryOn = true, premiumCents: number | null = null, featured: FeaturedEpisode | null = null) {
+  const ownerCountry = ({ EE: 'Estonia', PT: 'Portugal' } as Record<string, string>)[config.owner.country] ?? config.owner.country;
   const b = esc(config.brand);
   const signup = (extra = '') => esc(`/registar${extra || cq ? '?' : ''}${extra}${extra && cq ? '&' : ''}${cq}`);
   const withTags = (path: string) => esc(cq ? `${path}?${cq}` : path);
@@ -185,6 +186,9 @@ ${free ? `  <div class="card" id="free" style="max-width:760px"><h3 style="margi
   <p class="hint">Billing is monthly through Stripe, card only. VAT, where it applies, depends on your country; the final price is always shown before you pay.${s.tradeName || s.name ? ` Sold by ${esc(s.name || s.tradeName)}.` : ''} <a href="/termos">Terms of sale · Termos e condições</a> · ${complaintsLink(s)}. Plans and limits may change for new subscribers.</p>
 </section>
 
+<section class="wrap lp-section" id="about" aria-labelledby="abouth"><h2 id="abouth">Who is behind ${b}</h2>
+  <p class="lp-intro">${b} is owned and operated by <strong>${esc(config.owner.name)}</strong>${ownerCountry ? ` (${esc(ownerCountry)})` : ''}. Company website: <a href="${esc(config.owner.site)}" rel="noopener">${esc(config.owner.site.replace(/^https?:\/\/(www\.)?/i, '').replace(/\/$/, ''))}</a> · contact: <a href="mailto:${esc(config.owner.email)}">${esc(config.owner.email)}</a>.</p>
+</section>
 <section class="wrap lp-section"><div class="card lp-cta"><h2 style="margin-top:0">Your next great guest is one polite invitation away.</h2>
   <a class="btn accent" href="${signup()}">Create your account</a><p class="hint" style="margin-top:14px">Invited as a guest? Use the personal link in your email. There is nothing to sign up for.</p>
   <p class="hint">Questions about plans or a project of your own? <a href="/contact?topic=sales">Write to us</a>.</p></div>
