@@ -55,6 +55,10 @@ const STYLES = `
 .lp-cta{text-align:center;padding:40px 20px}
 .lp-video{margin:22px auto 0;max-width:880px}.lp-video video{width:100%;height:auto;aspect-ratio:16/9;border-radius:16px;background:#000;display:block}
 .lp-video figcaption{margin-top:8px}
+.lp-voices{background:#1B1F24;color:#F7F4EE;margin-top:64px;padding:64px 0}.lp-voices h2{color:#F7F4EE;margin:0 0 .3em}.lp-voices .lp-intro{color:#A9AFB5}
+.lp-vgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:28px 22px;margin-top:28px}.lp-vgrid figure{margin:0}
+.lp-vgrid video{width:100%;aspect-ratio:4/5;object-fit:cover;border-radius:16px;background:#2A2F33;display:block}
+.lp-vgrid figcaption{margin-top:10px;font:.92rem/1.4 system-ui,sans-serif;color:#A9AFB5}.lp-vgrid figcaption strong{display:block;color:#F7F4EE;font:400 1.2rem Georgia,serif}
 @media (max-width:820px){.lp-grid,.lp-split{grid-template-columns:1fr;gap:28px}.lp-hero{padding-top:32px}.lp-covers{grid-template-columns:repeat(3,1fr);gap:8px}}
 `;
 
@@ -125,6 +129,11 @@ ${featured ? `
     <figcaption class="hint">Translated and narrated with AI voices; the animated video carries a visible AI notice. <a href="${withTags(`/e/${featured.slug}`)}">Full episode, transcript and chapters</a>${galleryOn ? ` · <a href="${withTags('/podcasts')}">More interviews in the gallery</a>` : ''}</figcaption></figure>
 </section>
 ` : ''}
+<section class="lp-voices" aria-labelledby="voicesh"><div class="wrap">
+  <h2 id="voicesh">Every profession has a story worth hearing.</h2>
+  <p class="lp-intro">Premium video examples: AI-generated presenters and fictional people, always labelled as such.</p>
+  <div class="lp-vgrid"><figure><video autoplay muted loop playsinline preload="metadata" poster="/static/video/clips/01-fisherman.jpg" width="1280" height="720" aria-hidden="true"><source src="/static/video/clips/01-fisherman.mp4" type="video/mp4"></video><figcaption><strong>The fisherman</strong>Forty years at sea, told from the harbour.</figcaption></figure><figure><video autoplay muted loop playsinline preload="metadata" poster="/static/video/clips/02-engineer.jpg" width="1280" height="720" aria-hidden="true"><source src="/static/video/clips/02-engineer.mp4" type="video/mp4"></video><figcaption><strong>The engineer</strong>Answers between two site visits.</figcaption></figure><figure><video autoplay muted loop playsinline preload="metadata" poster="/static/video/clips/04-doctor.jpg" width="1280" height="720" aria-hidden="true"><source src="/static/video/clips/04-doctor.mp4" type="video/mp4"></video><figcaption><strong>The doctor</strong>Recorded after the last appointment.</figcaption></figure><figure><video autoplay muted loop playsinline preload="metadata" poster="/static/video/clips/05-teacher.jpg" width="1280" height="720" aria-hidden="true"><source src="/static/video/clips/05-teacher.mp4" type="video/mp4"></video><figcaption><strong>The teacher</strong>Shows her own episode to the class.</figcaption></figure><figure><video autoplay muted loop playsinline preload="metadata" poster="/static/video/clips/06-craftswoman.jpg" width="1280" height="720" aria-hidden="true"><source src="/static/video/clips/06-craftswoman.mp4" type="video/mp4"></video><figcaption><strong>The craftswoman</strong>Headphones on, in her workshop.</figcaption></figure><figure><video autoplay muted loop playsinline preload="metadata" poster="/static/video/clips/03-chef.jpg" width="1280" height="720" aria-hidden="true"><source src="/static/video/clips/03-chef.mp4" type="video/mp4"></video><figcaption><strong>The chef</strong>Phone on the shelf, kitchen still warm.</figcaption></figure></div>
+</div></section>
 <section class="wrap lp-section" id="hta-interview" aria-labelledby="hta-interview-title">
   <p class="lp-eyebrow">Hotel Training Academy × QuietInterview</p>
   <h2 id="hta-interview-title">Hospitality, leadership and the guest experience</h2>

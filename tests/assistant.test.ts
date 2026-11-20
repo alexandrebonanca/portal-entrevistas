@@ -270,7 +270,7 @@ test('utilizador: pergunta, resposta com as entradas (AI_MOCK), registo sem dado
   const emails = await nEmails();
   const help = await get('/ajuda', ana);
   assert.equal(help.statusCode, 200);
-  assert.match(help.body, /<h2 id="h-as"[^>]*>Assistente virtual<\/h2>/);
+  assert.match(help.body, /<h2 id="h-as"[^>]*>Quiet Help<\/h2>/);
   assert.match(help.body, /<form method="post" action="\/ajuda\/assistente" data-as>/);
   assert.match(help.body, /<label for="as-q">A sua pergunta<\/label>/);
   assert.match(help.body, /Ver todas as perguntas frequentes \(\d+\)/);

@@ -46,7 +46,7 @@ export async function createInvitation(db: Db, interview: any, host: { name: str
   // Rodapé dos emails ao convidado: marca, frase, endereço do portal e a página de privacidade. As dúvidas seguem pela
   // página «Ajuda» do link pessoal (suporte dentro do portal), sem nenhum endereço de email.
   const site = new URL(config.baseUrl).host;
-  const footer = `<p style="font:13px Arial,sans-serif;color:#6b655c;margin-top:32px">${esc(config.brand)} — ${esc(d.tagline)} · <a href="${esc(config.baseUrl)}" style="color:#b4691f">${esc(site)}</a> · ${emailPrivacyLink(d.privacyLink)}</p>`;
+  const footer = `<p style="font:13px Arial,sans-serif;color:#6b655c;margin-top:32px">${esc(config.brand)} — ${esc(d.tagline)} · <a href="${esc(config.baseUrl)}" style="color:#3F5E52">${esc(site)}</a> · ${emailPrivacyLink(d.privacyLink)}</p>`;
   const footerText = `${config.brand} — ${d.tagline} · ${site}\n${d.privacyLink}: ${config.baseUrl}/privacy`;
   const help = d.help;
   const small = (s: string) => `<p style="font-size:14px;color:#6b655c">${esc(s)}</p>`;
@@ -65,7 +65,7 @@ export async function createInvitation(db: Db, interview: any, host: { name: str
     const n = opts.redo.positions.length, note = opts.redo.note.trim();
     const until = d.linkUntil(new Date(`${lastDay}T12:00:00Z`).toLocaleDateString(lang === 'en' ? 'en-GB' : 'pt-PT', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' }));
     const which = opts.redo.positions.map(p => d.redoQ(p));
-    const body = `<p>${esc(d.redoLead(hostName))} <strong>${esc(interview.title)}</strong>.</p>${note ? `<blockquote style="border-left:3px solid #b4691f;margin:16px 0;padding:4px 16px;color:#4a443b">${esc(note).replace(/\r?\n/g, '<br>')}</blockquote>` : ''}
+    const body = `<p>${esc(d.redoLead(hostName))} <strong>${esc(interview.title)}</strong>.</p>${note ? `<blockquote style="border-left:3px solid #3F5E52;margin:16px 0;padding:4px 16px;color:#4a443b">${esc(note).replace(/\r?\n/g, '<br>')}</blockquote>` : ''}
 <p><strong>${esc(d.redoWhich)}</strong> ${esc(which.join(', '))}.</p><p>${esc(d.redoTip)}</p><p>${esc(until)}</p>`;
     const text = [d.redoHeading(n), `${d.redoLead(hostName)} ${interview.title}.`, note, `${d.redoWhich} ${which.join(', ')}.`, d.redoTip, until, `${d.open}: ${url}`, help, footerText].filter(Boolean).join('\n\n');
     await queueEmail(db, { key: `invite:${inv.id}`, interviewId: interview.id, to: interview.guest_email, subject: d.redoSubject(oneSpace(hostName), oneSpace(interview.title), n),
@@ -86,7 +86,7 @@ export async function createInvitation(db: Db, interview: any, host: { name: str
   const steps = followup ? [] : [d.howAnswer(nQ), d.howListen, ...(interview.review_policy === 'host_only' ? [d.howConsent, d.inviteEditHost] : [d.howApprove]), d.imageTerms];
   const until = d.linkUntil(new Date(`${lastDay}T12:00:00Z`).toLocaleDateString(lang === 'en' ? 'en-GB' : 'pt-PT', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' }));
   const pm = String(interview.personal_message ?? '').trim();
-  const body = `<p>${esc(lead)}<strong>${esc(interview.title)}</strong>${end}</p>${pm ? `<blockquote style="border-left:3px solid #b4691f;margin:16px 0;padding:4px 16px;color:#4a443b">${esc(pm).replace(/\r?\n/g, '<br>')}</blockquote>` : ''}
+  const body = `<p>${esc(lead)}<strong>${esc(interview.title)}</strong>${end}</p>${pm ? `<blockquote style="border-left:3px solid #3F5E52;margin:16px 0;padding:4px 16px;color:#4a443b">${esc(pm).replace(/\r?\n/g, '<br>')}</blockquote>` : ''}
 ${steps.length ? `<p style="margin:18px 0 6px"><strong>${esc(d.howTitle(config.brand))}</strong></p><ul style="padding-left:20px;margin:0 0 16px">${steps.map(s => `<li style="margin:4px 0">${esc(s)}</li>`).join('')}</ul>` : ''}
 <p>${esc(until)}</p>`;
   const quote = (s: string) => (lang === 'en' ? `“${s}”` : `«${s}»`);

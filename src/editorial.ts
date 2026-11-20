@@ -21,7 +21,7 @@ import { firstChars } from './lib.ts';
  * O som é sempre o do episódio (as falas animadas usam a mesma voz). Cada parte codifica-se à parte e junta-se no fim
  * (pouca memória); as legendas entregam-se em ficheiros (SRT/VTT), não gravadas na imagem.
  */
-export const EDITORIAL = { bg: '#f6f2ea', stage: '#f3f5f9', ink: '#1c1a17', accent: '#b4691f', muted: '#6b655c', line: '#ddd5c6' };
+export const EDITORIAL = { bg: '#F7F4EE', stage: '#f3f5f9', ink: '#1B1F24', accent: '#3F5E52', muted: '#5B6168', line: '#DDD5C7' };
 export const OPEN_MS = 3000, CLOSE_MS = 6000, NOTE_MS = 2800, LOWER_EDITORIAL_MS = 6500;
 const SERIF = "Georgia, 'DejaVu Serif', 'Times New Roman', serif", SANS = "'Segoe UI', 'DejaVu Sans', Arial, sans-serif";
 
@@ -103,7 +103,7 @@ function wrap(text: string, maxChars: number, maxLines = 3): string[] {
 
 /** Marca do portal (símbolo e «quietinterview»), em coordenadas do vídeo. */
 const logo = (x: number, y: number, s: number) => `<g transform="translate(${x} ${y}) scale(${s})">${MARK_PATHS(EDITORIAL.accent, EDITORIAL.bg)}</g>
-<text x="${x + 94 * s}" y="${y + 44 * s}" font-family="${SANS}" font-size="${42 * s}" fill="${EDITORIAL.accent}">quiet<tspan fill="${EDITORIAL.ink}" font-weight="700">interview</tspan></text>`;
+<text x="${x + 80 * s}" y="${y + 46 * s}" font-family="${SANS}" font-size="${42 * s}" fill="${EDITORIAL.accent}">quiet<tspan fill="${EDITORIAL.ink}" font-weight="700">interview</tspan></text>`;
 
 const svg = (w: number, h: number, body: string, bg?: string) => Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}">${bg ? `<rect width="${w}" height="${h}" fill="${bg}"/>` : ''}${body}</svg>`);
 const lines = (ls: string[], x: number, y: number, size: number, o: { family?: string; fill?: string; weight?: string; anchor?: string; gap?: number } = {}) =>

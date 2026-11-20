@@ -15,7 +15,11 @@ import { seedState, seedIndex, resolveSeed, faqNorm } from '../assistant-faq.ts'
 type Dict = ReturnType<typeof t>;
 
 /** Estilos do assistente (as respostas usam .msgbody do suporte: quebras de linha preservadas). */
-export const ASSISTANT_CSS = `.as-res{border-top:1px solid var(--line);margin-top:18px;padding-top:6px}.as-res:focus{outline:none}.as-h{font-size:1.15rem;margin:.8em 0 .3em}
+export const ASSISTANT_CSS = `.as-card{border-radius:20px}.as-head{display:flex;gap:18px;align-items:flex-end;margin-bottom:6px}.as-bot{width:96px;height:auto;flex:none}
+.as-bubble{position:relative;background:var(--accent-tint);border-radius:18px 18px 18px 6px;padding:14px 18px;flex:1}.as-bubble h2{font-size:1.3rem;margin:0 0 4px}.as-bubble p{margin:0}
+@media (max-width:560px){.as-bot{width:64px}.as-head{gap:10px}}
+#assistente textarea{border-radius:16px}
+.as-res{border-top:1px solid var(--line);margin-top:18px;padding-top:6px}.as-res:focus{outline:none}.as-h{font-size:1.15rem;margin:.8em 0 .3em}
 .as-fb{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:16px 0 0;font-family:system-ui,-apple-system,'Segoe UI',sans-serif}.as-fb button{padding:8px 20px;min-height:40px}
 .as-faq details{border-bottom:1px solid var(--line);padding:10px 0}.as-faq details:last-child{border-bottom:0}.as-faq summary{cursor:pointer;font:600 .98rem/1.4 system-ui,-apple-system,'Segoe UI',sans-serif}
 .as-faq .msgbody{margin:8px 0 0}.as-all{margin-top:18px}.as-all>summary{cursor:pointer;color:var(--accent);font:600 .95rem system-ui,-apple-system,'Segoe UI',sans-serif}`;
@@ -70,7 +74,7 @@ export async function assistantSection(db: Db, c: AsCtx, st: AsState): Promise<{
   const d = t(c.lang);
   const faq = await activeFaq(db, faqLang(c.lang), c.audience);
   const res = await assistantResult(db, c, st);
-  const html = `<section id="assistente" class="card" aria-labelledby="h-as"><h2 id="h-as" style="margin-top:0">${esc(d.asTitle)}</h2><p>${esc(d.asIntro)}</p>
+  const html = `<section id="assistente" class="card as-card" aria-labelledby="h-as"><div class="as-head"><img class="as-bot" src="/static/img/quiet-help.webp" width="584" height="823" alt="" decoding="async"><div class="as-bubble"><h2 id="h-as" style="margin-top:0">${esc(d.asTitle)}</h2><p>${esc(d.asIntro)}</p></div></div>
 <form method="post" action="${esc(c.base)}/assistente" data-as><label for="as-q">${esc(d.asLabel)}</label><textarea id="as-q" name="q" rows="2" required maxlength="${ASSISTANT_MAX_QUESTION}" aria-describedby="as-priv">${esc(st.q ?? '')}</textarea>
 <p class="hint" id="as-priv">${esc(c.ai && defaultAiEnabled() ? d.asPrivacyAi(ASSISTANT_LOG_DAYS) : d.asPrivacy(ASSISTANT_LOG_DAYS))}</p><p><button class="accent">${esc(d.asAsk)}</button></p></form>
 <div id="as-out">${res.html}</div>

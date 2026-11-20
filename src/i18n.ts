@@ -114,7 +114,7 @@ const D = {
     supportRate: 'Enviou muitas mensagens na última hora. Tente de novo mais tarde.',
     supportBack: 'Voltar à ajuda', supportBackInterview: 'Voltar à entrevista', supportNotFound: 'Pedido não encontrado.',
     // assistente virtual (perguntas e respostas)
-    asTitle: 'Assistente virtual', asIntro: 'Escreva a sua dúvida: o assistente responde com as perguntas frequentes do portal. Se não resolver, fale com o suporte.',
+    asTitle: 'Quiet Help', asIntro: 'Olá! Sou o Quiet Help, o assistente do portal. Escreva a sua dúvida e eu respondo com as perguntas frequentes. Se não resolver, passo-o ao suporte.',
     asLabel: 'A sua pergunta', asAsk: 'Perguntar',
     asPrivacy: (days: number) => `Não escreva dados pessoais, palavras-passe nem dados de pagamento. A pergunta é respondida só com as perguntas frequentes (não é enviada a serviços de IA) e fica registada sem identificação durante ${days} dias, para melhorar as respostas.`,
     asPrivacyAi: (days: number) => `Não escreva dados pessoais, palavras-passe nem dados de pagamento. Para redigir a resposta, o texto da pergunta (sem os dados da sua conta) pode ser enviado a um fornecedor de IA externo (OpenAI); fica registado sem identificação durante ${days} dias, para melhorar as respostas.`,
@@ -235,7 +235,7 @@ const D = {
     supportRate: 'You have sent many messages in the last hour. Please try again later.',
     supportBack: 'Back to help', supportBackInterview: 'Back to the interview', supportNotFound: 'Request not found.',
     // virtual assistant (questions and answers)
-    asTitle: 'Virtual assistant', asIntro: 'Type your question: the assistant answers from the portal’s frequently asked questions. If that does not solve it, contact support.',
+    asTitle: 'Quiet Help', asIntro: 'Hi! I’m Quiet Help, the portal’s assistant. Type your question and I’ll answer from the frequently asked questions. If that doesn’t solve it, I’ll pass you to support.',
     asLabel: 'Your question', asAsk: 'Ask',
     asPrivacy: (days: number) => `Do not include personal data, passwords or payment details. Your question is answered only from the frequently asked questions (it is not sent to AI services) and is stored without identification for ${days} days, to improve the answers.`,
     asPrivacyAi: (days: number) => `Do not include personal data, passwords or payment details. To draft the answer, the text of your question (without your account details) may be sent to an external AI provider (OpenAI); it is stored without identification for ${days} days, to improve the answers.`,

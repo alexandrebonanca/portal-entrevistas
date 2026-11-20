@@ -81,11 +81,11 @@ async function deliver(m: any): Promise<string> {
 }
 
 /** Ligação à página de privacidade no rodapé dos emails (o desta moldura e o dos convites, em invites.ts). */
-export const emailPrivacyLink = (label: string) => `<a href="${esc(config.baseUrl)}/privacy" style="color:#b4691f">${esc(label)}</a>`;
+export const emailPrivacyLink = (label: string) => `<a href="${esc(config.baseUrl)}/privacy" style="color:#3F5E52">${esc(label)}</a>`;
 
 /** Conteúdo do rodapé por omissão: a marca, o formulário de contacto e a página de privacidade. */
 const footerLine = (lang: 'pt' | 'en') =>
-  `${esc(config.brand)} · <a href="${esc(config.baseUrl)}/contact" style="color:#b4691f">${lang === 'en' ? 'Contact us' : 'Contacto'}</a> · ${emailPrivacyLink(lang === 'en' ? 'Privacy' : 'Privacidade')}`;
+  `${esc(config.brand)} · <a href="${esc(config.baseUrl)}/contact" style="color:#3F5E52">${lang === 'en' ? 'Contact us' : 'Contacto'}</a> · ${emailPrivacyLink(lang === 'en' ? 'Privacy' : 'Privacidade')}`;
 
 /**
  * Rodapé por omissão dos emails: a marca, a ligação ao formulário de contacto do portal (nunca um endereço de email) e a

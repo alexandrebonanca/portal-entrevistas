@@ -19,7 +19,8 @@ export const LOWER_H = 104, GFX_X = 40, CHAPTER_Y = 36;
 /** Rodapé: acima da zona das legendas gravadas (a caixa de 3 linhas, a maior) ou, num vídeo sem legendas, junto ao fundo. */
 export const lowerY = (subtitles: boolean) => (subtitles ? SUBS_TOP - 20 - LOWER_H : H - 56 - LOWER_H);
 const EDITORIAL = ['disclosure', 'editorial_intro', 'editorial_outro'];
-const COPPER = '#b4691f', COPPER_LIGHT = '#e3a868', INK = '#1c1a17';
+// Cores da marca (rebranding 2027): verde-salva e o seu tom claro para fundos escuros; os nomes antigos mantêm-se.
+const COPPER = '#3F5E52', COPPER_LIGHT = '#8DB5A4', INK = '#1B1F24';
 const snap = (ms: number) => Math.round(ms / 40) * 40; // 25 fps: grafismo em fotogramas inteiros
 
 /** Texto curto (pergunta no título de capítulo, nomes): corta numa palavra e acaba em reticências. */
@@ -145,9 +146,9 @@ export async function cardBackground(cover: Buffer): Promise<{ bg: Buffer; glow:
 /** Símbolo e nome da marca centrados em (cx, y), para os cartões (fundo escuro: «quiet» cobre claro, «interview» branco). */
 const brandSvg = (cy: number, size: number) => {
   const b = config.brand, two = /^quietinterview$/i.test(b);
-  const markH = Math.round(size * 1.15), markW = Math.round(markH * 80 / 76), gap = Math.round(size * 0.35);
+  const markH = Math.round(size * 1.15), markW = markH, gap = Math.round(size * 0.35);
   const textW = Math.round(b.length * size * 0.6), x0 = Math.round((W - (markW + gap + textW)) / 2);
-  return `<g transform="translate(${x0} ${cy - markH / 2}) scale(${markH / 76})">${markSvgFile(COPPER, '#fffdf8')}</g>
+  return `<g transform="translate(${x0} ${cy - markH / 2}) scale(${markH / 64})">${markSvgFile(COPPER, '#F7F4EE')}</g>
 <text x="${x0 + markW + gap}" y="${cy + size * 0.36}" font-family="${FONT}" font-weight="700" font-size="${size}">${two ? `<tspan fill="${COPPER_LIGHT}">quiet</tspan><tspan fill="#fff">interview</tspan>` : `<tspan fill="#fff">${escXml(b)}</tspan>`}</text>`;
 };
 /** Camada de texto do cartão recortada ao que tem desenhado (menos píxeis a misturar em cada fotograma) e a sua posição. */
