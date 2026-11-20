@@ -55,11 +55,12 @@ const STYLES = `
 .lp-cta{text-align:center;padding:40px 20px}
 .lp-video{margin:22px auto 0;max-width:880px}.lp-video video{width:100%;height:auto;aspect-ratio:16/9;border-radius:16px;background:#000;display:block}
 .lp-video figcaption{margin-top:8px}
+.lp-ep{margin:0}.lp-ep video{width:100%;height:auto;aspect-ratio:16/9;border-radius:16px;background:#000;display:block}.lp-ep figcaption{margin-top:10px;color:var(--mute);font-size:.95rem}.lp-ep figcaption strong{display:block;color:var(--ink);font:400 1.15rem Georgia,serif}
 .lp-voices{background:#1B1F24;color:#F7F4EE;margin-top:64px;padding:64px 0}.lp-voices h2{color:#F7F4EE;margin:0 0 .3em}.lp-voices .lp-intro{color:#A9AFB5}
 .lp-vgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:28px 22px;margin-top:28px}.lp-vgrid figure{margin:0}
 .lp-vgrid video{width:100%;aspect-ratio:4/5;object-fit:cover;border-radius:16px;background:#2A2F33;display:block}
 .lp-vgrid figcaption{margin-top:10px;font:.92rem/1.4 system-ui,sans-serif;color:#A9AFB5}.lp-vgrid figcaption strong{display:block;color:#F7F4EE;font:400 1.2rem Georgia,serif}
-@media (max-width:820px){.lp-grid,.lp-split{grid-template-columns:1fr;gap:28px}.lp-hero{padding-top:32px}.lp-covers{grid-template-columns:repeat(3,1fr);gap:8px}}
+@media (max-width:820px){#episodes .lp-grid{grid-template-columns:1fr!important}.lp-grid,.lp-split{grid-template-columns:1fr;gap:28px}.lp-hero{padding-top:32px}.lp-covers{grid-template-columns:repeat(3,1fr);gap:8px}}
 `;
 
 /**
@@ -142,6 +143,17 @@ ${featured ? `
     <iframe width="1280" height="720" style="display:block;width:100%;height:auto;aspect-ratio:16/9;border:0;border-radius:16px;background:#000" loading="lazy" src="https://www.youtube-nocookie.com/embed/eUNAKrgGUvc?cc_load_policy=1&amp;cc_lang_pref=pt" title="Jorge Beldade interviewed by Alex Rodrigues — full interview" allow="encrypted-media; picture-in-picture; fullscreen" allowfullscreen referrerpolicy="strict-origin-when-cross-origin"></iframe>
     <figcaption class="hint">Full interview · 12 min 30 sec · English audio · Selectable Portuguese subtitles.<br>A real remote interview: the guest received an invitation and recorded his answers on his phone. Produced by Hotel Training Academy with QuietInterview, using animated avatars and synthetic English voices.<br><a href="https://www.youtube.com/watch?v=eUNAKrgGUvc" target="_blank" rel="noopener">Watch the full interview on YouTube</a> · <a href="https://hoteltrainingacademy.com/" target="_blank" rel="noopener">Hotel Training Academy</a></figcaption>
   </figure>
+</section>
+<section class="wrap lp-section" id="episodes" aria-labelledby="episodesh">
+  <p class="lp-eyebrow">Episodes already produced</p>
+  <h2 id="episodesh">Hear what comes back</h2>
+  <p class="lp-intro">Two more episodes produced with quietinterview. Animated portraits are AI-generated and labelled on screen.</p>
+  <div class="lp-grid" style="grid-template-columns:1fr 1fr;align-items:start">
+    <figure class="lp-ep"><video controls playsinline preload="none" poster="/static/video/episodes/energy-transition.jpg" width="1280" height="720"><source src="/static/video/episodes/energy-transition.mp4" type="video/mp4">Your browser cannot play this video. <a href="/static/video/episodes/energy-transition.mp4">Download the episode (MP4)</a>.</video>
+      <figcaption><strong>The Energy Transition</strong>With Eng.º Alexandre Bonança · 10 min · Portuguese subtitles · AI-animated portraits</figcaption></figure>
+    <figure class="lp-ep"><video controls playsinline preload="none" poster="/static/video/episodes/telecert-pergunta6.jpg" width="1280" height="720"><source src="/static/video/episodes/telecert-pergunta6.mp4" type="video/mp4">Your browser cannot play this video. <a href="/static/video/episodes/telecert-pergunta6.mp4">Download the episode (MP4)</a>.</video>
+      <figcaption><strong>Telecert Academia — “O mundo está em risco?”</strong>Interview excerpt, answer to question 6 · 2 min 16 s</figcaption></figure>
+  </div>
 </section>
 <section class="wrap lp-section" id="how" aria-labelledby="howh"><h2 id="howh">How it works</h2>
   <p class="lp-intro">The people worth hearing are rarely free for a live recording. ${b} removes the scheduling and the pressure: no ambush, no chasing, no hidden recording.</p>
